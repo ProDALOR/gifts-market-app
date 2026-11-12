@@ -1,0 +1,794 @@
+{
+  "Item": {
+    "type": "object",
+    "required": [
+      "item_id",
+      "attributes",
+      "feed_id",
+      "item_type_id",
+      "observed_at"
+    ],
+    "properties": {
+      "attributes": {
+        "type": "object",
+        "additionalProperties": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        }
+      },
+      "feed_id": {
+        "type": "string"
+      },
+      "item_id": {
+        "$ref": "#/components/schemas/ItemId",
+        "description": "Opaque item identity; adapters establish cross-venue identity explicitly."
+      },
+      "item_type_id": {
+        "type": "string"
+      },
+      "observed_at": {
+        "type": "string",
+        "format": "date-time",
+        "description": "A checked Jiff timestamp at the precision supported by the wire contract.\n\nSerde uses UTC RFC 3339 strings. Protobuf conversions explicitly use whole\nmilliseconds. Constructing from a finer-precision Jiff value fails rather\nthan silently changing the instant.\nUnknown source times are `Option<MarketTimestamp>`, never a zero sentinel."
+      }
+    },
+    "additionalProperties": false
+  },
+  "ItemId": {
+    "type": "string"
+  },
+  "Order": {
+    "type": "object",
+    "required": [
+      "order_id",
+      "kind",
+      "price",
+      "quantity",
+      "feed_id",
+      "item_type_id",
+      "observed_at"
+    ],
+    "properties": {
+      "expires_at": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/components/schemas/MarketTimestamp"
+          }
+        ]
+      },
+      "feed_id": {
+        "type": "string"
+      },
+      "item_type_id": {
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/components/schemas/OrderKind",
+        "description": "Determines the side; the common envelope cannot declare a conflicting side."
+      },
+      "meta": {
+        "type": "object",
+        "description": "Opaque source metadata; keys are case-sensitive and contain no whitespace or controls. Limits: 16 entries, 64 UTF-8 bytes per key, 2048 per value, 4096 combined key/value bytes. Empty maps are omitted.",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "maxProperties": 16
+      },
+      "observed_at": {
+        "type": "string",
+        "format": "date-time",
+        "description": "A checked Jiff timestamp at the precision supported by the wire contract.\n\nSerde uses UTC RFC 3339 strings. Protobuf conversions explicitly use whole\nmilliseconds. Constructing from a finer-precision Jiff value fails rather\nthan silently changing the instant.\nUnknown source times are `Option<MarketTimestamp>`, never a zero sentinel."
+      },
+      "order_id": {
+        "$ref": "#/components/schemas/OrderId"
+      },
+      "price": {
+        "$ref": "#/components/schemas/Money",
+        "description": "Price per whole unit; limit price on an order, actual price on an execution."
+      },
+      "quantity": {
+        "$ref": "#/components/schemas/Quantity",
+        "description": "Remaining on an order, executed on a trade. Always positive and exact."
+      }
+    },
+    "additionalProperties": false
+  },
+  "MarketTimestamp": {
+    "type": "string",
+    "format": "date-time",
+    "description": "A checked Jiff timestamp at the precision supported by the wire contract.\n\nSerde uses UTC RFC 3339 strings. Protobuf conversions explicitly use whole\nmilliseconds. Constructing from a finer-precision Jiff value fails rather\nthan silently changing the instant.\nUnknown source times are `Option<MarketTimestamp>`, never a zero sentinel."
+  },
+  "OrderKind": {
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "item_id",
+          "type"
+        ],
+        "properties": {
+          "item_id": {
+            "$ref": "#/components/schemas/ItemId"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "ask_item"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "attributes",
+          "type"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            }
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "ask_units"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "item_id",
+          "type"
+        ],
+        "properties": {
+          "item_id": {
+            "$ref": "#/components/schemas/ItemId"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "bid_item"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "bid_any"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "filter",
+          "type"
+        ],
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/BTreeMap"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "bid_attributes"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "BTreeMap": {
+    "type": "object",
+    "additionalProperties": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "value",
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "eq"
+              ]
+            },
+            "value": {
+              "$ref": "#/components/schemas/AttributeValue"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "values",
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "one_of"
+              ]
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/AttributeValue"
+              },
+              "uniqueItems": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Inclusive endpoints; at least one must be supplied.",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "max": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/AttributeValue"
+                }
+              ]
+            },
+            "min": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/AttributeValue"
+                }
+              ]
+            },
+            "op": {
+              "type": "string",
+              "enum": [
+                "range"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "propertyNames": {
+      "type": "string"
+    }
+  },
+  "AttributeValue": {
+    "oneOf": [
+      {
+        "type": "string"
+      },
+      {
+        "type": "boolean"
+      }
+    ]
+  },
+  "OrderId": {
+    "type": "string"
+  },
+  "Money": {
+    "type": "object",
+    "required": [
+      "currency_id",
+      "amount"
+    ],
+    "properties": {
+      "amount": {
+        "type": "string"
+      },
+      "currency_id": {
+        "$ref": "#/components/schemas/CurrencyId"
+      }
+    }
+  },
+  "CurrencyId": {
+    "type": "string"
+  },
+  "Quantity": {
+    "type": "string"
+  },
+  "FeedStatus": {
+    "type": "object",
+    "required": [
+      "feed_id",
+      "venue_id",
+      "state"
+    ],
+    "properties": {
+      "feed_id": {
+        "$ref": "#/components/schemas/FeedId"
+      },
+      "last_sync_at": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/components/schemas/MarketTimestamp"
+          }
+        ]
+      },
+      "state": {
+        "$ref": "#/components/schemas/FeedState"
+      },
+      "venue_id": {
+        "$ref": "#/components/schemas/VenueId"
+      }
+    },
+    "additionalProperties": false
+  },
+  "FeedId": {
+    "type": "string"
+  },
+  "FeedState": {
+    "type": "string",
+    "enum": [
+      "syncing",
+      "ready",
+      "stale",
+      "unavailable"
+    ]
+  },
+  "VenueId": {
+    "type": "string"
+  },
+  "CatalogEntry": {
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "type"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/VenueId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "venue"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "decimals",
+          "type"
+        ],
+        "properties": {
+          "decimals": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "id": {
+            "$ref": "#/components/schemas/CurrencyId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "currency"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "type"
+        ],
+        "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalId"
+            }
+          },
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeRule"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "$ref": "#/components/schemas/ItemTypeId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "quantity_step": {
+            "type": "string",
+            "description": "Smallest permitted amount increment. Defaults to whole units."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "item_type"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "value_type",
+          "type"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/AttributeId"
+          },
+          "max_length": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Optional UTF-8 byte limit for text. The global maximum always applies.",
+            "minimum": 0
+          },
+          "maximum": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "minimum": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "attribute"
+            ]
+          },
+          "value_type": {
+            "$ref": "#/components/schemas/AttributeType"
+          }
+        },
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "required": [
+          "id",
+          "attribute_id",
+          "name",
+          "type"
+        ],
+        "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalId"
+            }
+          },
+          "attribute_id": {
+            "$ref": "#/components/schemas/AttributeId"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AttributeValueId"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/BTreeMap",
+            "description": "Source annotations such as asset IDs, colors, and applicability flags."
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "attribute_value"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "required": [
+          "id",
+          "venue_id",
+          "type"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/FeedId"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "feed"
+            ]
+          },
+          "venue_id": {
+            "$ref": "#/components/schemas/VenueId"
+          }
+        },
+        "additionalProperties": false
+      }
+    ]
+  },
+  "ExternalId": {
+    "type": "object",
+    "required": [
+      "namespace",
+      "id"
+    ],
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "namespace": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "AttributeRule": {
+    "type": "object",
+    "description": "An absent allowed_values set permits all options owned by this enum attribute.",
+    "properties": {
+      "allowed_values": {
+        "type": [
+          "array",
+          "null"
+        ],
+        "items": {
+          "$ref": "#/components/schemas/AttributeValueId"
+        },
+        "uniqueItems": true
+      }
+    },
+    "additionalProperties": false
+  },
+  "AttributeValueId": {
+    "type": "string"
+  },
+  "ItemTypeId": {
+    "type": "string"
+  },
+  "AttributeId": {
+    "type": "string"
+  },
+  "AttributeType": {
+    "type": "string",
+    "enum": [
+      "enum",
+      "integer",
+      "decimal",
+      "boolean",
+      "text",
+      "timestamp"
+    ]
+  },
+  "Record": {
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "item_id",
+          "attributes",
+          "feed_id",
+          "item_type_id",
+          "observed_at",
+          "type"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            }
+          },
+          "feed_id": {
+            "type": "string"
+          },
+          "item_id": {
+            "$ref": "#/components/schemas/ItemId",
+            "description": "Opaque item identity; adapters establish cross-venue identity explicitly."
+          },
+          "item_type_id": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "A checked Jiff timestamp at the precision supported by the wire contract.\n\nSerde uses UTC RFC 3339 strings. Protobuf conversions explicitly use whole\nmilliseconds. Constructing from a finer-precision Jiff value fails rather\nthan silently changing the instant.\nUnknown source times are `Option<MarketTimestamp>`, never a zero sentinel."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "item"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "required": [
+          "order_id",
+          "kind",
+          "price",
+          "quantity",
+          "feed_id",
+          "item_type_id",
+          "observed_at",
+          "type"
+        ],
+        "properties": {
+          "expires_at": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MarketTimestamp"
+              }
+            ]
+          },
+          "feed_id": {
+            "type": "string"
+          },
+          "item_type_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OrderKind",
+            "description": "Determines the side; the common envelope cannot declare a conflicting side."
+          },
+          "meta": {
+            "type": "object",
+            "description": "Opaque source metadata; keys are case-sensitive and contain no whitespace or controls. Limits: 16 entries, 64 UTF-8 bytes per key, 2048 per value, 4096 combined key/value bytes. Empty maps are omitted.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 16
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "A checked Jiff timestamp at the precision supported by the wire contract.\n\nSerde uses UTC RFC 3339 strings. Protobuf conversions explicitly use whole\nmilliseconds. Constructing from a finer-precision Jiff value fails rather\nthan silently changing the instant.\nUnknown source times are `Option<MarketTimestamp>`, never a zero sentinel."
+          },
+          "order_id": {
+            "$ref": "#/components/schemas/OrderId"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Price per whole unit; limit price on an order, actual price on an execution."
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/Quantity",
+            "description": "Remaining on an order, executed on a trade. Always positive and exact."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "order"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "required": [
+          "feed_id",
+          "venue_id",
+          "state",
+          "type"
+        ],
+        "properties": {
+          "feed_id": {
+            "$ref": "#/components/schemas/FeedId"
+          },
+          "last_sync_at": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MarketTimestamp"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/FeedState"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "feed"
+            ]
+          },
+          "venue_id": {
+            "$ref": "#/components/schemas/VenueId"
+          }
+        },
+        "additionalProperties": false
+      }
+    ]
+  },
+  "OrderSide": {
+    "type": "string",
+    "enum": [
+      "ask",
+      "bid"
+    ]
+  }
+}

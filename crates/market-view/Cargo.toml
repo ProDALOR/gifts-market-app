@@ -1,0 +1,16 @@
+[package]
+name = "market-view"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+hub-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+rust_decimal.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+prost.workspace = true
+humantime.workspace = true
+[lints]
+workspace = true

@@ -1,0 +1,53 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+market-view = { path = "crates/market-view" }
+market-reader = { path = "crates/market-reader" }
+hub-protocol = { path = "crates/hub-protocol" }
+market-history = { path = "crates/market-history" }
+market-query = { path = "crates/market-query" }
+market-json = { path = "crates/market-json" }
+actix = "0.13"
+actix-web = "4"
+actix-ws = "0.4"
+actix-cors = "0.7"
+base64 = "0.22"
+futures-util = "0.3"
+anyhow = "1"
+async-stream = "0.3"
+clap = { version = "4", features = ["derive", "env"] }
+im = "15"
+humantime = "2"
+jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
+prost = "0.14"
+prometheus-client = "0.25"
+prost-build = "0.14"
+protoc-bin-vendored = "3"
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value"] }
+serde_yaml_ng = "0.10"
+sha2 = "0.10"
+zstd = "0.13"
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+toml = "0.8"
+tonic = { version = "0.14", features = ["tls-ring"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+utoipa = { version = "5", features = ["actix_extras"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

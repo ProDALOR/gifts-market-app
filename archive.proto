@@ -1,0 +1,36 @@
+syntax = "proto3";
+package market_app.archive;
+import "market-hub.proto";
+
+// Binary archive payloads use the same event schema as replication.
+enum ArchiveGapReason {
+  ARCHIVE_GAP_REASON_UNSPECIFIED = 0;
+  ARCHIVE_GAP_REASON_INITIAL_START = 1;
+  ARCHIVE_GAP_REASON_GENERATION_CHANGED = 2;
+  ARCHIVE_GAP_REASON_REPLAY_EXPIRED = 3;
+}
+message ArchiveCatalogPage {
+  string generation = 1;
+  string revision = 2;
+  uint64 offset = 3;
+  repeated market.CatalogEntry entries = 4;
+  bool complete = 5;
+}
+message ArchiveGap {
+  market.Cursor after = 1;
+  market.Cursor resumed_after = 2;
+  ArchiveGapReason reason = 3;
+}
+message ArchiveBatch {
+  market.Cursor cursor = 1;
+  string catalog_revision = 2;
+  repeated market.MarketEvent events = 3;
+}
+message ArchiveEntry {
+  oneof entry {
+    ArchiveCatalogPage catalog_page = 1;
+    ArchiveGap gap = 2;
+    ArchiveBatch batch = 3;
+  }
+}
+

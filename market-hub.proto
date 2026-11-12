@@ -1,0 +1,494 @@
+syntax = "proto3";
+package market;
+
+// Service boundary: consumers vendor this contract and generate their own bindings.
+// Rust models, validation, storage and client implementations are private to each service.
+// Catalog revision strings are opaque identities; pin them across pages and frames.
+// Revisions must not be recomputed from a consumer's language-specific serialization.
+
+// Enrollment requires the deployment registration credential. Subsequent calls
+// use the node's own credential; repeating the same ID, role and key is idempotent.
+enum NodeRole {
+  NODE_ROLE_UNSPECIFIED = 0;
+  NODE_ROLE_ADAPTER = 1;
+  NODE_ROLE_READER = 2;
+}
+message RegisterNodeRequest {
+  string id = 1;
+  string token = 2;
+  NodeRole role = 3;
+}
+message NodeRegistration {
+  string id = 1;
+  NodeRole role = 2;
+  bool duplicate = 3;
+}
+service MarketRegistration {
+  rpc RegisterNode(RegisterNodeRequest) returns (NodeRegistration);
+}
+
+// Opaque identities. Exact decimal prices and Unix millisecond timestamps.
+message Cursor {
+  string generation = 1;
+  uint64 revision = 2;
+}
+
+message Money {
+  string currency_id = 1;
+  string amount = 2;
+}
+
+enum RecordKind {
+  RECORD_KIND_UNSPECIFIED = 0;
+  RECORD_KIND_ITEM = 1;
+  RECORD_KIND_ASK = 2;
+  RECORD_KIND_BID = 3;
+  RECORD_KIND_FEED = 4;
+}
+
+message RecordKey {
+  string feed_id = 1;
+  RecordKind kind = 2;
+  string id = 3;
+}
+
+message Item {
+  Observation observation = 1;
+  ItemData data = 2;
+}
+message ItemData {
+  string item_id = 1;
+  map<string, AttributeValue> attributes = 2;
+}
+
+// Provenance shared by all typed market observations.
+message Observation {
+  string feed_id = 1;
+  string item_type_id = 2;
+  int64 observed_at_ms = 3;
+}
+message PriceQuantity {
+  Money price = 1;
+  // Positive exact amount; remaining on orders, executed on trades.
+  string quantity = 2;
+}
+message Order {
+  Observation observation = 1;
+  OrderData data = 2;
+}
+message OrderData {
+  string order_id = 1;
+  PriceQuantity amounts = 2;
+  optional int64 expires_at_ms = 3;
+  // Opaque source annotations. 16 entries, 64-byte keys, 2048-byte values, 4096 combined UTF-8 bytes.
+  map<string, string> meta = 4;
+  oneof kind {
+    string ask_item_id = 5;
+    AttributeMap ask_units = 6;
+    string bid_item_id = 7;
+    Empty bid_any = 8;
+    AttributeFilter bid_attributes = 9;
+  }
+}
+message AttributeMap { map<string, AttributeValue> attributes = 1; }
+enum OrderSide {
+  ORDER_SIDE_UNSPECIFIED = 0;
+  ORDER_SIDE_ASK = 1;
+  ORDER_SIDE_BID = 2;
+}
+// Feed and item type come from the observation envelope.
+message OrderRef {
+  string order_id = 1;
+  OrderSide side = 2;
+}
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_OPEN = 1;
+  ORDER_STATUS_PARTIALLY_FILLED = 2;
+  ORDER_STATUS_FILLED = 3;
+  ORDER_STATUS_CANCELLED = 4;
+  ORDER_STATUS_EXPIRED = 5;
+}
+message OrderStatusEvent {
+  Observation observation = 1;
+  OrderStatusData data = 2;
+}
+message OrderStatusData {
+  string event_id = 1;
+  OrderRef order = 2;
+  OrderStatus status = 3;
+  optional int64 occurred_at_ms = 4;
+}
+message OrderRemoval {
+  Observation observation = 1;
+  OrderRef data = 2;
+}
+message Trade {
+  Observation observation = 1;
+  TradeData data = 2;
+}
+message TradeData {
+  string trade_id = 1;
+  PriceQuantity amounts = 2;
+  int64 executed_at_ms = 3;
+  optional string buy_order_id = 4;
+  optional string sell_order_id = 5;
+  oneof kind {
+    string item_id = 6;
+    AttributeMap units = 7;
+  }
+}
+// Adapters cannot submit core-owned observations/removals through this type.
+message SourceEvent {
+  oneof event {
+    OrderStatusEvent order_status = 1;
+    Trade trade = 2;
+  }
+}
+// Canonical events are retained once; live/history projections select variants.
+message MarketEvent {
+  oneof event {
+    Record upsert = 1;
+    RecordKey delete = 2;
+    OrderRemoval order_removed = 3;
+    OrderStatusEvent order_status = 4;
+    Trade trade = 5;
+  }
+}
+
+// Explicit scalar types. Decimal values are exact strings; oneof preserves false and zero.
+message AttributeValue {
+  oneof value {
+    string enum_id = 1;
+    sint64 integer = 2;
+    string decimal = 3;
+    bool boolean = 4;
+    string text = 5;
+    int64 timestamp_ms = 6;
+  }
+}
+message AttributeValues {
+  repeated AttributeValue values = 1;
+}
+message AttributeRange {
+  AttributeValue min = 1;
+  AttributeValue max = 2;
+}
+message AttributePredicate {
+  oneof predicate {
+    AttributeValue eq = 1;
+    AttributeValues one_of = 2;
+    AttributeRange range = 3;
+  }
+}
+message AttributeFilter {
+  // AND across catalog attribute IDs. one_of gives OR within one attribute.
+  // 1..64 predicates; one_of has 1..128 values. Ranges are inclusive.
+  map<string, AttributePredicate> attributes = 1;
+}
+
+enum FeedState {
+  FEED_STATE_UNSPECIFIED = 0;
+  FEED_STATE_SYNCING = 1;
+  FEED_STATE_READY = 2;
+  FEED_STATE_STALE = 3;
+  FEED_STATE_UNAVAILABLE = 4;
+}
+
+message FeedStatus {
+  string feed_id = 1;
+  string venue_id = 2;
+  FeedState state = 3;
+  optional int64 last_sync_ms = 4;
+}
+
+message Record {
+  oneof record {
+    Item item = 1;
+    Order order = 2;
+    FeedStatus feed = 3;
+  }
+}
+
+message Mutation {
+  oneof mutation {
+    Record upsert = 1;
+    RecordKey delete = 2;
+  }
+}
+
+// Opaque, feed-scoped ownership token. Replaced writers and core restarts invalidate it.
+message Session {
+  string id = 1;
+}
+
+message OpenFeedRequest {
+  string writer_id = 1;
+  bool takeover = 2;
+  string catalog_revision = 3;
+}
+
+message OpenFeedResponse {
+  Session session = 1;
+  string generation = 2;
+  string feed_id = 3;
+  uint64 next_sequence = 4;
+  bool requires_reconcile = 5;
+  IngestLimits limits = 6;
+}
+
+message IngestLimits {
+  uint32 max_batch_records = 1;
+  uint32 max_entry_bytes = 2;
+  uint32 max_payload_bytes = 3;
+  uint32 max_message_bytes = 4;
+  uint64 max_snapshot_records = 5;
+  uint64 max_snapshot_bytes = 6;
+  uint32 max_snapshot_chunks = 7;
+  uint32 feed_lease_seconds = 8;
+  uint32 reconcile_timeout_seconds = 9;
+}
+
+message FeedProgress {
+  FeedState state = 1;
+  optional int64 last_sync_ms = 2;
+}
+
+message RenewFeedRequest {
+  Session session = 1;
+  // Omit to renew ownership without changing readiness or source freshness.
+  FeedProgress progress = 2;
+}
+
+message PublishRequest {
+  Session session = 1;
+  uint64 sequence = 2;
+  repeated Mutation mutations = 3;
+  // Explicit source trades/statuses, committed atomically with mutations.
+  repeated SourceEvent history = 4;
+  // Optional progress commits atomically with changes; counts as one batch entry.
+  FeedProgress progress = 5;
+}
+
+// RAM-only acceptance does not promise survival across a core restart.
+message PublishAck {
+  Cursor cursor = 1;
+  uint64 accepted_sequence = 2;
+  bool duplicate = 3;
+}
+
+message BeginReconcileRequest {
+  Session session = 1;
+  string reconcile_id = 2;
+}
+
+message ReconcileSession {
+  string reconcile_id = 1;
+  uint32 next_chunk = 2;
+}
+
+message ReconcileChunk {
+  Session session = 1;
+  string reconcile_id = 2;
+  uint32 chunk_index = 3;
+  repeated Record records = 4;
+}
+
+message ChunkAck {
+  uint32 next_chunk = 1;
+}
+
+message FinishReconcileRequest {
+  Session session = 1;
+  string reconcile_id = 2;
+}
+message CancelReconcileRequest {
+  Session session = 1;
+  string reconcile_id = 2;
+}
+message CancelReconcileResponse {
+  PublishAck ack = 1;
+  // A completed snapshot cannot be rolled back by cancellation.
+  bool completed = 2;
+  bool requires_reconcile = 3;
+}
+
+message Empty {}
+enum ChangeProjection {
+  CHANGE_PROJECTION_UNSPECIFIED = 0;
+  CHANGE_PROJECTION_LIVE = 1;
+  CHANGE_PROJECTION_HISTORY = 2;
+  CHANGE_PROJECTION_ALL = 3;
+}
+message SyncRequest {
+  // Omit for a complete catalog/state snapshot, followed by ordered changes.
+  // Invalid resume cursors fail explicitly; retry without after to resnapshot.
+  Cursor after = 1;
+  ChangeProjection projection = 2;
+}
+enum FrameKind {
+  FRAME_KIND_UNSPECIFIED = 0;
+  FRAME_KIND_SNAPSHOT_START = 1;
+  FRAME_KIND_SNAPSHOT_DATA = 2;
+  FRAME_KIND_SNAPSHOT_COMPLETE = 3;
+  FRAME_KIND_DELTA = 4;
+  FRAME_KIND_CHECKPOINT = 5;
+  FRAME_KIND_HEARTBEAT = 6;
+}
+// A snapshot's cursor/catalog/counts stay fixed through its complete marker.
+// Delta chunks share one next cursor; apply their catalog and events atomically
+// only when complete is true. Empty deltas still advance the global revision.
+message SyncFrame {
+  Cursor cursor = 1;
+  FrameKind kind = 2;
+  string catalog_revision = 3;
+  repeated CatalogEntry catalog = 4;
+  repeated Record records = 5;
+  repeated MarketEvent events = 6;
+  bool complete = 7;
+  uint64 total_records = 8;
+  uint64 record_bytes = 9;
+}
+
+service MarketIngest {
+  rpc OpenFeed(OpenFeedRequest) returns (OpenFeedResponse);
+  rpc RenewFeed(RenewFeedRequest) returns (PublishAck);
+  rpc Publish(PublishRequest) returns (PublishAck);
+  rpc BeginReconcile(BeginReconcileRequest) returns (ReconcileSession);
+  rpc WriteReconcileChunk(ReconcileChunk) returns (ChunkAck);
+  rpc FinishReconcile(FinishReconcileRequest) returns (PublishAck);
+  rpc CancelReconcile(CancelReconcileRequest) returns (CancelReconcileResponse);
+}
+
+service MarketReplication {
+  rpc Sync(SyncRequest) returns (stream SyncFrame);
+}
+
+// Immutable reference data. Fetch page zero without a generation, then pin all later pages.
+message ExternalId {
+  string namespace = 1;
+  string id = 2;
+}
+
+message VenueDefinition {
+  string id = 1;
+  string name = 2;
+}
+
+message CurrencyDefinition {
+  string id = 1;
+  string name = 2;
+  uint32 decimals = 3;
+}
+
+message ItemTypeDefinition {
+  string id = 1;
+  string name = 2;
+  string quantity_step = 3;
+  repeated ExternalId aliases = 4;
+  map<string, AttributeRule> attributes = 5;
+}
+message AllowedAttributeValues { repeated string ids = 1; }
+message AttributeRule {
+  // Absence permits all enum options owned by the attribute; present must be nonempty.
+  AllowedAttributeValues allowed_values = 1;
+}
+enum AttributeType {
+  ATTRIBUTE_TYPE_UNSPECIFIED = 0;
+  ATTRIBUTE_TYPE_ENUM = 1;
+  ATTRIBUTE_TYPE_INTEGER = 2;
+  ATTRIBUTE_TYPE_DECIMAL = 3;
+  ATTRIBUTE_TYPE_BOOLEAN = 4;
+  ATTRIBUTE_TYPE_TEXT = 5;
+  ATTRIBUTE_TYPE_TIMESTAMP = 6;
+}
+message AttributeDefinition {
+  string id = 1;
+
+  string name = 2;
+  AttributeType value_type = 3;
+  AttributeValue minimum = 4;
+  AttributeValue maximum = 5;
+  optional uint32 max_length = 6;
+}
+message AttributeValueDefinition {
+  string id = 1;
+  string attribute_id = 2;
+  string name = 3;
+  repeated ExternalId aliases = 4;
+  // Opaque source annotations. Source-specific concepts belong here.
+  map<string, string> meta = 5;
+}
+
+message FeedDefinition {
+  string id = 1;
+  string venue_id = 2;
+}
+
+message CatalogEntry {
+  oneof entry {
+    VenueDefinition venue = 1;
+    CurrencyDefinition currency = 2;
+    ItemTypeDefinition item_type = 3;
+    AttributeDefinition attribute = 4;
+    AttributeValueDefinition attribute_value = 5;
+    FeedDefinition feed = 6;
+  }
+}
+
+message CatalogPageRequest {
+  string generation = 1;
+  string revision = 2;
+  uint32 offset = 3;
+}
+
+message CatalogPage {
+  string generation = 1;
+  string revision = 2;
+  repeated CatalogEntry entries = 3;
+  optional uint32 next_offset = 4;
+  uint32 total_entries = 5;
+}
+
+service MarketCatalog {
+  rpc GetCatalogPage(CatalogPageRequest) returns (CatalogPage);
+}
+
+// Generic, namespace-owned catalog bundles. One collection per bundle is conventional.
+// Updates merge definitions: omissions never retire IDs or remove allowed values.
+message CatalogBundle {
+  string id = 1;
+  repeated CatalogEntry entries = 2;
+}
+message BeginCatalogUpdateRequest {
+  string update_id = 1;
+  string expected_revision = 2;
+}
+message CatalogUpdateSession {
+  string update_id = 1;
+  uint32 next_chunk = 2;
+  bool completed = 3;
+  string revision = 4;
+  uint32 max_chunk_entries = 5;
+  uint32 max_chunk_bytes = 6;
+}
+message CatalogChunk {
+  string update_id = 1;
+  uint32 chunk_index = 2;
+  // A bundle may span chunks; each entry must occur only once in an update.
+  repeated CatalogBundle bundles = 3;
+}
+message CatalogChunkAck { uint32 next_chunk = 1; }
+message CatalogUpdateRequest { string update_id = 1; }
+message CatalogCommit {
+  string revision = 1;
+  bool changed = 2;
+  bool duplicate = 3;
+}
+// Available only on ingest, to configured adapters in their own namespace.
+service MarketCatalogAdmin {
+  rpc BeginCatalogUpdate(BeginCatalogUpdateRequest) returns (CatalogUpdateSession);
+  rpc WriteCatalogChunk(CatalogChunk) returns (CatalogChunkAck);
+  rpc CommitCatalogUpdate(CatalogUpdateRequest) returns (CatalogCommit);
+  rpc AbortCatalogUpdate(CatalogUpdateRequest) returns (Empty);
+}

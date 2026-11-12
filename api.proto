@@ -1,0 +1,128 @@
+syntax = "proto3";
+package market_app.api;
+import "market-hub.proto";
+
+// Client-facing read API. All work is served by a market-app's local replica.
+message ResponseMeta {
+  market.Cursor cursor = 1;
+  string catalog_revision = 2;
+  string served_at = 3; // UTC RFC 3339.
+  string replica_state = 4; // live, cached, or syncing.
+  optional string last_contact_at = 5;
+  string as_of = 6;
+}
+message Page { optional string next_cursor = 1; }
+message Included {
+  repeated market.Item items = 1;
+  repeated market.FeedStatus feeds = 2;
+}
+message ApiStatus {
+  bool ready = 1;
+  uint64 records = 2;
+  uint32 feeds = 3;
+  uint32 ready_feeds = 4;
+  ResponseMeta meta = 5;
+}
+message CatalogQuery {
+  optional string kind = 1;
+  optional string id = 2;
+  optional string item_type_id = 3;
+  optional string attribute_id = 4;
+  optional string q = 5;
+  optional uint32 limit = 6;
+  optional string cursor = 7;
+}
+message CatalogResult {
+  repeated market.CatalogEntry data = 1;
+  Page page = 2;
+  ResponseMeta meta = 3;
+}
+message FeedsQuery { optional string feed_id = 1; }
+message FeedsResult { repeated market.FeedStatus data = 1; ResponseMeta meta = 2; }
+message ItemsQuery {
+  optional string feed_id = 1;
+  optional string item_type_id = 2;
+  optional string item_id = 3;
+  map<string, market.AttributeValue> attributes = 4;
+  optional uint32 limit = 5;
+  optional string cursor = 6;
+}
+message ItemsResult { repeated market.Item data = 1; Page page = 2; ResponseMeta meta = 3; }
+message OrdersQuery {
+  optional string item_type_id = 1;
+  optional string currency_id = 2;
+  optional market.OrderSide side = 3;
+  optional string feed_id = 4;
+  optional string item_id = 5;
+  optional string order_id = 6;
+  map<string, market.AttributeValue> attributes = 7;
+  optional string price_min = 8;
+  optional string price_max = 9;
+  optional uint32 limit = 10;
+  optional string cursor = 11;
+  optional string include = 12; // Comma-separated item,feed.
+}
+message OrdersResult {
+  repeated market.Order data = 1;
+  Page page = 2;
+  ResponseMeta meta = 3;
+  Included included = 4;
+}
+message BookQuery {
+  string item_type_id = 1;
+  string currency_id = 2;
+  optional string feed_id = 3;
+  optional string item_id = 4;
+  map<string, market.AttributeValue> attributes = 5;
+  optional string price_min = 6;
+  optional string price_max = 7;
+  optional uint32 limit = 8;
+  optional string include = 9;
+}
+message BookSidePage { repeated market.Order data = 1; Page page = 2; }
+message BookResult {
+  string item_type_id = 1;
+  string currency_id = 2;
+  BookSidePage asks = 3;
+  BookSidePage bids = 4;
+  ResponseMeta meta = 5;
+  Included included = 6;
+}
+message BookFrame {
+  string type = 1; // snapshot or replace.
+  BookResult response = 2;
+}
+// Raw snapshots and changes preserve source observations. Structural filters only.
+message SnapshotQuery { optional string feed_id = 1; optional string item_type_id = 2; }
+message ApiSnapshotFrame {
+  ResponseMeta meta = 1;
+  repeated market.CatalogEntry catalog = 2;
+  repeated market.Record records = 3;
+  bool complete = 4;
+}
+message ApiWatchQuery {
+  market.Cursor after = 1; // Required. Resume after this complete snapshot/batch.
+  optional string feed_id = 2;
+  optional string item_type_id = 3;
+}
+message ApiChangeFrame {
+  string type = 1; // changes, checkpoint, or heartbeat.
+  market.Cursor previous = 2;
+  market.Cursor cursor = 3;
+  repeated market.MarketEvent events = 4;
+  ResponseMeta meta = 5;
+  bool complete = 6;
+  repeated market.CatalogEntry catalog = 7;
+  string catalog_revision = 8;
+}
+service MarketApi {
+  rpc GetStatus(market.Empty) returns (ApiStatus);
+  rpc ListCatalog(CatalogQuery) returns (CatalogResult);
+  rpc ListFeeds(FeedsQuery) returns (FeedsResult);
+  rpc ListItems(ItemsQuery) returns (ItemsResult);
+  rpc ListOrders(OrdersQuery) returns (OrdersResult);
+  rpc GetOrderBook(BookQuery) returns (BookResult);
+  rpc WatchOrderBook(BookQuery) returns (stream BookFrame);
+  rpc Snapshot(SnapshotQuery) returns (stream ApiSnapshotFrame);
+  rpc WatchChanges(ApiWatchQuery) returns (stream ApiChangeFrame);
+}

@@ -1,0 +1,14 @@
+**
+!Cargo.toml
+!Cargo.lock
+!market-hub.proto
+!api.proto
+!archive.proto
+!crates/
+!crates/**
+**/tests/
+**/target/
+**/accounts.json
+**/.env*
+**/*.key
+**/*.pem
