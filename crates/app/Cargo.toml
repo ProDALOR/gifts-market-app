@@ -9,8 +9,7 @@ path = "src/main.rs"
 [dependencies]
 market-view.workspace = true
 market-json.workspace = true
-market-query.workspace = true
-market-reader.workspace = true
+market-client.workspace = true
 hub-protocol.workspace = true
 prost.workspace = true
 tonic.workspace = true
@@ -36,14 +35,8 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
-[build-dependencies]
-prost-build.workspace = true
-protoc-bin-vendored.workspace = true
-tonic-prost-build.workspace = true
 [dev-dependencies]
-history-node = {path="../history-node"}
 toml.workspace = true
-market-history.workspace = true
 actix.workspace = true
 tokio-tungstenite = "0.29"
 [lints]

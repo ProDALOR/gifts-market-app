@@ -18,8 +18,8 @@ services:
     secrets: [market_ca, api_cert, api_key]
     environment:
       MARKET_API_TOKEN: ${MARKET_API_TOKEN:?Run sh docker/setup.sh with the hub join bundle}
-      MARKET_CORE_URL: ${MARKET_CORE_URL:-https://market-hub:50052}
-      MARKET_REGISTRATION_TOKEN: ${MARKET_REGISTRATION_TOKEN:?Run sh docker/setup.sh with the hub join bundle}
+      MARKET_CORE_URL: ${MARKET_CORE_URL:-https://market-hub:50051}
+      MARKET_JOIN_TOKEN: ${MARKET_JOIN_TOKEN:-}
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - api-identity:/var/lib/market/node

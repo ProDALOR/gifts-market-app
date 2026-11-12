@@ -8,10 +8,8 @@ edition = "2024"
 
 [workspace.dependencies]
 market-view = { path = "crates/market-view" }
-market-reader = { path = "crates/market-reader" }
+market-client = { path = "crates/market-client" }
 hub-protocol = { path = "crates/hub-protocol" }
-market-history = { path = "crates/market-history" }
-market-query = { path = "crates/market-query" }
 market-json = { path = "crates/market-json" }
 actix = "0.13"
 actix-web = "4"
@@ -34,14 +32,13 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_yaml_ng = "0.10"
 sha2 = "0.10"
-zstd = "0.13"
 subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.8"
-tonic = { version = "0.14", features = ["tls-ring"] }
+tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tracing = "0.1"

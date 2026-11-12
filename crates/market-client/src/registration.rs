@@ -1,11 +1,10 @@
 //! Shared enrollment and private credential storage for independently deployed nodes.
-use market_view::protocol::wire as w;
+use hub_protocol::wire as w;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::Path,
-    time::Duration,
 };
 use tonic::{
     Code, Request, Status,
@@ -26,8 +25,8 @@ pub fn valid_node_id(id: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
 }
-pub fn validate_identity(id: &str, role: w::NodeRole) -> Result<(), Status> {
-    if !valid_node_id(id) || role == w::NodeRole::Unspecified {
+pub fn validate_identity(id: &str) -> Result<(), Status> {
+    if !valid_node_id(id) {
         Err(Status::invalid_argument("invalid node identity"))
     } else {
         Ok(())
@@ -45,25 +44,20 @@ pub fn validate_token(token: &str) -> Result<(), Status> {
 #[serde(deny_unknown_fields)]
 pub struct NodeCredentials {
     pub id: String,
-    pub role: w::NodeRole,
     pub token: String,
 }
 impl NodeCredentials {
     pub fn validate(&self) -> Result<(), Status> {
-        validate_identity(&self.id, self.role)?;
+        validate_identity(&self.id)?;
         validate_token(&self.token)?;
         Ok(())
     }
     /// A complete credential is installed without overwriting a concurrent creator.
-    pub fn load_or_create(
-        path: &Path,
-        id: Option<&str>,
-        role: w::NodeRole,
-    ) -> Result<Self, Status> {
-        if role == w::NodeRole::Unspecified || id.is_some_and(|id| !valid_node_id(id)) {
-            return Err(Status::invalid_argument("invalid node identity or role"));
+    pub fn load_or_create(path: &Path, id: Option<&str>) -> Result<Self, Status> {
+        if id.is_some_and(|id| !valid_node_id(id)) {
+            return Err(Status::invalid_argument("invalid node identity"));
         }
-        match Self::load(path, id, role) {
+        match Self::load(path, id) {
             Ok(value) => return Ok(value),
             Err(error) if error.code() == Code::NotFound => {}
             Err(error) => return Err(error),
@@ -74,7 +68,6 @@ impl NodeCredentials {
             id: id
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("node-{}", Uuid::new_v4().simple())),
-            role,
             token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
         };
         let bytes = serde_json::to_vec(&credentials).map_err(storage_error)?;
@@ -93,7 +86,7 @@ impl NodeCredentials {
             match fs::hard_link(&temporary, path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Self::load(path, id, role);
+                    return Self::load(path, id);
                 }
                 Err(error) => return Err(storage_error(error)),
             }
@@ -104,7 +97,7 @@ impl NodeCredentials {
         let _ = fs::remove_file(temporary);
         result
     }
-    fn load(path: &Path, id: Option<&str>, role: w::NodeRole) -> Result<Self, Status> {
+    fn load(path: &Path, id: Option<&str>) -> Result<Self, Status> {
         let metadata = fs::symlink_metadata(path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Status::not_found("node credentials file not found")
@@ -130,9 +123,9 @@ impl NodeCredentials {
         let value: Self = serde_json::from_slice(&bytes)
             .map_err(|_| Status::invalid_argument("invalid node credentials file"))?;
         value.validate()?;
-        if id.is_some_and(|id| id != value.id) || value.role != role {
+        if id.is_some_and(|id| id != value.id) {
             return Err(Status::invalid_argument(
-                "stored node identity or role differs from configuration",
+                "stored node identity differs from configuration",
             ));
         }
         sync_directory(parent(path))?;
@@ -153,48 +146,30 @@ fn storage_error(_: impl std::fmt::Display) -> Status {
     Status::internal("cannot read or persist private node credentials")
 }
 
-/// Confirm an existing binding first, so enrollment-token rotation does not
-/// interrupt registered nodes. Only unknown credentials need enrollment authority.
+/// Enroll an unknown credential. The caller retries the real operation afterward.
 pub async fn register(
     channel: Channel,
     identity: &NodeCredentials,
-    registration_token: Option<&str>,
-) -> Result<w::NodeRegistration, Status> {
+    join_token: &str,
+) -> Result<(), Status> {
     identity.validate()?;
+    validate_token(join_token)?;
+    if join_token == identity.token {
+        return Err(Status::invalid_argument("join and node tokens must differ"));
+    }
     let mut client = w::market_registration_client::MarketRegistrationClient::new(channel)
         .max_decoding_message_size(4096)
         .max_encoding_message_size(4096);
-    let request = |token: &str| -> Result<Request<w::RegisterNodeRequest>, Status> {
-        let mut request = Request::new(w::RegisterNodeRequest {
-            id: identity.id.clone(),
-            token: identity.token.clone(),
-            role: identity.role.into(),
-        });
-        request
-            .metadata_mut()
-            .insert("authorization", authorization(token)?);
-        request.set_timeout(Duration::from_secs(5));
-        Ok(request)
-    };
-    let mut response = client.register_node(request(&identity.token)?).await;
-    if response
-        .as_ref()
-        .is_err_and(|error| error.code() == Code::Unauthenticated)
-    {
-        let token = registration_token.ok_or_else(|| {
-            Status::unauthenticated(
-                "node is not registered; supply a registration token for enrollment",
-            )
-        })?;
-        response = client.register_node(request(token)?).await;
-    }
-    let response = response?.into_inner();
-    if response.id != identity.id || response.role != i32::from(identity.role) {
-        return Err(Status::data_loss(
-            "registration returned an unexpected node identity or role",
-        ));
-    }
-    Ok(response)
+    let mut request = Request::new(w::RegisterNodeRequest {
+        id: identity.id.clone(),
+        node_token: identity.token.clone(),
+    });
+    request
+        .metadata_mut()
+        .insert("authorization", authorization(join_token)?);
+    request.set_timeout(std::time::Duration::from_secs(5));
+    client.register_node(request).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -215,19 +190,15 @@ mod tests {
         }
     }
     #[test]
-    fn credentials_keep_identity_and_role_and_reject_invalid_files_without_overwrite() {
+    fn credentials_keep_identity_and_reject_invalid_files_without_overwrite() {
         let folder = Folder::new();
         let path = folder.0.join("node.json");
-        let original = NodeCredentials::load_or_create(&path, None, w::NodeRole::Reader).unwrap();
+        let original = NodeCredentials::load_or_create(&path, None).unwrap();
         let bytes = fs::read(&path).unwrap();
-        let restored = NodeCredentials::load_or_create(&path, None, w::NodeRole::Reader).unwrap();
+        let restored = NodeCredentials::load_or_create(&path, None).unwrap();
         assert_eq!(restored.id, original.id);
         assert_eq!(restored.token, original.token);
-        assert!(
-            NodeCredentials::load_or_create(&path, Some("different-node"), w::NodeRole::Reader)
-                .is_err()
-        );
-        assert!(NodeCredentials::load_or_create(&path, None, w::NodeRole::Adapter).is_err());
+        assert!(NodeCredentials::load_or_create(&path, Some("different-node")).is_err());
         assert_eq!(fs::read(&path).unwrap(), bytes);
         for corrupt in [
             "{broken",
@@ -235,7 +206,7 @@ mod tests {
             r#"{"id":"node","role":99,"token":"private-credential"}"#,
         ] {
             fs::write(&path, corrupt).unwrap();
-            assert!(NodeCredentials::load_or_create(&path, None, w::NodeRole::Reader).is_err());
+            assert!(NodeCredentials::load_or_create(&path, None).is_err());
             assert_eq!(fs::read_to_string(&path).unwrap(), corrupt);
         }
         fs::write(&path, &bytes).unwrap();
@@ -243,7 +214,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-            assert!(NodeCredentials::load_or_create(&path, None, w::NodeRole::Reader).is_err());
+            assert!(NodeCredentials::load_or_create(&path, None).is_err());
         }
     }
     #[test]
@@ -253,9 +224,7 @@ mod tests {
         let handles: Vec<_> = (0..12)
             .map(|_| {
                 let path = path.clone();
-                std::thread::spawn(move || {
-                    NodeCredentials::load_or_create(&path, None, w::NodeRole::Reader).unwrap()
-                })
+                std::thread::spawn(move || NodeCredentials::load_or_create(&path, None).unwrap())
             })
             .collect();
         let credentials: Vec<_> = handles

@@ -20,16 +20,19 @@ async fn healthz(_: web::Query<NoQuery>) -> HttpResponse {
     HttpResponse::Ok().json(Liveness { alive: true })
 }
 #[utoipa::path(get,path="/status",responses((status=200,body=StatusResponse)))]
-async fn status(state: web::Data<ApiState>, _: web::Query<NoQuery>) -> web::Json<StatusResponse> {
-    web::Json(state.status())
+async fn status(
+    state: web::Data<ApiState>,
+    _: web::Query<NoQuery>,
+) -> Result<web::Json<StatusResponse>> {
+    Ok(web::Json(state.status().await?))
 }
 #[utoipa::path(get,path="/readyz",responses((status=200,body=StatusResponse),(status=503,body=StatusResponse)))]
-async fn readyz(state: web::Data<ApiState>, _: web::Query<NoQuery>) -> HttpResponse {
-    let response = state.status();
+async fn readyz(state: web::Data<ApiState>, _: web::Query<NoQuery>) -> Result<HttpResponse> {
+    let response = state.status().await?;
     if response.data.ready {
-        HttpResponse::Ok().json(response)
+        Ok(HttpResponse::Ok().json(response))
     } else {
-        HttpResponse::ServiceUnavailable().json(response)
+        Ok(HttpResponse::ServiceUnavailable().json(response))
     }
 }
 #[utoipa::path(get,path="/catalog",params(CatalogQuery),responses((status=200,body=CatalogResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
@@ -37,35 +40,42 @@ async fn catalog(
     state: web::Data<ApiState>,
     query: web::Query<CatalogQuery>,
 ) -> Result<web::Json<CatalogResponse>> {
-    Ok(web::Json(state.catalog(&query)?))
+    Ok(web::Json(state.catalog(&query).await?))
 }
 #[utoipa::path(get,path="/items",params(ItemsQuery),responses((status=200,body=ItemsResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 async fn items(
     state: web::Data<ApiState>,
     query: web::Query<ItemsQuery>,
 ) -> Result<web::Json<ItemsResponse>> {
-    Ok(web::Json(state.items(&query)?))
+    Ok(web::Json(state.items(&query).await?))
 }
 #[utoipa::path(get,path="/feeds",params(FeedsQuery),responses((status=200,body=FeedsResponse),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 async fn feeds(
     state: web::Data<ApiState>,
     query: web::Query<FeedsQuery>,
 ) -> Result<web::Json<FeedsResponse>> {
-    Ok(web::Json(state.feeds(&query)?))
+    Ok(web::Json(state.feeds(&query).await?))
 }
 #[utoipa::path(get,path="/orders",params(OrdersQuery),responses((status=200,body=OrdersResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 async fn orders(
     state: web::Data<ApiState>,
     query: web::Query<OrdersQuery>,
 ) -> Result<web::Json<OrdersResponse>> {
-    Ok(web::Json(state.orders(&query)?))
+    Ok(web::Json(state.orders(&query).await?))
 }
 #[utoipa::path(get,path="/orderbook",params(BookQuery),responses((status=200,body=BookResponse),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 async fn orderbook(
     state: web::Data<ApiState>,
     query: web::Query<BookQuery>,
 ) -> Result<web::Json<BookResponse>> {
-    Ok(web::Json(state.orderbook(&query)?))
+    Ok(web::Json(state.orderbook(&query).await?))
+}
+#[utoipa::path(get,path="/trades",params(TradesQuery),responses((status=200,body=TradesResponse),(status=400,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+async fn trades(
+    state: web::Data<ApiState>,
+    query: web::Query<TradesQuery>,
+) -> Result<web::Json<TradesResponse>> {
+    Ok(web::Json(state.trades(&query).await?))
 }
 #[utoipa::path(get,path="/openapi.json",responses((status=200,description="OpenAPI document")))]
 async fn openapi(_: web::Query<NoQuery>) -> web::Json<utoipa::openapi::OpenApi> {
@@ -82,6 +92,7 @@ async fn openapi(_: web::Query<NoQuery>) -> web::Json<utoipa::openapi::OpenApi> 
         feeds,
         orders,
         orderbook,
+        trades,
         crate::websocket::connect,
         openapi
     ),
@@ -95,6 +106,8 @@ async fn openapi(_: web::Query<NoQuery>) -> web::Json<utoipa::openapi::OpenApi> 
         FeedsResponse,
         OrdersResponse,
         BookResponse,
+        TradesResponse,
+        Trades,
         BookData,
         BookId,
         OrderPage,
@@ -104,8 +117,6 @@ async fn openapi(_: web::Query<NoQuery>) -> web::Json<utoipa::openapi::OpenApi> 
         Page,
         Included,
         crate::status::ApiCursor,
-        crate::status::ReplicaHealth,
-        crate::status::SyncState,
         market_json::schema::Item,
         market_json::schema::Order,
         market_json::schema::FeedStatus,
@@ -140,6 +151,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     read!("/ws", crate::websocket::connect);
     read!("/orders", orders);
     read!("/orderbook", orderbook);
+    read!("/trades", trades);
     read!("/openapi.json", openapi);
     cfg.default_service(web::to(fallback));
 }

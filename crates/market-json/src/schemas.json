@@ -790,5 +790,102 @@
       "ask",
       "bid"
     ]
+  },
+  "Trade": {
+    "type": "object",
+    "required": [
+      "type",
+      "trade_id",
+      "kind",
+      "price",
+      "quantity",
+      "feed_id",
+      "item_type_id",
+      "observed_at",
+      "executed_at"
+    ],
+    "properties": {
+      "feed_id": {
+        "type": "string"
+      },
+      "item_type_id": {
+        "type": "string"
+      },
+      "kind": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "item_id"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "item"
+                ]
+              },
+              "item_id": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "attributes"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "units"
+                ]
+              },
+              "attributes": {
+                "$ref": "#/components/schemas/BTreeMap"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "observed_at": {
+        "type": "string",
+        "format": "date-time",
+        "description": "A checked Jiff timestamp at the precision supported by the wire contract.\n\nSerde uses UTC RFC 3339 strings. Protobuf conversions explicitly use whole\nmilliseconds. Constructing from a finer-precision Jiff value fails rather\nthan silently changing the instant.\nUnknown source times are `Option<MarketTimestamp>`, never a zero sentinel."
+      },
+      "price": {
+        "$ref": "#/components/schemas/Money",
+        "description": "Price per whole unit; limit price on an order, actual price on an execution."
+      },
+      "quantity": {
+        "$ref": "#/components/schemas/Quantity",
+        "description": "Remaining on an order, executed on a trade. Always positive and exact."
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "trade"
+        ]
+      },
+      "trade_id": {
+        "type": "string"
+      },
+      "executed_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "buy_order_id": {
+        "type": "string"
+      },
+      "sell_order_id": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
   }
 }

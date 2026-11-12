@@ -15,4 +15,12 @@ macro_rules! model {($($name:ident),+)=>{$(
     impl PartialSchema for $name {fn schema()->RefOr<Schema> {definitions()[stringify!($name)].clone()}}
     impl ToSchema for $name {fn schemas(output:&mut Vec<(String,RefOr<Schema>)>) {for (name,schema) in definitions() {if !output.iter().any(|(key,_)|key==name) {output.push((name.clone(),schema.clone()));}}}}
 )+};}
-model!(Item, Order, FeedStatus, CatalogEntry, Record, OrderSide);
+model!(
+    Item,
+    Order,
+    FeedStatus,
+    CatalogEntry,
+    Record,
+    OrderSide,
+    Trade
+);

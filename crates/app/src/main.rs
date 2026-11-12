@@ -1,6 +1,6 @@
 use actix_web::{App, HttpServer, web};
 use clap::Parser;
-use market_app::{ApiState, cli::Cli, replication::ReplicaHandle};
+use market_app::{ApiState, cli::Cli};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 #[actix_web::main]
@@ -11,7 +11,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let args = Cli::parse();
-    let config = args.replica_config()?;
+    let node = args.node_config()?;
     let tls = if let (Some(cert), Some(key)) = (&args.grpc_cert, &args.grpc_key) {
         let mut tls = tonic::transport::ServerTlsConfig::new().identity(
             tonic::transport::Identity::from_pem(
@@ -33,19 +33,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
-    let replica = ReplicaHandle::with_replay_limits(args.replay_batches, args.replay_bytes);
-    let state = ApiState::new(
-        replica.clone(),
-        args.max_stale,
-        args.max_concurrent_queries,
-        args.max_scan,
-    )
-    .limits(
-        args.max_streams,
-        args.max_snapshots,
-        args.max_snapshot_bytes,
-        args.snapshot_ttl,
-    );
+    let state = ApiState::new(node, args.max_concurrent_queries, args.max_streams);
     let data = web::Data::new(state.clone());
     let origins = args.cors_origin.clone();
     let server = HttpServer::new(move || {
@@ -82,8 +70,6 @@ async fn main() -> anyhow::Result<()> {
     let server_handle = server.handle();
     let stop = CancellationToken::new();
     let shutdown = stop.clone();
-    let sync = tokio::spawn(async move { replica.run(config, shutdown).await });
-    let shutdown = stop.clone();
     let mut grpc = tokio::spawn(async move {
         if let Some(listener) = grpc_listener {
             market_app::grpc::serve(state, listener, tls, args.grpc_token, shutdown).await
@@ -92,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
     });
-    tracing::info!(http=%args.bind,grpc=?args.grpc_bind,"API node started; waiting for local bootstrap");
+    tracing::info!(http=%args.bind,grpc=?args.grpc_bind,"Gateway started; queries are served by core");
     let result = tokio::select! {
         result=server=>result.map_err(anyhow::Error::from),
         result=&mut grpc=>{
@@ -104,6 +90,5 @@ async fn main() -> anyhow::Result<()> {
     if !grpc.is_finished() {
         let _ = tokio::time::timeout(Duration::from_secs(5), grpc).await;
     }
-    let _ = sync.await;
     result
 }

@@ -1,11 +1,9 @@
 [package]
-name = "market-reader"
+name = "market-client"
 version.workspace = true
 edition.workspace = true
 [dependencies]
-market-view.workspace = true
 hub-protocol.workspace = true
-prost.workspace = true
 tonic.workspace = true
 tokio.workspace = true
 serde.workspace = true

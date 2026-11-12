@@ -1,8 +1,8 @@
 use actix_web::{HttpResponse, ResponseError, http::StatusCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     InvalidQuery,
@@ -11,12 +11,12 @@ pub enum ErrorCode {
     CursorExpired,
     ResyncRequired,
     CapacityExceeded,
-    ReplicaUnavailable,
+    CoreUnavailable,
     NotFound,
     ReadOnly,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
@@ -24,7 +24,7 @@ pub struct ApiError {
     pub field: Option<String>,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, Deserialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: ApiError,
 }
@@ -50,10 +50,7 @@ impl ApiError {
         }
     }
     pub fn unavailable() -> Self {
-        Self::new(
-            ErrorCode::ReplicaUnavailable,
-            "local replica has no usable snapshot",
-        )
+        Self::new(ErrorCode::CoreUnavailable, "core is unavailable")
     }
 }
 impl std::fmt::Display for ApiError {
@@ -70,7 +67,7 @@ impl ResponseError for ApiError {
             }
             ErrorCode::CursorExpired | ErrorCode::ResyncRequired => StatusCode::CONFLICT,
             ErrorCode::CapacityExceeded => StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::ReplicaUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::CoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
             ErrorCode::ReadOnly => StatusCode::METHOD_NOT_ALLOWED,
         }
@@ -101,7 +98,7 @@ impl From<ApiError> for tonic::Status {
             }
             ErrorCode::CursorExpired | ErrorCode::ResyncRequired => Code::FailedPrecondition,
             ErrorCode::CapacityExceeded => Code::ResourceExhausted,
-            ErrorCode::ReplicaUnavailable => Code::Unavailable,
+            ErrorCode::CoreUnavailable => Code::Unavailable,
             ErrorCode::NotFound => Code::NotFound,
             ErrorCode::ReadOnly => Code::PermissionDenied,
         };
@@ -116,14 +113,18 @@ impl From<ApiError> for tonic::Status {
 }
 impl From<tonic::Status> for ApiError {
     fn from(error: tonic::Status) -> Self {
+        if let Ok(body) = serde_json::from_slice::<ErrorResponse>(error.details()) {
+            return body.error;
+        }
         Self::new(
-            if matches!(
-                error.code(),
-                tonic::Code::FailedPrecondition | tonic::Code::OutOfRange
-            ) {
-                ErrorCode::ResyncRequired
-            } else {
-                ErrorCode::ReplicaUnavailable
+            match error.code() {
+                tonic::Code::InvalidArgument => ErrorCode::InvalidQuery,
+                tonic::Code::FailedPrecondition | tonic::Code::OutOfRange => {
+                    ErrorCode::ResyncRequired
+                }
+                tonic::Code::ResourceExhausted => ErrorCode::CapacityExceeded,
+                tonic::Code::NotFound => ErrorCode::NotFound,
+                _ => ErrorCode::CoreUnavailable,
             },
             error.message(),
         )

@@ -1,12 +1,12 @@
 use crate::{
     error::{ApiError, ErrorCode, Result},
-    query::{ApiState, BookQuery, Scope},
+    query::{ApiState, BookQuery},
     status::ApiCursor,
 };
 use actix_web::{HttpRequest, HttpResponse, web};
 use actix_ws::AggregatedMessage;
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -33,21 +33,8 @@ enum Command {
 #[derive(Deserialize)]
 #[serde(tag = "topic", rename_all = "snake_case", deny_unknown_fields)]
 enum Topic {
-    Orderbook {
-        query: BookQuery,
-    },
-    Changes {
-        #[serde(default)]
-        query: Scope,
-        after: Option<ApiCursor>,
-    },
-}
-#[derive(Serialize)]
-struct BookFrame<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    subscription_id: &'a str,
-    response: &'a serde_json::value::RawValue,
+    Orderbook { query: BookQuery },
+    Changes { after: Option<ApiCursor> },
 }
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -174,54 +161,50 @@ fn subscribe(
     tx: mpsc::Sender<String>,
     stop: CancellationToken,
 ) -> Result<()> {
-    // Validate/acquire before accepting; the task owns all permits until drop.
-    match topic {
-        Topic::Orderbook { query } => {
-            let mut stream = state.book_stream(query, token.clone())?;
-            actix_web::rt::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _=token.cancelled()=>break,
-                        value=stream.next()=>match value {
-                            Some(Ok(value))=>{let text=serde_json::to_string(&BookFrame {kind:value.kind,subscription_id:&id,response:&value.json}).expect("book frame JSON");if !send(&tx,&stop,text).await {break;}},
-                            Some(Err(error))=>{send_error(&tx,&stop,&id,error).await;break;}, None=>break,
+    let permit = state.stream_slot()?;
+    actix_web::rt::spawn(async move {
+        let work = async {
+            let _permit = permit;
+            match topic {
+                Topic::Orderbook { query } => {
+                    let mut stream = state.watch_book(&query).await?;
+                    let mut first = true;
+                    while let Some(frame) = stream.message().await.map_err(ApiError::from)? {
+                        let response = crate::query::book_response(frame)?;
+                        let kind = if first { "snapshot" } else { "replace" };
+                        first = false;
+                        let text=serde_json::json!({"type":kind,"subscription_id":id,"response":response}).to_string();
+                        if !send(&tx, &stop, text).await {
+                            break;
                         }
                     }
                 }
-                token.cancel();
-            });
-        }
-        Topic::Changes { query, after } => {
-            let (after, initial) = if let Some(after) = after {
-                (after.into(), None)
-            } else {
-                let (cursor, stream) = state.snapshot_stream(query.clone())?;
-                (cursor, Some(stream))
-            };
-            // Open replay immediately to validate resume and hold the stream slot;
-            // the journal is checked again on every poll, so slow snapshots get resync_required.
-            let mut changes = state.changes_stream(after, query, token.clone())?;
-            actix_web::rt::spawn(async move {
-                let work = async {
-                    if let Some(mut initial) = initial {
-                        while let Some(value) = initial.next().await {
-                            let value = value?;
-                            if !send(&tx,&stop,serde_json::json!({"type":"snapshot","subscription_id":id,"response":value}).to_string()).await {return Ok(());}
+                Topic::Changes { after } => {
+                    let mut stream = state
+                        .sync(hub_protocol::wire::SyncRequest {
+                            after: after.map(|c| hub_protocol::wire::Cursor {
+                                generation: c.generation,
+                                revision: c.revision,
+                            }),
+                        })
+                        .await
+                        .map_err(ApiError::from)?;
+                    while let Some(frame) = stream.message().await.map_err(ApiError::from)? {
+                        let text=serde_json::json!({"type":"sync","subscription_id":id,"response":crate::query::sync_response(frame)?}).to_string();
+                        if !send(&tx, &stop, text).await {
+                            break;
                         }
                     }
-                    while let Some(value) = changes.next().await {
-                        let value = value?;
-                        if !send(&tx,&stop,serde_json::json!({"type":value.kind,"subscription_id":id,"response":value}).to_string()).await {break;}
-                    }
-                    Ok::<_, ApiError>(())
-                };
-                tokio::select! {_=token.cancelled()=>{},result=work=>{if let Err(error)=result {send_error(&tx,&stop,&id,error).await;}}}
-                token.cancel();
-            });
-        }
-    }
+                }
+            }
+            Ok::<_, ApiError>(())
+        };
+        tokio::select! {_=token.cancelled()=>{},r=work=>{if let Err(error)=r {send_error(&tx,&stop,&id,error).await;}}}
+        token.cancel();
+    });
     Ok(())
 }
+
 async fn send_error(
     tx: &mpsc::Sender<String>,
     stop: &CancellationToken,

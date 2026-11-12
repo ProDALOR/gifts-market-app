@@ -155,26 +155,27 @@ pub struct BookQuery {
     pub limit: Option<usize>,
     pub include: Option<String>,
 }
-impl BookQuery {
-    pub fn orders(&self, side: OrderSide) -> OrdersQuery {
-        OrdersQuery {
-            item_type_id: Some(self.item_type_id.clone()),
-            currency_id: Some(self.currency_id.clone()),
-            side: Some(side),
-            feed_id: self.feed_id.clone(),
-            item_id: self.item_id.clone(),
-            attributes: self.attributes.clone(),
-            price_min: self.price_min.clone(),
-            price_max: self.price_max.clone(),
-            limit: self.limit,
-            include: self.include.clone(),
-            ..Default::default()
-        }
-    }
-}
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, ToSchema)]
+#[serde(transparent)]
+#[schema(value_type=Vec<market_json::schema::Trade>)]
+pub struct Trades(pub Vec<serde_json::Value>);
+pub type TradesResponse = Response<Trades>;
+#[derive(Clone, Default, Debug, Serialize, Deserialize, IntoParams)]
 #[serde(default, deny_unknown_fields)]
-pub struct Scope {
+#[into_params(parameter_in=Query)]
+pub struct TradesQuery {
+    #[param(value_type=Option<String>)]
     pub feed_id: Option<FeedId>,
+    #[param(value_type=Option<String>)]
     pub item_type_id: Option<ItemTypeId>,
+    #[param(value_type=Option<String>)]
+    pub currency_id: Option<CurrencyId>,
+    #[param(value_type=Option<String>)]
+    pub item_id: Option<ItemId>,
+    #[param(value_type=Option<String>,format=DateTime)]
+    pub executed_from: Option<market_view::MarketTimestamp>,
+    #[param(value_type=Option<String>,format=DateTime)]
+    pub executed_until: Option<market_view::MarketTimestamp>,
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
 }

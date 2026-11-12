@@ -6,25 +6,17 @@ package market;
 // Catalog revision strings are opaque identities; pin them across pages and frames.
 // Revisions must not be recomputed from a consumer's language-specific serialization.
 
-// Enrollment requires the deployment registration credential. Subsequent calls
-// use the node's own credential; repeating the same ID, role and key is idempotent.
-enum NodeRole {
-  NODE_ROLE_UNSPECIFIED = 0;
-  NODE_ROLE_ADAPTER = 1;
-  NODE_ROLE_READER = 2;
-}
+// Enroll only when a normal RPC rejects an unknown node credential. Authorize this
+// RPC with the deployment join token; all other RPCs use the independent node token.
+// Save the node token before enrollment. Repeating the same binding is idempotent.
+// All registered nodes are trusted services: they may read and write their own namespace.
 message RegisterNodeRequest {
   string id = 1;
-  string token = 2;
-  NodeRole role = 3;
-}
-message NodeRegistration {
-  string id = 1;
-  NodeRole role = 2;
-  bool duplicate = 3;
+  string node_token = 2;
 }
 service MarketRegistration {
-  rpc RegisterNode(RegisterNodeRequest) returns (NodeRegistration);
+  // New and identical repeated bindings both return success; conflicts return an error.
+  rpc RegisterNode(RegisterNodeRequest) returns (Empty);
 }
 
 // Opaque identities. Exact decimal prices and Unix millisecond timestamps.
@@ -145,7 +137,7 @@ message SourceEvent {
     Trade trade = 2;
   }
 }
-// Canonical events are retained once; live/history projections select variants.
+// Canonical market events are retained once and delivered in publication order.
 message MarketEvent {
   oneof event {
     Record upsert = 1;
@@ -217,24 +209,20 @@ message Mutation {
   }
 }
 
-// Opaque, feed-scoped ownership token. Replaced writers and core restarts invalidate it.
-message Session {
-  string id = 1;
-}
-
+// Opaque, feed-scoped session IDs fence replaced writers and core restarts.
 message OpenFeedRequest {
   string writer_id = 1;
   bool takeover = 2;
   string catalog_revision = 3;
 }
 
+// The feed ID is the authenticated node ID and is not echoed.
 message OpenFeedResponse {
-  Session session = 1;
+  string session_id = 1;
   string generation = 2;
-  string feed_id = 3;
-  uint64 next_sequence = 4;
-  bool requires_reconcile = 5;
-  IngestLimits limits = 6;
+  uint64 next_sequence = 3;
+  bool requires_snapshot = 4;
+  IngestLimits limits = 5;
 }
 
 message IngestLimits {
@@ -246,7 +234,7 @@ message IngestLimits {
   uint64 max_snapshot_bytes = 6;
   uint32 max_snapshot_chunks = 7;
   uint32 feed_lease_seconds = 8;
-  uint32 reconcile_timeout_seconds = 9;
+  uint32 upload_timeout_seconds = 9;
 }
 
 message FeedProgress {
@@ -255,76 +243,43 @@ message FeedProgress {
 }
 
 message RenewFeedRequest {
-  Session session = 1;
+  string session_id = 1;
   // Omit to renew ownership without changing readiness or source freshness.
   FeedProgress progress = 2;
 }
 
 message PublishRequest {
-  Session session = 1;
+  string session_id = 1;
   uint64 sequence = 2;
   repeated Mutation mutations = 3;
   // Explicit source trades/statuses, committed atomically with mutations.
-  repeated SourceEvent history = 4;
+  repeated SourceEvent events = 4;
   // Optional progress commits atomically with changes; counts as one batch entry.
   FeedProgress progress = 5;
 }
 
-// RAM-only acceptance does not promise survival across a core restart.
+// Trade events are durable before acknowledgement. Live state/replay remain generation-scoped RAM.
 message PublishAck {
   Cursor cursor = 1;
   uint64 accepted_sequence = 2;
-  bool duplicate = 3;
 }
 
-message BeginReconcileRequest {
-  Session session = 1;
-  string reconcile_id = 2;
-}
-
-message ReconcileSession {
-  string reconcile_id = 1;
-  uint32 next_chunk = 2;
-}
-
-message ReconcileChunk {
-  Session session = 1;
-  string reconcile_id = 2;
-  uint32 chunk_index = 3;
+// First chunk carries session_id, snapshot_id and expected_sequence; later chunks carry only records.
+// EOF commits the complete snapshot. First-header-only streams clear the feed. An interrupted stream publishes no records.
+// Retry the entire identical upload with the same snapshot_id after a lost reply.
+message SnapshotChunk {
+  string session_id = 1;
+  string snapshot_id = 2;
+  // Reject a snapshot overtaken by a concurrent Publish. Snapshots do not consume sequences.
+  uint64 expected_sequence = 3;
   repeated Record records = 4;
 }
 
-message ChunkAck {
-  uint32 next_chunk = 1;
-}
-
-message FinishReconcileRequest {
-  Session session = 1;
-  string reconcile_id = 2;
-}
-message CancelReconcileRequest {
-  Session session = 1;
-  string reconcile_id = 2;
-}
-message CancelReconcileResponse {
-  PublishAck ack = 1;
-  // A completed snapshot cannot be rolled back by cancellation.
-  bool completed = 2;
-  bool requires_reconcile = 3;
-}
-
 message Empty {}
-enum ChangeProjection {
-  CHANGE_PROJECTION_UNSPECIFIED = 0;
-  CHANGE_PROJECTION_LIVE = 1;
-  CHANGE_PROJECTION_HISTORY = 2;
-  CHANGE_PROJECTION_ALL = 3;
-}
 message SyncRequest {
-  // Omit for a complete catalog/state snapshot, followed by ordered changes.
+  // Omit for catalog/current-state snapshot followed by all ordered market events.
   // Invalid resume cursors fail explicitly; retry without after to resnapshot.
   Cursor after = 1;
-  ChangeProjection projection = 2;
 }
 enum FrameKind {
   FRAME_KIND_UNSPECIFIED = 0;
@@ -348,20 +303,6 @@ message SyncFrame {
   bool complete = 7;
   uint64 total_records = 8;
   uint64 record_bytes = 9;
-}
-
-service MarketIngest {
-  rpc OpenFeed(OpenFeedRequest) returns (OpenFeedResponse);
-  rpc RenewFeed(RenewFeedRequest) returns (PublishAck);
-  rpc Publish(PublishRequest) returns (PublishAck);
-  rpc BeginReconcile(BeginReconcileRequest) returns (ReconcileSession);
-  rpc WriteReconcileChunk(ReconcileChunk) returns (ChunkAck);
-  rpc FinishReconcile(FinishReconcileRequest) returns (PublishAck);
-  rpc CancelReconcile(CancelReconcileRequest) returns (CancelReconcileResponse);
-}
-
-service MarketReplication {
-  rpc Sync(SyncRequest) returns (stream SyncFrame);
 }
 
 // Immutable reference data. Fetch page zero without a generation, then pin all later pages.
@@ -436,59 +377,155 @@ message CatalogEntry {
   }
 }
 
-message CatalogPageRequest {
-  string generation = 1;
-  string revision = 2;
-  uint32 offset = 3;
-}
-
-message CatalogPage {
-  string generation = 1;
-  string revision = 2;
-  repeated CatalogEntry entries = 3;
-  optional uint32 next_offset = 4;
-  uint32 total_entries = 5;
-}
-
-service MarketCatalog {
-  rpc GetCatalogPage(CatalogPageRequest) returns (CatalogPage);
-}
-
 // Generic, namespace-owned catalog bundles. One collection per bundle is conventional.
 // Updates merge definitions: omissions never retire IDs or remove allowed values.
 message CatalogBundle {
   string id = 1;
   repeated CatalogEntry entries = 2;
 }
-message BeginCatalogUpdateRequest {
-  string update_id = 1;
-  string expected_revision = 2;
-}
-message CatalogUpdateSession {
-  string update_id = 1;
-  uint32 next_chunk = 2;
-  bool completed = 3;
-  string revision = 4;
-  uint32 max_chunk_entries = 5;
-  uint32 max_chunk_bytes = 6;
-}
+// First chunk carries update_id and expected_revision; later chunks carry only bundles.
+// EOF commits atomically; incomplete streams are discarded. Retry identical content
+// and identity after a lost reply. At most 500 entries / 512 KiB per chunk,
+// 4096 chunks, 100000 entries / 32 MiB per complete catalog upload.
 message CatalogChunk {
   string update_id = 1;
-  uint32 chunk_index = 2;
-  // A bundle may span chunks; each entry must occur only once in an update.
+  string expected_revision = 2;
   repeated CatalogBundle bundles = 3;
 }
-message CatalogChunkAck { uint32 next_chunk = 1; }
-message CatalogUpdateRequest { string update_id = 1; }
 message CatalogCommit {
   string revision = 1;
-  bool changed = 2;
-  bool duplicate = 3;
 }
-// Available only on ingest, to configured adapters in their own namespace.
-service MarketCatalogAdmin {
-  rpc BeginCatalogUpdate(BeginCatalogUpdateRequest) returns (CatalogUpdateSession);
-  rpc WriteCatalogChunk(CatalogChunk) returns (CatalogChunkAck);
-  rpc CommitCatalogUpdate(CatalogUpdateRequest) returns (CatalogCommit);
-  rpc AbortCatalogUpdate(CatalogUpdateRequest) returns (Empty);
+service MarketAdapter {
+  rpc ConfigureCatalog(stream CatalogChunk) returns (CatalogCommit);
+  rpc OpenFeed(OpenFeedRequest) returns (OpenFeedResponse);
+  rpc RenewFeed(RenewFeedRequest) returns (PublishAck);
+  rpc Publish(PublishRequest) returns (PublishAck);
+  rpc ReplaceSnapshot(stream SnapshotChunk) returns (PublishAck);
+}
+
+message ReadMeta {
+  Cursor cursor = 1;
+  string catalog_revision = 2;
+  string served_at = 3; // UTC RFC 3339.
+  string as_of = 4;
+}
+message Page { optional string next_cursor = 1; }
+message Included {
+  repeated Item items = 1;
+  repeated FeedStatus feeds = 2;
+}
+message ReadStatus {
+  bool ready = 1;
+  uint64 records = 2;
+  uint32 feeds = 3;
+  uint32 ready_feeds = 4;
+  ReadMeta meta = 5;
+  uint64 record_bytes = 6;
+  uint64 replay_batches = 7;
+  uint64 replay_bytes = 8;
+  uint64 inflight_requests = 9;
+  uint64 pending_bytes = 10;
+  Cursor oldest_cursor = 11;
+  string started_at = 12; // UTC RFC 3339.
+}
+message CatalogQuery {
+  optional string kind = 1;
+  optional string id = 2;
+  optional string item_type_id = 3;
+  optional string attribute_id = 4;
+  optional string q = 5;
+  optional uint32 limit = 6;
+  optional string cursor = 7;
+}
+message CatalogResult {
+  repeated CatalogEntry data = 1;
+  Page page = 2;
+  ReadMeta meta = 3;
+}
+message FeedsQuery { optional string feed_id = 1; }
+message FeedsResult { repeated FeedStatus data = 1; ReadMeta meta = 2; }
+message ItemsQuery {
+  optional string feed_id = 1;
+  optional string item_type_id = 2;
+  optional string item_id = 3;
+  optional string attributes_json = 4;
+  optional uint32 limit = 5;
+  optional string cursor = 6;
+}
+message ItemsResult { repeated Item data = 1; Page page = 2; ReadMeta meta = 3; }
+message OrdersQuery {
+  optional string item_type_id = 1;
+  optional string currency_id = 2;
+  optional OrderSide side = 3;
+  optional string feed_id = 4;
+  optional string item_id = 5;
+  optional string order_id = 6;
+  optional string attributes_json = 7;
+  optional string price_min = 8;
+  optional string price_max = 9;
+  optional uint32 limit = 10;
+  optional string cursor = 11;
+  optional string include = 12; // Comma-separated item,feed.
+}
+message OrdersResult {
+  repeated Order data = 1;
+  Page page = 2;
+  ReadMeta meta = 3;
+  Included included = 4;
+}
+message BookQuery {
+  string item_type_id = 1;
+  string currency_id = 2;
+  optional string feed_id = 3;
+  optional string item_id = 4;
+  optional string attributes_json = 5;
+  optional string price_min = 6;
+  optional string price_max = 7;
+  optional uint32 limit = 8;
+  optional string include = 9;
+}
+message BookSidePage { repeated Order data = 1; Page page = 2; }
+message BookResult {
+  string item_type_id = 1;
+  string currency_id = 2;
+  BookSidePage asks = 3;
+  BookSidePage bids = 4;
+  ReadMeta meta = 5;
+  Included included = 6;
+}
+message TradesQuery {
+  optional string feed_id = 1;
+  optional string item_type_id = 2;
+  optional string currency_id = 3;
+  optional string item_id = 4;
+  optional string executed_from = 5; // UTC RFC 3339.
+  optional string executed_until = 6;
+  optional uint32 limit = 7;
+  optional string cursor = 8;
+}
+message TradesResult {
+  repeated Trade data = 1;
+  Page page = 2;
+  ReadMeta meta = 3;
+}
+// Registered nodes are trusted services: all may read and write their own namespace.
+// Catalog continuations pin catalog revision and filters independently of live view TTL.
+// Shared-state reads run independently of the writer. History is durable; live books are rebuilt.
+service MarketRead {
+  rpc GetStatus(Empty) returns (ReadStatus);
+  rpc ListCatalog(CatalogQuery) returns (CatalogResult);
+  rpc ListFeeds(FeedsQuery) returns (FeedsResult);
+  rpc ListItems(ItemsQuery) returns (ItemsResult);
+  rpc ListOrders(OrdersQuery) returns (OrdersResult);
+  // Raw storage order, including unavailable feeds and expired orders. Supports
+  // side/feed/type/currency/order ID and limit/cursor; other filters are rejected.
+  rpc ListStoredOrders(OrdersQuery) returns (OrdersResult);
+  rpc GetOrderBook(BookQuery) returns (BookResult);
+  rpc ListTrades(TradesQuery) returns (TradesResult);
+  // Initial full view, then complete replacements.
+  rpc WatchOrderBook(BookQuery) returns (stream BookResult);
+  rpc Sync(SyncRequest) returns (stream SyncFrame);
+  // Up to ten retained revisions, then a checkpoint and EOF. Omitted after starts
+  // at the replay floor. Resume from the last complete checkpoint to page/poll.
+  rpc Replay(SyncRequest) returns (stream SyncFrame);
 }

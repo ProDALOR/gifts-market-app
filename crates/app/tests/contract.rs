@@ -1,133 +1,157 @@
-//! The API is exercised against a protocol peer, never an imported hub implementation.
+//! The gateway talks only to the copied protocol, with no market state or query engine.
 #[path = "../../../tests/support/mod.rs"]
 mod fixtures;
-use market_app::{
-    ApiState,
-    replication::{ReplicaConfig, ReplicaHandle},
+use hub_protocol::wire as w;
+use market_app::{ApiState, query::BookQuery};
+use market_client::{node::NodeConfig, registration::NodeCredentials};
+use market_view as m;
+use std::{
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
-use market_reader::registration::NodeCredentials;
-use market_view::{
-    self as m,
-    protocol::{catalog::CatalogSnapshot, wire as w},
-};
-use prost::Message;
-use std::{pin::Pin, sync::Arc, time::Duration};
-use tokio_stream::{Stream, StreamExt, wrappers::TcpListenerStream};
+use tokio_stream::{Stream, wrappers::TcpListenerStream};
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status, transport::Server};
-#[derive(Clone)]
-struct Peer(Arc<Vec<w::SyncFrame>>);
+#[derive(Clone, Default)]
+struct Peer(Arc<AtomicUsize>);
+fn meta() -> Option<w::ReadMeta> {
+    Some(w::ReadMeta {
+        cursor: Some(w::Cursor {
+            generation: "authoritative".into(),
+            revision: 9007199254740993,
+        }),
+        catalog_revision: "catalog".into(),
+        served_at: "2026-11-12T10:00:00Z".into(),
+        as_of: "2026-11-12T10:00:00Z".into(),
+    })
+}
+fn authorized<T>(r: &Request<T>) {
+    assert!(r.metadata().get("authorization").unwrap() == "Bearer private-test-reader-credential");
+}
 #[tonic::async_trait]
-impl w::market_registration_server::MarketRegistration for Peer {
-    async fn register_node(
-        &self,
-        r: Request<w::RegisterNodeRequest>,
-    ) -> Result<Response<w::NodeRegistration>, Status> {
-        let r = r.into_inner();
-        assert_eq!(r.role, w::NodeRole::Reader as i32);
-        Ok(Response::new(w::NodeRegistration {
-            id: r.id,
-            role: r.role,
-            duplicate: true,
+impl w::market_read_server::MarketRead for Peer {
+    async fn get_status(&self, r: Request<w::Empty>) -> Result<Response<w::ReadStatus>, Status> {
+        authorized(&r);
+        Ok(Response::new(w::ReadStatus {
+            ready: true,
+            records: 17,
+            feeds: 1,
+            ready_feeds: 1,
+            meta: meta(),
+            ..Default::default()
         }))
     }
-}
-#[tonic::async_trait]
-impl w::market_replication_server::MarketReplication for Peer {
-    type SyncStream = Pin<Box<dyn Stream<Item = Result<w::SyncFrame, Status>> + Send>>;
-    async fn sync(&self, r: Request<w::SyncRequest>) -> Result<Response<Self::SyncStream>, Status> {
-        assert_eq!(r.into_inner().projection, w::ChangeProjection::Live as i32);
-        Ok(Response::new(Box::pin(
-            tokio_stream::iter(self.0.as_ref().clone().into_iter().map(Ok))
-                .chain(tokio_stream::pending()),
-        )))
+    async fn list_catalog(
+        &self,
+        _: Request<w::CatalogQuery>,
+    ) -> Result<Response<w::CatalogResult>, Status> {
+        Err(Status::unimplemented("unused"))
     }
-}
-fn frames() -> Vec<w::SyncFrame> {
-    let catalog = CatalogSnapshot::new(
-        "contract-peer".into(),
-        Arc::new(fixtures::catalog("source")),
-    );
-    let mut records = fixtures::records();
-    let now = m::MarketTimestamp::now();
-    for r in &mut records {
-        match r {
-            m::Record::Item(v) => v.observed_at = now,
-            m::Record::Order(v) => v.observed_at = now,
-            _ => {}
-        }
+    async fn list_feeds(
+        &self,
+        _: Request<w::FeedsQuery>,
+    ) -> Result<Response<w::FeedsResult>, Status> {
+        Err(Status::unimplemented("unused"))
     }
-    records.push(m::Record::Feed(m::FeedStatus {
-        feed_id: "source".parse().unwrap(),
-        venue_id: catalog
-            .catalog
-            .feed(&"source".parse().unwrap())
-            .unwrap()
-            .venue_id
-            .clone(),
-        state: m::FeedState::Ready,
-        last_sync_at: Some(now),
-    }));
-    records.sort_by_key(m::Record::key);
-    let records: Vec<w::Record> = records.into_iter().map(Into::into).collect();
-    let cursor = w::Cursor {
-        generation: catalog.generation.clone(),
-        revision: 3,
-    };
-    let base = w::SyncFrame {
-        cursor: Some(cursor.clone()),
-        catalog_revision: catalog.revision.clone(),
-        ..Default::default()
-    };
-    vec![
-        w::SyncFrame {
-            kind: w::FrameKind::SnapshotStart as i32,
-            total_records: records.len() as u64,
-            record_bytes: records.iter().map(|r| r.encoded_len() as u64).sum(),
-            ..base.clone()
-        },
-        w::SyncFrame {
-            kind: w::FrameKind::SnapshotData as i32,
-            catalog: catalog.entries.iter().cloned().map(Into::into).collect(),
-            ..base.clone()
-        },
-        w::SyncFrame {
-            kind: w::FrameKind::SnapshotData as i32,
-            records,
-            ..base.clone()
-        },
-        w::SyncFrame {
-            kind: w::FrameKind::SnapshotComplete as i32,
-            complete: true,
-            ..base.clone()
-        },
-        w::SyncFrame {
-            kind: w::FrameKind::Checkpoint as i32,
-            complete: true,
-            ..base
-        },
-    ]
+    async fn list_items(
+        &self,
+        _: Request<w::ItemsQuery>,
+    ) -> Result<Response<w::ItemsResult>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+    async fn list_orders(
+        &self,
+        _: Request<w::OrdersQuery>,
+    ) -> Result<Response<w::OrdersResult>, Status> {
+        Err(Status::invalid_argument("bad order filters"))
+    }
+    async fn list_stored_orders(
+        &self,
+        _: Request<w::OrdersQuery>,
+    ) -> Result<Response<w::OrdersResult>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+    async fn get_order_book(
+        &self,
+        r: Request<w::BookQuery>,
+    ) -> Result<Response<w::BookResult>, Status> {
+        authorized(&r);
+        self.0.fetch_add(1, Ordering::SeqCst);
+        let q = r.into_inner();
+        assert_eq!(q.attributes_json.as_deref(), Some("{\"model\":\"gold\"}"));
+        let orders = fixtures::records()
+            .into_iter()
+            .filter_map(|r| match r {
+                m::Record::Order(v) if v.side() == m::OrderSide::Ask => Some(w::Order::from(v)),
+                _ => None,
+            })
+            .take(1)
+            .collect();
+        Ok(Response::new(w::BookResult {
+            item_type_id: q.item_type_id,
+            currency_id: q.currency_id,
+            asks: Some(w::BookSidePage {
+                data: orders,
+                page: Some(w::Page {
+                    next_cursor: Some("core-owned-cursor".into()),
+                }),
+            }),
+            bids: Some(w::BookSidePage::default()),
+            meta: meta(),
+            included: None,
+        }))
+    }
+    async fn list_trades(
+        &self,
+        _: Request<w::TradesQuery>,
+    ) -> Result<Response<w::TradesResult>, Status> {
+        let data = fixtures::sources()
+            .into_iter()
+            .filter_map(|e| match e {
+                m::SourceEvent::Trade(t) => Some(t.into()),
+                _ => None,
+            })
+            .collect();
+        Ok(Response::new(w::TradesResult {
+            data,
+            page: Some(w::Page { next_cursor: None }),
+            meta: meta(),
+        }))
+    }
+    type WatchOrderBookStream = Pin<Box<dyn Stream<Item = Result<w::BookResult, Status>> + Send>>;
+    async fn watch_order_book(
+        &self,
+        _: Request<w::BookQuery>,
+    ) -> Result<Response<Self::WatchOrderBookStream>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+    type ReplayStream = Self::SyncStream;
+    async fn replay(
+        &self,
+        _: Request<w::SyncRequest>,
+    ) -> Result<Response<Self::ReplayStream>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+    type SyncStream =
+        std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<w::SyncFrame, Status>> + Send>>;
+    async fn sync(&self, _: Request<w::SyncRequest>) -> Result<Response<Self::SyncStream>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
 }
 #[actix_web::test]
-async fn grpc_snapshot_drives_read_only_rest_and_exact_public_values() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn")
-        .with_test_writer()
-        .try_init();
+async fn rest_queries_forward_to_core_and_preserve_exact_values_dates_and_cursors() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let peer = Peer::default();
+    let service = peer.clone();
     let stop = CancellationToken::new();
     let cancel = stop.clone();
-    let peer = Peer(Arc::new(frames()));
-    let service = peer.clone();
     let server = tokio::spawn(async move {
         Server::builder()
-            .add_service(
-                w::market_registration_server::MarketRegistrationServer::new(service.clone()),
-            )
-            .add_service(w::market_replication_server::MarketReplicationServer::new(
-                service,
-            ))
+            .add_service(w::market_read_server::MarketReadServer::new(service))
             .serve_with_incoming_shutdown(
                 TcpListenerStream::new(listener),
                 cancel.cancelled_owned(),
@@ -135,38 +159,17 @@ async fn grpc_snapshot_drives_read_only_rest_and_exact_public_values() {
             .await
             .unwrap();
     });
-    let replica = ReplicaHandle::new();
-    let config = ReplicaConfig::new(
+    let node = NodeConfig::new(
         format!("http://{address}"),
         NodeCredentials {
-            id: "api-contract-test".into(),
-            role: w::NodeRole::Reader,
+            id: "gateway".into(),
             token: "private-test-reader-credential".into(),
         },
     );
-    let handle = replica.clone();
-    let cancel = stop.clone();
-    let follower = tokio::spawn(async move {
-        handle.run(config, cancel).await.unwrap();
-    });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if replica.snapshot().connected {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    let state = ApiState::new(node, 8, 16);
     let app = actix_web::test::init_service(
         actix_web::App::new()
-            .app_data(actix_web::web::Data::new(ApiState::new(
-                replica.clone(),
-                Duration::from_secs(60),
-                8,
-                5000,
-            )))
+            .app_data(actix_web::web::Data::new(state.clone()))
             .configure(market_app::configure),
     )
     .await;
@@ -177,36 +180,57 @@ async fn grpc_snapshot_drives_read_only_rest_and_exact_public_values() {
             .to_request(),
     )
     .await;
-    assert_eq!(value["data"]["ready"], true);
-    assert_eq!(value["meta"]["cursor"]["revision"], "3");
+    assert_eq!(value["data"]["records"], 17);
+    assert_eq!(value["meta"]["cursor"]["revision"], "9007199254740993");
+    let q = BookQuery {
+        item_type_id: "test-item".parse().unwrap(),
+        currency_id: "TON".parse().unwrap(),
+        feed_id: None,
+        item_id: None,
+        attributes: Some("{\"model\":\"gold\"}".into()),
+        price_min: None,
+        price_max: None,
+        limit: None,
+        include: None,
+    };
+    let value = serde_json::to_value(state.orderbook(&q).await.unwrap()).unwrap();
+    assert_eq!(value["data"]["asks"]["data"][0]["price"]["amount"], "12.50");
+    assert_eq!(
+        value["data"]["asks"]["page"]["next_cursor"],
+        "core-owned-cursor"
+    );
+    assert!(value["data"]["asks"]["data"][0]["observed_at"].is_string());
+    assert!(
+        value["data"]["asks"]["data"][0]
+            .get("observation")
+            .is_none()
+    );
+    assert_eq!(peer.0.load(Ordering::SeqCst), 1);
     let value: serde_json::Value = actix_web::test::call_and_read_body_json(
         &app,
         actix_web::test::TestRequest::get()
-            .uri("/orders?item_type_id=test-item&currency_id=TON&side=ask&limit=10")
+            .uri("/trades")
             .to_request(),
     )
     .await;
-    let orders = value["data"].as_array().unwrap();
-    assert!(!orders.is_empty());
-    assert!(orders.iter().all(|r| r["observed_at"].is_string()
-        && r["price"]["amount"].is_string()
-        && r["quantity"].is_string()));
-    for method in [
-        actix_web::http::Method::POST,
-        actix_web::http::Method::PUT,
-        actix_web::http::Method::DELETE,
-    ] {
-        let response = actix_web::test::call_service(
-            &app,
-            actix_web::test::TestRequest::default()
-                .method(method)
-                .uri("/orders")
-                .to_request(),
-        )
-        .await;
-        assert!(response.status().is_client_error());
-    }
+    assert_eq!(value["data"][0]["quantity"], "0.25");
+    assert!(value["data"][0]["executed_at"].is_string());
+    let response = actix_web::test::call_service(
+        &app,
+        actix_web::test::TestRequest::get()
+            .uri("/orders")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 400);
+    let response = actix_web::test::call_service(
+        &app,
+        actix_web::test::TestRequest::post()
+            .uri("/orders")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 405);
     stop.cancel();
-    follower.await.unwrap();
     server.await.unwrap();
 }

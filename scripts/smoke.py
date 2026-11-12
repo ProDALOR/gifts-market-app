@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable TLS core/API/history + fake-native Rust adapter integration; no accounts used.
+"""Disposable TLS core/gateway + fake-native Rust adapter integration; no accounts used.
 Build the services independently; supply --hub-bin and --adapter-manifest.
 """
 import argparse
@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix="market-split-smoke-") as temporary:
     join = directory / "join"
     join.mkdir()
     token = secrets.token_hex(32)
-    (join / "join.json").write_text(json.dumps({"registration_token": token, "network": "market-smoke"}))
+    (join / "join.json").write_text(json.dumps({"core_url": "https://market-hub:50051", "join_token": token, "network": "market-smoke"}))
     (core_certs / "ca.cnf").write_text("[req]\nprompt=no\ndistinguished_name=name\nx509_extensions=ca\n[name]\nCN=Disposable hub CA\n[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n")
     (core_certs / "core.cnf").write_text("[req]\nprompt=no\ndistinguished_name=name\nreq_extensions=server\n[name]\nCN=market-hub\n[server]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:market-hub,DNS:localhost,IP:127.0.0.1,IP:::1\n")
     def openssl(*arguments):
@@ -50,15 +50,13 @@ with tempfile.TemporaryDirectory(prefix="market-split-smoke-") as temporary:
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
     environment.update(setup.env_values(directory / "env"))
-    sockets = [socket.socket() for _ in range(5)]
+    sockets = [socket.socket() for _ in range(4)]
     for handle in sockets:
         handle.bind(("127.0.0.1", 0))
-    ingest, read, metrics, http, grpc = [handle.getsockname()[1] for handle in sockets]
-    config=f'''catalog_dir = "{directory}/catalog"
-ingest_addr = "127.0.0.1:{ingest}"
-read_addr = "127.0.0.1:{read}"
+    core_grpc, metrics, http, grpc = [handle.getsockname()[1] for handle in sockets]
+    config=f'''data_dir = "{directory}/catalog"
+grpc_addr = "127.0.0.1:{core_grpc}"
 http_addr = "127.0.0.1:{metrics}"
-registration_token_env = "MARKET_REGISTRATION_TOKEN"
 [tls]
 cert = "{core_certs}/core.crt"
 key = "{core_certs}/core.key"
@@ -87,51 +85,65 @@ feed_lease = "5s"
                 process.kill()
                 process.wait()
 
-    try:
-        start("core", [str(hub_bin), "--config", str(directory / "core.toml")], directory)
-        start("api", [str(app / "target/debug/market-app"), "--bind", f"127.0.0.1:{http}", "--core", f"https://127.0.0.1:{read}", "--core-ca", str(directory / "hub-ca.crt"), "--credentials", str(directory / "api.json"), "--grpc-bind", f"127.0.0.1:{grpc}", "--grpc-cert", str(directory / "certs/api.crt"), "--grpc-key", str(directory / "certs/api.key")], app)
-        history = start("history", [str(app / "target/debug/history-node"), "--endpoint", f"https://127.0.0.1:{read}", "--core-ca", str(directory / "hub-ca.crt"), "--credentials", str(directory / "history.json"), "--output", str(directory / "archive")], app)
+    def status():
+        with urllib.request.urlopen(f"http://127.0.0.1:{http}/status", timeout=1) as response:
+            return json.load(response)
+
+    def wait_ready(previous_generation=None):
         deadline = time.monotonic() + 20
         while True:
-            assert all(process.poll() is None for process in processes), "a service exited"
+            assert all(process.poll() is None for process in processes if process not in stopped), "a service exited"
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{http}/status", timeout=1) as response:
-                    if json.load(response)["data"]["ready"]:
-                        break
+                value = status()
+                if value["data"]["ready"] and value["meta"]["cursor"]["generation"] != previous_generation:
+                    return value["meta"]["cursor"]["generation"]
             except OSError:
                 pass
-            assert time.monotonic() < deadline, "API bootstrap timed out"
+            assert time.monotonic() < deadline, "API synchronization timed out"
             time.sleep(.05)
-        # The initial empty catalog and explicit archive boundary are two complete frames.
-        deadline = time.monotonic() + 10
-        active = directory / "archive/segments/00000000000000000001.binpb"
-        while True:
-            count = 0
-            if active.exists():
-                data = active.read_bytes()
-                position = 8
-                while position + 40 <= len(data):
-                    length = int.from_bytes(data[position:position+4], "little")
-                    if position + 40 + length > len(data):
-                        break
-                    count += 1
-                    position += 40 + length
-            if count >= 2:
-                break
-            assert time.monotonic() < deadline, "history baseline timed out"
-            time.sleep(.05)
-        environment.update(MARKET_RESALE_ENDPOINT=f"https://127.0.0.1:{ingest}", MARKET_RESALE_API=f"http://127.0.0.1:{http}", MARKET_RESALE_CA=str(directory / "hub-ca.crt"))
-        subprocess.run(["cargo", "test", "--manifest-path", str(adapter_manifest), "--locked", "-p", "market-telegram", "--test", "deployment", "--", "--ignored", "--nocapture"], cwd=adapters, env=environment, check=True, timeout=180)
+
+    stopped = []
+    def stop_service(process):
+        stop(process)
+        stopped.append(process)
+
+    try:
+        core_command = [str(hub_bin), "--config", str(directory / "core.toml")]
+        api_command = [str(app / "target/debug/market-app"), "--bind", f"127.0.0.1:{http}", "--core", f"https://127.0.0.1:{core_grpc}", "--core-ca", str(directory / "hub-ca.crt"), "--credentials", str(directory / "api.json"), "--grpc-bind", f"127.0.0.1:{grpc}", "--grpc-cert", str(directory / "certs/api.crt"), "--grpc-key", str(directory / "certs/api.key")]
+        core = start("core", core_command, directory)
+        api = start("gateway", api_command, app)
+        generation = wait_ready()
+        environment.update(MARKET_RESALE_ENDPOINT=f"https://127.0.0.1:{core_grpc}", MARKET_RESALE_API=f"http://127.0.0.1:{http}", MARKET_RESALE_CA=str(directory / "hub-ca.crt"), MARKET_RESALE_CREDENTIALS=str(directory / "adapter.json"))
+        adapter_command = ["cargo", "test", "--manifest-path", str(adapter_manifest), "--locked", "-p", "market-telegram", "--test", "deployment", "--", "--ignored", "--nocapture"]
+        subprocess.run(adapter_command, cwd=adapters, env=environment, check=True, timeout=180)
         subprocess.run([str(app / "target/debug/examples/read_api"), "--endpoint", f"https://127.0.0.1:{grpc}", "--ca", str(directory / "certs/ca.crt"), "--item-type", "telegram.gift.123"], cwd=app, env=environment, check=True, timeout=30)
-        # The history consumer should have followed all revisions before shutdown.
-        time.sleep(1)
-        stop(history)
-        dump = subprocess.check_output([str(app / "target/debug/history-node"), "--output", str(directory / "archive"), "--dump"], cwd=app, env=environment, text=True)
-        rows = [json.loads(line) for line in dump.splitlines()]
-        events = [event for row in rows if row["type"] == "batch" for event in row["events"]]
-        assert any(event["type"] == "order_removed" for event in events), "history missed quote removal"
-        assert any(event["type"] == "upsert" for event in events), "history missed order observations"
-        print(f"Split deployment verified: real TLS services, separate credentials, {len(events)} archived facts, recovered JSONL export")
+        def trades():
+            with urllib.request.urlopen(f"http://127.0.0.1:{http}/trades?feed_id=telegram", timeout=2) as response:
+                return json.load(response)["data"]
+        before = trades()
+        assert len(before) == 1 and before[0]["trade_id"] == "test-execution-1"
+        identities = {name: (directory / name).read_bytes() for name in ("api.json", "adapter.json")}
+        # A hard kill leaves no opportunity for a shutdown flush. The acknowledged
+        # execution must survive in core's WAL, independently of the volatile book.
+        core.kill()
+        core.wait(timeout=5)
+        stopped.append(core)
+        environment["MARKET_JOIN_TOKEN"] = secrets.token_hex(32)
+        core = start("restarted-core", core_command, directory)
+        environment.pop("MARKET_JOIN_TOKEN")
+        wait_ready(generation)
+        assert trades() == before, "acknowledged trade disappeared after a core crash"
+        # The restarted adapter backfills the same fact. Core deduplicates its identity
+        # even though the source observation clock and core generation changed.
+        subprocess.run(adapter_command, cwd=adapters, env=environment, check=True, timeout=180)
+        assert trades() == before, "backfilled trade was duplicated or replaced"
+        stop_service(api)
+        environment["MARKET_JOIN_TOKEN"] = ""  # Compose omits enrollment authority this way.
+        api = start("restarted-gateway", api_command, app)
+        wait_ready()
+        assert trades() == before
+        assert all((directory / name).read_bytes() == value for name, value in identities.items()), "node credentials changed on restart"
+        print("Core ownership verified: one TLS endpoint, indexed books, durable trade crash recovery and deduplication, stateless gateway, token-free reconnects")
     except Exception:
         for name, log in logs:
             log.flush()
