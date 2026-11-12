@@ -23,7 +23,6 @@ fn meta() -> Option<w::ReadMeta> {
             generation: "authoritative".into(),
             revision: 9007199254740993,
         }),
-        catalog_revision: "catalog".into(),
         served_at: "2026-11-12T10:00:00Z".into(),
         as_of: "2026-11-12T10:00:00Z".into(),
     })
@@ -105,7 +104,14 @@ impl w::market_read_server::MarketRead for Peer {
         let orders = fixtures::records()
             .into_iter()
             .filter_map(|r| match r {
-                m::Record::Order(v) if v.side() == m::OrderSide::Ask => Some(w::Order::from(v)),
+                m::Record::Order(v)
+                    if matches!(
+                        v.kind,
+                        m::OrderKind::AskItem { .. } | m::OrderKind::AskUnits { .. }
+                    ) =>
+                {
+                    Some(w::Order::from(v))
+                }
                 _ => None,
             })
             .take(1)

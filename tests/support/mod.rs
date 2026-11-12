@@ -1,10 +1,6 @@
 #![allow(dead_code)]
 //! Test-only builders; no persisted market data or runtime configuration is loaded.
 use market_view as m;
-mod catalog;
-pub fn catalog(feed: &str) -> m::Catalog {
-    catalog::catalog(feed)
-}
 
 pub fn records() -> Vec<m::Record> {
     let time = "2026-11-09T16:00:00Z".parse().unwrap();

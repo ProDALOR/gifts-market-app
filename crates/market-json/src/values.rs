@@ -28,25 +28,6 @@ pub fn attributes(values: &m::Attributes) -> RawAttributes {
         .map(|(id, value)| (id.clone(), value.into()))
         .collect()
 }
-fn value(
-    catalog: &m::Catalog,
-    kind: &m::ItemTypeId,
-    id: &m::AttributeId,
-    scalar: Scalar,
-) -> Result<m::AttributeValue> {
-    if !catalog
-        .item_type(kind)
-        .ok_or(m::ValidationError("unknown item type ID"))?
-        .attributes
-        .contains_key(id)
-    {
-        return Err(m::ValidationError("attribute is not permitted for this item type").into());
-    }
-    let schema = catalog
-        .attribute(id)
-        .ok_or(m::ValidationError("unknown attribute ID"))?;
-    decode_scalar(schema.value_type, scalar)
-}
 /// Decode a human JSON scalar using a catalog attribute's declared type.
 pub fn decode_scalar(value_type: m::AttributeType, scalar: Scalar) -> Result<m::AttributeValue> {
     Ok(match (value_type, scalar) {
@@ -68,33 +49,10 @@ pub fn decode_scalar(value_type: m::AttributeType, scalar: Scalar) -> Result<m::
         }
     })
 }
-pub fn decode_attributes(
-    catalog: &m::Catalog,
-    kind: &m::ItemTypeId,
-    raw: RawAttributes,
-) -> Result<m::Attributes> {
-    if raw.len() > m::MAX_ATTRIBUTES {
-        return Err(m::ValidationError("too many attributes").into());
-    }
-    let values = raw
-        .into_iter()
-        .map(|(id, v)| Ok((id.clone(), value(catalog, kind, &id, v)?)))
-        .collect::<Result<_>>()?;
-    catalog.validate_attributes(kind, &values)?;
-    Ok(values)
-}
 #[derive(Deserialize)]
 struct AttributeMap(
     #[serde(deserialize_with = "m::attributes::deserialize_attribute_map")] RawAttributes,
 );
-pub fn parse_attributes(
-    bytes: &[u8],
-    catalog: &m::Catalog,
-    kind: &m::ItemTypeId,
-) -> Result<m::Attributes> {
-    decode_attributes(catalog, kind, parse_raw_attributes(bytes)?)
-}
-
 pub fn parse_raw_attributes(bytes: &[u8]) -> Result<RawAttributes> {
     Ok(serde_json::from_slice::<AttributeMap>(bytes)?.0)
 }

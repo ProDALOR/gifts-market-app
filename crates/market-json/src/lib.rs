@@ -1,19 +1,14 @@
-//! Optional human JSON codec. Application projections are independent of hub implementation types.
+//! Public response formatting and strict query scalar parsing. No ingestion or catalog validation.
 mod codecs;
 mod records;
-mod strict;
 mod values;
 pub use codecs::{
     serialize_catalog, serialize_items, serialize_orders, serialize_records, u64_string,
 };
 pub use records::{
-    catalog_value, event_value, item_value, order_value, parse_records, parse_sources,
-    record_value, source_value,
+    catalog_value, event_value, item_value, order_value, record_value, source_value,
 };
-pub use values::{
-    RawAttributes, Scalar, attributes, decode_attributes, decode_scalar, parse_attributes,
-    parse_raw_attributes,
-};
+pub use values::{RawAttributes, Scalar, attributes, decode_scalar, parse_raw_attributes};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]

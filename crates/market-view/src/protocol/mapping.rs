@@ -425,25 +425,6 @@ impl TryFrom<w::Record> for Record {
         })
     }
 }
-impl From<Mutation> for w::Mutation {
-    fn from(v: Mutation) -> Self {
-        Self {
-            mutation: Some(match v {
-                Mutation::Upsert(v) => w::mutation::Mutation::Upsert(v.into()),
-                Mutation::Delete(v) => w::mutation::Mutation::Delete(v.into()),
-            }),
-        }
-    }
-}
-impl TryFrom<w::Mutation> for Mutation {
-    type Error = ValidationError;
-    fn try_from(v: w::Mutation) -> Result<Self, Self::Error> {
-        Ok(match required(v.mutation)? {
-            w::mutation::Mutation::Upsert(v) => Self::Upsert(v.try_into()?),
-            w::mutation::Mutation::Delete(v) => Self::Delete(v.try_into()?),
-        })
-    }
-}
 impl From<SourceEvent> for w::SourceEvent {
     fn from(v: SourceEvent) -> Self {
         Self {

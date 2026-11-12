@@ -21,7 +21,6 @@ impl From<Cursor> for ApiCursor {
 #[derive(Clone, Serialize, ToSchema)]
 pub struct ResponseMeta {
     pub cursor: Option<ApiCursor>,
-    pub catalog_revision: Option<String>,
     #[schema(value_type=String,format=DateTime)]
     pub served_at: MarketTimestamp,
     /// Fixed across a paginated query; expiry is evaluated at this time.

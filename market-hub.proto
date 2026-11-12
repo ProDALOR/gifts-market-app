@@ -3,7 +3,7 @@ package market;
 
 // Service boundary: consumers vendor this contract and generate their own bindings.
 // Rust models, validation, storage and client implementations are private to each service.
-// Catalog revision strings are opaque identities; pin them across pages and frames.
+// Catalog changes travel with market events under the same ordered cursor.
 // Revisions must not be recomputed from a consumer's language-specific serialization.
 
 // Services authenticate with signed node tokens issued by the hub CLI.
@@ -206,7 +206,6 @@ message Mutation {
 message OpenFeedRequest {
   string writer_id = 1;
   bool takeover = 2;
-  string catalog_revision = 3;
 }
 
 // The feed ID is the authenticated node ID and is not echoed.
@@ -216,6 +215,8 @@ message OpenFeedResponse {
   uint64 next_sequence = 3;
   bool requires_snapshot = 4;
   IngestLimits limits = 5;
+  // Stable for this durable trade database, including across process restarts.
+  string history_id = 6;
 }
 
 message IngestLimits {
@@ -246,6 +247,8 @@ message PublishRequest {
   uint64 sequence = 2;
   repeated Mutation mutations = 3;
   // Explicit source trades/statuses, committed atomically with mutations.
+  // Trade-only batches (no mutations/progress) may precede the initial order snapshot.
+  // Backfills never change order readiness or source freshness.
   repeated SourceEvent events = 4;
   // Optional progress commits atomically with changes; counts as one batch entry.
   FeedProgress progress = 5;
@@ -289,16 +292,15 @@ enum FrameKind {
 message SyncFrame {
   Cursor cursor = 1;
   FrameKind kind = 2;
-  string catalog_revision = 3;
-  repeated CatalogEntry catalog = 4;
-  repeated Record records = 5;
-  repeated MarketEvent events = 6;
-  bool complete = 7;
-  uint64 total_records = 8;
-  uint64 record_bytes = 9;
+  repeated CatalogEntry catalog = 3;
+  repeated Record records = 4;
+  repeated MarketEvent events = 5;
+  bool complete = 6;
+  uint64 total_records = 7;
+  uint64 record_bytes = 8;
 }
 
-// Immutable reference data. Fetch page zero without a generation, then pin all later pages.
+// Typed reference data. Pagination tokens pin the current catalog content and query.
 message ExternalId {
   string namespace = 1;
   string id = 2;
@@ -370,26 +372,17 @@ message CatalogEntry {
   }
 }
 
-// Generic, namespace-owned catalog bundles. One collection per bundle is conventional.
-// Updates merge definitions: omissions never retire IDs or remove allowed values.
-message CatalogBundle {
-  string id = 1;
+// One namespace-owned bundle per upload, conventionally one collection.
+// The first chunk carries bundle_id; later chunks carry only entries.
+// EOF merges the complete bundle atomically. Omissions never delete definitions.
+// Identical reuploads are no-ops; mutable names/metadata use the latest accepted upload.
+// 500 entries / 512 KiB per chunk, 4096 chunks, 100000 entries / 32 MiB per upload.
+message CatalogChunk {
+  string bundle_id = 1;
   repeated CatalogEntry entries = 2;
 }
-// First chunk carries update_id and expected_revision; later chunks carry only bundles.
-// EOF commits atomically; incomplete streams are discarded. Retry identical content
-// and identity after a lost reply. At most 500 entries / 512 KiB per chunk,
-// 4096 chunks, 100000 entries / 32 MiB per complete catalog upload.
-message CatalogChunk {
-  string update_id = 1;
-  string expected_revision = 2;
-  repeated CatalogBundle bundles = 3;
-}
-message CatalogCommit {
-  string revision = 1;
-}
 service MarketAdapter {
-  rpc ConfigureCatalog(stream CatalogChunk) returns (CatalogCommit);
+  rpc ConfigureCatalog(stream CatalogChunk) returns (Empty);
   rpc OpenFeed(OpenFeedRequest) returns (OpenFeedResponse);
   rpc RenewFeed(RenewFeedRequest) returns (PublishAck);
   rpc Publish(PublishRequest) returns (PublishAck);
@@ -398,9 +391,8 @@ service MarketAdapter {
 
 message ReadMeta {
   Cursor cursor = 1;
-  string catalog_revision = 2;
-  string served_at = 3; // UTC RFC 3339.
-  string as_of = 4;
+  string served_at = 2; // UTC RFC 3339.
+  string as_of = 3;
 }
 message Page { optional string next_cursor = 1; }
 message Included {
@@ -504,7 +496,7 @@ message TradesResult {
   ReadMeta meta = 3;
 }
 // Authenticated nodes are trusted services: all may read and write their own namespace.
-// Catalog continuations pin catalog revision and filters independently of live view TTL.
+// Catalog continuations pin current definitions and filters independently of live view TTL.
 // Shared-state reads run independently of the writer. History is durable; live books are rebuilt.
 service MarketRead {
   rpc GetStatus(Empty) returns (ReadStatus);

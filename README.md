@@ -39,7 +39,7 @@ For native development, export `MARKET_NODE_TOKEN` and run `cargo run --locked -
 | `/ws` | Core-backed subscriptions |
 | `/openapi.json` | Generated HTTP request/response schemas |
 
-All routes are read-only. Responses contain `data`, optional `page`/`included`, and `meta` with the core cursor, catalog revision, serving time and fixed query `as_of`. IDs, decimals, quantities, integer attributes and cursor revisions are lossless strings. All HTTP datetimes are UTC RFC 3339 strings.
+All routes are read-only. Responses contain `data`, optional `page`/`included`, and `meta` with the core cursor, serving time and fixed query `as_of`. IDs, decimals, quantities, integer attributes and cursor revisions are lossless strings. All HTTP datetimes are UTC RFC 3339 strings.
 
 ```sh
 curl --get http://localhost:8080/orderbook \
@@ -52,7 +52,7 @@ curl --get http://localhost:8080/orderbook \
 
 Candidate `attributes` are a catalog-aware JSON map. The gateway looks up the applicable attribute schemas only when attributes are supplied, then sends an explicitly typed `AttributeMap` to core. Enum IDs, exact decimals and integers use strings; booleans use JSON booleans. Core validates their types and applicability. Price filters are exact strings. `limit` is 1–200. `include_items=true` and `include_feeds=true` expand dependencies from the same core view.
 
-Catalog continuations pin catalog revision and filters independently of live views; they survive book changes and core restarts while those definitions remain unchanged. Book/order continuations pin a bounded core view, filter scope and `as_of` for up to 60 seconds. Each book side has its own order-page continuation. Reuse it on `/orders` with the corresponding side and identical filters. HTTP 409 means reload the query. Cursors belong to core, so requests may switch gateway instances connected to that same core.
+Catalog continuations pin the current definitions and filters independently of live views; they survive book changes and core restarts while those definitions remain unchanged. Book/order continuations pin a bounded core view, filter scope and `as_of` for up to 60 seconds. Each book side has its own order-page continuation. Reuse it on `/orders` with the corresponding side and identical filters. HTTP 409 means reload the query. Cursors belong to core, so requests may switch gateway instances connected to that same core.
 
 `/trades` supports `feed_id`, `item_type_id`, `currency_id`, `item_id`, `executed_from`, `executed_until`, `limit` and `cursor`. Date filters use RFC 3339. Results sort by execution time, newest first; ties use ingestion sequence. Historical pagination pins a durable watermark, excludes later arrivals, and survives core restarts. Trade IDs are feed-scoped. A current-record snapshot is separate from the durable trade dataset; historical continuations do not act as raw `Sync` cursors.
 
@@ -83,7 +83,7 @@ Trusted services connect directly to core’s native gRPC endpoint with their ow
 | `market-app` | REST/WebSocket gateway, bounded transport admission and OpenAPI |
 | `hub-protocol` | Generated bindings from the local contract copy |
 | `market-view` | Response projections used for JSON formatting |
-| `market-json` | Public JSON codecs and schemas |
+| `market-json` | Public response formatting, query scalar parsing and schemas |
 
 ```sh
 cargo fmt --all -- --check
@@ -93,6 +93,8 @@ cargo build --locked --bins --examples
 python3 scripts/smoke.py --hub-bin /path/to/market-hub --adapter-manifest /path/to/adapters/Cargo.toml
 ```
 
-Standalone tests use protocol peers. The integration check uses disposable token-authenticated HTTP/2 services, random ports, temporary credentials and synthetic venue facts. It verifies indexed books, a slow source scan with independent lease renewal, durable trades after a hard core crash, backfill deduplication, operational status, stored-order inspection, bounded replay, read subscriptions and gateway/adapter reconnects without access-secret distribution or registration. It never opens Telegram accounts or contacts real markets.
+Standalone tests use protocol peers. The integration check uses disposable token-authenticated HTTP/2 services, random ports, temporary credentials and synthetic venue facts. It verifies indexed books, a slow order scan with independent lease renewal and concurrent trade ingestion, durable trades after a hard core crash, persistent source-cursor resume and overlapping-page deduplication, operational status, stored-order inspection, bounded replay, read subscriptions and gateway/adapter reconnects without access-secret distribution or registration. It never opens Telegram accounts or contacts real markets.
+
+The gateway decodes hub responses and formats the public JSON shape. It has no catalog compiler, order matching engine or record-import parsers. Query attributes are decoded using the applicable attribute schemas returned by core; core enforces catalog and trading rules. Exact numeric strings, flattened records and RFC 3339 dates remain part of the public format.
 
 Review and copy each hub contract update into this repository, then regenerate bindings through the normal build. Core's `scripts/check-contracts.py` compares explicit schema paths before a coordinated release. Ordinary builds use only this repository.

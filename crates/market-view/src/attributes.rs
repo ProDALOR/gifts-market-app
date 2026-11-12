@@ -131,42 +131,8 @@ impl AttributePredicate {
             _ => Ok(()),
         }
     }
-    pub fn matches(&self, v: &AttributeValue) -> bool {
-        match self {
-            Self::Eq { value } => value == v,
-            Self::OneOf { values } => values.contains(v),
-            Self::Range { min, max } => {
-                min.as_ref()
-                    .is_none_or(|a| v.range_cmp(a).is_some_and(|c| c != Ordering::Less))
-                    && max
-                        .as_ref()
-                        .is_none_or(|b| v.range_cmp(b).is_some_and(|c| c != Ordering::Greater))
-            }
-        }
-    }
 }
-pub fn validate_attributes(a: &Attributes) -> Result<(), ValidationError> {
-    if a.len() > 64 {
-        return Err(ValidationError("too many attributes"));
-    }
-    for v in a.values() {
-        v.validate()?
-    }
-    Ok(())
-}
-pub fn validate_attribute_filter(a: &AttributeFilter) -> Result<(), ValidationError> {
-    if a.is_empty() || a.len() > 64 {
-        return Err(ValidationError("invalid attribute filter size"));
-    }
-    for p in a.values() {
-        p.validate()?
-    }
-    Ok(())
-}
-pub fn attribute_filter_matches(f: &AttributeFilter, a: &Attributes) -> bool {
-    f.iter()
-        .all(|(id, p)| a.get(id).is_some_and(|v| p.matches(v)))
-}
+
 pub fn deserialize_attribute_map<'de, D, V>(d: D) -> Result<BTreeMap<AttributeId, V>, D::Error>
 where
     D: serde::Deserializer<'de>,

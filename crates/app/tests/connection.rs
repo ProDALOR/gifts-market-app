@@ -40,7 +40,6 @@ impl w::market_read_server::MarketRead for Peer {
                     generation: "generation".into(),
                     revision: 0,
                 }),
-                catalog_revision: "revision".into(),
                 ..Default::default()
             }),
             ..Default::default()

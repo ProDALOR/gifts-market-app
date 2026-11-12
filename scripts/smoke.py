@@ -91,9 +91,12 @@ with tempfile.TemporaryDirectory(prefix="market-split-smoke-") as temporary:
         core = start("core", core_command, directory, hub=True)
         api = start("gateway", api_command, app)
         generation = wait_ready()
-        environment.update(MARKET_RESALE_ENDPOINT=f"http://127.0.0.1:{core_grpc}", MARKET_RESALE_API=f"http://127.0.0.1:{http}", MARKET_RESALE_TOKEN=issued["telegram"])
+        environment.update(MARKET_RESALE_ENDPOINT=f"http://127.0.0.1:{core_grpc}", MARKET_RESALE_API=f"http://127.0.0.1:{http}", MARKET_RESALE_TOKEN=issued["telegram"], MARKET_RESALE_DATA_DIR=str(directory / "adapter-state"))
         adapter_command = ["cargo", "test", "--manifest-path", str(adapter_manifest), "--locked", "-p", "market-telegram", "--test", "deployment", "--", "--ignored", "--nocapture"]
         subprocess.run(adapter_command, cwd=adapters, env=environment, check=True, timeout=180)
+        cursor_files = list((directory / "adapter-state/trade-cursors").glob("*.cursor"))
+        assert len(cursor_files) == 1 and cursor_files[0].read_text() == "page-1", "first acknowledged trade cursor was not persisted"
+
         subprocess.run([str(app / "target/debug/examples/read_core"), "--endpoint", f"http://127.0.0.1:{core_grpc}", "--item-type", "telegram.gift.123"], cwd=app, env=dict(clean, MARKET_NODE_TOKEN=issued["reader"]), check=True, timeout=30)
         def trades():
             with urllib.request.urlopen(f"http://127.0.0.1:{http}/trades?feed_id=telegram", timeout=2) as response:
@@ -112,6 +115,9 @@ with tempfile.TemporaryDirectory(prefix="market-split-smoke-") as temporary:
         # The restarted adapter backfills the same fact. Core deduplicates its identity
         # even though the source observation clock and core generation changed.
         subprocess.run(adapter_command, cwd=adapters, env=environment, check=True, timeout=180)
+        assert list((directory / "adapter-state/trade-cursors").glob("*.cursor")) == cursor_files, "cursor scope changed across a normal core restart"
+        assert cursor_files[0].read_text() == "page-2", "adapter did not resume and persist the overlapping next page"
+
         assert trades() == before, "backfilled trade was duplicated or replaced"
         stop_service(api)
         api = start("restarted-gateway", api_command, app)
@@ -120,7 +126,7 @@ with tempfile.TemporaryDirectory(prefix="market-split-smoke-") as temporary:
         assert environment["MARKET_NODE_TOKEN"] == original_token, "service token changed on restart"
         assert not list(directory.glob("*.json")), "credential JSON files must not be created"
         assert not (directory / "catalog/nodes.json").exists(), "credential registry must not be created"
-        print("Core ownership verified: one token-authenticated HTTP/2 endpoint, indexed books, durable trade crash recovery and deduplication, stateless gateway, offline signed credentials, no enrollment or credential registry")
+        print("Core ownership verified: one token-authenticated HTTP/2 endpoint, indexed books, durable trade crash recovery and deduplication, persistent trade cursor resume, stateless gateway, offline signed credentials, no enrollment or credential registry")
     except Exception:
         for name, log in logs:
             log.flush()

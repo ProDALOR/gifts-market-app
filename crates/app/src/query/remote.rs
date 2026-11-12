@@ -17,7 +17,6 @@ pub(crate) fn meta(v: Option<w::ReadMeta>) -> Result<ResponseMeta> {
             generation: c.generation,
             revision: c.revision,
         }),
-        catalog_revision: Some(v.catalog_revision),
         served_at: v.served_at.parse().map_err(invalid)?,
         as_of: v.as_of.parse().map_err(invalid)?,
     })
@@ -409,6 +408,6 @@ pub(crate) fn sync_response(frame: w::SyncFrame) -> Result<serde_json::Value> {
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(
-        serde_json::json!({"cursor":frame.cursor.map(|c|ApiCursor {generation:c.generation,revision:c.revision}),"kind":w::FrameKind::try_from(frame.kind).map_err(invalid)?.as_str_name().trim_start_matches("FRAME_KIND_").to_ascii_lowercase(),"catalog_revision":frame.catalog_revision,"catalog":catalog,"records":records,"events":events,"complete":frame.complete,"total_records":frame.total_records.to_string(),"record_bytes":frame.record_bytes.to_string()}),
+        serde_json::json!({"cursor":frame.cursor.map(|c|ApiCursor {generation:c.generation,revision:c.revision}),"kind":w::FrameKind::try_from(frame.kind).map_err(invalid)?.as_str_name().trim_start_matches("FRAME_KIND_").to_ascii_lowercase(),"catalog":catalog,"records":records,"events":events,"complete":frame.complete,"total_records":frame.total_records.to_string(),"record_bytes":frame.record_bytes.to_string()}),
     )
 }
