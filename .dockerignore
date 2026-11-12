@@ -1,0 +1,11 @@
+# Build only service sources; credentials and local state stay outside the image context.
+**
+!Dockerfile
+!Cargo.toml
+!Cargo.lock
+!market-hub.proto
+!crates/
+!crates/**
+**/tests/
+**/examples/
+**/target/

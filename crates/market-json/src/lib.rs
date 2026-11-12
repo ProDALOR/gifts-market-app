@@ -10,7 +10,10 @@ pub use records::{
     catalog_value, event_value, item_value, order_value, parse_records, parse_sources,
     record_value, source_value,
 };
-pub use values::{RawAttributes, Scalar, attributes, decode_attributes, parse_attributes};
+pub use values::{
+    RawAttributes, Scalar, attributes, decode_attributes, decode_scalar, parse_attributes,
+    parse_raw_attributes,
+};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]

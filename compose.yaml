@@ -14,31 +14,15 @@ services:
     stop_grace_period: 15s
     tmpfs: ["/tmp:size=16m,mode=1777,nosuid,nodev"]
     networks: [market]
-    command: [--bind, "0.0.0.0:8080", --core-ca, /run/secrets/market_ca, --credentials, /var/lib/market/node/identity.json, --grpc-bind, "0.0.0.0:50053", --grpc-cert, /run/secrets/api_cert, --grpc-key, /run/secrets/api_key]
-    secrets: [market_ca, api_cert, api_key]
+    command: [--bind, "0.0.0.0:8080"]
     environment:
-      MARKET_API_TOKEN: ${MARKET_API_TOKEN:?Run sh docker/setup.sh with the hub join bundle}
-      MARKET_CORE_URL: ${MARKET_CORE_URL:-https://market-hub:50051}
-      MARKET_JOIN_TOKEN: ${MARKET_JOIN_TOKEN:-}
+      MARKET_CORE_URL: ${MARKET_CORE_URL:-http://market-hub:50051}
+      MARKET_NODE_TOKEN: ${MARKET_NODE_TOKEN:?Set MARKET_NODE_TOKEN to an issued service token}
       RUST_LOG: ${RUST_LOG:-info}
-    volumes:
-      - api-identity:/var/lib/market/node
     ports:
       - "127.0.0.1:${MARKET_API_PORT:-8080}:8080"
-      - "127.0.0.1:${MARKET_API_GRPC_PORT:-50053}:50053"
 
 networks:
   market:
     name: ${MARKET_NETWORK:-market}
     external: true
-
-volumes:
-  api-identity:
-
-secrets:
-  market_ca:
-    file: ${MARKET_HUB_CA:-./.docker/hub-ca.crt}
-  api_cert:
-    file: ${MARKET_CERT_DIR:-./.docker/certs}/api.crt
-  api_key:
-    file: ${MARKET_CERT_DIR:-./.docker/certs}/api.key

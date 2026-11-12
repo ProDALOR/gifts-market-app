@@ -134,8 +134,10 @@ pub struct OrdersQuery {
     pub price_max: Option<String>,
     pub limit: Option<usize>,
     pub cursor: Option<String>,
-    /// Comma-separated item,feed dependencies from the same view.
-    pub include: Option<String>,
+    #[serde(default)]
+    pub include_items: bool,
+    #[serde(default)]
+    pub include_feeds: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, IntoParams)]
 #[serde(deny_unknown_fields)]
@@ -153,7 +155,10 @@ pub struct BookQuery {
     pub price_min: Option<String>,
     pub price_max: Option<String>,
     pub limit: Option<usize>,
-    pub include: Option<String>,
+    #[serde(default)]
+    pub include_items: bool,
+    #[serde(default)]
+    pub include_feeds: bool,
 }
 #[derive(Clone, Serialize, ToSchema)]
 #[serde(transparent)]

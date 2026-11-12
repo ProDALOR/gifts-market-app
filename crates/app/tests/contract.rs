@@ -2,8 +2,8 @@
 #[path = "../../../tests/support/mod.rs"]
 mod fixtures;
 use hub_protocol::wire as w;
+use market_app::client::CoreClient;
 use market_app::{ApiState, query::BookQuery};
-use market_client::{node::NodeConfig, registration::NodeCredentials};
 use market_view as m;
 use std::{
     pin::Pin,
@@ -29,7 +29,10 @@ fn meta() -> Option<w::ReadMeta> {
     })
 }
 fn authorized<T>(r: &Request<T>) {
-    assert!(r.metadata().get("authorization").unwrap() == "Bearer private-test-reader-credential");
+    assert!(
+        r.metadata().get("authorization").unwrap()
+            == "Bearer gateway.private-test-reader-signature"
+    );
 }
 #[tonic::async_trait]
 impl w::market_read_server::MarketRead for Peer {
@@ -46,9 +49,22 @@ impl w::market_read_server::MarketRead for Peer {
     }
     async fn list_catalog(
         &self,
-        _: Request<w::CatalogQuery>,
+        r: Request<w::CatalogQuery>,
     ) -> Result<Response<w::CatalogResult>, Status> {
-        Err(Status::unimplemented("unused"))
+        authorized(&r);
+        assert_eq!(r.get_ref().kind.as_deref(), Some("attribute"));
+        Ok(Response::new(w::CatalogResult {
+            data: vec![w::CatalogEntry {
+                entry: Some(w::catalog_entry::Entry::Attribute(w::AttributeDefinition {
+                    id: "model".into(),
+                    name: "Model".into(),
+                    value_type: w::AttributeType::Enum as i32,
+                    ..Default::default()
+                })),
+            }],
+            page: None,
+            meta: meta(),
+        }))
     }
     async fn list_feeds(
         &self,
@@ -81,7 +97,11 @@ impl w::market_read_server::MarketRead for Peer {
         authorized(&r);
         self.0.fetch_add(1, Ordering::SeqCst);
         let q = r.into_inner();
-        assert_eq!(q.attributes_json.as_deref(), Some("{\"model\":\"gold\"}"));
+        assert!(q.include_items && q.include_feeds);
+        assert_eq!(
+            q.attributes.unwrap().attributes.get("model").unwrap().value,
+            Some(w::attribute_value::Value::EnumId("gold".into()))
+        );
         let orders = fixtures::records()
             .into_iter()
             .filter_map(|r| match r {
@@ -159,13 +179,11 @@ async fn rest_queries_forward_to_core_and_preserve_exact_values_dates_and_cursor
             .await
             .unwrap();
     });
-    let node = NodeConfig::new(
+    let node = CoreClient::new(
         format!("http://{address}"),
-        NodeCredentials {
-            id: "gateway".into(),
-            token: "private-test-reader-credential".into(),
-        },
-    );
+        "gateway.private-test-reader-signature".into(),
+    )
+    .unwrap();
     let state = ApiState::new(node, 8, 16);
     let app = actix_web::test::init_service(
         actix_web::App::new()
@@ -191,7 +209,8 @@ async fn rest_queries_forward_to_core_and_preserve_exact_values_dates_and_cursor
         price_min: None,
         price_max: None,
         limit: None,
-        include: None,
+        include_items: true,
+        include_feeds: true,
     };
     let value = serde_json::to_value(state.orderbook(&q).await.unwrap()).unwrap();
     assert_eq!(value["data"]["asks"]["data"][0]["price"]["amount"], "12.50");
@@ -205,6 +224,11 @@ async fn rest_queries_forward_to_core_and_preserve_exact_values_dates_and_cursor
             .get("observation")
             .is_none()
     );
+    let mut bad = q.clone();
+    bad.attributes = Some("{\"model\":true}".into());
+    assert!(state.orderbook(&bad).await.is_err());
+    bad.attributes = Some("{\"unknown\":\"value\"}".into());
+    assert!(state.orderbook(&bad).await.is_err());
     assert_eq!(peer.0.load(Ordering::SeqCst), 1);
     let value: serde_json::Value = actix_web::test::call_and_read_body_json(
         &app,

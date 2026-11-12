@@ -94,20 +94,91 @@ pub(crate) fn book_result(v: w::BookResult) -> Result<BookResponse> {
         included: included(v.included)?,
     })
 }
-pub(crate) fn book_query(q: &BookQuery) -> Result<w::BookQuery> {
-    Ok(w::BookQuery {
-        item_type_id: q.item_type_id.to_string(),
-        currency_id: q.currency_id.to_string(),
-        feed_id: q.feed_id.as_ref().map(ToString::to_string),
-        item_id: q.item_id.as_ref().map(ToString::to_string),
-        attributes_json: q.attributes.clone(),
-        price_min: q.price_min.clone(),
-        price_max: q.price_max.clone(),
-        limit: limit(q.limit)?,
-        include: q.include.clone(),
-    })
+impl ApiState {
+    async fn book_query(&self, q: &BookQuery) -> Result<w::BookQuery> {
+        Ok(w::BookQuery {
+            item_type_id: q.item_type_id.to_string(),
+            currency_id: q.currency_id.to_string(),
+            feed_id: q.feed_id.as_ref().map(ToString::to_string),
+            item_id: q.item_id.as_ref().map(ToString::to_string),
+            attributes: self
+                .attributes(Some(&q.item_type_id), q.attributes.as_deref())
+                .await?,
+            price_min: q.price_min.clone(),
+            price_max: q.price_max.clone(),
+            limit: limit(q.limit)?,
+            include_items: q.include_items,
+            include_feeds: q.include_feeds,
+        })
+    }
 }
 impl ApiState {
+    /// Only the JSON boundary needs schema lookup. Core receives explicit typed values
+    /// and remains responsible for catalog rules and applicability validation.
+    async fn attributes(
+        &self,
+        kind: Option<&m::ItemTypeId>,
+        raw: Option<&str>,
+    ) -> Result<Option<w::AttributeMap>> {
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        if raw.len() > 16 * 1024 {
+            return Err(ApiError::field(
+                "attributes",
+                "candidate attributes are too large",
+            ));
+        }
+        let kind =
+            kind.ok_or_else(|| ApiError::field("item_type_id", "required for attributes"))?;
+        let values = market_json::parse_raw_attributes(raw.as_bytes())
+            .map_err(|e| ApiError::field("attributes", e))?;
+        if values.is_empty() {
+            return Ok(Some(w::AttributeMap::default()));
+        }
+        // Each item type has at most 64 attributes; this page contains every applicable schema.
+        let query = w::CatalogQuery {
+            kind: Some("attribute".into()),
+            item_type_id: Some(kind.to_string()),
+            limit: Some(200),
+            ..Default::default()
+        };
+        let page = self
+            .call(|mut rpc, auth| async move {
+                Ok(rpc.list_catalog(request(query, auth)).await?.into_inner())
+            })
+            .await
+            .map_err(ApiError::from)?;
+        if page.page.and_then(|p| p.next_cursor).is_some() {
+            return Err(invalid("attribute schema exceeds catalog limit"));
+        }
+        let schemas = page
+            .data
+            .into_iter()
+            .map(|v| m::CatalogEntry::try_from(v).map_err(invalid))
+            .collect::<Result<Vec<_>>>()?;
+        let attributes = values
+            .into_iter()
+            .map(|(id, value)| {
+                let schema = schemas
+                    .iter()
+                    .find_map(|entry| match entry {
+                        m::CatalogEntry::Attribute(v) if v.id == id => Some(v),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        ApiError::field(
+                            "attributes",
+                            "attribute is not permitted for this item type",
+                        )
+                    })?;
+                let value = market_json::decode_scalar(schema.value_type, value)
+                    .map_err(|e| ApiError::field("attributes", e))?;
+                Ok((id.to_string(), value.into()))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Some(w::AttributeMap { attributes }))
+    }
     pub async fn status(&self) -> Result<StatusResponse> {
         let v = self
             .call(|mut rpc, auth| async move {
@@ -182,7 +253,9 @@ impl ApiState {
             feed_id: q.feed_id.as_ref().map(ToString::to_string),
             item_type_id: q.item_type_id.as_ref().map(ToString::to_string),
             item_id: q.item_id.as_ref().map(ToString::to_string),
-            attributes_json: q.attributes.clone(),
+            attributes: self
+                .attributes(q.item_type_id.as_ref(), q.attributes.as_deref())
+                .await?,
             limit: limit(q.limit)?,
             cursor: q.cursor.clone(),
         };
@@ -216,12 +289,15 @@ impl ApiState {
             }),
             item_id: q.item_id.as_ref().map(ToString::to_string),
             order_id: q.order_id.as_ref().map(ToString::to_string),
-            attributes_json: q.attributes.clone(),
+            attributes: self
+                .attributes(q.item_type_id.as_ref(), q.attributes.as_deref())
+                .await?,
             price_min: q.price_min.clone(),
             price_max: q.price_max.clone(),
             limit: limit(q.limit)?,
             cursor: q.cursor.clone(),
-            include: q.include.clone(),
+            include_items: q.include_items,
+            include_feeds: q.include_feeds,
         };
         let v = self
             .call(|mut rpc, auth| {
@@ -243,7 +319,7 @@ impl ApiState {
         })
     }
     pub async fn orderbook(&self, q: &BookQuery) -> Result<BookResponse> {
-        let q = book_query(q)?;
+        let q = self.book_query(q).await?;
         let v = self
             .call(|mut rpc, auth| {
                 let q = q.clone();
@@ -287,7 +363,7 @@ impl ApiState {
         })
     }
     pub async fn watch_book(&self, q: &BookQuery) -> Result<tonic::Streaming<w::BookResult>> {
-        let q = book_query(q)?;
+        let q = self.book_query(q).await?;
         self.call(|mut rpc, auth| {
             let q = q.clone();
             async move {

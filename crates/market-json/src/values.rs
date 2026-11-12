@@ -45,7 +45,11 @@ fn value(
     let schema = catalog
         .attribute(id)
         .ok_or(m::ValidationError("unknown attribute ID"))?;
-    Ok(match (schema.value_type, scalar) {
+    decode_scalar(schema.value_type, scalar)
+}
+/// Decode a human JSON scalar using a catalog attribute's declared type.
+pub fn decode_scalar(value_type: m::AttributeType, scalar: Scalar) -> Result<m::AttributeValue> {
+    Ok(match (value_type, scalar) {
         (m::AttributeType::Enum, Scalar::String(v)) => m::AttributeValue::Enum(v.parse()?),
         (m::AttributeType::Text, Scalar::String(v)) => m::AttributeValue::Text(v),
         (m::AttributeType::Integer, Scalar::String(v)) => m::AttributeValue::Integer(
@@ -88,9 +92,9 @@ pub fn parse_attributes(
     catalog: &m::Catalog,
     kind: &m::ItemTypeId,
 ) -> Result<m::Attributes> {
-    decode_attributes(
-        catalog,
-        kind,
-        serde_json::from_slice::<AttributeMap>(bytes)?.0,
-    )
+    decode_attributes(catalog, kind, parse_raw_attributes(bytes)?)
+}
+
+pub fn parse_raw_attributes(bytes: &[u8]) -> Result<RawAttributes> {
+    Ok(serde_json::from_slice::<AttributeMap>(bytes)?.0)
 }

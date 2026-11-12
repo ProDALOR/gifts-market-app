@@ -8,7 +8,6 @@ edition = "2024"
 
 [workspace.dependencies]
 market-view = { path = "crates/market-view" }
-market-client = { path = "crates/market-client" }
 hub-protocol = { path = "crates/hub-protocol" }
 market-json = { path = "crates/market-json" }
 actix = "0.13"
@@ -38,7 +37,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.8"
-tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
+tonic = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tracing = "0.1"

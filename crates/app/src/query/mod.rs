@@ -1,9 +1,9 @@
 //! Thin transport gateway. Market interpretation, indexes, pagination and history live in core.
 pub mod models;
 mod remote;
+use crate::client::CoreClient;
 use crate::error::{ApiError, ErrorCode, Result};
 use hub_protocol::wire as w;
-use market_client::node::NodeConfig;
 pub use models::*;
 pub(crate) use remote::{book_result as book_response, sync_response};
 use std::{sync::Arc, time::Duration};
@@ -14,12 +14,12 @@ use tonic::{
 };
 #[derive(Clone)]
 pub struct ApiState {
-    pub node: NodeConfig,
+    pub node: CoreClient,
     pub(crate) streams: Arc<Semaphore>,
     queries: Arc<Semaphore>,
 }
 impl ApiState {
-    pub fn new(node: NodeConfig, max_queries: usize, max_streams: usize) -> Self {
+    pub fn new(node: CoreClient, max_queries: usize, max_streams: usize) -> Self {
         Self {
             node,
             queries: Arc::new(Semaphore::new(max_queries)),
@@ -34,9 +34,9 @@ impl ApiState {
             )
         })
     }
-    pub async fn call<T: Send + 'static, F, Fut>(&self, mut f: F) -> std::result::Result<T, Status>
+    pub async fn call<T: Send + 'static, F, Fut>(&self, f: F) -> std::result::Result<T, Status>
     where
-        F: FnMut(
+        F: FnOnce(
             w::market_read_client::MarketReadClient<tonic::transport::Channel>,
             MetadataValue<Ascii>,
         ) -> Fut,

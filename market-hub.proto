@@ -6,18 +6,11 @@ package market;
 // Catalog revision strings are opaque identities; pin them across pages and frames.
 // Revisions must not be recomputed from a consumer's language-specific serialization.
 
-// Enroll only when a normal RPC rejects an unknown node credential. Authorize this
-// RPC with the deployment join token; all other RPCs use the independent node token.
-// Save the node token before enrollment. Repeating the same binding is idempotent.
-// All registered nodes are trusted services: they may read and write their own namespace.
-message RegisterNodeRequest {
-  string id = 1;
-  string node_token = 2;
-}
-service MarketRegistration {
-  // New and identical repeated bindings both return success; conflicts return an error.
-  rpc RegisterNode(RegisterNodeRequest) returns (Empty);
-}
+// Services authenticate with signed node tokens issued by the hub CLI.
+// Node identity is bound to its signature; no enrollment or credential registry.
+// Bearer tokens use <node-id>.<signature>; node IDs are 1-64 ASCII letters/digits/_/-.
+// Clients may derive their own ID from the prefix; only core verifies signatures.
+// The hub signing secret is never a bearer credential. GUI clients use issued tokens too.
 
 // Opaque identities. Exact decimal prices and Unix millisecond timestamps.
 message Cursor {
@@ -448,7 +441,7 @@ message ItemsQuery {
   optional string feed_id = 1;
   optional string item_type_id = 2;
   optional string item_id = 3;
-  optional string attributes_json = 4;
+  AttributeMap attributes = 4;
   optional uint32 limit = 5;
   optional string cursor = 6;
 }
@@ -460,12 +453,13 @@ message OrdersQuery {
   optional string feed_id = 4;
   optional string item_id = 5;
   optional string order_id = 6;
-  optional string attributes_json = 7;
+  AttributeMap attributes = 7;
   optional string price_min = 8;
   optional string price_max = 9;
   optional uint32 limit = 10;
   optional string cursor = 11;
-  optional string include = 12; // Comma-separated item,feed.
+  bool include_items = 12;
+  bool include_feeds = 13;
 }
 message OrdersResult {
   repeated Order data = 1;
@@ -478,11 +472,12 @@ message BookQuery {
   string currency_id = 2;
   optional string feed_id = 3;
   optional string item_id = 4;
-  optional string attributes_json = 5;
+  AttributeMap attributes = 5;
   optional string price_min = 6;
   optional string price_max = 7;
   optional uint32 limit = 8;
-  optional string include = 9;
+  bool include_items = 9;
+  bool include_feeds = 10;
 }
 message BookSidePage { repeated Order data = 1; Page page = 2; }
 message BookResult {
@@ -508,7 +503,7 @@ message TradesResult {
   Page page = 2;
   ReadMeta meta = 3;
 }
-// Registered nodes are trusted services: all may read and write their own namespace.
+// Authenticated nodes are trusted services: all may read and write their own namespace.
 // Catalog continuations pin catalog revision and filters independently of live view TTL.
 // Shared-state reads run independently of the writer. History is durable; live books are rebuilt.
 service MarketRead {

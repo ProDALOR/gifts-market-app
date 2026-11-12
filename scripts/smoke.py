@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Disposable TLS core/gateway + fake-native Rust adapter integration; no accounts used.
+"""Disposable token-authenticated core/gateway + fake-native Rust adapter integration; no accounts used.
 Build the services independently; supply --hub-bin and --adapter-manifest.
 """
 import argparse
-import importlib.util
-import secrets
 import json
 import os
 from pathlib import Path
@@ -16,7 +14,7 @@ import time
 import urllib.request
 
 app = Path(__file__).resolve().parents[1]
-parser=argparse.ArgumentParser(description="Black-box TLS integration between independently built services")
+parser=argparse.ArgumentParser(description="Black-box HTTP/2 integration between independently built services")
 parser.add_argument("--hub-bin", required=True, type=Path)
 parser.add_argument("--adapter-manifest", required=True, type=Path)
 args=parser.parse_args()
@@ -27,52 +25,32 @@ assert (app / "market-hub.proto").read_bytes()==(adapters / "market-hub.proto").
 
 with tempfile.TemporaryDirectory(prefix="market-split-smoke-") as temporary:
     directory = Path(temporary)
-    # This test owns its hub issuer. Production client setup only imports the join bundle.
-    core_certs = directory / "hub-certs"
-    core_certs.mkdir()
-    join = directory / "join"
-    join.mkdir()
-    token = secrets.token_hex(32)
-    (join / "join.json").write_text(json.dumps({"core_url": "https://market-hub:50051", "join_token": token, "network": "market-smoke"}))
-    (core_certs / "ca.cnf").write_text("[req]\nprompt=no\ndistinguished_name=name\nx509_extensions=ca\n[name]\nCN=Disposable hub CA\n[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n")
-    (core_certs / "core.cnf").write_text("[req]\nprompt=no\ndistinguished_name=name\nreq_extensions=server\n[name]\nCN=market-hub\n[server]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:market-hub,DNS:localhost,IP:127.0.0.1,IP:::1\n")
-    def openssl(*arguments):
-        subprocess.run(["openssl", *map(str, arguments)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", core_certs / "ca.key")
-    openssl("req", "-new", "-x509", "-sha256", "-days", "1", "-key", core_certs / "ca.key", "-config", core_certs / "ca.cnf", "-out", core_certs / "ca.crt")
-    openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", core_certs / "core.key")
-    openssl("req", "-new", "-key", core_certs / "core.key", "-config", core_certs / "core.cnf", "-out", core_certs / "core.csr")
-    openssl("x509", "-req", "-days", "1", "-in", core_certs / "core.csr", "-CA", core_certs / "ca.crt", "-CAkey", core_certs / "ca.key", "-CAcreateserial", "-extfile", core_certs / "core.cnf", "-extensions", "server", "-out", core_certs / "core.crt")
-    (join / "ca.crt").write_bytes((core_certs / "ca.crt").read_bytes())
-    environment = dict(os.environ, MARKET_ENV_FILE=str(directory / "env"), MARKET_CERT_DIR=str(directory / "certs"), MARKET_HUB_CA=str(directory / "hub-ca.crt"))
-    subprocess.run(["sh", "docker/setup.sh", str(join)], cwd=app, env=environment, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    spec = importlib.util.spec_from_file_location("deployment_setup", app / "docker/setup.py")
-    setup = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(setup)
-    environment.update(setup.env_values(directory / "env"))
-    sockets = [socket.socket() for _ in range(4)]
+    # This test owns its signing secret and never reads local deployment files.
+    clean = {k: v for k, v in os.environ.items() if not k.startswith("MARKET_")}
+    token = subprocess.run([str(hub_bin), "key"], cwd=directory, env=clean, check=True, capture_output=True, text=True).stdout.strip()
+    assert len(token) == 64 and all(c in "0123456789abcdef" for c in token)
+    # Offline issuance must work before the hub starts and without reading a hub config.
+    issue_env = dict(clean, MARKET_ACCESS_TOKEN=token)
+    issued = {}
+    for node_id in ["gui", "market-app", "telegram", "reader"]:
+        result = subprocess.run([str(hub_bin), "token", "--id", node_id], cwd=directory, env=issue_env, check=True, capture_output=True, text=True)
+        issued[node_id] = result.stdout.strip()
+        assert issued[node_id].startswith(node_id + '.') and len(result.stdout.splitlines()) == 1
+        assert token not in result.stdout, "signing secret appeared in token output"
+    environment = dict(clean, MARKET_NODE_TOKEN=issued["market-app"])
+    sockets = [socket.socket() for _ in range(3)]
     for handle in sockets:
         handle.bind(("127.0.0.1", 0))
-    core_grpc, metrics, http, grpc = [handle.getsockname()[1] for handle in sockets]
-    config=f'''data_dir = "{directory}/catalog"
-grpc_addr = "127.0.0.1:{core_grpc}"
-http_addr = "127.0.0.1:{metrics}"
-[tls]
-cert = "{core_certs}/core.crt"
-key = "{core_certs}/core.key"
-[limits]
-feed_lease = "5s"
-'''
-    (directory / "core.toml").write_text(config)
+    core_grpc, metrics, http = [handle.getsockname()[1] for handle in sockets]
     for handle in sockets:
         handle.close()
     processes = []
     logs = []
 
-    def start(name, command, cwd):
+    def start(name, command, cwd, hub=False):
         log = (directory / (name + ".log")).open("w+")
         logs.append((name, log))
-        process = subprocess.Popen(command, cwd=cwd, env=environment, stdout=log, stderr=log)
+        process = subprocess.Popen(command, cwd=cwd, env=dict(environment, MARKET_ACCESS_TOKEN=token) if hub else environment, stdout=log, stderr=log)
         processes.append(process)
         return process
 
@@ -108,29 +86,27 @@ feed_lease = "5s"
         stopped.append(process)
 
     try:
-        core_command = [str(hub_bin), "--config", str(directory / "core.toml")]
-        api_command = [str(app / "target/debug/market-app"), "--bind", f"127.0.0.1:{http}", "--core", f"https://127.0.0.1:{core_grpc}", "--core-ca", str(directory / "hub-ca.crt"), "--credentials", str(directory / "api.json"), "--grpc-bind", f"127.0.0.1:{grpc}", "--grpc-cert", str(directory / "certs/api.crt"), "--grpc-key", str(directory / "certs/api.key")]
-        core = start("core", core_command, directory)
+        core_command = [str(hub_bin), "--data-dir", str(directory / "catalog"), "--grpc-addr", f"127.0.0.1:{core_grpc}", "--http-addr", f"127.0.0.1:{metrics}", "--feed-lease", "5s"]
+        api_command = [str(app / "target/debug/market-app"), "--bind", f"127.0.0.1:{http}", "--core", f"http://127.0.0.1:{core_grpc}"]
+        core = start("core", core_command, directory, hub=True)
         api = start("gateway", api_command, app)
         generation = wait_ready()
-        environment.update(MARKET_RESALE_ENDPOINT=f"https://127.0.0.1:{core_grpc}", MARKET_RESALE_API=f"http://127.0.0.1:{http}", MARKET_RESALE_CA=str(directory / "hub-ca.crt"), MARKET_RESALE_CREDENTIALS=str(directory / "adapter.json"))
+        environment.update(MARKET_RESALE_ENDPOINT=f"http://127.0.0.1:{core_grpc}", MARKET_RESALE_API=f"http://127.0.0.1:{http}", MARKET_RESALE_TOKEN=issued["telegram"])
         adapter_command = ["cargo", "test", "--manifest-path", str(adapter_manifest), "--locked", "-p", "market-telegram", "--test", "deployment", "--", "--ignored", "--nocapture"]
         subprocess.run(adapter_command, cwd=adapters, env=environment, check=True, timeout=180)
-        subprocess.run([str(app / "target/debug/examples/read_api"), "--endpoint", f"https://127.0.0.1:{grpc}", "--ca", str(directory / "certs/ca.crt"), "--item-type", "telegram.gift.123"], cwd=app, env=environment, check=True, timeout=30)
+        subprocess.run([str(app / "target/debug/examples/read_core"), "--endpoint", f"http://127.0.0.1:{core_grpc}", "--item-type", "telegram.gift.123"], cwd=app, env=dict(clean, MARKET_NODE_TOKEN=issued["reader"]), check=True, timeout=30)
         def trades():
             with urllib.request.urlopen(f"http://127.0.0.1:{http}/trades?feed_id=telegram", timeout=2) as response:
                 return json.load(response)["data"]
         before = trades()
         assert len(before) == 1 and before[0]["trade_id"] == "test-execution-1"
-        identities = {name: (directory / name).read_bytes() for name in ("api.json", "adapter.json")}
+        original_token = environment["MARKET_NODE_TOKEN"]
         # A hard kill leaves no opportunity for a shutdown flush. The acknowledged
         # execution must survive in core's WAL, independently of the volatile book.
         core.kill()
         core.wait(timeout=5)
         stopped.append(core)
-        environment["MARKET_JOIN_TOKEN"] = secrets.token_hex(32)
-        core = start("restarted-core", core_command, directory)
-        environment.pop("MARKET_JOIN_TOKEN")
+        core = start("restarted-core", core_command, directory, hub=True)
         wait_ready(generation)
         assert trades() == before, "acknowledged trade disappeared after a core crash"
         # The restarted adapter backfills the same fact. Core deduplicates its identity
@@ -138,12 +114,13 @@ feed_lease = "5s"
         subprocess.run(adapter_command, cwd=adapters, env=environment, check=True, timeout=180)
         assert trades() == before, "backfilled trade was duplicated or replaced"
         stop_service(api)
-        environment["MARKET_JOIN_TOKEN"] = ""  # Compose omits enrollment authority this way.
         api = start("restarted-gateway", api_command, app)
         wait_ready()
         assert trades() == before
-        assert all((directory / name).read_bytes() == value for name, value in identities.items()), "node credentials changed on restart"
-        print("Core ownership verified: one TLS endpoint, indexed books, durable trade crash recovery and deduplication, stateless gateway, token-free reconnects")
+        assert environment["MARKET_NODE_TOKEN"] == original_token, "service token changed on restart"
+        assert not list(directory.glob("*.json")), "credential JSON files must not be created"
+        assert not (directory / "catalog/nodes.json").exists(), "credential registry must not be created"
+        print("Core ownership verified: one token-authenticated HTTP/2 endpoint, indexed books, durable trade crash recovery and deduplication, stateless gateway, offline signed credentials, no enrollment or credential registry")
     except Exception:
         for name, log in logs:
             log.flush()

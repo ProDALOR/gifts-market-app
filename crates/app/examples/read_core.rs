@@ -1,47 +1,35 @@
-//! A downstream service uses the public API credential, never core enrollment.
+//! A trusted service connects directly to core with its own issued service token.
 use clap::Parser;
+use market_app::client::CoreClient;
 use market_app::wire as a;
-use market_view::protocol::wire as m;
-use std::{path::PathBuf, time::Duration};
-use tonic::{
-    Request,
-    transport::{Certificate, Channel, ClientTlsConfig},
-};
+use tonic::Request;
 #[derive(Parser)]
 struct Args {
-    #[arg(long, default_value = "http://127.0.0.1:50053")]
+    #[arg(long, default_value = "http://127.0.0.1:50051")]
     endpoint: String,
-    #[arg(long)]
-    ca: Option<PathBuf>,
     #[arg(long)]
     item_type: Option<String>,
     #[arg(long, default_value = "TON")]
     currency: String,
 }
-fn request<T>(value: T) -> anyhow::Result<Request<T>> {
+fn request<T>(core: &CoreClient, value: T) -> Request<T> {
     let mut request = Request::new(value);
-    if let Ok(token) = std::env::var("MARKET_API_TOKEN") {
-        request
-            .metadata_mut()
-            .insert("authorization", format!("Bearer {token}").parse()?);
-    }
-    Ok(request)
+    request
+        .metadata_mut()
+        .insert("authorization", core.authorization());
+    request.set_timeout(std::time::Duration::from_secs(10));
+    request
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let mut endpoint = Channel::from_shared(args.endpoint)?
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10));
-    if let Some(ca) = args.ca {
-        endpoint = endpoint.tls_config(
-            ClientTlsConfig::new()
-                .ca_certificate(Certificate::from_pem(tokio::fs::read(ca).await?)),
-        )?;
-    }
-    let channel = endpoint.connect().await?;
+    let core = CoreClient::new(args.endpoint, std::env::var("MARKET_NODE_TOKEN")?)?;
+    let channel = core.channel();
     let mut client = a::market_read_client::MarketReadClient::new(channel.clone());
-    let status = client.get_status(request(m::Empty {})?).await?.into_inner();
+    let status = client
+        .get_status(request(&core, a::Empty {}))
+        .await?
+        .into_inner();
     anyhow::ensure!(status.ready, "core not ready");
     anyhow::ensure!(
         !status.started_at.is_empty() && status.oldest_cursor.is_some(),
@@ -52,19 +40,25 @@ async fn main() -> anyhow::Result<()> {
         "core storage counters missing"
     );
     let stored = client
-        .list_stored_orders(request(a::OrdersQuery {
-            item_type_id: args.item_type.clone(),
-            currency_id: Some(args.currency.clone()),
-            limit: Some(10),
-            ..Default::default()
-        })?)
+        .list_stored_orders(request(
+            &core,
+            a::OrdersQuery {
+                item_type_id: args.item_type.clone(),
+                currency_id: Some(args.currency.clone()),
+                limit: Some(10),
+                ..Default::default()
+            },
+        ))
         .await?
         .into_inner();
     anyhow::ensure!(stored.meta.is_some(), "stored order metadata missing");
     let mut replay = client
-        .replay(request(a::SyncRequest {
-            after: status.oldest_cursor,
-        })?)
+        .replay(request(
+            &core,
+            a::SyncRequest {
+                after: status.oldest_cursor,
+            },
+        ))
         .await?
         .into_inner();
     let mut batches = 0;
@@ -86,8 +80,11 @@ async fn main() -> anyhow::Result<()> {
             currency_id: args.currency,
             ..Default::default()
         };
-        client.get_order_book(request(query.clone())?).await?;
-        let mut updates = client.watch_order_book(request(query)?).await?.into_inner();
+        client.get_order_book(request(&core, query.clone())).await?;
+        let mut updates = client
+            .watch_order_book(request(&core, query))
+            .await?
+            .into_inner();
         anyhow::ensure!(
             updates
                 .message()
@@ -97,14 +94,17 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     client
-        .list_trades(request(a::TradesQuery {
-            limit: Some(10),
-            ..Default::default()
-        })?)
+        .list_trades(request(
+            &core,
+            a::TradesQuery {
+                limit: Some(10),
+                ..Default::default()
+            },
+        ))
         .await?;
     let mut replication = a::market_read_client::MarketReadClient::new(channel);
     let mut stream = replication
-        .sync(request(a::SyncRequest { after: None })?)
+        .sync(request(&core, a::SyncRequest { after: None }))
         .await?
         .into_inner();
     let mut records = 0;
@@ -115,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     println!(
-        "Public gRPC verified: {} core records, {records} streamed records, {} stored orders, {batches} replay revisions, durable trade query",
+        "Direct core gRPC verified: {} core records, {records} streamed records, {} stored orders, {batches} replay revisions, durable trade query",
         status.records,
         stored.data.len()
     );

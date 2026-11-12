@@ -10,7 +10,7 @@ pub mod status;
 pub use http::{ApiDoc, configure};
 pub use query::ApiState;
 
-pub mod grpc;
+pub mod client;
 
 mod websocket;
 
