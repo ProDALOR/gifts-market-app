@@ -1,5 +1,5 @@
 //! Validated service identity, cached authorization metadata and one reusable HTTP/2 channel.
-use std::{future::Future, time::Duration};
+use std::time::Duration;
 use tonic::{
     Status,
     metadata::{Ascii, MetadataValue},
@@ -7,7 +7,6 @@ use tonic::{
 };
 #[derive(Clone)]
 pub struct CoreClient {
-    id: String,
     auth: MetadataValue<Ascii>,
     channel: Channel,
 }
@@ -46,27 +45,12 @@ impl CoreClient {
             .map_err(|_| Status::invalid_argument("invalid core URI"))?
             .connect_timeout(Duration::from_secs(5))
             .connect_lazy();
-        Ok(Self {
-            id: id.into(),
-            auth,
-            channel,
-        })
-    }
-    pub fn node_id(&self) -> &str {
-        &self.id
+        Ok(Self { auth, channel })
     }
     pub fn channel(&self) -> Channel {
         self.channel.clone()
     }
     pub fn authorization(&self) -> MetadataValue<Ascii> {
         self.auth.clone()
-    }
-    /// Each operation supplies its own deadline. Tonic reconnects the shared transport.
-    pub async fn authenticated<T, F, Fut>(&self, operation: F) -> Result<T, Status>
-    where
-        F: FnOnce(Channel, MetadataValue<Ascii>) -> Fut,
-        Fut: Future<Output = Result<T, Status>>,
-    {
-        operation(self.channel(), self.authorization()).await
     }
 }

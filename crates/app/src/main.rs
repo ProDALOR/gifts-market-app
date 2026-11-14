@@ -1,51 +1,83 @@
-use actix_web::{App, HttpServer, web};
+use actix_web::{App, HttpServer, middleware, web};
 use clap::Parser;
-use market_app::{ApiState, cli::Cli};
-use std::time::Duration;
+use market_app::{
+    ApiDoc, WebRoot,
+    cli::{Cli, Command},
+    client::CoreClient,
+    configure,
+    error::ApiError,
+    gateway::Gateway,
+};
+use utoipa::OpenApi;
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
+    let args = Cli::parse();
+    if matches!(args.command, Some(Command::Schema)) {
+        println!("{}", ApiDoc::openapi().to_json()?);
+        return Ok(());
+    }
+    anyhow::ensure!(
+        args.web_dir.join("index.html").is_file(),
+        "Build the frontend with npm --prefix web run build, or set --web-dir"
+    );
+    anyhow::ensure!(
+        args.workers > 0 && args.max_streams > 0 && args.max_concurrent_queries > 0,
+        "limits must be positive"
+    );
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
+        .with_writer(std::io::stderr)
         .init();
-    let args = Cli::parse();
-    let node = args.core_client()?;
-    let state = ApiState::new(node, args.max_concurrent_queries, args.max_streams);
-    let data = web::Data::new(state.clone());
-    let origins = args.cors_origin.clone();
-    let server = HttpServer::new(move || {
+    let token = args
+        .node_token
+        .ok_or_else(|| anyhow::anyhow!("MARKET_NODE_TOKEN is required"))?;
+    let identity = token.split_once('.').map(|(id, _)| id).unwrap_or("");
+    let source = format!("{}|{}", args.core, identity);
+    let node = CoreClient::new(args.core, token)?;
+    let data_dir = args.data_dir;
+    let replica =
+        tokio::task::spawn_blocking(move || market_replica::Replica::open(&data_dir, &source))
+            .await??;
+    let sync = replica.clone();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let cancel = stop.clone();
+    let worker =
+        tokio::spawn(async move { sync.run(node.channel(), node.authorization(), cancel).await });
+    let gateway = Gateway::new(replica, args.max_concurrent_queries, args.max_streams);
+    let root = WebRoot(args.web_dir);
+    let origins = args.cors_origin;
+    HttpServer::new(move || {
         let mut cors = actix_cors::Cors::default()
-            .allowed_methods(vec!["GET", "HEAD"])
-            .allowed_origin_fn(|origin, head| {
-                head.uri
-                    .authority()
-                    .map(|v| v.as_str())
-                    .or_else(|| head.headers.get("host").and_then(|v| v.to_str().ok()))
-                    .is_some_and(|host| {
-                        origin.as_bytes() == format!("http://{host}").as_bytes()
-                            || origin.as_bytes() == format!("https://{host}").as_bytes()
-                    })
-            })
-            .allowed_headers(vec!["Content-Type"])
-            .max_age(3600);
+            .allowed_methods(vec!["GET", "POST", "HEAD"])
+            .allowed_header("Content-Type");
         for origin in &origins {
             cors = cors.allowed_origin(origin);
         }
+        let headers = middleware::DefaultHeaders::new()
+            .add(("X-Content-Type-Options", "nosniff"))
+            .add(("Referrer-Policy", "no-referrer"))
+            .add(("Cache-Control", "no-store"))
+            .add(("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"));
         App::new()
             .wrap(cors)
-            .app_data(web::Data::new(market_app::Origins(origins.clone())))
-            .app_data(data.clone())
-            .configure(market_app::configure)
+            .wrap(headers)
+            .app_data(web::JsonConfig::default().limit(64 * 1024)
+                .error_handler(|_, _| ApiError::invalid("invalid JSON query").into()))
+            .app_data(web::Data::new(gateway.clone()))
+            .app_data(web::Data::new(root.clone()))
+            .app_data(web::Data::new(origins.clone()))
+            .configure(configure)
     })
     .workers(args.workers)
-    .max_connections(1024)
-    .client_request_timeout(Duration::from_secs(5))
-    .keep_alive(Duration::from_secs(5))
+    .max_connections(2048)
+    .client_request_timeout(std::time::Duration::from_secs(10))
     .shutdown_timeout(5)
     .bind(args.bind)?
-    .run();
-    tracing::info!(http=%args.bind,"Gateway started; queries are served by core");
-    server.await?;
+    .run()
+    .await?;
+    stop.cancel();
+    worker.await?;
     Ok(())
 }

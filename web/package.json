@@ -1,0 +1,26 @@
+{
+  "name": "market-app-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "dev": "npm run generate && vite --host 127.0.0.1",
+    "build": "npm run generate && tsc --noEmit && vite build",
+    "test": "node --experimental-transform-types --test scripts/*.test.ts"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "playwright": "^1.65.0",
+    "prettier": "^3.10.1",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.8",
+    "openapi-typescript": "^7"
+  }
+}

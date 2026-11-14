@@ -1,100 +1,116 @@
 # Gifts Market App
 
-A stateless Rust REST and WebSocket gateway for Market Hub. Core owns the current book, market filtering, query indexes, pagination views, subscriptions and durable trade history. This repository owns public transport policy, JSON/OpenAPI formatting and the GUI boundary. Each request uses the same authenticated core connection; gateways keep no market replicas or history archives.
+A public React market browser with a Rust REST/WebSocket API and a persistent local read replica. Market Hub receives and validates authoritative facts. Each app instance synchronizes those facts once, then serves catalog, order and execution queries locally. Public requests never query the hub.
 
 ```text
-venue adapters → market-hub (one writer + shared-state read workers)
-                             ↑
-                 market-app gateway → GUI / other services
+Adapters → Market Hub ── snapshot + Watch ──→ App replica → REST / WebSocket → React
+                          └───────────────→ Another app replica → more visitors
 ```
 
-The copied `market-hub.proto` is the service boundary. All crates build independently of other repositories; no hub model, state or history crate is imported.
+Each app process shares one replica across its HTTP workers. Current catalog, feeds and active-order indexes live in RAM. Execution payloads remain in local redb, with chronological, book and typed attribute indexes. Current entities are also persisted so a saved checkpoint always describes fully restorable state. There is no sibling Rust dependency: the copied `market-hub.proto` is the service boundary and the replica stores its generated messages directly.
 
 ## Run
 
-Start the hub from its repository and create the external Docker network once (`docker network create market`). Configure the gateway with its own issued service token:
+Issue a service token on the hub with `market-hub token --id market-app`, then configure this application:
 
 ```sh
-cp .env.example .env
-# Set MARKET_NODE_TOKEN to the output of market-hub token --id market-app.
-docker compose up --build --detach
+export MARKET_NODE_TOKEN='<issued service token>'
+npm --prefix web ci
+npm --prefix web run build
+cargo run --locked --bin market-app -- --core http://127.0.0.1:50051 --data-dir data
 ```
 
-This project starts only `market-app`. It needs a hub URL and its own issued service token; the hub signing secret stays with the operator. Compose defaults to `http://market-hub:50051` on the external `market` network. Set `MARKET_CORE_URL` and `MARKET_NETWORK` for another deployment. There are no setup scripts or connection bundles. HTTP/WebSocket listens on loopback port 8080. The gateway has no persistent volume.
+Open `http://127.0.0.1:8080`. The interface provides collection search, separate quote currencies, unified or single-venue offers and bids, exact price ordering, typed catalog filters, execution history and order details. It receives only its visible page. Filters stay in the URL; pagination and pause/resume retain the selected boundary. Executions are confirmed facts from adapters; disappearing listings do not imply sales.
 
-For native development, export `MARKET_NODE_TOKEN` and run `cargo run --locked --bin market-app -- --core http://127.0.0.1:50051`. The application uses one immutable, validated client and cached authorization metadata for every core call.
+The service token stays on the server. Visitors need no hub credentials. Native configuration uses `MARKET_CORE_URL`, `MARKET_NODE_TOKEN`, `MARKET_HTTP_ADDR` and `MARKET_DATA_DIR`, or their CLI options. Every app instance needs its own data directory. It is bound to the source hub URL and service identity; use a new directory when connecting to a different source.
 
-## Read API
+For frontend development, start the Rust application and run `npm --prefix web run dev`. Vite proxies API and WebSocket traffic to port 8080. Rust serves `web/dist` normally; set `--web-dir` for another location.
+
+## Synchronization and recovery
+
+A new replica reads one consistent, unfiltered `Read(SNAPSHOT)` view, including catalog, current orders and execution history. It opens `Watch` at the first page's cursor immediately and spools changes to disk while loading snapshot pages. The hub renews the snapshot's idle lifetime as paging progresses. The app builds RAM indexes incrementally and replays staged changes before atomically publishing the completed replica. Orders, history and checkpoints become visible together.
+
+Normal operation needs one authenticated Watch stream through a reusable gRPC channel. Each delivery commits its changes, execution indexes and checkpoint in one redb transaction before publishing the new RAM/history view. Execution upserts remove the same identity from active orders. Immutable execution retries are idempotent. Execution timestamps determine history order; the opaque Watch cursor determines replication progress, so late backfills are retained.
+
+After app restart, saved state is immediately available with `sync.state: stale`. The app resumes Watch from its durable checkpoint. If the cursor expired or the hub restarted, it builds a replacement database while continuing to serve the previous copy. Completion swaps catalog, active orders and history together; facts absent from the replacement snapshot disappear too. An interrupted build is discarded on startup.
+
+Hub outages leave public reads available from the last committed copy. WebSocket pages and REST responses carry `sync: {ready, state, updated_at}`; states are `starting`, `syncing`, `live` and `stale`. `updated_at` is the last durably received checkpoint time, not an execution timestamp or a guarantee of zero replication lag. The GUI shows **Stale** when current-order updates are delayed. `/readyz` succeeds once a complete saved or freshly synchronized replica exists. `/sync` reports upstream freshness separately.
+
+The local database is a rebuildable cache, not the authoritative archive. Stop this app and delete its data directory to rebuild it. Never share a redb directory between running app instances. Disk usage includes execution history and, during a rebuild, the replacement database and its change journal.
+
+## Docker
+
+Create the shared network once with `docker network create market`. Copy `.env.example` to `.env`, set `MARKET_NODE_TOKEN`, and run `docker compose up --build --detach`.
+
+Compose starts only this application, connects to `http://market-hub:50051`, publishes `0.0.0.0:8080` and persists its replica in `market-app-data:/data`. Configure `MARKET_CORE_URL`, `MARKET_NETWORK` or `MARKET_APP_PORT` for another deployment. Separate deployments use separate volumes. Multiple instances can sit behind a load balancer; retained snapshot pagination requires affinity to the instance holding the view. Live page boundaries can move between instances synchronized to the same market.
+
+The image generates public OpenAPI and TypeScript types before building React. Generated clients, dependencies and built assets are ignored. The Node build exports its schema using the compiled Rust binary.
+
+## Public API
 
 | Route | Purpose |
 | --- | --- |
-| `/healthz` | Gateway process liveness |
-| `/status`, `/readyz` | Core readiness and current record/feed counts |
-| `/catalog` | Filtered catalog definitions |
-| `/feeds` | Current source status |
-| `/items` | Current item observations |
-| `/orders` | Indexed market queries or exact venue order lookup |
-| `/orderbook` | Asks and bids from the same core view and expiry evaluation time |
-| `/trades` | Durable confirmed executions |
-| `/ws` | Core-backed subscriptions |
-| `/openapi.json` | Generated HTTP request/response schemas |
+| `GET /books` | Paged concrete venue / item-type / currency books |
+| `GET /catalog/{kind}` | Paged reference definitions |
+| `POST /catalog/query` | Reference definitions, optionally by exact IDs |
+| `POST /orders/query` | One frozen page of current asks/bids |
+| `POST /executions/query` | One frozen page of confirmed executions |
+| `GET /ws` | Live current-order pages from the local replica |
+| `GET /sync` | Replica readiness and synchronization status |
+| `GET /openapi.json` | Generated public contract, including WebSocket frames |
+| `GET /healthz`, `GET /readyz` | Process and replica readiness |
 
-All routes are read-only. Responses contain `data`, optional `page`/`included`, and `meta` with the core cursor, serving time and fixed query `as_of`. IDs, decimals, quantities, integer attributes and cursor revisions are lossless strings. All HTTP datetimes are UTC RFC 3339 strings.
+All operations are read-only. POST bodies carry filters. Orders require an item type and quote currency; omit venue to combine markets. Default mode is `ask`, sort is `price_asc`, and page size is 50 (maximum 200).
 
 ```sh
-curl --get http://localhost:8080/orderbook \
-  --data-urlencode item_type_id=telegram.gift.5936013938331222567 \
-  --data-urlencode currency_id=TON \
-  --data-urlencode limit=20 \
-  --data-urlencode include_items=true \
-  --data-urlencode include_feeds=true
+curl http://localhost:8080/orders/query \
+  -H 'Content-Type: application/json' \
+  -d '{"scope":{"item_type_id":"tg.gift.5167939598143193218","currency_id":"GRAM","modes":["ask"],"price":{"max":"20"}},"sort":"price_asc","limit":25}'
 ```
 
-Candidate `attributes` are a catalog-aware JSON map. The gateway looks up the applicable attribute schemas only when attributes are supplied, then sends an explicitly typed `AttributeMap` to core. Enum IDs, exact decimals and integers use strings; booleans use JSON booleans. Core validates their types and applicability. Price filters are exact strings. `limit` is 1–200. `include_items=true` and `include_feeds=true` expand dependencies from the same core view.
-
-Catalog continuations pin the current definitions and filters independently of live views; they survive book changes and core restarts while those definitions remain unchanged. Book/order continuations pin a bounded core view, filter scope and `as_of` for up to 60 seconds. Each book side has its own order-page continuation. Reuse it on `/orders` with the corresponding side and identical filters. HTTP 409 means reload the query. Cursors belong to core, so requests may switch gateway instances connected to that same core.
-
-`/trades` supports `feed_id`, `item_type_id`, `currency_id`, `item_id`, `executed_from`, `executed_until`, `limit` and `cursor`. Date filters use RFC 3339. Results sort by execution time, newest first; ties use ingestion sequence. Historical pagination pins a durable watermark, excludes later arrivals, and survives core restarts. Trade IDs are feed-scoped. A current-record snapshot is separate from the durable trade dataset; historical continuations do not act as raw `Sync` cursors.
-
-## WebSocket
-
-Subscribe to a bounded orderbook:
+Pages contain `{data, next_page_token, cursor, sync}`. Each order carries its concrete `book`, direct item ID, scalar price, quantity and typed attributes. Prices, quantities and integer attributes are exact strings. Dates are RFC 3339 strings. Values use `{type, value}` and predicates use `{op, ...}`. Nested lists and objects preserve duplicates and match object fields within the same occurrence.
 
 ```json
-{"type":"subscribe","subscription_id":"book","topic":"orderbook","query":{"item_type_id":"telegram.gift.5936013938331222567","currency_id":"TON","limit":20}}
+{"scope":{"item_type_id":"tg.gift.5167939598143193218","currency_id":"GRAM","attributes":{"tg.number":{"op":"range","min":{"type":"integer","value":"1"},"max":{"type":"integer","value":"100"}}}},"limit":25}
 ```
 
-Core streams plain `BookResult` messages. The gateway labels the initial view `snapshot` and subsequent full views `replace` for WebSocket clients. Core evaluates expiry, coalesces updates and shares identical book computations. Reconnect by subscribing again. Send `{"type":"unsubscribe","subscription_id":"book"}` to release a subscription.
+Sort is `price_asc`, `price_desc` or `identity`. Price trees compare exact decimals, then venue/order identity; descending reverses the complete key. Optional price bounds are inclusive. Executions use chronological `(executed_at, venue_id, order_id)` order and optional `period: {from, until}` with inclusive start and exclusive end. They use the same Order model with `mode: executed`.
 
-For the raw ordered market stream, use `topic:"changes"` with an optional `after:{generation,revision:"123"}`. Frames have `{type:"sync",subscription_id,response}`. `response.kind` is `snapshot_start`, `snapshot_data`, `snapshot_complete`, `delta`, `checkpoint` or `heartbeat`; records/catalog/events use the public JSON codecs. Activate snapshots only at `snapshot_complete`, and delta revisions only at `complete:true`. Persist only complete cursors. Empty revisions still advance the cursor. Invalid generations or lost replay require a fresh subscription without `after`. Raw subscriptions include all market events and preserve core's protocol boundaries.
+Catalog kinds are `venue`, `currency`, `item_type`, `attribute` and `attribute_option`. Exact-ID requests accept at most 500 IDs. `/books` returns `{data, next_after}`; pass its JSON BookKey as the next `after` query parameter. Even an empty filtered page can have a continuation after a bounded scan.
 
-Each socket accepts at most 16 subscriptions and 64 KiB input messages. Queues and send deadlines are bounded; slow clients disconnect without blocking core. Browser origins must match the gateway or be allowed with repeated `--cors-origin`. Use an HTTPS reverse proxy for public hosting and any customer authentication policy.
+## Pagination and WebSockets
 
-## Other services
+REST pages pin a local RAM/history view for consistent forward pagination. Views expire after 60 seconds of inactivity or app restart, and are released when traversal completes. Hub restart alone does not invalidate an already retained local view.
 
-Trusted services connect directly to core’s native gRPC endpoint with their own CLI-issued service token and generated `market-hub.proto` client. The gateway exposes REST and WebSocket only; it has no duplicate gRPC listener or separate downstream token. Core owns status, catalogs, indexed queries, durable trades, book subscriptions, raw stored-order inspection, replay and snapshot/delta synchronization.
+Live subscriptions use local keyset boundaries and replace only the requested page. Identical subscriptions share one page computation within an app. The same continuation format works across live and snapshot reads: a live continuation used in REST captures a new snapshot; a snapshot continuation used live ignores its frozen-view ID and resumes its boundary against current data. An expired snapshot returns HTTP 409 in REST but remains a usable live boundary. Changing filters or sort starts a new traversal.
 
-`crates/app/examples/read_core.rs` demonstrates direct core access. Set `MARKET_NODE_TOKEN` to a token issued for that service, then use `cargo run --locked --example read_core -- --endpoint http://127.0.0.1:50051`.
+Public continuations are bounded, validated read positions, not credentials. They contain a normalized query fingerprint, sort, keyset position and optional local snapshot ID. They never contain upstream page tokens or the service token. Stateless live boundaries are portable across replicas; frozen views remain local. `cursor` identifies the replicated hub checkpoint behind that page. It is not a public query continuation or a query-specific native Watch cursor.
 
-## Workspace and verification
+```json
+{"type":"subscribe","id":"offers","query":{"scope":{"item_type_id":"tg.gift.5167939598143193218","currency_id":"GRAM","modes":["ask"]},"sort":"price_asc","limit":25,"page_token":""}}
+```
 
-| Crate | Responsibility |
-| --- | --- |
-| `market-app` | REST/WebSocket gateway, bounded transport admission and OpenAPI |
-| `hub-protocol` | Generated bindings from the local contract copy |
-| `market-view` | Response projections used for JSON formatting |
-| `market-json` | Public response formatting, query scalar parsing and schemas |
+Frames are `{type:"status", id, state:"connecting"}`, then `{type:"page", id, page:{data,next_page_token,cursor,sync}}`. Each page fully replaces the previous one, including refills, execution exits and freshness changes. Errors use `{type:"error", id, error:{code,message}}`. Unsubscribe with `{"type":"unsubscribe","id":"offers"}`. Browser reconnection uses the same query and page boundary; upstream reconnection is handled independently by the replica.
+
+Each socket permits 16 subscriptions and 64 KiB input messages. Queues, send deadlines, local query concurrency and retained views are bounded. Browser origins must match this application or be allowed with repeated `--cors-origin`. Writer endpoints and raw authenticated hub forwarding are absent. Trusted ingestion services still connect directly to the hub.
+
+## Workspace and checks
+
+- `crates/hub-protocol`: native bindings generated from the local proto copy.
+- `crates/market-replica`: protocol-native RAM indexes, redb storage, local pages and synchronization.
+- `crates/app`: public DTOs/OpenAPI, JSON conversion, REST/WebSockets and React hosting.
+- `web`: React interface and generated public API types.
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo build --locked --bins --examples
+npm --prefix web test
+npm --prefix web run build
+cargo build --locked --bins
 python3 scripts/smoke.py --hub-bin /path/to/market-hub --adapter-manifest /path/to/adapters/Cargo.toml
 ```
 
-Standalone tests use protocol peers. The integration check uses disposable token-authenticated HTTP/2 services, random ports, temporary credentials and synthetic venue facts. It verifies indexed books, a slow order scan with independent lease renewal and concurrent trade ingestion, durable trades after a hard core crash, persistent source-cursor resume and overlapping-page deduplication, operational status, stored-order inspection, bounded replay, read subscriptions and gateway/adapter reconnects without access-secret distribution or registration. It never opens Telegram accounts or contacts real markets.
+Tests cover snapshot/Watch overlap, durable checkpoint recovery, replaced datasets, exact prices, typed duplicate list matching, chronological backfills and local-only public reads. The integration check starts a disposable real hub, adapter fixture and app on random local ports. It verifies browser layouts, live updates, execution transitions, hub restart rebuilds and persisted reads while the hub is offline. It never opens account exports or contacts markets. Install its browser with `cd web && npx playwright install chromium`. Optional `--keep target/replica-preview` retains a synthetic preview; use a fresh directory.
 
-The gateway decodes hub responses and formats the public JSON shape. It has no catalog compiler, order matching engine or record-import parsers. Query attributes are decoded using the applicable attribute schemas returned by core; core enforces catalog and trading rules. Exact numeric strings, flattened records and RFC 3339 dates remain part of the public format.
-
-Review and copy each hub contract update into this repository, then regenerate bindings through the normal build. Core's `scripts/check-contracts.py` compares explicit schema paths before a coordinated release. Ordinary builds use only this repository.
+Copy coordinated contract updates into the client repositories and use the hub's `scripts/check-contracts.py` before release. All builds use only their own repository. No legacy gateway routes or copied hub implementation crates remain.

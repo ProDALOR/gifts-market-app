@@ -7,9 +7,9 @@ name = "market-app"
 path = "src/main.rs"
 
 [dependencies]
-market-view.workspace = true
-market-json.workspace = true
 hub-protocol.workspace = true
+market-replica.workspace = true
+jiff.workspace = true
 tonic.workspace = true
 actix-web.workspace = true
 actix-ws.workspace = true
@@ -25,7 +25,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
 [dev-dependencies]
-tokio-stream.workspace = true
+tempfile = "3"
+tokio-stream = { workspace = true, features = ["sync"] }
 tokio-tungstenite = "0.29"
 [lints]
 workspace = true

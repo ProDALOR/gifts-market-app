@@ -1,170 +1,156 @@
-//! Read-only HTTP transport for the shared local query service.
 use crate::{
-    error::{ApiError, ErrorCode, ErrorResponse, Result},
-    query::*,
-    status::{ResponseMeta, StatusData},
+    api::*,
+    error::{ApiError, ErrorResponse, Result},
+    gateway::Gateway,
 };
 use actix_web::{HttpResponse, web};
-use serde::{Deserialize, Serialize};
-use utoipa::{OpenApi, ToSchema};
-
+use serde::Deserialize;
+use std::path::PathBuf;
+use utoipa::OpenApi;
+#[derive(Clone)]
+pub struct WebRoot(pub PathBuf);
+#[utoipa::path(get,path="/healthz",responses((status=200,description="Process is running")))]
+async fn health() -> HttpResponse {
+    HttpResponse::Ok().finish()
+}
+#[utoipa::path(get,path="/readyz",responses((status=200,description="Hub is reachable"),(status=503,body=ErrorResponse)))]
+async fn ready(state: web::Data<Gateway>) -> Result<HttpResponse> {
+    state.ready().await?;
+    Ok(HttpResponse::Ok().finish())
+}
+#[utoipa::path(get,path="/sync",responses((status=200,body=SyncInfo)))]
+async fn sync(state: web::Data<Gateway>) -> web::Json<SyncInfo> {
+    web::Json(state.sync())
+}
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NoQuery {}
-#[derive(Serialize, ToSchema)]
-struct Liveness {
-    alive: bool,
+struct BooksParams {
+    #[serde(default)]
+    limit: u32,
+    after: Option<String>,
 }
-#[utoipa::path(get,path="/healthz",responses((status=200,body=Liveness)))]
-async fn healthz(_: web::Query<NoQuery>) -> HttpResponse {
-    HttpResponse::Ok().json(Liveness { alive: true })
+#[utoipa::path(get,path="/books",params(("limit"=Option<u32>,Query),("after"=Option<String>,Query,description="JSON BookKey returned in next_after")),responses((status=200,body=BooksPage)))]
+async fn books(
+    state: web::Data<Gateway>,
+    q: web::Query<BooksParams>,
+) -> Result<web::Json<BooksPage>> {
+    let after = q
+        .after
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| ApiError::invalid("invalid book continuation"))?;
+    Ok(web::Json(
+        state
+            .books(BooksQuery {
+                limit: q.limit,
+                after,
+            })
+            .await?,
+    ))
 }
-#[utoipa::path(get,path="/status",responses((status=200,body=StatusResponse)))]
-async fn status(
-    state: web::Data<ApiState>,
-    _: web::Query<NoQuery>,
-) -> Result<web::Json<StatusResponse>> {
-    Ok(web::Json(state.status().await?))
-}
-#[utoipa::path(get,path="/readyz",responses((status=200,body=StatusResponse),(status=503,body=StatusResponse)))]
-async fn readyz(state: web::Data<ApiState>, _: web::Query<NoQuery>) -> Result<HttpResponse> {
-    let response = state.status().await?;
-    if response.data.ready {
-        Ok(HttpResponse::Ok().json(response))
-    } else {
-        Ok(HttpResponse::ServiceUnavailable().json(response))
-    }
-}
-#[utoipa::path(get,path="/catalog",params(CatalogQuery),responses((status=200,body=CatalogResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/catalog/query",request_body=CatalogQuery,responses((status=200,body=Page<CatalogEntry>),(status=400,body=ErrorResponse)))]
 async fn catalog(
-    state: web::Data<ApiState>,
-    query: web::Query<CatalogQuery>,
-) -> Result<web::Json<CatalogResponse>> {
-    Ok(web::Json(state.catalog(&query).await?))
+    state: web::Data<Gateway>,
+    q: web::Json<CatalogQuery>,
+) -> Result<web::Json<Page<CatalogEntry>>> {
+    Ok(web::Json(state.catalog(q.into_inner()).await?))
 }
-#[utoipa::path(get,path="/items",params(ItemsQuery),responses((status=200,body=ItemsResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-async fn items(
-    state: web::Data<ApiState>,
-    query: web::Query<ItemsQuery>,
-) -> Result<web::Json<ItemsResponse>> {
-    Ok(web::Json(state.items(&query).await?))
+#[derive(Deserialize)]
+struct CatalogParams {
+    #[serde(default = "default_limit")]
+    limit: u32,
+    #[serde(default)]
+    page_token: String,
 }
-#[utoipa::path(get,path="/feeds",params(FeedsQuery),responses((status=200,body=FeedsResponse),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-async fn feeds(
-    state: web::Data<ApiState>,
-    query: web::Query<FeedsQuery>,
-) -> Result<web::Json<FeedsResponse>> {
-    Ok(web::Json(state.feeds(&query).await?))
+fn default_limit() -> u32 {
+    50
 }
-#[utoipa::path(get,path="/orders",params(OrdersQuery),responses((status=200,body=OrdersResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/catalog/{kind}",params(("kind"=CatalogKind,Path),("limit"=Option<u32>,Query),("page_token"=Option<String>,Query)),responses((status=200,body=Page<CatalogEntry>)))]
+async fn list_catalog(
+    state: web::Data<Gateway>,
+    kind: web::Path<CatalogKind>,
+    q: web::Query<CatalogParams>,
+) -> Result<web::Json<Page<CatalogEntry>>> {
+    Ok(web::Json(
+        state
+            .catalog(CatalogQuery {
+                kind: kind.into_inner(),
+                ids: Vec::new(),
+                limit: q.limit,
+                page_token: q.page_token.clone(),
+            })
+            .await?,
+    ))
+}
+#[utoipa::path(post,path="/orders/query",request_body=OrdersQuery,responses((status=200,body=Page<Order>),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse)))]
 async fn orders(
-    state: web::Data<ApiState>,
-    query: web::Query<OrdersQuery>,
-) -> Result<web::Json<OrdersResponse>> {
-    Ok(web::Json(state.orders(&query).await?))
+    state: web::Data<Gateway>,
+    q: web::Json<OrdersQuery>,
+) -> Result<web::Json<Page<Order>>> {
+    Ok(web::Json(state.orders(q.into_inner()).await?))
 }
-#[utoipa::path(get,path="/orderbook",params(BookQuery),responses((status=200,body=BookResponse),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-async fn orderbook(
-    state: web::Data<ApiState>,
-    query: web::Query<BookQuery>,
-) -> Result<web::Json<BookResponse>> {
-    Ok(web::Json(state.orderbook(&query).await?))
-}
-#[utoipa::path(get,path="/trades",params(TradesQuery),responses((status=200,body=TradesResponse),(status=400,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-async fn trades(
-    state: web::Data<ApiState>,
-    query: web::Query<TradesQuery>,
-) -> Result<web::Json<TradesResponse>> {
-    Ok(web::Json(state.trades(&query).await?))
-}
-#[utoipa::path(get,path="/openapi.json",responses((status=200,description="OpenAPI document")))]
-async fn openapi(_: web::Query<NoQuery>) -> web::Json<utoipa::openapi::OpenApi> {
-    web::Json(ApiDoc::openapi())
+#[utoipa::path(post,path="/executions/query",request_body=ExecutionsQuery,responses((status=200,body=Page<Order>),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse)))]
+async fn executions(
+    state: web::Data<Gateway>,
+    q: web::Json<ExecutionsQuery>,
+) -> Result<web::Json<Page<Order>>> {
+    Ok(web::Json(state.executions(q.into_inner()).await?))
 }
 #[derive(OpenApi)]
 #[openapi(
-    paths(
-        healthz,
-        status,
-        readyz,
-        catalog,
-        items,
-        feeds,
-        orders,
-        orderbook,
-        trades,
-        crate::websocket::connect,
-        openapi
-    ),
-    components(schemas(
-        Liveness,
-        StatusData,
-        ResponseMeta,
-        StatusResponse,
-        CatalogResponse,
-        ItemsResponse,
-        FeedsResponse,
-        OrdersResponse,
-        BookResponse,
-        TradesResponse,
-        Trades,
-        BookData,
-        BookId,
-        OrderPage,
-        Orders,
-        Items,
-        CatalogEntries,
-        Page,
-        Included,
-        crate::status::ApiCursor,
-        market_json::schema::Item,
-        market_json::schema::Order,
-        market_json::schema::FeedStatus,
-        market_json::schema::CatalogEntry,
-        market_json::schema::Record,
-        market_json::schema::OrderSide,
-        ErrorResponse
-    )),
-    info(title = "Market API", version = "0.1.0")
+    paths(health, ready, sync, books, catalog, list_catalog, orders, executions),
+    components(schemas(Command, ServerFrame, AttributeValue)),
+    info(title = "Market App", version = "0.1.0")
 )]
 pub struct ApiDoc;
-pub fn configure(cfg: &mut web::ServiceConfig) {
-    cfg.app_data(
-        web::QueryConfig::default().error_handler(|error, _| ApiError::invalid_query(error).into()),
-    );
-    macro_rules! read {
-        ($path:literal,$handler:expr) => {
-            cfg.service(
-                web::resource($path)
-                    .route(web::get().to($handler))
-                    .route(web::head().to($handler))
-                    .default_service(web::to(read_only)),
-            );
-        };
+async fn schema() -> HttpResponse {
+    HttpResponse::Ok().json(ApiDoc::openapi())
+}
+async fn index(root: web::Data<WebRoot>) -> HttpResponse {
+    match tokio::fs::read(root.0.join("index.html")).await {
+        Ok(bytes) => HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .insert_header(("Cache-Control", "no-cache"))
+            .body(bytes),
+        Err(_) => HttpResponse::ServiceUnavailable().body("The market interface is unavailable."),
     }
-    read!("/healthz", healthz);
-    read!("/readyz", readyz);
-    read!("/status", status);
-    read!("/catalog", catalog);
-    read!("/items", items);
-    read!("/feeds", feeds);
-    read!("/ws", crate::websocket::connect);
-    read!("/orders", orders);
-    read!("/orderbook", orderbook);
-    read!("/trades", trades);
-    read!("/openapi.json", openapi);
-    cfg.default_service(web::to(fallback));
 }
-async fn read_only() -> Result<HttpResponse> {
-    Err(ApiError::new(ErrorCode::ReadOnly, "API is read-only"))
-}
-async fn fallback(request: actix_web::HttpRequest) -> Result<HttpResponse> {
-    if matches!(
-        *request.method(),
-        actix_web::http::Method::GET | actix_web::http::Method::HEAD
-    ) {
-        Err(ApiError::new(ErrorCode::NotFound, "route not found"))
+async fn asset(root: web::Data<WebRoot>, name: web::Path<String>) -> HttpResponse {
+    if !name
+        .bytes()
+        .all(|v| v.is_ascii_alphanumeric() || b"-_.".contains(&v))
+        || name.contains("..")
+    {
+        return HttpResponse::NotFound().finish();
+    }
+    let content = if name.ends_with(".js") {
+        "text/javascript"
+    } else if name.ends_with(".css") {
+        "text/css"
+    } else if name.ends_with(".svg") {
+        "image/svg+xml"
     } else {
-        read_only().await
+        return HttpResponse::NotFound().finish();
+    };
+    match tokio::fs::read(root.0.join("assets").join(name.as_str())).await {
+        Ok(bytes) => HttpResponse::Ok()
+            .content_type(content)
+            .insert_header(("Cache-Control", "public,max-age=31536000,immutable"))
+            .body(bytes),
+        Err(_) => HttpResponse::NotFound().finish(),
     }
+}
+pub fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.route("/", web::get().to(index))
+        .route("/assets/{name}", web::get().to(asset))
+        .route("/healthz", web::get().to(health))
+        .route("/readyz", web::get().to(ready))
+        .route("/sync", web::get().to(sync))
+        .route("/books", web::get().to(books))
+        .route("/catalog/query", web::post().to(catalog))
+        .route("/catalog/{kind}", web::get().to(list_catalog))
+        .route("/orders/query", web::post().to(orders))
+        .route("/executions/query", web::post().to(executions))
+        .route("/ws", web::get().to(crate::websocket::connect))
+        .route("/openapi.json", web::get().to(schema));
 }

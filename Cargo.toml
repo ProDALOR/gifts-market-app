@@ -7,24 +7,26 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-market-view = { path = "crates/market-view" }
 hub-protocol = { path = "crates/hub-protocol" }
-market-json = { path = "crates/market-json" }
+market-replica = { path = "crates/market-replica" }
+redb = "4.6"
+im = "15"
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+base64 = "0.22"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
 actix-web = "4"
 actix-ws = "0.4"
 actix-cors = "0.7"
 futures-util = "0.3"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-humantime = "2"
 jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
 prost = "0.14"
 prost-build = "0.14"
 protoc-bin-vendored = "3"
-rust_decimal = { version = "1", features = ["serde-with-str"] }
 serde = { version = "1", features = ["derive", "rc"] }
-serde_json = { version = "1", features = ["raw_value"] }
-thiserror = "2"
+serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -33,7 +35,7 @@ tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-utoipa = { version = "5", features = ["actix_extras"] }
+utoipa = { version = "5", features = ["actix_extras", "rc_schema"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
