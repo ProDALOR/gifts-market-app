@@ -330,3 +330,93 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
     assert!(!json.contains("Money"));
 }
 use market_app::ApiDoc;
+
+#[actix_web::test]
+#[ignore = "requires the production React build and Playwright Chromium"]
+async fn telegram_react_bridge_sign_in_launch_theme_back_button_and_reload() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use ed25519_dalek::{Signer, SigningKey};
+    let (state, _peer, stop) = setup().await;
+    let signing = SigningKey::from_bytes(&[23; 32]);
+    let auth =
+        market_telegram_app::auth::Auth::new(42, signing.verifying_key().to_bytes(), [61; 32])
+            .unwrap();
+    let telegram = market_app::telegram::Telegram::new(
+        Some(auth),
+        Some("test_market_bot".into()),
+        Some("https://markets.example".into()),
+    )
+    .unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert!(root.join("web/dist/index.html").is_file());
+    let webroot = market_app::WebRoot(root.join("web/dist"));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = HttpServer::new(move || {
+        App::new()
+            .wrap(market_app::security_headers())
+            .app_data(web::Data::new(state.clone()))
+            .app_data(web::Data::new(telegram.clone()))
+            .app_data(web::Data::new(webroot.clone()))
+            .app_data(web::Data::new(Vec::<String>::new()))
+            .configure(configure)
+    })
+    .listen(listener)
+    .unwrap()
+    .run();
+    let handle = server.handle();
+    actix_web::rt::spawn(server);
+    let selection = "item=tg.gift.123&currency=GRAM&mode=ask&sort=price_desc&max=2";
+    let payload = format!("v_{}", URL_SAFE_NO_PAD.encode(selection));
+    let values: std::collections::BTreeMap<String, String> = [
+        (
+            "auth_date".into(),
+            jiff::Timestamp::now().as_second().to_string(),
+        ),
+        ("query_id".into(), "test-query".into()),
+        ("start_param".into(), payload),
+        (
+            "user".into(),
+            r#"{"id":9007199254740991,"first_name":"Anna","username":"anna"}"#.into(),
+        ),
+    ]
+    .into();
+    let mut check = "42:WebAppData".to_owned();
+    for (key, value) in &values {
+        check.push_str(&format!("\n{key}={value}"));
+    }
+    let proof = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(values)
+        .append_pair(
+            "signature",
+            &URL_SAFE_NO_PAD.encode(signing.sign(check.as_bytes()).to_bytes()),
+        )
+        .finish();
+    let output = tokio::process::Command::new("node")
+        .arg("scripts/telegram-smoke.mjs")
+        .current_dir(root.join("web"))
+        .env("MARKET_TELEGRAM_TEST_URL", format!("http://{address}"))
+        .env("MARKET_TELEGRAM_TEST_PROOF", proof)
+        .env(
+            "MARKET_TELEGRAM_SCREENSHOTS",
+            root.join("target/telegram-screenshots"),
+        )
+        .output();
+    let result = tokio::time::timeout(Duration::from_secs(60), output)
+        .await
+        .unwrap()
+        .unwrap();
+    handle.stop(false).await;
+    stop.cancel();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}

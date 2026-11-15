@@ -36,7 +36,7 @@ After app restart, saved state is immediately available with `sync.state: stale`
 
 Hub outages leave public reads available from the last committed copy. WebSocket pages and REST responses carry `sync: {ready, state, updated_at}`; states are `starting`, `syncing`, `live` and `stale`. `updated_at` is the last durably received checkpoint time, not an execution timestamp or a guarantee of zero replication lag. The GUI shows **Stale** when current-order updates are delayed. `/readyz` succeeds once a complete saved or freshly synchronized replica exists. `/sync` reports upstream freshness separately.
 
-The local database is a rebuildable cache, not the authoritative archive. Stop this app and delete its data directory to rebuild it. Never share a redb directory between running app instances. Disk usage includes execution history and, during a rebuild, the replacement database and its change journal.
+The local database is a rebuildable cache, not the authoritative archive. Stop this app and remove `replica.redb` and `building.redb` from its data directory to rebuild it. Preserve `session.key`, which signs user sessions independently of market replication. Never share a redb directory between running app instances. Disk usage includes execution history and, during a rebuild, the replacement database and its change journal.
 
 ## Docker
 
@@ -45,6 +45,42 @@ Create the shared network once with `docker network create market`. Copy `.env.e
 Compose starts only this application, connects to `http://market-hub:50051`, publishes `0.0.0.0:8080` and persists its replica in `market-app-data:/data`. Configure `MARKET_CORE_URL`, `MARKET_NETWORK` or `MARKET_APP_PORT` for another deployment. Separate deployments use separate volumes. Multiple instances can sit behind a load balancer; retained snapshot pagination requires affinity to the instance holding the view. Live page boundaries can move between instances synchronized to the same market.
 
 The image generates public OpenAPI and TypeScript types before building React. Generated clients, dependencies and built assets are ignored. The Node build exports its schema using the compiled Rust binary.
+
+## Telegram Mini App and bot
+
+The same React interface works as an ordinary website and as a Telegram Mini App. The bridge loads only for Telegram launches, integrates safe areas and theme changes, and connects Telegram's Back button to order details, filters and the account menu. A small account control displays the server-verified identity. Market browsing stays public.
+
+For a real Telegram launch, host the application at a public HTTPS origin. A deployment or HTTPS tunnel can forward to the existing HTTP listener. Configure these values in `.env` for Compose:
+
+```dotenv
+MARKET_TELEGRAM_BOT_ID=123456789
+MARKET_TELEGRAM_BOT_USERNAME=your_bot
+MARKET_PUBLIC_URL=https://markets.example.com
+TELEGRAM_BOT_TOKEN=<BotFather token>
+```
+
+The API receives only the public bot ID, username and URL. Only `market-bot` receives the bot token. The native API reads environment variables or CLI flags; the native bot worker also reads `.env` for local development. Keep `.env` private; it is excluded from Git and Docker builds.
+
+Enable the **Main Mini App** in BotFather for this bot and set its URL to `MARKET_PUBLIC_URL`. The polling worker configures the chat's **Open market** menu button and `/start`, `/market`, `/help` commands. It replies to those commands in private chats with a launch button. It does not automatically remove an existing webhook. Run one polling worker per bot, separately from API replicas:
+
+```sh
+# Read-only identity and setup inspection; does not consume updates or send messages.
+cargo run --locked -p market-telegram-app --bin market-bot -- inspect
+# After configuring the public HTTPS URL:
+docker compose --profile telegram up --build --detach
+```
+
+Native worker startup is `cargo run --locked -p market-telegram-app --bin market-bot`. `market-bot configure` sets commands/menu without starting polling. Its own data directory (`MARKET_BOT_DATA_DIR`, default `bot-data`) holds a binary update checkpoint and a writer lock. Compose persists it in `market-bot-data`; the worker has no hub credential or market replica. Notification subscriptions and buying are outside this first integration.
+
+Sign-in uses `POST /auth/telegram` with `{init_data: "<raw Telegram.WebApp.initData>"}`. The API verifies Telegram's Ed25519 signature against its production public key and configured bot ID, checks the signed launch time (one hour, with 30 seconds of future clock tolerance), and issues a 24-hour application session. It never trusts `initDataUnsafe.user`. `GET /auth/me` accepts the resulting `Authorization: Bearer <session>` and returns the verified profile. IDs are strings and expiration dates are RFC 3339.
+
+The browser keeps only its application session and launch fingerprint in tab-scoped session storage. Refresh validates the saved session; a different launch revalidates Telegram's proof, preventing cached identity from carrying over when the Telegram account changes. Sign-out clears that tab's session and pauses automatic sign-in for the current launch. Browsing works without signing in. `/telegram` exposes public configuration and whether sign-in is enabled.
+
+Session signatures use a generated private `data/session.key`, preserved across app restarts and replica rebuilds. For multiple API replicas, supply the same `MARKET_SESSION_KEY` to every instance, generated offline with `market-app session-key`. This key is separate from hub service credentials and the bot token. It does not require a registration database. Permanent user preferences or future alert definitions must use their own application storage, rather than the rebuildable replica.
+
+The **Telegram** link on the standalone website opens a configured Main Mini App with the selected collection, currency, mode and filters. Launch state uses `startapp=v_<base64url query>` with only market-view fields and Telegram's 512-character limit. Very large selections open the app's default view. Launch parameters choose a view; they never authorize an action or identify a user. The browser policy permits the official bridge and Telegram Web embedding while retaining same-origin API/WebSocket connections.
+
+The official [Mini App documentation](https://core.telegram.org/bots/webapps) describes launch configuration and signature validation. The [Bot API](https://core.telegram.org/bots/api) defines menu buttons and polling.
 
 ## Public API
 
@@ -57,10 +93,12 @@ The image generates public OpenAPI and TypeScript types before building React. G
 | `POST /executions/query` | One frozen page of confirmed executions |
 | `GET /ws` | Live current-order pages from the local replica |
 | `GET /sync` | Replica readiness and synchronization status |
+| `GET /telegram` | Public Mini App configuration |
+| `POST /auth/telegram`, `GET /auth/me` | Verified Telegram sign-in and session identity |
 | `GET /openapi.json` | Generated public contract, including WebSocket frames |
 | `GET /healthz`, `GET /readyz` | Process and replica readiness |
 
-All operations are read-only. POST bodies carry filters. Orders require an item type and quote currency; omit venue to combine markets. Default mode is `ask`, sort is `price_asc`, and page size is 50 (maximum 200).
+Market operations are read-only. Query POST bodies carry filters; the authentication POST issues a user session. Orders require an item type and quote currency; omit venue to combine markets. Default mode is `ask`, sort is `price_asc`, and page size is 50 (maximum 200).
 
 ```sh
 curl http://localhost:8080/orders/query \
@@ -98,6 +136,7 @@ Each socket permits 16 subscriptions and 64 KiB input messages. Queues, send dea
 
 - `crates/hub-protocol`: native bindings generated from the local proto copy.
 - `crates/market-replica`: protocol-native RAM indexes, redb storage, local pages and synchronization.
+- `crates/telegram`: Telegram signature verification, user sessions and the independent `market-bot` worker.
 - `crates/app`: public DTOs/OpenAPI, JSON conversion, REST/WebSockets and React hosting.
 - `web`: React interface and generated public API types.
 
@@ -107,6 +146,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 npm --prefix web test
 npm --prefix web run build
+# Verify the Telegram bridge using a local SDK simulation and real test signatures:
+cargo test -p market-app --test gateway telegram_react_bridge -- --ignored
 cargo build --locked --bins
 python3 scripts/smoke.py --hub-bin /path/to/market-hub --adapter-manifest /path/to/adapters/Cargo.toml
 ```

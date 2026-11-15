@@ -873,3 +873,182 @@ footer {
     margin-left: 0;
   }
 }
+
+.telegram-link {
+  font-size: 11px;
+  color: var(--green);
+  margin-left: auto;
+  white-space: nowrap;
+}
+.telegram-link + .api-link {
+  margin-left: 0;
+}
+.telegram-account {
+  position: relative;
+  margin-left: auto;
+}
+.telegram-account + .api-link {
+  margin-left: 0;
+}
+.account-button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.account-dot {
+  height: 5px;
+  width: 5px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #d0aa67;
+}
+.account-dot.verified {
+  background: var(--green);
+}
+.account-menu {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  min-width: 230px;
+  max-width: 85vw;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+  z-index: 70;
+  box-shadow: 0 14px 36px #0004;
+}
+.account-menu span,
+.account-menu small,
+.account-menu p {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.account-menu button {
+  margin-top: 6px;
+}
+:root.telegram {
+  --tg-safe-top: 0px;
+  --tg-safe-bottom: 0px;
+  --tg-safe-left: 0px;
+  --tg-safe-right: 0px;
+}
+.telegram .workspace {
+  padding: var(--tg-safe-top) var(--tg-safe-right) var(--tg-safe-bottom)
+    var(--tg-safe-left);
+}
+.telegram .detail {
+  top: calc(64px + var(--tg-safe-top));
+  bottom: var(--tg-safe-bottom);
+}
+.telegram .api-link {
+  display: none;
+}
+.telegram .orders {
+  height: calc(100dvh - 300px - var(--tg-safe-top) - var(--tg-safe-bottom));
+}
+.telegram[data-telegram-theme="light"] {
+  color-scheme: light;
+  color: var(--tg-text, #18212b);
+  background: var(--tg-bg, #fff);
+  --line: #d5dce2;
+  --muted: var(--tg-hint, #65717e);
+  --raised: var(--tg-surface, #f3f5f7);
+  --green: #19774c;
+}
+.telegram[data-telegram-theme="light"] body {
+  background: var(--tg-bg, #fff);
+}
+.telegram[data-telegram-theme="light"]
+  :is(.topbar, .collections, .orders, .detail) {
+  background: var(--tg-bg, #fff);
+}
+.telegram[data-telegram-theme="light"] :is(.segments, .filters) {
+  background: var(--tg-surface, #f3f5f7);
+}
+.telegram[data-telegram-theme="light"] .segments button {
+  background: transparent;
+}
+.telegram[data-telegram-theme="light"]
+  :is(
+    button,
+    input,
+    select,
+    .search,
+    .table-toolbar,
+    thead,
+    .attribute,
+    .item-icon,
+    .collection-icon
+  ) {
+  background: var(--tg-surface, #f3f5f7);
+  color: var(--tg-text, #18212b);
+}
+.telegram[data-telegram-theme="light"]
+  :is(
+    h1,
+    h2,
+    h3,
+    .brand > span,
+    .item-cell strong,
+    .detail dd,
+    .detail-price,
+    .filter-heading,
+    .filters legend,
+    .empty strong
+  ) {
+  color: var(--tg-text, #18212b);
+}
+.telegram[data-telegram-theme="light"]
+  :is(td, th, .detail dl > div, .attribute) {
+  border-color: var(--line);
+}
+.telegram[data-telegram-theme="light"]
+  :is(
+    .segments .active,
+    .collection.selected,
+    tbody tr:hover,
+    tbody tr.selected
+  ) {
+  background: #e5f2eb;
+  color: #196b48;
+}
+.telegram[data-telegram-theme="light"] .price {
+  color: #18212b;
+}
+.telegram[data-telegram-theme="light"] .price.bid {
+  color: #19774c;
+}
+.telegram[data-telegram-theme="light"] .status.live {
+  color: #19774c;
+}
+.telegram[data-telegram-theme="light"] .notice {
+  color: #76551c;
+  background: #fff5df;
+  border-color: #d9c69e;
+}
+.telegram[data-telegram-theme="light"]
+  :is(.primary, .text-button, .filter-button.applied) {
+  color: #196b48;
+}
+.telegram[data-telegram-theme="light"] .filter-button b {
+  color: #fff;
+}
+.telegram[data-telegram-theme="light"] .account-menu {
+  background: var(--tg-bg, #fff);
+}
+@media (max-width: 700px) {
+  .telegram .detail {
+    top: calc(55px + var(--tg-safe-top));
+  }
+  .account-button {
+    max-width: 165px;
+  }
+}

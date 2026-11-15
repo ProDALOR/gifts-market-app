@@ -8,3 +8,6 @@ mod http;
 mod websocket;
 pub use http::{ApiDoc, WebRoot, configure};
 pub use hub_protocol::wire;
+
+pub mod telegram;
+pub use telegram::security_headers;

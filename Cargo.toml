@@ -9,6 +9,15 @@ edition = "2024"
 [workspace.dependencies]
 hub-protocol = { path = "crates/hub-protocol" }
 market-replica = { path = "crates/market-replica" }
+market-telegram-app = { path = "crates/telegram" }
+ed25519-dalek = "3"
+dotenvy = "0.15"
+fs2 = "0.4"
+getrandom = "0.4"
+hmac = "0.12"
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = "2"
 redb = "4.6"
 im = "15"
 rust_decimal = { version = "1", features = ["serde-with-str"] }

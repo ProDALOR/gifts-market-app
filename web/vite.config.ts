@@ -5,6 +5,9 @@ export default defineConfig({
   server: {
     proxy: Object.fromEntries(
       [
+        "/telegram",
+        "/auth",
+        "/sync",
         "/books",
         "/catalog",
         "/orders",

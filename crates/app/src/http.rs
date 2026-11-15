@@ -13,7 +13,7 @@ pub struct WebRoot(pub PathBuf);
 async fn health() -> HttpResponse {
     HttpResponse::Ok().finish()
 }
-#[utoipa::path(get,path="/readyz",responses((status=200,description="Hub is reachable"),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/readyz",responses((status=200,description="A complete market replica is available"),(status=503,body=ErrorResponse)))]
 async fn ready(state: web::Data<Gateway>) -> Result<HttpResponse> {
     state.ready().await?;
     Ok(HttpResponse::Ok().finish())
@@ -98,7 +98,19 @@ async fn executions(
 }
 #[derive(OpenApi)]
 #[openapi(
-    paths(health, ready, sync, books, catalog, list_catalog, orders, executions),
+    paths(
+        crate::telegram::config,
+        crate::telegram::sign_in,
+        crate::telegram::me,
+        health,
+        ready,
+        sync,
+        books,
+        catalog,
+        list_catalog,
+        orders,
+        executions
+    ),
     components(schemas(Command, ServerFrame, AttributeValue)),
     info(title = "Market App", version = "0.1.0")
 )]
@@ -152,5 +164,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/orders/query", web::post().to(orders))
         .route("/executions/query", web::post().to(executions))
         .route("/ws", web::get().to(crate::websocket::connect))
-        .route("/openapi.json", web::get().to(schema));
+        .route("/openapi.json", web::get().to(schema))
+        .configure(crate::telegram::configure);
 }

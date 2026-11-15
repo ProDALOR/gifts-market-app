@@ -17,6 +17,14 @@ pub struct Cli {
     pub node_token: Option<String>,
     #[arg(long, env = "MARKET_DATA_DIR", default_value = "data")]
     pub data_dir: PathBuf,
+    #[arg(long, env = "MARKET_TELEGRAM_BOT_ID")]
+    pub telegram_bot_id: Option<u64>,
+    #[arg(long, env = "MARKET_TELEGRAM_BOT_USERNAME")]
+    pub telegram_bot_username: Option<String>,
+    #[arg(long, env = "MARKET_PUBLIC_URL")]
+    pub public_url: Option<String>,
+    #[arg(long, env = "MARKET_SESSION_KEY", hide_env_values = true)]
+    pub session_key: Option<String>,
     #[arg(long, default_value = "web/dist")]
     pub web_dir: PathBuf,
     #[arg(long)]
@@ -31,4 +39,5 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     Schema,
+    SessionKey,
 }

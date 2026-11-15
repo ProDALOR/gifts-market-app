@@ -4,6 +4,7 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
+    Unauthorized,
     InvalidQuery,
     RestartRead,
     CapacityExceeded,
@@ -50,6 +51,7 @@ impl std::error::Error for ApiError {}
 impl ResponseError for ApiError {
     fn status_code(&self) -> StatusCode {
         match self.code {
+            ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
             ErrorCode::InvalidQuery => StatusCode::BAD_REQUEST,
             ErrorCode::RestartRead => StatusCode::CONFLICT,
             ErrorCode::CapacityExceeded => StatusCode::TOO_MANY_REQUESTS,
@@ -65,4 +67,13 @@ impl ResponseError for ApiError {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: ApiError,
+}
+
+impl From<market_telegram_app::auth::AuthError> for ApiError {
+    fn from(error: market_telegram_app::auth::AuthError) -> Self {
+        Self {
+            code: ErrorCode::Unauthorized,
+            message: error.to_string(),
+        }
+    }
 }

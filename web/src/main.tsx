@@ -12,6 +12,13 @@ import {
 } from "./data";
 import type { Book, Entry, Order, Page, Predicate, Query } from "./data";
 import { Field } from "./filters";
+import { initializeTelegram, launchSelection } from "./telegram";
+import type { TelegramContext } from "./telegram";
+import {
+  useTelegram,
+  useTelegramBack,
+  TelegramAccount,
+} from "./telegram-react";
 import "./style.css";
 type ItemType = Extract<Entry, { kind: "item_type" }>;
 type Attribute = Extract<Entry, { kind: "attribute" }>;
@@ -28,8 +35,8 @@ type Choice = {
   from: string;
   until: string;
 };
-function saved(): Choice {
-  const p = new URLSearchParams(location.search);
+function saved(context: TelegramContext): Choice {
+  const p = launchSelection(context, location.search);
   let filters = {};
   try {
     const parsed = JSON.parse(p.get("filters") || "{}");
@@ -159,9 +166,11 @@ function usePage(
   }, [signature, paused, refresh]);
   return { page, status, error };
 }
-function App() {
-  const [choice, setChoice] = useState(saved),
-    [draft, setDraft] = useState(saved),
+function App({ context }: { context: TelegramContext }) {
+  const telegram = useTelegram(context);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [choice, setChoice] = useState(() => saved(context)),
+    [draft, setDraft] = useState(() => saved(context)),
     [types, setTypes] = useState<ItemType[]>([]),
     [directory, setDirectory] = useState<Book[]>([]),
     [venues, setVenues] = useState<Entry[]>([]),
@@ -251,7 +260,7 @@ function App() {
     setSelected(undefined);
   }, [JSON.stringify(choice)]);
   useEffect(() => {
-    const pop = () => setChoice(saved());
+    const pop = () => setChoice(saved(context));
     window.addEventListener("popstate", pop);
     return () => window.removeEventListener("popstate", pop);
   }, []);
@@ -323,6 +332,11 @@ function App() {
       ),
     [page.data],
   );
+  useTelegramBack(context, accountOpen || !!selected || showFilters, () => {
+    if (accountOpen) setAccountOpen(false);
+    else if (selected) setSelected(undefined);
+    else setShowFilters(false);
+  });
   const set = (next: Choice) => {
     setChoice(next);
     setShowFilters(false);
@@ -371,6 +385,13 @@ function App() {
           </span>
         </a>
         <span className="top-caption">One view. Every venue.</span>
+        <TelegramAccount
+          telegram={telegram}
+          context={context}
+          open={accountOpen}
+          setOpen={setAccountOpen}
+          selection={new URLSearchParams(location.search)}
+        />
         <a
           className="api-link"
           href="/openapi.json"
@@ -912,4 +933,8 @@ function describe(p: Predicate, names: Map<string, string>): string {
       return p.predicates.map((v) => describe(v, names)).join("; ");
   }
 }
-createRoot(document.getElementById("root")!).render(<App />);
+void initializeTelegram().then((context) =>
+  createRoot(document.getElementById("root")!).render(
+    <App context={context} />,
+  ),
+);

@@ -20,9 +20,32 @@ services:
       MARKET_CORE_URL: ${MARKET_CORE_URL:-http://market-hub:50051}
       MARKET_NODE_TOKEN: ${MARKET_NODE_TOKEN:?Set MARKET_NODE_TOKEN to an issued service token}
       MARKET_DATA_DIR: /data
+      MARKET_TELEGRAM_BOT_ID: ${MARKET_TELEGRAM_BOT_ID:-0}
+      MARKET_TELEGRAM_BOT_USERNAME: ${MARKET_TELEGRAM_BOT_USERNAME:-}
+      MARKET_PUBLIC_URL: ${MARKET_PUBLIC_URL:-}
+      MARKET_SESSION_KEY: ${MARKET_SESSION_KEY:-}
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "0.0.0.0:${MARKET_APP_PORT:-8080}:8080"
+
+  market-bot:
+    profiles: [telegram]
+    image: ${MARKET_BOT_IMAGE:-market-bot:local}
+    build:
+      context: .
+      target: market-bot
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
+    volumes: ["market-bot-data:/data"]
+    tmpfs: ["/tmp:size=16m,mode=1777,nosuid,nodev"]
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      MARKET_PUBLIC_URL: ${MARKET_PUBLIC_URL:-}
+      MARKET_BOT_DATA_DIR: /data
 
 networks:
   market:
@@ -31,3 +54,4 @@ networks:
 
 volumes:
   market-app-data:
+  market-bot-data:

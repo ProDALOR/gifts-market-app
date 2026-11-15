@@ -12,6 +12,7 @@ web/src/gen/
 **/tests/
 **/target/
 /data/
+/bot-data/
 **/accounts.json
 **/.env*
 **/*.key

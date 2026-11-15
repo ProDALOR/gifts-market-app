@@ -16,3 +16,5 @@ __pycache__/
 /web/src/gen/
 
 /data/
+
+/bot-data/

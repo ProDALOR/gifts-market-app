@@ -1,4 +1,4 @@
-use actix_web::{App, HttpServer, middleware, web};
+use actix_web::{App, HttpServer, web};
 use clap::Parser;
 use market_app::{
     ApiDoc, WebRoot,
@@ -14,6 +14,13 @@ async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
     if matches!(args.command, Some(Command::Schema)) {
         println!("{}", ApiDoc::openapi().to_json()?);
+        return Ok(());
+    }
+    if matches!(args.command, Some(Command::SessionKey)) {
+        println!(
+            "{}",
+            market_telegram_app::auth::encode_key(&market_telegram_app::auth::generate_key()?)
+        );
         return Ok(());
     }
     anyhow::ensure!(
@@ -37,9 +44,25 @@ async fn main() -> anyhow::Result<()> {
     let source = format!("{}|{}", args.core, identity);
     let node = CoreClient::new(args.core, token)?;
     let data_dir = args.data_dir;
+    let key_file = data_dir.join("session.key");
     let replica =
         tokio::task::spawn_blocking(move || market_replica::Replica::open(&data_dir, &source))
             .await??;
+    let bot_id = args.telegram_bot_id.filter(|id| *id > 0);
+    let key = args.session_key.filter(|v| !v.is_empty());
+    let auth = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        bot_id
+            .map(|id| {
+                market_telegram_app::auth::Auth::production(
+                    id,
+                    market_telegram_app::auth::session_key(&key_file, key.as_deref())?,
+                )
+            })
+            .transpose()
+    })
+    .await??;
+    let telegram =
+        market_app::telegram::Telegram::new(auth, args.telegram_bot_username, args.public_url)?;
     let sync = replica.clone();
     let stop = tokio_util::sync::CancellationToken::new();
     let cancel = stop.clone();
@@ -51,20 +74,19 @@ async fn main() -> anyhow::Result<()> {
     HttpServer::new(move || {
         let mut cors = actix_cors::Cors::default()
             .allowed_methods(vec!["GET", "POST", "HEAD"])
-            .allowed_header("Content-Type");
+            .allowed_headers(["Content-Type", "Authorization"]);
         for origin in &origins {
             cors = cors.allowed_origin(origin);
         }
-        let headers = middleware::DefaultHeaders::new()
-            .add(("X-Content-Type-Options", "nosniff"))
-            .add(("Referrer-Policy", "no-referrer"))
-            .add(("Cache-Control", "no-store"))
-            .add(("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"));
         App::new()
             .wrap(cors)
-            .wrap(headers)
-            .app_data(web::JsonConfig::default().limit(64 * 1024)
-                .error_handler(|_, _| ApiError::invalid("invalid JSON query").into()))
+            .wrap(market_app::security_headers())
+            .app_data(
+                web::JsonConfig::default()
+                    .limit(64 * 1024)
+                    .error_handler(|_, _| ApiError::invalid("invalid JSON query").into()),
+            )
+            .app_data(web::Data::new(telegram.clone()))
             .app_data(web::Data::new(gateway.clone()))
             .app_data(web::Data::new(root.clone()))
             .app_data(web::Data::new(origins.clone()))
