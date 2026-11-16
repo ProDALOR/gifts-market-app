@@ -1,8 +1,9 @@
 use crate::{
     state::{self, Key, State},
     storage,
+    types::{EntityKind, IndexKind, IndexTerm, Leaf, OrderMode, Sort},
 };
-use hub_protocol::wire as w;
+use market_hub_protocol::wire as w;
 use prost::Message;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -10,14 +11,52 @@ use tonic::Status;
 fn invalid(message: &str) -> Status {
     Status::invalid_argument(message)
 }
-type Index = storage::IndexTerm;
+#[derive(Clone)]
+pub struct ExactPriceRange {
+    pub min: Option<rust_decimal::Decimal>,
+    pub max: Option<rust_decimal::Decimal>,
+}
+#[derive(Clone)]
+pub struct Scope {
+    pub venue_id: Option<String>,
+    pub item_type_id: Option<String>,
+    pub currency_id: Option<String>,
+    pub modes: BTreeSet<OrderMode>,
+    pub attributes: std::collections::BTreeMap<String, w::AttributePredicate>,
+    pub price: Option<ExactPriceRange>,
+}
+impl TryFrom<w::Scope> for Scope {
+    type Error = Status;
+    fn try_from(scope: w::Scope) -> Result<Self, Status> {
+        Ok(Self {
+            venue_id: scope.venue_id,
+            item_type_id: scope.item_type_id,
+            currency_id: scope.currency_id,
+            modes: scope
+                .modes
+                .into_iter()
+                .map(OrderMode::try_from)
+                .collect::<Result<_, _>>()?,
+            attributes: scope.attributes,
+            price: scope
+                .price
+                .map(|price| {
+                    Ok::<_, Status>(ExactPriceRange {
+                        min: price.min.as_deref().map(state::decimal).transpose()?,
+                        max: price.max.as_deref().map(state::decimal).transpose()?,
+                    })
+                })
+                .transpose()?,
+        })
+    }
+}
 #[derive(Clone)]
 pub struct Filter {
-    pub scope: Option<w::Scope>,
+    pub scope: Option<Scope>,
     pub period: Option<w::Period>,
-    pub kinds: BTreeSet<i32>,
+    pub kinds: BTreeSet<EntityKind>,
     pub keys: BTreeSet<Key>,
-    pub sort: i32,
+    pub sort: Sort,
     pub fingerprint: String,
 }
 impl Filter {
@@ -26,23 +65,32 @@ impl Filter {
         if selection.keys.len() > 500 || selection.kinds.len() > 7 {
             return Err(invalid("too many query keys or kinds"));
         }
-        selection.keys.sort_by_key(Key::wire);
+        // Validate before sorting so malformed keys never enter the compiled representation.
+        let mut keys = selection
+            .keys
+            .iter()
+            .map(Key::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        keys.sort();
+        let keys = keys.into_iter().collect();
+        selection
+            .keys
+            .sort_by(|a, b| (a.kind, &a.venue_id, &a.id).cmp(&(b.kind, &b.venue_id, &b.id)));
         selection.keys.dedup();
         selection.kinds.sort();
         selection.kinds.dedup();
-        for kind in &selection.kinds {
-            if !(1..=7).contains(kind) {
-                return Err(invalid("unknown entity kind"));
-            }
-        }
-        let kinds = selection.kinds.iter().copied().collect();
-        let keys = selection.keys.iter().map(Key::wire).collect();
+        let kinds = selection
+            .kinds
+            .iter()
+            .copied()
+            .map(EntityKind::try_from)
+            .collect::<Result<_, _>>()?;
         let scope = match &mut selection.source {
             Some(w::selection::Source::Scope(scope)) => {
                 for (kind, id) in [
-                    (1, &scope.venue_id),
-                    (2, &scope.currency_id),
-                    (3, &scope.item_type_id),
+                    (EntityKind::Venue, &scope.venue_id),
+                    (EntityKind::Currency, &scope.currency_id),
+                    (EntityKind::ItemType, &scope.item_type_id),
                 ] {
                     if let Some(id) = id
                         && state.get(kind, id).is_none()
@@ -52,7 +100,7 @@ impl Filter {
                 }
                 scope.modes.sort();
                 scope.modes.dedup();
-                if scope.modes.iter().any(|m| !(1..=3).contains(m)) {
+                if scope.modes.iter().any(|m| OrderMode::try_from(*m).is_err()) {
                     return Err(invalid("unknown order mode"));
                 }
                 if scope.modes.len() == 3 {
@@ -82,10 +130,13 @@ impl Filter {
                     return Err(invalid("too many attribute filters"));
                 }
                 if !scope.attributes.is_empty() {
-                    if scope.modes.is_empty() || scope.modes.contains(&2) {
+                    if scope.modes.is_empty() || scope.modes.contains(&(w::OrderMode::Bid as i32)) {
                         return Err(invalid("attribute filters require asks or executions"));
                     }
-                    let item = scope.item_type_id.as_ref().and_then(|id| state.get(3, id));
+                    let item = scope
+                        .item_type_id
+                        .as_ref()
+                        .and_then(|id| state.get(EntityKind::ItemType, id));
                     let Some(w::entity::Entity::ItemType(item)) = item else {
                         return Err(invalid("attribute filters require an item type"));
                     };
@@ -98,7 +149,7 @@ impl Filter {
                         validate_predicate(state, id, Some(rule), predicate, 0, &mut nodes)?;
                     }
                 }
-                Some(scope.clone())
+                Some(Scope::try_from(scope.clone())?)
             }
             Some(w::selection::Source::FeedId(_)) => {
                 return Err(invalid("public queries use an explicit scope"));
@@ -110,15 +161,13 @@ impl Filter {
         {
             return Err(invalid("invalid execution period"));
         }
-        if !(0..=2).contains(&request.sort) {
-            return Err(invalid("unknown read sort"));
-        }
-        if request.sort != 0
-            && (!scope.as_ref().is_some_and(|s| {
-                s.item_type_id.is_some()
-                    && s.currency_id.is_some()
-                    && !s.modes.is_empty()
-                    && !s.modes.contains(&3)
+        let sort = Sort::try_from(request.sort)?;
+        if sort != Sort::Identity
+            && (!scope.as_ref().is_some_and(|scope| {
+                scope.item_type_id.is_some()
+                    && scope.currency_id.is_some()
+                    && !scope.modes.is_empty()
+                    && !scope.modes.contains(&OrderMode::Executed)
             }) || selection.executed_at.is_some())
         {
             return Err(invalid(
@@ -131,16 +180,20 @@ impl Filter {
             period: selection.executed_at,
             kinds,
             keys,
-            sort: request.sort,
+            sort,
             fingerprint,
         })
     }
     pub fn history(&self) -> bool {
-        self.period.is_some() || self.scope.as_ref().is_some_and(|s| s.modes == [3])
+        self.period.is_some()
+            || self
+                .scope
+                .as_ref()
+                .is_some_and(|s| s.modes == BTreeSet::from([OrderMode::Executed]))
     }
     pub fn matches(&self, entity: &w::Entity) -> Result<bool, Status> {
         let key = state::entity_key(entity)?;
-        if (!self.kinds.is_empty() && !self.kinds.contains(&key.0))
+        if (!self.kinds.is_empty() && !self.kinds.contains(&key.kind))
             || (!self.keys.is_empty() && !self.keys.contains(&key))
         {
             return Ok(false);
@@ -152,7 +205,7 @@ impl Filter {
         }
     }
     pub fn matches_order(&self, order: &w::Order) -> Result<bool, Status> {
-        if !self.kinds.is_empty() && !self.kinds.contains(&7) {
+        if !self.kinds.is_empty() && !self.kinds.contains(&EntityKind::Order) {
             return Ok(false);
         }
         let book = order
@@ -162,14 +215,14 @@ impl Filter {
         if !self.keys.is_empty()
             && !self
                 .keys
-                .contains(&Key(7, book.venue_id.clone(), order.id.clone()))
+                .contains(&Key::order(book.venue_id.clone(), order.id.clone()))
         {
             return Ok(false);
         }
         if let Some(period) = &self.period
             && (!order.executed_at_ms.is_some_and(|t| {
                 period.from_ms.is_none_or(|v| t >= v) && period.until_ms.is_none_or(|v| t < v)
-            }) || order.mode != 3)
+            }) || OrderMode::try_from(order.mode)? != OrderMode::Executed)
         {
             return Ok(false);
         }
@@ -185,20 +238,13 @@ impl Filter {
                 .currency_id
                 .as_ref()
                 .is_some_and(|v| v != &book.currency_id)
-            || (!scope.modes.is_empty() && !scope.modes.contains(&order.mode))
+            || (!scope.modes.is_empty() && !scope.modes.contains(&OrderMode::try_from(order.mode)?))
         {
             return Ok(false);
         }
         if let Some(range) = &scope.price {
             let price = state::decimal(&order.price)?;
-            if range
-                .min
-                .as_ref()
-                .is_some_and(|v| state::decimal(v).is_ok_and(|v| price < v))
-                || range
-                    .max
-                    .as_ref()
-                    .is_some_and(|v| state::decimal(v).is_ok_and(|v| price > v))
+            if range.min.is_some_and(|min| price < min) || range.max.is_some_and(|max| price > max)
             {
                 return Ok(false);
             }
@@ -215,25 +261,37 @@ impl Filter {
         }
         Ok(true)
     }
-    pub fn index(&self) -> Result<Option<Index>, Status> {
+    pub fn index(&self) -> Result<Option<IndexTerm>, Status> {
         if let Some(scope) = &self.scope {
             for (id, predicate) in &scope.attributes {
-                if let Some((path, value)) = necessary(&mut vec![id.clone()], predicate)? {
-                    return Ok(Some((3, path, value)));
+                if let Some(Leaf { path, value }) = necessary(&mut vec![id.clone()], predicate)? {
+                    return Ok(Some(IndexTerm {
+                        kind: IndexKind::Attribute,
+                        path,
+                        value,
+                    }));
                 }
             }
             if let (Some(item), Some(currency)) = (&scope.item_type_id, &scope.currency_id) {
-                return Ok(Some((
-                    2,
-                    item.as_bytes().to_vec(),
-                    currency.as_bytes().to_vec(),
-                )));
+                return Ok(Some(IndexTerm {
+                    kind: IndexKind::Book,
+                    path: item.as_bytes().to_vec(),
+                    value: currency.as_bytes().to_vec(),
+                }));
             }
             if let Some(item) = &scope.item_type_id {
-                return Ok(Some((1, vec![], item.as_bytes().to_vec())));
+                return Ok(Some(IndexTerm {
+                    kind: IndexKind::ItemType,
+                    path: vec![],
+                    value: item.as_bytes().to_vec(),
+                }));
             }
             if let Some(venue) = &scope.venue_id {
-                return Ok(Some((0, vec![], venue.as_bytes().to_vec())));
+                return Ok(Some(IndexTerm {
+                    kind: IndexKind::Venue,
+                    path: vec![],
+                    value: venue.as_bytes().to_vec(),
+                }));
             }
         }
         Ok(None)
@@ -242,7 +300,7 @@ impl Filter {
 fn necessary(
     path: &mut Vec<String>,
     predicate: &w::AttributePredicate,
-) -> Result<Option<storage::Leaf>, Status> {
+) -> Result<Option<Leaf>, Status> {
     use w::attribute_predicate::Predicate as P;
     match &predicate.predicate {
         Some(P::Eq(value)) => {
@@ -344,7 +402,7 @@ pub fn matches(predicate: &w::AttributePredicate, value: &w::AttributeValue) -> 
     }
 }
 fn schema<'a>(state: &'a State, id: &str) -> Result<&'a w::Attribute, Status> {
-    match state.get(4, id) {
+    match state.get(EntityKind::Attribute, id) {
         Some(w::entity::Entity::Attribute(v)) => Ok(v),
         _ => Err(invalid("unknown attribute schema")),
     }
@@ -374,7 +432,9 @@ fn validate_value(
         .ok_or_else(|| invalid("missing attribute value"))?
     {
         V::OptionId(option) => {
-            if let Some(w::entity::Entity::AttributeOption(v)) = state.get(5, option) {
+            if let Some(w::entity::Entity::AttributeOption(v)) =
+                state.get(EntityKind::AttributeOption, option)
+            {
                 attr.value_type == 1
                     && v.attribute_id == id
                     && rule

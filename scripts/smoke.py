@@ -46,10 +46,10 @@ try:
     fixture_bin=adapter/'target/debug/examples'/name
     def fixture(action):
         with (workspace/'fixture.log').open('a') as log:
-            subprocess.run([str(fixture_bin)],env=dict(os.environ,MARKET_NODE_TOKEN=token,MARKET_FIXTURE_CORE=core,MARKET_FIXTURE_ACTION=action),stdout=log,stderr=log,check=True)
+            subprocess.run([str(fixture_bin)],env=dict(os.environ,MARKET_HUB_TOKEN=token,MARKET_FIXTURE_HUB_URL=core,MARKET_FIXTURE_ACTION=action),stdout=log,stderr=log,check=True)
     server=start('hub',core_command,env,root);wait(f'http://127.0.0.1:{admin}/healthz');fixture('seed')
-    app_command=[str(app),'--bind',f'127.0.0.1:{http}','--core',core,'--web-dir',str(root/'web/dist'),'--data-dir',str(workspace/'replica')]
-    gateway=start('app',app_command,dict(os.environ,MARKET_NODE_TOKEN=token),root);wait(base+'/readyz')
+    app_command=[str(app),'--bind',f'127.0.0.1:{http}','--hub-url',core,'--web-dir',str(root/'web/dist'),'--data-dir',str(workspace/'replica')]
+    gateway=start('app',app_command,dict(os.environ,MARKET_HUB_TOKEN=token),root);wait(base+'/readyz')
     query={'scope':{'item_type_id':'tg.gift.123','currency_id':'GRAM','modes':['ask']},'limit':1}
     page=call('/orders/query',query);assert page['data'][0]['price']=='1.25';assert page['data'][0]['book']['venue_id']=='partner';assert 'T' in page['data'][0]['observed_at']
     stale=page['next_page_token'];second=call('/orders/query',dict(query,page_token=page['next_page_token']));assert second['data'][0]['price']=='2.25';assert second['cursor']==page['cursor']
@@ -81,7 +81,7 @@ try:
     # A frozen local view survives a hub failure.
     assert call('/orders/query',dict(query,page_token=stale))['data'][0]['price']=='2.25'
     gateway.kill();gateway.wait()
-    gateway=start('app',app_command,dict(os.environ,MARKET_NODE_TOKEN=token),root);wait(base+'/readyz')
+    gateway=start('app',app_command,dict(os.environ,MARKET_HUB_TOKEN=token),root);wait(base+'/readyz')
     assert call('/orders/query',query)['data'][0]['price']=='0.500000001'
     assert len(call('/executions/query',{'scope':query['scope']})['data'])==1
     assert len(call('/catalog/query',{'kind':'item_type'})['data'])==2
@@ -107,7 +107,7 @@ socket.close();const response=await fetch(base+'/orders/query',{method:'POST',he
     history=call('/executions/query',{'scope':query['scope']})['data']
     assert history[0]['id']=='old-execution'
     server.kill();server.wait();eventually(lambda:call('/sync')['state']=='stale')
-    gateway.kill();gateway.wait();gateway=start('app',app_command,dict(os.environ,MARKET_NODE_TOKEN=token),root);wait(base+'/readyz')
+    gateway.kill();gateway.wait();gateway=start('app',app_command,dict(os.environ,MARKET_HUB_TOKEN=token),root);wait(base+'/readyz')
     assert len(call('/executions/query',{'scope':query['scope']})['data'])==3
     assert len(call('/orders/query',q)['data'])==29
     # Leave the optional preview connected after testing persisted, disconnected reads.

@@ -1,0 +1,61 @@
+use super::{
+    OrderbooksActor,
+    messages::{GetStatus, ListBooks, ReadOrders},
+};
+use crate::{
+    runtime::{QueryBudget, closed},
+    selection,
+};
+use actix::Addr;
+use market_hub_protocol::wire as w;
+use market_replica::{ReadResult, SyncStatus};
+use tonic::Status;
+#[derive(Clone)]
+pub(crate) struct OrderbooksHandle {
+    pub address: Addr<OrderbooksActor>,
+    pub budget: QueryBudget,
+}
+impl OrderbooksHandle {
+    pub async fn value_models(
+        &self,
+        positions: Vec<crate::valuation::ResolvedPosition>,
+        currency_id: String,
+    ) -> Result<crate::valuation::Valuation, Status> {
+        let permit = self.budget.try_query()?;
+        self.address
+            .send(super::messages::ValueModels {
+                positions,
+                currency_id,
+                permit,
+            })
+            .await
+            .map_err(closed)?
+    }
+    pub async fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
+        selection::orders(&request)?;
+        let permit = self.budget.try_query()?;
+        self.address
+            .send(ReadOrders { request, permit })
+            .await
+            .map_err(closed)?
+    }
+    pub async fn read_wait(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
+        selection::orders(&request)?;
+        let permit = self.budget.wait().await?;
+        self.address
+            .send(ReadOrders { request, permit })
+            .await
+            .map_err(closed)?
+    }
+    pub async fn books(&self, request: w::BooksRequest) -> Result<w::BooksPage, Status> {
+        let permit = self.budget.try_query()?;
+        self.address
+            .send(ListBooks { request, permit })
+            .await
+            .map_err(closed)?
+    }
+    pub async fn status(&self) -> Result<SyncStatus, Status> {
+        self.budget.check()?;
+        self.address.send(GetStatus).await.map_err(closed)?
+    }
+}

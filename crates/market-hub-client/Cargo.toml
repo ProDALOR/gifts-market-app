@@ -1,0 +1,16 @@
+[package]
+name = "market-hub-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+market-hub-protocol.workspace = true
+tonic.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio-stream.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

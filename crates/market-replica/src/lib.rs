@@ -1,16 +1,25 @@
 //! Protocol-native, disposable read replica. No hub implementation dependencies.
+mod book_index;
 mod query;
-mod read;
+mod reader;
+mod replication;
+mod runtime;
+pub use replication::ReplicationWorker;
+pub use runtime::ReplicaRuntime;
+mod staging;
 mod state;
 mod storage;
-mod sync;
-use hub_protocol::wire as w;
+#[cfg(test)]
+mod test_support;
+pub use staging::{PreparedSnapshot, SnapshotBuilder, SnapshotJournal};
+mod types;
+use market_hub_protocol::wire as w;
 use serde::{Deserialize, Serialize};
 use state::State;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, Weak},
     time::{Duration, Instant},
 };
 use storage::{Snapshot, Store};
@@ -34,32 +43,40 @@ pub struct SyncStatus {
     pub state: SyncState,
     pub updated_at: Option<i64>,
 }
+#[derive(Clone)]
 pub struct ReadResult {
     pub page: w::Page,
     pub sync: SyncStatus,
 }
-struct View {
+struct ReplicaView {
     state: State,
     history: Snapshot,
     cursor: String,
 }
-struct Retained {
-    view: Arc<View>,
+struct RetainedView {
+    view: Arc<ReplicaView>,
     until: Instant,
 }
-struct Inner {
-    path: PathBuf,
-    source: String,
-    store: Mutex<Store>,
-    published: RwLock<Option<Arc<View>>>,
+struct ReadState {
+    published: RwLock<Option<Arc<ReplicaView>>>,
     status: watch::Sender<SyncStatus>,
     changed: watch::Sender<u64>,
-    views: Mutex<BTreeMap<String, Retained>>,
-    writer: tokio::sync::Mutex<()>,
+    views: Mutex<BTreeMap<String, RetainedView>>,
 }
+/// Read-only access to immutable views published by synchronization.
 #[derive(Clone)]
-pub struct Replica(Arc<Inner>);
-impl Replica {
+pub struct ReplicaReader(Arc<ReadState>);
+/// Exclusive, non-cloneable mutation engine, owned by synchronization.
+/// Cloning a `ReplicaReader` never grants this capability.
+pub struct ReplicaWriter {
+    path: PathBuf,
+    source: String,
+    staging: Weak<()>,
+    owner: Arc<()>,
+    store: Store,
+    reader: ReplicaReader,
+}
+impl ReplicaWriter {
     pub fn open(directory: &Path, source: &str) -> Result<Self, Status> {
         let path = directory.join("replica.redb");
         let store = Store::open(&path, source)?;
@@ -72,7 +89,7 @@ impl Replica {
         let published = if cursor.is_empty() {
             None
         } else {
-            Some(Arc::new(View {
+            Some(Arc::new(ReplicaView {
                 state: store.state()?,
                 history: store.snapshot()?,
                 cursor,
@@ -89,15 +106,33 @@ impl Replica {
             updated_at,
         });
         let (changed, _) = watch::channel(0);
-        Ok(Self(Arc::new(Inner {
-            path,
-            source: source.into(),
-            store: Mutex::new(store),
+        let replica = ReplicaReader(Arc::new(ReadState {
             published: RwLock::new(published),
             status,
             changed,
             views: Mutex::default(),
-            writer: tokio::sync::Mutex::new(()),
+        }));
+        Ok(Self {
+            path,
+            source: source.into(),
+            staging: Weak::new(),
+            owner: Arc::new(()),
+            store,
+            reader: replica,
+        })
+    }
+}
+impl ReplicaReader {
+    /// Pin one published view for a short, compound read without blocking synchronization.
+    pub fn snapshot(&self) -> Result<Self, Status> {
+        let view = self.view()?;
+        let (status, _) = watch::channel(self.status());
+        let (changed, _) = watch::channel(0);
+        Ok(Self(Arc::new(ReadState {
+            published: RwLock::new(Some(view)),
+            status,
+            changed,
+            views: Mutex::default(),
         })))
     }
     pub fn status(&self) -> SyncStatus {
@@ -106,7 +141,7 @@ impl Replica {
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.0.changed.subscribe()
     }
-    fn view(&self) -> Result<Arc<View>, Status> {
+    fn view(&self) -> Result<Arc<ReplicaView>, Status> {
         self.0
             .published
             .read()
@@ -119,95 +154,117 @@ impl Replica {
             views.retain(|_, v| v.until > Instant::now());
         }
     }
-    fn mark(&self, state: SyncState) {
-        let mut status = self.status();
-        status.state = state;
-        self.0.status.send_replace(status);
-        self.0.changed.send_modify(|v| *v = v.wrapping_add(1));
-    }
-    #[cfg(test)]
-    fn install(&self, store: Store) -> Result<(), Status> {
-        let state = store.state()?;
-        self.install_state(store, state)
-    }
-    fn install_state(&self, store: Store, state: State) -> Result<(), Status> {
-        let view = Arc::new(View {
-            state,
-            history: store.snapshot()?,
-            cursor: store.cursor()?,
-        });
-        *self.0.store.lock().map_err(storage::failure)? = store.clone();
-        *self.0.published.write().map_err(storage::failure)? = Some(view);
-        self.0.status.send_replace(SyncStatus {
-            ready: true,
-            state: SyncState::Live,
-            updated_at: store.updated_at()?,
-        });
-        self.0.changed.send_modify(|v| *v = v.wrapping_add(1));
-        Ok(())
-    }
-    fn apply(&self, batch: w::Batch) -> Result<(), Status> {
-        if batch.cursor.is_empty() {
-            return Err(Status::data_loss("empty replication checkpoint"));
-        }
-        let mut state = self.view()?.state.clone();
-        state.apply(&batch.changes)?;
-        let store = self.0.store.lock().map_err(storage::failure)?.clone();
-        store.apply(&batch.changes, Some(&batch.cursor))?;
-        let view = Arc::new(View {
-            state,
-            history: store.snapshot()?,
-            cursor: batch.cursor,
-        });
-        *self.0.published.write().map_err(storage::failure)? = Some(view);
-        self.0.status.send_replace(SyncStatus {
-            ready: true,
-            state: SyncState::Live,
-            updated_at: store.updated_at()?,
-        });
-        self.0.changed.send_modify(|v| *v = v.wrapping_add(1));
-        Ok(())
-    }
     pub fn books(&self, after: Option<w::BookKey>, limit: usize) -> Result<w::BooksPage, Status> {
         if limit == 0 || limit > 500 {
             return Err(Status::invalid_argument("invalid page size"));
         }
-        use std::ops::Bound::{Excluded, Unbounded};
-        let view = self.view()?;
-        let books = view.state.books();
-        let after = after.as_ref().map(state::book);
-        let mut rows = books.range((after.map_or(Unbounded, Excluded), Unbounded));
-        let data: Vec<_> = rows
-            .by_ref()
-            .take(limit)
-            .map(|((venue, item, currency), _)| w::BookKey {
-                venue_id: venue.clone(),
-                item_type_id: item.clone(),
-                currency_id: currency.clone(),
-            })
-            .collect();
-        Ok(w::BooksPage {
-            next_after: if rows.next().is_some() {
-                data.last().cloned()
-            } else {
-                None
-            },
-            books: data,
-        })
+        Ok(self.view()?.state.books.page(after, limit))
     }
-    pub async fn run(
-        &self,
-        channel: tonic::transport::Channel,
-        authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii>,
-        stop: tokio_util::sync::CancellationToken,
-    ) {
-        let _writer = self.0.writer.lock().await;
-        let task = sync::run(self.clone(), channel, authorization, stop.clone());
-        tokio::pin!(task);
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            tokio::select! {_=&mut task=>break,_=interval.tick()=>self.expire()}
+}
+
+impl ReplicaWriter {
+    pub fn reader(&self) -> ReplicaReader {
+        self.reader.clone()
+    }
+    pub fn cursor(&self) -> Result<String, Status> {
+        self.store.cursor()
+    }
+    pub fn expire_views(&self) {
+        self.reader.expire();
+    }
+    pub fn begin_snapshot(&mut self) -> Result<SnapshotBuilder, Status> {
+        if self.staging.upgrade().is_some() {
+            return Err(Status::failed_precondition(
+                "a replica snapshot is already being built",
+            ));
         }
+        let lease = Arc::new(());
+        let snapshot =
+            SnapshotBuilder::open(&self.path, &self.source, self.owner.clone(), lease.clone())?;
+        self.staging = Arc::downgrade(&lease);
+        Ok(snapshot)
+    }
+    pub fn install_snapshot(&mut self, snapshot: PreparedSnapshot) -> Result<(), Status> {
+        if !Arc::ptr_eq(&snapshot.owner, &self.owner)
+            || snapshot.target != self.path
+            || snapshot.source != self.source
+        {
+            return Err(Status::failed_precondition(
+                "snapshot belongs to another replica or source",
+            ));
+        }
+        std::fs::rename(self.path.with_file_name("building.redb"), &self.path)
+            .map_err(storage::failure)?;
+        std::fs::File::open(
+            self.path
+                .parent()
+                .ok_or_else(|| storage::failure("missing replica directory"))?,
+        )
+        .map_err(storage::failure)?
+        .sync_all()
+        .map_err(storage::failure)?;
+        self.install_state(snapshot.store, snapshot.state)
+    }
+}
+
+impl ReplicaWriter {
+    pub fn mark(&self, state: SyncState) {
+        let mut status = self.reader.status();
+        status.state = state;
+        self.reader.0.status.send_replace(status);
+        self.reader
+            .0
+            .changed
+            .send_modify(|v| *v = v.wrapping_add(1));
+    }
+    #[cfg(test)]
+    fn install(&mut self, store: Store) -> Result<(), Status> {
+        let state = store.state()?;
+        self.install_state(store, state)
+    }
+    fn install_state(&mut self, store: Store, state: State) -> Result<(), Status> {
+        let view = Arc::new(ReplicaView {
+            state,
+            history: store.snapshot()?,
+            cursor: store.cursor()?,
+        });
+        self.store = store.clone();
+        *self.reader.0.published.write().map_err(storage::failure)? = Some(view);
+        self.reader.0.status.send_replace(SyncStatus {
+            ready: true,
+            state: SyncState::Live,
+            updated_at: store.updated_at()?,
+        });
+        self.reader
+            .0
+            .changed
+            .send_modify(|v| *v = v.wrapping_add(1));
+        Ok(())
+    }
+    pub fn apply(&mut self, batch: w::Batch) -> Result<(), Status> {
+        if batch.cursor.is_empty() {
+            return Err(Status::data_loss("empty replication checkpoint"));
+        }
+        let mut state = self.reader.view()?.state.clone();
+        state.apply(&batch.changes)?;
+        let store = &self.store;
+        store.apply(&batch.changes, Some(&batch.cursor))?;
+        let view = Arc::new(ReplicaView {
+            state,
+            history: store.snapshot()?,
+            cursor: batch.cursor,
+        });
+        *self.reader.0.published.write().map_err(storage::failure)? = Some(view);
+        self.reader.0.status.send_replace(SyncStatus {
+            ready: true,
+            state: SyncState::Live,
+            updated_at: store.updated_at()?,
+        });
+        self.reader
+            .0
+            .changed
+            .send_modify(|v| *v = v.wrapping_add(1));
+        Ok(())
     }
 }
 

@@ -37,8 +37,8 @@ fn facts(number: i64) -> std::collections::BTreeMap<String, w::AttributePredicat
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = CoreClient::new(
-        std::env::var("MARKET_FIXTURE_CORE")?,
-        std::env::var("MARKET_NODE_TOKEN")?,
+        std::env::var("MARKET_FIXTURE_HUB_URL")?,
+        std::env::var("MARKET_HUB_TOKEN")?,
     )?;
     let action = std::env::var("MARKET_FIXTURE_ACTION").unwrap_or_else(|_| "seed".into());
     if action.starts_with("seed") {

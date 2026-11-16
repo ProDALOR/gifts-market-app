@@ -1,0 +1,18 @@
+[package]
+name = "market-actors"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+actix.workspace = true
+jiff.workspace = true
+rust_decimal.workspace = true
+market-replica.workspace = true
+market-hub-protocol.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tonic.workspace = true
+[dev-dependencies]
+tempfile = "3"
+[lints]
+workspace = true

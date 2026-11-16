@@ -9,3 +9,12 @@
 **/tests/
 **/examples/
 **/target/
+
+!web/
+!web/**
+web/node_modules/
+web/dist/
+web/src/gen/
+**/*.mtproto.sqlite*
+**/.env
+**/.env.*

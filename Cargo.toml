@@ -7,16 +7,20 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-hub-protocol = { path = "crates/hub-protocol" }
+market-api = { path = "crates/market-api", default-features = false }
+market-actors = { path = "crates/market-actors" }
+market-miniapp = { path = "crates/market-miniapp" }
+market-hub-protocol = { path = "crates/market-hub-protocol" }
+market-hub-client = { path = "crates/market-hub-client" }
 market-replica = { path = "crates/market-replica" }
-market-telegram-app = { path = "crates/telegram" }
+market-telegram = { path = "crates/market-telegram" }
 ed25519-dalek = "3"
-dotenvy = "0.15"
 fs2 = "0.4"
 getrandom = "0.4"
 hmac = "0.12"
 percent-encoding = "2"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+grammers-client = "=0.12.0"
+grammers-session = "=0.12.0"
 url = "2"
 redb = "4.6"
 im = "15"
@@ -24,6 +28,7 @@ rust_decimal = { version = "1", features = ["serde-with-str"] }
 base64 = "0.22"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
+actix = "0.13.5"
 actix-web = "4"
 actix-ws = "0.4"
 actix-cors = "0.7"

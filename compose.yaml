@@ -5,7 +5,9 @@ services:
     image: ${MARKET_APP_IMAGE:-market-app:local}
     build:
       context: .
-      target: market-app
+      target: ${MARKET_IMAGE_TARGET:-market-app}
+      args:
+        MARKET_FEATURES: ${MARKET_FEATURES:-}
     init: true
     restart: unless-stopped
     read_only: true
@@ -14,38 +16,27 @@ services:
     stop_grace_period: 15s
     tmpfs: ["/tmp:size=16m,mode=1777,nosuid,nodev"]
     networks: [market]
-    volumes: ["market-app-data:/data"]
-    command: [--bind, "0.0.0.0:8080"]
+    volumes: ["market-app-data:/data", "market-bot-data:/bot-data"]
     environment:
-      MARKET_CORE_URL: ${MARKET_CORE_URL:-http://market-hub:50051}
-      MARKET_NODE_TOKEN: ${MARKET_NODE_TOKEN:?Set MARKET_NODE_TOKEN to an issued service token}
-      MARKET_DATA_DIR: /data
-      MARKET_TELEGRAM_BOT_ID: ${MARKET_TELEGRAM_BOT_ID:-0}
-      MARKET_TELEGRAM_BOT_USERNAME: ${MARKET_TELEGRAM_BOT_USERNAME:-}
+      MARKET_HUB_URL: ${MARKET_HUB_URL:-http://market-hub:50051}
+      MARKET_HUB_TOKEN: ${MARKET_HUB_TOKEN:?Set MARKET_HUB_TOKEN to an issued service token}
+      MARKET_NO_WEB: ${MARKET_NO_WEB:-false}
+      MARKET_WEB_DIR: ${MARKET_WEB_DIR:-/app/web/dist}
+      MARKET_CORS_ORIGINS: ${MARKET_CORS_ORIGINS:-}
+      MARKET_HTTP_WORKERS: ${MARKET_HTTP_WORKERS:-2}
+      MARKET_MAX_CONCURRENT_QUERIES: ${MARKET_MAX_CONCURRENT_QUERIES:-32}
+      MARKET_MAX_LIVE_QUERIES: ${MARKET_MAX_LIVE_QUERIES:-128}
+      MARKET_MINIAPP_BOT_ID: ${MARKET_MINIAPP_BOT_ID:-0}
+      MARKET_MINIAPP_BOT_USERNAME: ${MARKET_MINIAPP_BOT_USERNAME:-}
       MARKET_PUBLIC_URL: ${MARKET_PUBLIC_URL:-}
+      MARKET_BOT_ENABLED: ${MARKET_BOT_ENABLED:-false}
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-0}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       MARKET_SESSION_KEY: ${MARKET_SESSION_KEY:-}
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "0.0.0.0:${MARKET_APP_PORT:-8080}:8080"
-
-  market-bot:
-    profiles: [telegram]
-    image: ${MARKET_BOT_IMAGE:-market-bot:local}
-    build:
-      context: .
-      target: market-bot
-    init: true
-    restart: unless-stopped
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    stop_grace_period: 15s
-    volumes: ["market-bot-data:/data"]
-    tmpfs: ["/tmp:size=16m,mode=1777,nosuid,nodev"]
-    environment:
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      MARKET_PUBLIC_URL: ${MARKET_PUBLIC_URL:-}
-      MARKET_BOT_DATA_DIR: /data
 
 networks:
   market:

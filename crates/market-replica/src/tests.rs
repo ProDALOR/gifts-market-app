@@ -1,16 +1,16 @@
 use super::*;
 use w::entity::Entity as E;
-fn entity(value: E) -> w::Entity {
+pub(super) fn entity(value: E) -> w::Entity {
     w::Entity {
         entity: Some(value),
     }
 }
-fn upsert(value: w::Entity) -> w::Change {
+pub(super) fn upsert(value: w::Entity) -> w::Change {
     w::Change {
         change: Some(w::change::Change::Upsert(value)),
     }
 }
-fn catalog() -> Vec<w::Change> {
+pub(super) fn catalog() -> Vec<w::Change> {
     vec![
         upsert(entity(E::Venue(w::Venue {
             id: "venue".into(),
@@ -65,7 +65,7 @@ fn catalog() -> Vec<w::Change> {
         }))),
     ]
 }
-fn order(id: &str, price: &str, time: Option<i64>) -> w::Order {
+pub(super) fn order(id: &str, price: &str, time: Option<i64>) -> w::Order {
     w::Order {
         id: id.into(),
         book: Some(w::BookKey {
@@ -81,7 +81,7 @@ fn order(id: &str, price: &str, time: Option<i64>) -> w::Order {
         ..Default::default()
     }
 }
-fn read(mode: i32, history: bool) -> w::ReadRequest {
+pub(super) fn read(mode: i32, history: bool) -> w::ReadRequest {
     w::ReadRequest {
         selection: Some(w::Selection {
             source: Some(w::selection::Source::Scope(w::Scope {
@@ -98,16 +98,43 @@ fn read(mode: i32, history: bool) -> w::ReadRequest {
         ..Default::default()
     }
 }
-fn setup() -> (tempfile::TempDir, Replica) {
+// Pure state/storage tests use a local writer. Production writes are only exposed
+// through the actor's private replication capability (covered in actor tests).
+struct Fixture {
+    reader: ReplicaReader,
+    writer: std::sync::Mutex<ReplicaWriter>,
+}
+impl Fixture {
+    fn open(directory: &std::path::Path, source: &str) -> Result<Self, Status> {
+        let writer = ReplicaWriter::open(directory, source)?;
+        Ok(Self {
+            reader: writer.reader.clone(),
+            writer: std::sync::Mutex::new(writer),
+        })
+    }
+    fn apply(&self, batch: w::Batch) -> Result<(), Status> {
+        self.writer.lock().unwrap().apply(batch)
+    }
+    fn install(&self, store: Store) -> Result<(), Status> {
+        self.writer.lock().unwrap().install(store)
+    }
+}
+impl std::ops::Deref for Fixture {
+    type Target = ReplicaReader;
+    fn deref(&self) -> &ReplicaReader {
+        &self.reader
+    }
+}
+fn setup() -> (tempfile::TempDir, Fixture) {
     let dir = tempfile::tempdir().unwrap();
-    let replica = Replica::open(dir.path(), "test-source").unwrap();
-    let store = replica.0.store.lock().unwrap().clone();
+    let replica = Fixture::open(dir.path(), "test-source").unwrap();
+    let store = replica.writer.lock().unwrap().store.clone();
     store.apply(&catalog(), Some("c0")).unwrap();
     replica.install(store).unwrap();
     (dir, replica)
 }
-fn apply(replica: &Replica, changes: Vec<w::Change>, cursor: &str) {
-    replica
+fn apply(fixture: &Fixture, changes: Vec<w::Change>, cursor: &str) {
+    fixture
         .apply(w::Batch {
             changes,
             cursor: cursor.into(),
@@ -218,7 +245,7 @@ fn terminal_transitions_late_backfills_and_snapshots_remain_consistent() {
     retry.observed_at_ms = 2000;
     apply(&replica, vec![upsert(entity(E::Order(retry)))], "c3");
     drop(replica);
-    let reopened = Replica::open(dir.path(), "test-source").unwrap();
+    let reopened = Fixture::open(dir.path(), "test-source").unwrap();
     assert!(reopened.status().ready);
     assert_eq!(reopened.status().state, SyncState::Stale);
     let mut history = read(0, true);
@@ -255,7 +282,7 @@ fn rejected_batches_persist_neither_current_changes_nor_checkpoint() {
         "1"
     );
     drop(replica);
-    let restored = Replica::open(dir.path(), "test-source").unwrap();
+    let restored = Fixture::open(dir.path(), "test-source").unwrap();
     assert_eq!(restored.view().unwrap().cursor, "good");
     assert_eq!(
         state::order(&restored.read(read(1, false)).unwrap().page.entities[0])
@@ -378,202 +405,6 @@ fn history_leaf_indexes_preserve_duplicate_counts_and_same_object_correlation() 
         assert_eq!(replica.read(query).unwrap().page.entities.len(), expected);
     }
 }
-#[tokio::test]
-async fn snapshot_paging_spools_changes_before_older_snapshot_rows_and_resumes_saved_state() {
-    use tokio_stream::wrappers::TcpListenerStream;
-    use tonic::{Request, Response, transport::Server};
-    #[derive(Clone)]
-    struct Peer {
-        reads: Arc<std::sync::atomic::AtomicUsize>,
-        watches: Arc<std::sync::atomic::AtomicUsize>,
-        reset: Arc<std::sync::atomic::AtomicBool>,
-    }
-    #[tonic::async_trait]
-    impl w::market_read_server::MarketRead for Peer {
-        async fn books(
-            &self,
-            _: Request<w::BooksRequest>,
-        ) -> Result<Response<w::BooksPage>, Status> {
-            Err(Status::unimplemented("replication never needs Books"))
-        }
-        type ReadStream = tokio_stream::Once<Result<w::Page, Status>>;
-        async fn read(
-            &self,
-            r: Request<w::ReadRequest>,
-        ) -> Result<Response<Self::ReadStream>, Status> {
-            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            assert!(r.get_ref().selection.is_none());
-            if self.reset.load(std::sync::atomic::Ordering::SeqCst) {
-                let mut entities = catalog()
-                    .into_iter()
-                    .map(|change| match change.change.unwrap() {
-                        w::change::Change::Upsert(e) => e,
-                        _ => unreachable!(),
-                    })
-                    .collect::<Vec<_>>();
-                entities.push(entity(E::Order(order("new", "5", None))));
-                return Ok(Response::new(tokio_stream::once(Ok(w::Page {
-                    entities,
-                    cursor: "new0".into(),
-                    ..Default::default()
-                }))));
-            }
-            let page = if r.get_ref().page_token.is_empty() {
-                w::Page {
-                    entities: catalog()
-                        .into_iter()
-                        .map(|c| match c.change.unwrap() {
-                            w::change::Change::Upsert(e) => e,
-                            _ => unreachable!(),
-                        })
-                        .collect(),
-                    next_page_token: "later".into(),
-                    cursor: "c0".into(),
-                }
-            } else {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                w::Page {
-                    entities: vec![entity(E::Order(order("late-row", "9", None)))],
-                    cursor: "c0".into(),
-                    ..Default::default()
-                }
-            };
-            Ok(Response::new(tokio_stream::once(Ok(page))))
-        }
-        type WatchStream =
-            std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<w::Batch, Status>> + Send>>;
-        async fn watch(
-            &self,
-            r: Request<w::WatchRequest>,
-        ) -> Result<Response<Self::WatchStream>, Status> {
-            use tokio_stream::StreamExt;
-            self.watches
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let cursor = r.into_inner().after_cursor;
-            if self.reset.load(std::sync::atomic::Ordering::SeqCst) && cursor != "new0" {
-                return Err(Status::failed_precondition("old generation"));
-            }
-            let frames = if cursor == "new0" {
-                vec![Ok(w::Batch {
-                    cursor,
-                    changes: vec![],
-                })]
-            } else if cursor == "c0" {
-                vec![
-                    Ok(w::Batch {
-                        cursor: "c0".into(),
-                        changes: vec![],
-                    }),
-                    Ok(w::Batch {
-                        cursor: "c1".into(),
-                        changes: vec![
-                            upsert(entity(E::Order(order("late-row", "1", None)))),
-                            upsert(entity(E::Order(order("executed", "2", Some(1))))),
-                        ],
-                    }),
-                ]
-            } else {
-                assert_eq!(cursor, "c1");
-                vec![Ok(w::Batch {
-                    cursor,
-                    changes: vec![],
-                })]
-            };
-            Ok(Response::new(Box::pin(
-                tokio_stream::iter(frames).chain(tokio_stream::pending()),
-            )))
-        }
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let channel = tonic::transport::Endpoint::from_shared(format!(
-        "http://{}",
-        listener.local_addr().unwrap()
-    ))
-    .unwrap()
-    .connect_lazy();
-    let peer = Peer {
-        reads: Arc::default(),
-        watches: Arc::default(),
-        reset: Arc::default(),
-    };
-    let server = peer.clone();
-    let stopped = tokio_util::sync::CancellationToken::new();
-    let cancel = stopped.clone();
-    let server = tokio::spawn(async move {
-        Server::builder()
-            .add_service(w::market_read_server::MarketReadServer::new(server))
-            .serve_with_incoming_shutdown(
-                TcpListenerStream::new(listener),
-                cancel.cancelled_owned(),
-            )
-            .await
-            .unwrap();
-    });
-    for phase in 0..3 {
-        let restored = phase > 0;
-        if phase == 2 {
-            peer.reset.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        let replica = Replica::open(dir.path(), "test-source").unwrap();
-        if restored {
-            assert!(replica.status().ready);
-        }
-        let target = replica.clone();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let worker_stop = cancel.clone();
-        let channel = channel.clone();
-        let worker = tokio::spawn(async move {
-            target
-                .run(channel, "Bearer test.token".parse().unwrap(), worker_stop)
-                .await
-        });
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while replica.status().state != SyncState::Live
-                || replica
-                    .view()
-                    .map(|v| v.cursor != if phase == 2 { "new0" } else { "c1" })
-                    .unwrap_or(true)
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        let current = replica.read(read(1, false)).unwrap();
-        assert_eq!(
-            state::order(&current.page.entities[0]).unwrap().price,
-            if phase == 2 { "5" } else { "1" }
-        );
-        if phase == 2 {
-            assert!(
-                replica
-                    .read(read(0, true))
-                    .unwrap()
-                    .page
-                    .entities
-                    .is_empty(),
-                "replacement snapshots remove old history"
-            );
-        } else {
-            assert_eq!(
-                ids(&replica.read(read(0, true)).unwrap().page),
-                ["executed"]
-            );
-        }
-        cancel.cancel();
-        worker.await.unwrap();
-        drop(replica);
-    }
-    assert_eq!(
-        peer.reads.load(std::sync::atomic::Ordering::SeqCst),
-        3,
-        "restart must resume without a new snapshot"
-    );
-    assert_eq!(peer.watches.load(std::sync::atomic::Ordering::SeqCst), 4);
-    stopped.cancel();
-    server.await.unwrap();
-}
 
 #[test]
 fn book_directory_tracks_feed_references_and_price_mode_currency_moves_without_ghosts() {
@@ -635,4 +466,167 @@ fn book_directory_tracks_feed_references_and_price_mode_currency_moves_without_g
         "c4",
     );
     assert!(replica.books(None, 10).unwrap().books.is_empty());
+}
+
+#[test]
+fn shared_book_references_and_directory_pagination_survive_restart() {
+    let (directory, replica) = setup();
+    let primary = order("a", "1", None).book.unwrap();
+    let mut declared_only = primary.clone();
+    declared_only.venue_id = "zeta".into();
+    let mut bid = order("b", "2", None);
+    bid.mode = w::OrderMode::Bid as i32;
+    let mut stars = order("stars", "3", None);
+    stars.book.as_mut().unwrap().currency_id = "XTR".into();
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Feed(w::Feed {
+                id: "first".into(),
+                books: vec![primary.clone(), primary.clone(), declared_only.clone()],
+                ..Default::default()
+            }))),
+            upsert(entity(E::Feed(w::Feed {
+                id: "second".into(),
+                books: vec![primary.clone()],
+                ..Default::default()
+            }))),
+            upsert(entity(E::Order(order("a", "1", None)))),
+            upsert(entity(E::Order(bid))),
+            upsert(entity(E::Order(stars))),
+        ],
+        "books1",
+    );
+    let mut all = Vec::new();
+    let mut after = None;
+    loop {
+        let page = replica.books(after, 1).unwrap();
+        all.extend(page.books);
+        after = page.next_after;
+        if after.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        all,
+        [
+            primary.clone(),
+            w::BookKey {
+                currency_id: "XTR".into(),
+                ..primary.clone()
+            },
+            declared_only
+        ]
+    );
+    let remove = |kind, id: &str| w::Change {
+        change: Some(w::change::Change::Remove(w::Removal {
+            key: Some(w::Key {
+                kind,
+                id: id.into(),
+                venue_id: if kind == 7 {
+                    "venue".into()
+                } else {
+                    String::new()
+                },
+            }),
+            ..Default::default()
+        })),
+    };
+    apply(
+        &replica,
+        vec![remove(6, "first"), remove(7, "a"), remove(6, "second")],
+        "books2",
+    );
+    assert_eq!(
+        replica.books(None, 10).unwrap().books.len(),
+        2,
+        "the remaining bid keeps its book alive"
+    );
+    apply(&replica, vec![remove(7, "b")], "books3");
+    let expected = replica.books(None, 10).unwrap();
+    assert_eq!(expected.books.len(), 1);
+    assert_eq!(expected.books[0].currency_id, "XTR");
+    drop(replica);
+    let restored = Fixture::open(directory.path(), "test-source").unwrap();
+    assert_eq!(restored.books(None, 10).unwrap(), expected);
+}
+
+#[test]
+fn legacy_continuations_keep_their_shape_and_exact_boundaries() {
+    use crate::types::{EntityKind, Key, Position, Sort};
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use serde_json::json;
+    assert_eq!(
+        serde_json::to_value(Key::order("venue".into(), "a".into())).unwrap(),
+        json!([7, "venue", "a"])
+    );
+    let position = Position {
+        executed_at_ms: 10,
+        venue_id: "venue".into(),
+        order_id: "x".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(position).unwrap(),
+        json!([10, "venue", "x"])
+    );
+    assert_eq!(serde_json::to_value(Sort::PriceDesc).unwrap(), json!(2));
+    assert!(serde_json::from_value::<Key>(json!([0, "venue", "a"])).is_err());
+    assert!(serde_json::from_value::<Key>(json!([1, "venue", "a"])).is_err());
+    assert!(serde_json::from_value::<Sort>(json!(3)).is_err());
+    let (_directory, replica) = setup();
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Order(order("a", "1", None)))),
+            upsert(entity(E::Order(order("b", "1", None)))),
+            upsert(entity(E::Order(order("c", "2", None)))),
+            upsert(entity(E::Order(order("x", "1", Some(10))))),
+            upsert(entity(E::Order(order("y", "1", Some(20))))),
+        ],
+        "typed",
+    );
+    for (history, sort, boundary, expected) in [
+        (false, 1, json!({"Price":["1",[7,"venue","a"]]}), "b"),
+        (false, 2, json!({"Price":["2",[7,"venue","c"]]}), "b"),
+        (false, 0, json!({"Current":[7,"venue","a"]}), "b"),
+        (true, 0, json!({"History":[10,"venue","x"]}), "y"),
+    ] {
+        let mut query = read(1, history);
+        query.sort = sort;
+        let filter = crate::query::Filter::compile(&replica.view().unwrap().state, &query).unwrap();
+        query.page_token = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&json!({
+                "selection":filter.fingerprint, "sort":sort, "position":boundary, "snapshot":null
+            }))
+            .unwrap(),
+        );
+        assert_eq!(ids(&replica.read(query).unwrap().page), [expected]);
+    }
+    // Inclusive price bounds must retain every identity tied at the same exact price.
+    let mut query = read(1, false);
+    query.limit = 10;
+    if let Some(w::selection::Source::Scope(scope)) =
+        query.selection.as_mut().unwrap().source.as_mut()
+    {
+        scope.price = Some(w::PriceRange {
+            min: Some("1".into()),
+            max: Some("1.000".into()),
+        });
+    }
+    assert_eq!(ids(&replica.read(query.clone()).unwrap().page), ["a", "b"]);
+    query.sort = 2;
+    assert_eq!(ids(&replica.read(query).unwrap().page), ["b", "a"]);
+    let mut invalid = read(1, false);
+    invalid.selection.as_mut().unwrap().kinds = vec![0];
+    assert!(replica.read(invalid).is_err());
+    let mut keys = replica
+        .view()
+        .unwrap()
+        .state
+        .entities
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(keys.first().unwrap().kind, EntityKind::Venue);
 }

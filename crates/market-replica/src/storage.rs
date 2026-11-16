@@ -1,19 +1,18 @@
 use crate::{
     query::Filter,
     state::{self, State},
+    types::{IndexKind, IndexTerm, Key, Leaf, OrderMode},
 };
-use hub_protocol::wire as w;
+use market_hub_protocol::wire as w;
 use prost::Message;
 use redb::{
     Database, Durability, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata,
     TableDefinition,
 };
-use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 use tonic::Status;
 
-pub(crate) type IndexTerm = (u8, Vec<u8>, Vec<u8>);
-pub(crate) type Leaf = (Vec<u8>, Vec<u8>);
+pub use crate::types::Position;
 type Identity<'a> = (i32, &'a str, &'a str);
 type TimeKey<'a> = (i64, &'a str, &'a str);
 type IndexKey<'a> = (u8, &'a [u8], &'a [u8], TimeKey<'a>);
@@ -23,13 +22,6 @@ const EXECUTIONS: TableDefinition<TimeKey<'static>, &[u8]> = TableDefinition::ne
 const IDENTITIES: TableDefinition<(&str, &str), i64> = TableDefinition::new("identities");
 const INDEX: TableDefinition<IndexKey<'static>, ()> = TableDefinition::new("index");
 const JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("bootstrap_journal");
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Position(pub i64, pub String, pub String);
-impl Position {
-    fn key(&self) -> TimeKey<'_> {
-        (self.0, &self.1, &self.2)
-    }
-}
 #[derive(Clone)]
 pub struct Store(Arc<Database>);
 #[derive(Clone)]
@@ -138,12 +130,14 @@ impl Store {
                             .as_ref()
                             .ok_or_else(|| Status::data_loss("missing removal key"))?;
                         current
-                            .remove((k.kind, k.venue_id.as_str(), k.id.as_str()))
+                            .remove(Key::try_from(k)?.stored())
                             .map_err(failure)?;
                     }
                     w::change::Change::Upsert(entity) => {
                         let key = state::entity_key(entity)?;
-                        if let Some(order) = state::order(entity).filter(|v| v.mode == 3) {
+                        if let Some(order) = state::order(entity).filter(|v| {
+                            OrderMode::try_from(v.mode).ok() == Some(OrderMode::Executed)
+                        }) {
                             let book = order
                                 .book
                                 .as_ref()
@@ -153,7 +147,7 @@ impl Store {
                             let time = order
                                 .executed_at_ms
                                 .ok_or_else(|| Status::data_loss("missing execution time"))?;
-                            current.remove((7, venue, id)).map_err(failure)?;
+                            current.remove(key.stored()).map_err(failure)?;
                             if let Some(old) = identities.get((venue, id)).map_err(failure)? {
                                 let payload = executions
                                     .get((old.value(), venue, id))
@@ -173,20 +167,22 @@ impl Store {
                                 .insert((time, venue, id), order.encode_to_vec().as_slice())
                                 .map_err(failure)?;
                             identities.insert((venue, id), time).map_err(failure)?;
-                            for (tag, path, value) in execution_indexes(order)? {
+                            for IndexTerm { kind, path, value } in execution_indexes(order)? {
                                 index
                                     .insert(
-                                        (tag, path.as_slice(), value.as_slice(), (time, venue, id)),
+                                        (
+                                            kind as u8,
+                                            path.as_slice(),
+                                            value.as_slice(),
+                                            (time, venue, id),
+                                        ),
                                         (),
                                     )
                                     .map_err(failure)?;
                             }
                         } else {
                             current
-                                .insert(
-                                    (key.0, key.1.as_str(), key.2.as_str()),
-                                    entity.encode_to_vec().as_slice(),
-                                )
+                                .insert(key.stored(), entity.encode_to_vec().as_slice())
                                 .map_err(failure)?;
                         }
                     }
@@ -261,10 +257,10 @@ pub fn leaves(
             if let Some(V::Decimal(v)) = &mut value.value {
                 *v = state::decimal(v)?.to_string();
             }
-            out.insert((
-                serde_json::to_vec(path).map_err(failure)?,
-                value.encode_to_vec(),
-            ));
+            out.insert(Leaf {
+                path: serde_json::to_vec(path).map_err(failure)?,
+                value: value.encode_to_vec(),
+            });
         }
     }
     Ok(())
@@ -275,20 +271,32 @@ fn execution_indexes(order: &w::Order) -> Result<BTreeSet<IndexTerm>, Status> {
         .as_ref()
         .ok_or_else(|| Status::data_loss("missing book"))?;
     let mut rows: BTreeSet<_> = [
-        (0, vec![], b.venue_id.as_bytes().to_vec()),
-        (1, vec![], b.item_type_id.as_bytes().to_vec()),
-        (
-            2,
-            b.item_type_id.as_bytes().to_vec(),
-            b.currency_id.as_bytes().to_vec(),
-        ),
+        IndexTerm {
+            kind: IndexKind::Venue,
+            path: vec![],
+            value: b.venue_id.as_bytes().to_vec(),
+        },
+        IndexTerm {
+            kind: IndexKind::ItemType,
+            path: vec![],
+            value: b.item_type_id.as_bytes().to_vec(),
+        },
+        IndexTerm {
+            kind: IndexKind::Book,
+            path: b.item_type_id.as_bytes().to_vec(),
+            value: b.currency_id.as_bytes().to_vec(),
+        },
     ]
     .into();
     for (id, predicate) in &order.attributes {
         if let Some(w::attribute_predicate::Predicate::Eq(value)) = &predicate.predicate {
             let mut facts = BTreeSet::new();
             leaves(&mut vec![id.clone()], value, &mut facts)?;
-            rows.extend(facts.into_iter().map(|(path, value)| (3, path, value)));
+            rows.extend(facts.into_iter().map(|Leaf { path, value }| IndexTerm {
+                kind: IndexKind::Attribute,
+                path,
+                value,
+            }));
         }
     }
     Ok(rows)
@@ -309,9 +317,11 @@ impl Snapshot {
             .unwrap_or(i64::MIN);
         let until = filter.period.as_ref().and_then(|p| p.until_ms);
         let start = after
-            .filter(|p| p.0 >= from)
-            .map_or(Included((from, "", "")), |p| Excluded(p.key()));
-        if until.is_some_and(|until| from >= until || after.is_some_and(|p| p.0 >= until)) {
+            .filter(|p| p.executed_at_ms >= from)
+            .map_or(Included((from, "", "")), |p| Excluded(p.stored()));
+        if until
+            .is_some_and(|until| from >= until || after.is_some_and(|p| p.executed_at_ms >= until))
+        {
             return Ok((Vec::new(), None));
         }
         let end = until.map_or(Unbounded, |time| Excluded((time, "", "")));
@@ -319,31 +329,46 @@ impl Snapshot {
         let index = self.read.open_table(INDEX).map_err(failure)?;
         let candidate = filter.index()?;
         let rows: Box<dyn Iterator<Item = Result<Position, Status>> + '_> =
-            if let Some((tag, path, value)) = &candidate {
+            if let Some(IndexTerm { kind, path, value }) = &candidate {
                 let lo = match start {
-                    Included(t) => Included((*tag, path.as_slice(), value.as_slice(), t)),
-                    Excluded(t) => Excluded((*tag, path.as_slice(), value.as_slice(), t)),
+                    Included(t) => Included((*kind as u8, path.as_slice(), value.as_slice(), t)),
+                    Excluded(t) => Excluded((*kind as u8, path.as_slice(), value.as_slice(), t)),
                     Unbounded => unreachable!(),
                 };
                 let hi = until.map_or(
                     Included((
-                        *tag,
+                        *kind as u8,
                         path.as_slice(),
                         value.as_slice(),
                         (i64::MAX, "\u{10ffff}", "\u{10ffff}"),
                     )),
-                    |time| Excluded((*tag, path.as_slice(), value.as_slice(), (time, "", ""))),
+                    |time| {
+                        Excluded((
+                            *kind as u8,
+                            path.as_slice(),
+                            value.as_slice(),
+                            (time, "", ""),
+                        ))
+                    },
                 );
                 Box::new(index.range((lo, hi)).map_err(failure)?.map(|row| {
                     let (key, _) = row.map_err(failure)?;
                     let (_, _, _, (t, v, id)) = key.value();
-                    Ok(Position(t, v.into(), id.into()))
+                    Ok(Position {
+                        executed_at_ms: t,
+                        venue_id: v.into(),
+                        order_id: id.into(),
+                    })
                 }))
             } else {
                 Box::new(executions.range((start, end)).map_err(failure)?.map(|row| {
                     let (key, _) = row.map_err(failure)?;
                     let (t, v, id) = key.value();
-                    Ok(Position(t, v.into(), id.into()))
+                    Ok(Position {
+                        executed_at_ms: t,
+                        venue_id: v.into(),
+                        order_id: id.into(),
+                    })
                 }))
             };
         let mut data = Vec::new();
@@ -355,7 +380,7 @@ impl Snapshot {
                 return Ok((data, position));
             }
             let raw = executions
-                .get(row.key())
+                .get(row.stored())
                 .map_err(failure)?
                 .ok_or_else(|| failure("index points to missing execution"))?;
             let order = w::Order::decode(raw.value()).map_err(failure)?;
@@ -376,5 +401,160 @@ impl Snapshot {
             position = Some(row);
         }
         Ok((data, None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_database_tuple_keys_remain_readable_and_writable() {
+        let directory = tempfile::tempdir().unwrap();
+        let book = w::BookKey {
+            venue_id: "venue".into(),
+            item_type_id: "gift".into(),
+            currency_id: "GRAM".into(),
+        };
+        let active = w::Order {
+            id: "active".into(),
+            book: Some(book.clone()),
+            mode: 1,
+            price: "1.25".into(),
+            quantity: "1".into(),
+            ..Default::default()
+        };
+        let executed = w::Order {
+            id: "old".into(),
+            mode: 3,
+            executed_at_ms: Some(10),
+            ..active.clone()
+        };
+        // Write the old persisted representation directly, independently of typed key conversion.
+        {
+            let database = Database::create(directory.path().join("replica.redb")).unwrap();
+            let tx = database.begin_write().unwrap();
+            {
+                let mut meta = tx.open_table(META).unwrap();
+                meta.insert("source", b"legacy-source".as_slice()).unwrap();
+                meta.insert("cursor", b"legacy-checkpoint".as_slice())
+                    .unwrap();
+                let mut current = tx.open_table(CURRENT).unwrap();
+                for (kind, id, venue, entity) in [
+                    (
+                        1,
+                        "venue",
+                        "",
+                        w::entity::Entity::Venue(w::Venue {
+                            id: "venue".into(),
+                            name: "Venue".into(),
+                        }),
+                    ),
+                    (
+                        2,
+                        "GRAM",
+                        "",
+                        w::entity::Entity::Currency(w::Currency {
+                            id: "GRAM".into(),
+                            name: "Gram".into(),
+                            decimals: 9,
+                        }),
+                    ),
+                    (
+                        3,
+                        "gift",
+                        "",
+                        w::entity::Entity::ItemType(w::ItemType {
+                            id: "gift".into(),
+                            name: "Gift".into(),
+                            quantity_step: "1".into(),
+                            ..Default::default()
+                        }),
+                    ),
+                    (
+                        7,
+                        "active",
+                        "venue",
+                        w::entity::Entity::Order(active.clone()),
+                    ),
+                ] {
+                    current
+                        .insert(
+                            (kind, venue, id),
+                            w::Entity {
+                                entity: Some(entity),
+                            }
+                            .encode_to_vec()
+                            .as_slice(),
+                        )
+                        .unwrap();
+                }
+                tx.open_table(EXECUTIONS)
+                    .unwrap()
+                    .insert((10, "venue", "old"), executed.encode_to_vec().as_slice())
+                    .unwrap();
+                tx.open_table(IDENTITIES)
+                    .unwrap()
+                    .insert(("venue", "old"), 10)
+                    .unwrap();
+                tx.open_table(INDEX)
+                    .unwrap()
+                    .insert(
+                        (
+                            2,
+                            b"gift".as_slice(),
+                            b"GRAM".as_slice(),
+                            (10, "venue", "old"),
+                        ),
+                        (),
+                    )
+                    .unwrap();
+                tx.open_table(JOURNAL).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let mut writer = crate::ReplicaWriter::open(directory.path(), "legacy-source").unwrap();
+        let replica = writer.reader.clone();
+        let query = |mode, sort| w::ReadRequest {
+            selection: Some(w::Selection {
+                source: Some(w::selection::Source::Scope(w::Scope {
+                    item_type_id: Some("gift".into()),
+                    currency_id: Some("GRAM".into()),
+                    modes: vec![mode],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            sort,
+            ..Default::default()
+        };
+        assert_eq!(
+            state::order(&replica.read(query(1, 1)).unwrap().page.entities[0])
+                .unwrap()
+                .id,
+            "active"
+        );
+        assert_eq!(
+            state::order(&replica.read(query(3, 0)).unwrap().page.entities[0])
+                .unwrap()
+                .id,
+            "old"
+        );
+        writer
+            .apply(w::Batch {
+                cursor: "typed-checkpoint".into(),
+                changes: vec![w::Change {
+                    change: Some(w::change::Change::Upsert(w::Entity {
+                        entity: Some(w::entity::Entity::Order(w::Order {
+                            mode: 3,
+                            executed_at_ms: Some(20),
+                            ..active
+                        })),
+                    })),
+                }],
+            })
+            .unwrap();
+        assert!(replica.read(query(1, 1)).unwrap().page.entities.is_empty());
+        assert_eq!(replica.read(query(3, 0)).unwrap().page.entities.len(), 2);
     }
 }

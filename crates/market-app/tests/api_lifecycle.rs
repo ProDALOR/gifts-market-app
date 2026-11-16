@@ -1,0 +1,129 @@
+use futures_util::StreamExt;
+use market_api::{ApiConfig, ApiServer};
+use market_app::MarketRuntime;
+use std::{path::Path, time::Duration};
+use tokio_tungstenite::tungstenite::Message;
+
+fn server(runtime: &MarketRuntime, web_dir: &Path) -> ApiServer {
+    ApiServer::bind(
+        ApiConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            workers: 2,
+            web_dir: Some(web_dir.to_owned()),
+            cors_origins: vec![],
+            limits: Default::default(),
+        },
+        runtime.handle(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn application_starts_api_once_and_shutdown_closes_connections_and_releases_listener() {
+    let directory = tempfile::tempdir().unwrap();
+    let web_dir = directory.path().join("web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "<html></html>").unwrap();
+    let runtime = MarketRuntime::open(directory.path(), "test", 2, 2)
+        .await
+        .unwrap();
+    let api = server(&runtime, &web_dir);
+    let address = api.local_addr().unwrap();
+    runtime.start_api(api).unwrap();
+    assert!(runtime.start_api(server(&runtime, &web_dir)).is_err());
+
+    let (mut socket, _) = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio_tungstenite::connect_async(format!("ws://{address}/ws")),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), runtime.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => continue,
+                other => panic!("API did not gracefully close its WebSocket: {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(tokio::net::TcpStream::connect(address).await.is_err());
+    assert!(runtime.start_api(server(&runtime, &web_dir)).is_err());
+}
+
+#[cfg(not(any(feature = "bot", feature = "miniapp")))]
+#[tokio::test]
+async fn api_only_process_ignores_telegram_environment_and_creates_no_auth_storage() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path().join("data");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_market-app"))
+        .args([
+            "--bind",
+            &address.to_string(),
+            "--hub-url",
+            "http://127.0.0.1:1",
+            "--hub-token",
+            "public-app.private-test-service-token",
+        ])
+        .arg("--no-web")
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .envs([
+            ("MARKET_CORS_ORIGINS", ""),
+            ("MARKET_HTTP_WORKERS", "1"),
+            ("MARKET_MAX_CONCURRENT_QUERIES", "3"),
+            ("MARKET_MAX_LIVE_QUERIES", "4"),
+            ("MARKET_BOT_ENABLED", "not-a-boolean"),
+            ("MARKET_MINIAPP_BOT_ID", "not-an-id"),
+            ("MARKET_MINIAPP_BOT_USERNAME", "invalid username"),
+            ("MARKET_PUBLIC_URL", "not-a-url"),
+            ("TELEGRAM_API_ID", "not-an-id"),
+            ("TELEGRAM_API_HASH", "unused"),
+            ("TELEGRAM_BOT_TOKEN", "unused"),
+            ("MARKET_SESSION_KEY", "unused"),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "API-only process exited during startup"
+            );
+            if let Ok(mut stream) = tokio::net::TcpStream::connect(address).await {
+                stream
+                    .write_all(
+                        b"GET /sync HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                let mut response = String::new();
+                stream.read_to_string(&mut response).await.unwrap();
+                break response;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    child.kill().await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("\"ready\":false"));
+    assert!(!data_dir.join("session.key").exists());
+    assert!(!data_dir.join("bot").exists());
+}

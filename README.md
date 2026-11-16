@@ -14,23 +14,29 @@ Each app process shares one replica across its HTTP workers. Current catalog, fe
 Issue a service token on the hub with `market-hub token --id market-app`, then configure this application:
 
 ```sh
-export MARKET_NODE_TOKEN='<issued service token>'
+export MARKET_HUB_TOKEN='<issued service token>'
 npm --prefix web ci
 npm --prefix web run build
-cargo run --locked --bin market-app -- --core http://127.0.0.1:50051 --data-dir data
+cargo run --locked --bin market-app -- --hub-url http://127.0.0.1:50051 --data-dir data
 ```
 
 Open `http://127.0.0.1:8080`. The interface provides collection search, separate quote currencies, unified or single-venue offers and bids, exact price ordering, typed catalog filters, execution history and order details. It receives only its visible page. Filters stay in the URL; pagination and pause/resume retain the selected boundary. Executions are confirmed facts from adapters; disappearing listings do not imply sales.
 
-The service token stays on the server. Visitors need no hub credentials. Native configuration uses `MARKET_CORE_URL`, `MARKET_NODE_TOKEN`, `MARKET_HTTP_ADDR` and `MARKET_DATA_DIR`, or their CLI options. Every app instance needs its own data directory. It is bound to the source hub URL and service identity; use a new directory when connecting to a different source.
+The service token stays on the server. Visitors need no hub credentials. Native configuration uses `MARKET_HUB_URL`, `MARKET_HUB_TOKEN`, `MARKET_HTTP_ADDR` and `MARKET_DATA_DIR`, or their CLI options. Every app instance needs its own data directory. It is bound to the source hub URL and service identity; use a new directory when connecting to a different source.
 
-For frontend development, start the Rust application and run `npm --prefix web run dev`. Vite proxies API and WebSocket traffic to port 8080. Rust serves `web/dist` normally; set `--web-dir` for another location.
+For frontend development, start the Rust application and run `npm --prefix web run dev`. Vite proxies API and WebSocket traffic to port 8080. Rust serves `web/dist` normally; set `--web-dir` or `MARKET_WEB_DIR` for another location. Use `--no-web` or `MARKET_NO_WEB=true` to serve only the API, without frontend files or routes. Embedded `ApiConfig` defaults to `web_dir: None`; pass `Some(path)` to enable frontend hosting.
+
+Deployment limits use `MARKET_HTTP_WORKERS` / `--http-workers` (default 2), `MARKET_MAX_CONCURRENT_QUERIES` / `--max-concurrent-queries` (32), and `MARKET_MAX_LIVE_QUERIES` / `--max-live-queries` (128). Live-query capacity counts distinct shared feeds; identical subscriptions share one slot. These limits are separate from WebSocket connection limits. CLI flags take precedence over environment values. Native runs do not automatically load `.env`; export its settings before starting the process. Compose loads `.env` automatically.
+
+Configuration migration: `MARKET_CORE_URL` / `--core` became `MARKET_HUB_URL` / `--hub-url`; `MARKET_NODE_TOKEN` / `--node-token` became `MARKET_HUB_TOKEN` / `--hub-token`; `--workers` became `--http-workers`; `--max-streams` became `--max-live-queries`. Remove `MARKET_TELEGRAM_BOT_ID` and `MARKET_TELEGRAM_BOT_USERNAME` from worker deployments. For Mini App-only deployments, replace them with `MARKET_MINIAPP_BOT_ID` and `MARKET_MINIAPP_BOT_USERNAME`. Old names are no longer read. Keep the same hub URL, issued token and data directory when migrating to preserve the replica binding.
 
 ## Synchronization and recovery
 
 A new replica reads one consistent, unfiltered `Read(SNAPSHOT)` view, including catalog, current orders and execution history. It opens `Watch` at the first page's cursor immediately and spools changes to disk while loading snapshot pages. The hub renews the snapshot's idle lifetime as paging progresses. The app builds RAM indexes incrementally and replays staged changes before atomically publishing the completed replica. Orders, history and checkpoints become visible together.
 
 Normal operation needs one authenticated Watch stream through a reusable gRPC channel. Each delivery commits its changes, execution indexes and checkpoint in one redb transaction before publishing the new RAM/history view. Execution upserts remove the same identity from active orders. Immutable execution retries are idempotent. Execution timestamps determine history order; the opaque Watch cursor determines replication progress, so late backfills are retained.
+
+Internal entity kinds, order modes, sort order and index tags use validated enums. Entity and execution keys have named fields; numeric codes and tuple layouts are converted at the protocol, database and continuation boundaries. Existing databases and valid pagination tokens keep their original format.
 
 After app restart, saved state is immediately available with `sync.state: stale`. The app resumes Watch from its durable checkpoint. If the cursor expired or the hub restarted, it builds a replacement database while continuing to serve the previous copy. Completion swaps catalog, active orders and history together; facts absent from the replacement snapshot disappear too. An interrupted build is discarded on startup.
 
@@ -40,47 +46,119 @@ The local database is a rebuildable cache, not the authoritative archive. Stop t
 
 ## Docker
 
-Create the shared network once with `docker network create market`. Copy `.env.example` to `.env`, set `MARKET_NODE_TOKEN`, and run `docker compose up --build --detach`.
+Create the shared network once with `docker network create market`. Copy `.env.example` to `.env`, set `MARKET_HUB_TOKEN`, and run `docker compose up --build --detach`.
 
-Compose starts only this application, connects to `http://market-hub:50051`, publishes `0.0.0.0:8080` and persists its replica in `market-app-data:/data`. Configure `MARKET_CORE_URL`, `MARKET_NETWORK` or `MARKET_APP_PORT` for another deployment. Separate deployments use separate volumes. Multiple instances can sit behind a load balancer; retained snapshot pagination requires affinity to the instance holding the view. Live page boundaries can move between instances synchronized to the same market.
+Compose starts only this application, connects to `http://market-hub:50051`, publishes `0.0.0.0:8080` and persists its replica in `market-app-data:/data`. Configure `MARKET_HUB_URL`, `MARKET_NETWORK` or `MARKET_APP_PORT` for another deployment. Separate deployments use separate volumes. Multiple instances can sit behind a load balancer; retained snapshot pagination requires affinity to the instance holding the view. Live page boundaries can move between instances synchronized to the same market.
 
-The image generates public OpenAPI and TypeScript types before building React. Generated clients, dependencies and built assets are ignored. The Node build exports its schema using the compiled Rust binary.
+Two image targets are available: `market-app` (default, API and website) and `market-api` (headless). Set `MARKET_IMAGE_TARGET=market-api` in `.env` to skip Node, schema/client generation and frontend assets entirely. The headless image starts with `--no-web`. A direct build uses `docker build --target market-api -t market-api .`. `MARKET_NO_WEB=true` can also disable frontend routes in the ordinary image, but does not skip its frontend build.
+
+Both targets bind `0.0.0.0:8080`, store the replica in `/data` and bot state in `/bot-data`, and run as UID/GID 10001. Preserve both directories when running outside Compose. The image uses standard `SIGTERM` shutdown; Compose allows 15 seconds to drain workers.
+
+The ordinary image generates public OpenAPI and TypeScript types before building React. Generated clients, dependencies and built assets are ignored. The Node build exports its schema using the compiled Rust binary.
 
 ## Telegram Mini App and bot
+
+Telegram support is opt-in at compile time. The default `market-app` and `market-api` builds serve the market API and ordinary website without Telegram configuration or dependencies. Disabled features omit their CLI flags and subcommands; an API-only process ignores Telegram environment variables and creates no Telegram session or authentication storage.
+
+| Cargo features on `market-app` | Included support |
+| --- | --- |
+| none (default) | Market API, WebSocket queries and ordinary website |
+| `bot` | MTProto bot worker and `bot inspect` / `bot configure` commands |
+| `miniapp` | Mini App launch settings, HTTP sign-in/session endpoints and `session-key` command |
+| `bot,miniapp` | Both integrations |
+
+`market-api` also exposes its own `miniapp` feature for embedding. The `bot` feature includes bot launch URL validation but does not enable Mini App HTTP routes. Compiling `bot` makes the worker available; `MARKET_BOT_ENABLED=true` still controls whether the process starts it.
+
+```sh
+# Default: market API and website, with no Telegram settings.
+npm --prefix web run build
+cargo run --locked -p market-app -- --data-dir data
+# Mini App HTTP support without a bot worker:
+MARKET_SCHEMA_FEATURES=miniapp npm --prefix web run build
+cargo run --locked -p market-app --features miniapp -- --data-dir data
+# Both integrations (set the runtime credentials described below):
+cargo run --locked -p market-app --features bot,miniapp -- --data-dir data
+```
+
+Build the frontend against the same Mini App capability as the server. `MARKET_SCHEMA_FEATURES=miniapp` selects that capability when the frontend generates its schema through Cargo; with `MARKET_SCHEMA_BIN`, the provided binary's compiled features determine it. The browser build reads the schema and disables Telegram SDK initialization, sign-in requests and account controls when Mini App routes are absent.
+
+For Docker/Compose, set `MARKET_FEATURES=bot,miniapp` in `.env` before building to include both integrations, or choose either feature separately. Leaving it empty builds only the market API. Changing features requires rebuilding the image; runtime environment settings cannot enable code omitted from the binary. A direct Docker build accepts `--build-arg MARKET_FEATURES=bot,miniapp`.
 
 The same React interface works as an ordinary website and as a Telegram Mini App. The bridge loads only for Telegram launches, integrates safe areas and theme changes, and connects Telegram's Back button to order details, filters and the account menu. A small account control displays the server-verified identity. Market browsing stays public.
 
 For a real Telegram launch, host the application at a public HTTPS origin. A deployment or HTTPS tunnel can forward to the existing HTTP listener. Configure these values in `.env` for Compose:
 
 ```dotenv
-MARKET_TELEGRAM_BOT_ID=123456789
-MARKET_TELEGRAM_BOT_USERNAME=your_bot
+MARKET_FEATURES=bot,miniapp
 MARKET_PUBLIC_URL=https://markets.example.com
+MARKET_BOT_ENABLED=true
 TELEGRAM_BOT_TOKEN=<BotFather token>
+TELEGRAM_API_ID=<application ID from my.telegram.org>
+TELEGRAM_API_HASH=<application hash from my.telegram.org>
 ```
 
-The API receives only the public bot ID, username and URL. Only `market-bot` receives the bot token. The native API reads environment variables or CLI flags; the native bot worker also reads `.env` for local development. Keep `.env` private; it is excluded from Git and Docker builds.
+`market-app` hosts one supervised bot worker when `MARKET_BOT_ENABLED=true` (default false). It uses MTProto through grammers 0.12, logging in as the bot with its BotFather token and a Telegram application API ID/hash from [my.telegram.org](https://my.telegram.org). Supply these three credentials only to the application instance running the worker. Native runs read environment variables or CLI flags; Compose reads `.env`. Keep `.env` private; it is excluded from Git and Docker builds. These credentials and the saved MTProto authentication key are private and never part of public configuration or browser state.
 
-Enable the **Main Mini App** in BotFather for this bot and set its URL to `MARKET_PUBLIC_URL`. The polling worker configures the chat's **Open market** menu button and `/start`, `/market`, `/help` commands. It replies to those commands in private chats with a launch button. It does not automatically remove an existing webhook. Run one polling worker per bot, separately from API replicas:
+Enable the **Main Mini App** in BotFather for this bot and set its URL to `MARKET_PUBLIC_URL` when launch buttons are wanted. The worker registers `/start`, `/market`, `/help`, `/status`, `/floor` and `/portfolio`; it also configures the chat's **Open market** menu button when a URL is supplied. Commands work in private chats. `/status` reads synchronization status through the shared data actor. Startup verifies the saved session belongs to the token’s bot, then discovers the ID, current username and active aliases from the authenticated Telegram profile. The worker does not manage HTTP Bot API webhooks.
+
+```text
+/floor Bunny Muffin | Red Alert
+/floor Bunny Muffin | Red Alert | GRAM
+/portfolio
+/portfolio GRAM
+```
+
+`/floor` resolves exact collection/model names (case-insensitive) or catalog IDs, then returns the lowest non-expired, positive-quantity ask across loaded venues. Bids and executions are excluded. Quote currency defaults to `GRAM`; `TON` is accepted as its alias. A missing listing is reported explicitly.
+
+`/portfolio` reads the command sender's Telegram-visible profile gifts through [payments.getSavedStarGifts](https://core.telegram.org/method/payments.getSavedStarGifts). It never accepts another user's ID as its target. The model document and original gift IDs are matched to catalog aliases, then the actors value each supported collectible at its model floor in one quote currency. Regular gifts and refunded or burned gifts are not valued. Hosted collectibles linked from TON wallets are included when their host matches the sender, and counted separately; linking to a profile does not prove wallet ownership. On-chain holdings not linked to the profile are outside this estimate. Saved and unsaved gifts are requested; Telegram decides which gifts this bot may see. Gifts hidden from the bot remain outside the result. Telegram permission errors produce a per-command explanation instead of a zero balance. Reads are bounded to 1000 saved gifts or 20 pages and 30 seconds overall, deduplicate collectible IDs across pages, and label truncated inventories with the reason. If a later page times out or fails, the estimate retains successfully read gifts and is explicitly partial; authorization failures are never hidden. Skipped gifts report separate reasons for refunds, burns, ownership/hosting mismatches and missing IDs or models. Telegram flood waits are shared across inventory requests, and shorter waits never shorten an existing cooldown.
+
+Portfolio output reports Telegram's returned gift count, advertised total and pages read, alongside priced and unpriced gift counts. A missing continuation cursor before the advertised total is reached is marked partial. Only priced gifts contribute to the estimate; no collection-floor fallback or currency conversion is used. Decimal multiplication and addition are exact and checked for overflow. Quotes within one valuation use one pinned replica view, and stale market data is marked. Results are ask-based estimates before fees, not sale proceeds. Only the first ten model groups are displayed; additional priced groups remain included in the total.
 
 ```sh
-# Read-only identity and setup inspection; does not consume updates or send messages.
-cargo run --locked -p market-telegram-app --bin market-bot -- inspect
-# After configuring the public HTTPS URL:
-docker compose --profile telegram up --build --detach
+# Log in/resume the local session and inspect identity; no updates consumed or messages sent.
+cargo run --locked -p market-app --features bot -- bot inspect
+# Set commands/menu without consuming updates or starting the hub replica/HTTP server:
+cargo run --locked -p market-app --features bot -- bot configure
+# Start the application, including its enabled worker:
+docker compose up --build --detach
 ```
 
-Native worker startup is `cargo run --locked -p market-telegram-app --bin market-bot`. `market-bot configure` sets commands/menu without starting polling. Its own data directory (`MARKET_BOT_DATA_DIR`, default `bot-data`) holds a binary update checkpoint and a writer lock. Compose persists it in `market-bot-data`; the worker has no hub credential or market replica. Notification subscriptions and buying are outside this first integration.
+Bot transport, command handling, session persistence and worker lifecycle live in separate modules under `crates/market-telegram/src/bot`; application startup builds configuration and registers the worker once outside the HTTP-worker factory. Shutdown stops and joins the MTProto sender, then drains session writes before releasing the writer lock. Temporary connection failures retry; Telegram flood waits are honored in full. A sender-task failure closes the old connection, drains session writes and reconnects using the saved session. Authorization, identity/configuration or session-storage failures stop the bot and are logged; the market API and replica continue running. The application still owns and drains the bot task on shutdown.
 
-Sign-in uses `POST /auth/telegram` with `{init_data: "<raw Telegram.WebApp.initData>"}`. The API verifies Telegram's Ed25519 signature against its production public key and configured bot ID, checks the signed launch time (one hour, with 30 seconds of future clock tolerance), and issues a 24-hour application session. It never trusts `initDataUnsafe.user`. `GET /auth/me` accepts the resulting `Authorization: Bearer <session>` and returns the verified profile. IDs are strings and expiration dates are RFC 3339.
+Bot commands use `CommandKind` for menu metadata and a typed `Command` request enum for parsed arguments. `BotWorker::run(handler, stop)` is generic over the native async `CommandHandler` trait; the default `MarketCommands` implementation receives a `MarketDataHandle`. The parser builds `CommandRequest` values from the authenticated private peer and message ID, with validated floor queries and quote currencies. Each request receives a read-only `GiftSource` scoped to that peer. Handlers receive no bot token, Telegram API credentials or saved session. Parsing, floor/portfolio services and reply rendering live in separate command modules. The private `bot/mtproto` module contains all TL requests, response mapping, grammers calls and session storage. `TelegramActions` supplies a cloneable action handle; `Transport` receives updates, and `UpdateCheckpoint` persists progress. Profile gifts are Telegram data with an explicit owned/hosted/unverified relation; only the portfolio service converts their identifiers into actor catalog aliases. The bot validates its own launch URL and has no dependency on Mini App authentication.
+
+The dispatcher runs up to eight commands concurrently across private chats, with one active command per chat and at most 64 received, uncheckpointed deliveries. Commands in the same chat retain their order. Checkpoints advance only through the completed prefix of received updates, so a later fast command cannot skip an earlier unfinished command after restart. Backpressure stops receiving when that window is full. In-progress receive futures survive other command completions. Command handlers have a 40-second deadline and at most three attempts; failures and panics produce a command-level response. Permanent reply rejections finish only that delivery. Transient sends retry with a 15-second timeout per attempt and honor full flood waits; cancellation leaves unfinished deliveries uncheckpointed. Replies retain stable random IDs and are bounded to Telegram's text limit without splitting characters.
+
+MTProto worker authentication requires `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`; its saved MTProto session is reused across restarts. The worker has no separately configured identity. When Mini App support is also compiled, the application publishes its authenticated ID and username to all HTTP workers. The public API starts without waiting for Telegram; Mini App sign-in becomes available after login. Discovered identity remains available during subsequent bot transport outages and is refreshed on reconnect. `MARKET_PUBLIC_URL` configures launch buttons. Bot users do not provide a Mini App session token, `initData`, phone number or login code to send commands; the worker gets their identity from Telegram's incoming private message. The Mini App's application session key serves HTTP sign-in separately.
+
+The bot can run without `MARKET_PUBLIC_URL`: it registers its commands and sends plain text replies, including `/status`, without Mini App buttons. When a public HTTPS URL is supplied, it also configures the launch menu and attaches launch buttons. Existing menu settings are left unchanged when no URL is configured.
+
+Run the worker on exactly one instance per bot. Instances without a worker keep `MARKET_BOT_ENABLED=false`. Mini App-only deployments and API replicas configure the intended public identity explicitly, without Telegram credentials:
+
+```dotenv
+MARKET_FEATURES=miniapp
+MARKET_MINIAPP_BOT_ID=123456789
+MARKET_MINIAPP_BOT_USERNAME=your_bot
+MARKET_PUBLIC_URL=https://markets.example.com
+```
+
+These identity settings are rejected when a bot worker is enabled; remove them from that instance. The ID binds signature verification to the intended bot, while the username supplies launch-link metadata. Omitting the ID leaves Mini App sign-in disabled. Neither value replaces `MARKET_PUBLIC_URL`, which remains a deployment setting.
+
+`MARKET_BOT_DATA_DIR` defaults to `<MARKET_DATA_DIR>/bot` for native runs; Compose mounts `market-bot-data` at `/bot-data`. The private `<bot-id>-<api-id>.mtproto.sqlite` session stores authentication keys, peer access hashes and update progress, separately from the rebuildable market cache. Preserve this directory across restarts. An exclusive `<bot-id>.lock` also prevents a legacy worker from sharing the directory; it does not coordinate separate deployment volumes.
+
+For migration, stop the previous HTTP polling worker and remove any HTTP webhook before enabling MTProto. Old Bot API `.offset` checkpoints cannot be converted: the first MTProto login starts from Telegram’s current update state and leaves old files untouched. Later starts catch up from the saved MTProto state. Progress is saved through each consecutively completed update; replies use a stable MTProto `random_id` across retries and replays to reduce duplicates, without claiming exactly-once delivery. The standalone bot executable and Compose service have been removed. Notification subscriptions and buying remain outside this integration.
+
+Sign-in uses `POST /auth/telegram` with `{init_data: "<raw Telegram.WebApp.initData>"}`. The API verifies Telegram's Ed25519 signature against its production public key and the discovered or explicitly configured bot ID, checks the signed launch time (one hour, with 30 seconds of future clock tolerance), and issues a 24-hour application session. It never trusts `initDataUnsafe.user`. `GET /auth/me` accepts the resulting `Authorization: Bearer <session>` and returns the verified profile. IDs are strings and expiration dates are RFC 3339.
+
+These HTTP endpoints and public launch settings live in `market-api/src/miniapp.rs` behind `MiniAppApi`. Verification and application session logic live in `market-miniapp`; the HTTP API does not run a Telegram bot. The provider-specific public routes and schema names keep their existing Telegram names.
 
 The browser keeps only its application session and launch fingerprint in tab-scoped session storage. Refresh validates the saved session; a different launch revalidates Telegram's proof, preventing cached identity from carrying over when the Telegram account changes. Sign-out clears that tab's session and pauses automatic sign-in for the current launch. Browsing works without signing in. `/telegram` exposes public configuration and whether sign-in is enabled.
 
-Session signatures use a generated private `data/session.key`, preserved across app restarts and replica rebuilds. For multiple API replicas, supply the same `MARKET_SESSION_KEY` to every instance, generated offline with `market-app session-key`. This key is separate from hub service credentials and the bot token. It does not require a registration database. Permanent user preferences or future alert definitions must use their own application storage, rather than the rebuildable replica.
+Session signatures use a generated private `data/session.key`, preserved across app restarts and replica rebuilds. For multiple Mini App API replicas, supply the same `MARKET_SESSION_KEY` to every instance, generated offline with `cargo run --locked -p market-app --features miniapp -- session-key`. This key is separate from hub service credentials and the bot token. It does not require a registration database. API-only builds never load or generate it. Permanent user preferences or future alert definitions must use their own application storage, rather than the rebuildable replica.
 
 The **Telegram** link on the standalone website opens a configured Main Mini App with the selected collection, currency, mode and filters. Launch state uses `startapp=v_<base64url query>` with only market-view fields and Telegram's 512-character limit. Very large selections open the app's default view. Launch parameters choose a view; they never authorize an action or identify a user. The browser policy permits the official bridge and Telegram Web embedding while retaining same-origin API/WebSocket connections.
 
-The official [Mini App documentation](https://core.telegram.org/bots/webapps) describes launch configuration and signature validation. The [Bot API](https://core.telegram.org/bots/api) defines menu buttons and polling.
+The official [Mini App documentation](https://core.telegram.org/bots/webapps) describes launch configuration and signature validation. The [Telegram MTProto bot documentation](https://core.telegram.org/api/bots) describes bot authorization and available methods.
 
 ## Public API
 
@@ -130,24 +208,56 @@ Public continuations are bounded, validated read positions, not credentials. The
 
 Frames are `{type:"status", id, state:"connecting"}`, then `{type:"page", id, page:{data,next_page_token,cursor,sync}}`. Each page fully replaces the previous one, including refills, execution exits and freshness changes. Errors use `{type:"error", id, error:{code,message}}`. Unsubscribe with `{"type":"unsubscribe","id":"offers"}`. Browser reconnection uses the same query and page boundary; upstream reconnection is handled independently by the replica.
 
-Each socket permits 16 subscriptions and 64 KiB input messages. Queues, send deadlines, local query concurrency and retained views are bounded. Browser origins must match this application or be allowed with repeated `--cors-origin`. Writer endpoints and raw authenticated hub forwarding are absent. Trusted ingestion services still connect directly to the hub.
+API errors use `{error:{code,message}}`, including JSON, query/path extraction and framework errors. Invalid parameters return 400, oversized JSON returns 413, unsupported content types return 415, unknown routes return 404 and unsupported methods return 405. JSON query bodies are limited to 64 KiB by default. The same extractor policy is installed by the public route configurator and the full server.
+
+WebSockets reserve subscription IDs during asynchronous setup, so pings, unsubscribe and shutdown remain responsive. Unsubscribe cancels pending setup or forwarding; an internal generation prevents queued frames and late completions from affecting a reused ID. An oversized page produces a terminal subscription error and releases the ID. Slow consumers close with code 1013 so clients can reconnect and resubscribe. An API-scoped, bounded cache shares encoded actor pages across subscribers; encoding runs on four tracked blocking workers, converts one order at a time and enforces the output limit while writing. Shutdown drains encoding jobs after closing connections.
+
+`ApiLimits` and `WebSocketLimits` centralize service bounds. Defaults are 256 WebSocket connections across HTTP workers, 16 pending/active subscriptions per socket, 64 KiB input messages, 4 MiB encoded pages, and an outgoing application queue bounded to eight messages and 8 MiB. Setup and send deadlines are 10 and 5 seconds; heartbeat and idle timeouts are 15 and 35 seconds. Large outgoing messages are fragmented at the configured frame size, preserving one JSON message without buffering dozens of complete pages inside the socket library. Local query concurrency and retained views remain bounded by the actor layer. CORS and WebSocket handshakes share one canonical origin policy; configured origins are validated at bind time. Browser origins must match this application's host or be allowed with repeated `--cors-origin` or comma-separated `MARKET_CORS_ORIGINS`. Writer endpoints and raw authenticated hub forwarding are absent. Trusted ingestion services still connect directly to the hub.
+
+`MarketRuntime` owns process startup, supervision and shutdown. Synchronization is an ordinary worker in `market-replica`: it owns the sole storage writer, commits batches and snapshot replacements, then publishes immutable views. The Telegram MTProto loop and the `market-api` HTTP service are also supervised workers. Each starts once, and the application runtime stays outside the HTTP-worker factory.
+
+Actors provide user-facing data access through one `MarketDataService` and a shared `MarketDataHandle` for API and bot callers. The service starts three actors on its dedicated Actix thread: `OrderbooksActor` owns order, execution, book-directory and freshness queries; `CatalogActor` owns reference-definition reads; `UserSubscriptionsActor` owns per-caller subscription leases and shared live-query feeds. Orderbook and catalog requests use separate mailboxes and one shared read budget. Expensive reads run on tracked blocking workers. Bot `/status` uses the orderbooks actor's freshness interface, as does the API's `/sync`.
+
+Actor requests, pages, catalog entries, synchronization status and errors are native Rust contracts owned by `market-actors`. Query validation and the private hub/replica adapters live there. API serialization and HTTP error mapping remain in `market-api`. The API and bot do not receive hub read messages, replica result objects or RPC error types through the data interface; shared native live pages are published by the actors, and the API reuses bounded page encodings across subscribers.
+
+Each subscription call creates its own lease. Identical orderbook queries share page computation across callers; dropping one lease leaves the other callers subscribed. Dropping the last lease stops that feed and releases its capacity, even if an obsolete receiver remains. These are live connection subscriptions; saved preferences and durable alerts remain separate features.
+
+The API and bot use `MarketDataHandle` directly; `market-api::MarketApi` maps public queries and responses to that actor interface. The API and bot receive no storage writer. Within the API crate, WebSocket handlers receive a small `ConnectionSupervisor` that registers connection tasks and supplies a separate cancellation token for each connection. The application supervisor tracks the actor group, synchronization worker, bot and API service. The API drains its connection tasks, and the actor group drains its query and subscription jobs. An API, replica or data-actor failure stops the application; bot failures and failed WebSocket connections remain isolated. Shutdown rejects new reads, cancels subscriptions, drains in-flight commits/reads, stops HTTP workers and joins the actor thread. Normal hub outages still use the synchronization worker's reconnect/rebuild loop.
 
 ## Workspace and checks
 
-- `crates/hub-protocol`: native bindings generated from the local proto copy.
-- `crates/market-replica`: protocol-native RAM indexes, redb storage, local pages and synchronization.
-- `crates/telegram`: Telegram signature verification, user sessions and the independent `market-bot` worker.
-- `crates/app`: public DTOs/OpenAPI, JSON conversion, REST/WebSockets and React hosting.
+- `crates/market-hub-protocol`: native bindings generated from the local proto copy.
+- `crates/market-hub-client`: authenticated snapshot/Watch transport, service identity, RPC deadlines and bounded capacity retries over one reusable channel.
+- `crates/market-replica`: state, indexes, storage, immutable views and an ordinary snapshot/Watch synchronization worker. It has no Actix dependency.
+- `crates/market-actors`: actor-owned data contracts and errors, query validation, private replica/protocol adapters, read-only data-serving actors, shared subscriptions and actor lifecycles. It has no direct hub-client dependency.
+- `crates/market-api`: public DTOs/OpenAPI, REST/WebSocket query conversion, Telegram sign-in endpoints, React hosting, HTTP configuration and connection supervision. It receives only actor access and a service shutdown token.
+- `crates/market-miniapp`: Telegram Mini App signature verification, application sessions, session keys and public launch URL validation. It has no actor, bot, HTTP-server or market-storage dependency; API schemas are an optional feature.
+- `crates/market-telegram`: embeddable MTProto bot worker with typed commands, native profile inventory, bounded dispatch, session persistence and a private grammers adapter. It uses actors for market data and owns its launch configuration without Mini App authentication dependencies.
+- `crates/market-app`: CLI/configuration, replica and actor assembly, API/bot startup, process supervision and shutdown. Actor read workers retain their capacity permits even if the requesting connection closes.
 - `web`: React interface and generated public API types.
+
+Actor implementations live under `market-actors/src/orderbooks/`, `catalog/` and `subscriptions/`. The crate's `models.rs` and `error.rs` define its public data contract; `query.rs` and `protocol.rs` adapt it to the private replica requests and results. `handle.rs` routes requests to the responsible actor, `runtime.rs` shares lifecycle and query-worker support, and `service.rs` starts and drains the actor group. All three use the same published replica views and coordinated shutdown; failure of any actor stops the group and is reported to the application supervisor. Synchronization stays in `market-replica/src/replication.rs` and writes storage directly, without actor messages.
+
+The data path is `hub → synchronization worker → replica views → responsibility-specific actors → API / bot`. Production dependencies are `market-actors → market-replica → market-hub-client`, `market-api → market-actors + market-miniapp` and `market-telegram → market-actors`. The API and bot have no direct production dependency on replica storage, the hub client or protocol, or one another. `market-app` wires settings, constructs these services and supervises their lifecycles. Interface tests may use replica writers and fake hub servers to build fixtures; the dependency-boundary test checks production dependencies separately.
+
+Crate folders match their Cargo package names. `market-hub-*` contains upstream transport and protocol code; `market-replica` owns local state, `market-actors` owns the data-serving interface and actors; `market-api` serves HTTP/WebSocket clients; `market-miniapp` contains Mini App authentication and launch support; `market-telegram` runs the bot; `market-app` assembles them.
+
+Within `market-app/src`, `market/` contains `runtime.rs` and the private `supervisor.rs`. `api_config.rs` and `bot_config.rs` translate application settings into the API service and Telegram worker. `MarketRuntime` owns their lifecycles and returns the shared `MarketDataHandle`. The API crate separates public models, REST routes, schema generation, browser policy and optional frontend hosting. `conversion.rs` maps API DTOs to actor contracts, `encoding.rs` shares bounded live-page encodings, `server.rs` owns the service, and `connections.rs` admits and drains WebSocket tasks. The `websocket/` modules own handshake, session, generation registry, outgoing queue and cancellable subscription work. `config.rs` centralizes validated limits. `ApiServer::bind` validates configuration and reserves the listener without starting HTTP workers; `ApiServer::run` starts them under application supervision and drains them on cancellation. `ReplicaReader` and `ReplicationWorker` separate read access from synchronization; `MarketDataHandle` and `MarketDataTask` separate actor access from lifecycle. Public route, configuration, DTO and persisted-data names retain their existing formats. OpenAPI uses an explicit `telegram` tag so documentation groups remain independent of Rust module paths. The `market-app schema` command delegates to `market-api` for frontend type generation. Frontend market helpers live in `web/src/market.ts`; Telegram hooks and controls live in `web/src/telegram-ui.tsx`.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo test -p market-app -p market-api --no-default-features
+cargo test -p market-app -p market-api --no-default-features --features market-app/bot
+cargo test -p market-app -p market-api --no-default-features --features market-app/miniapp
 npm --prefix web test
 npm --prefix web run build
-# Verify the Telegram bridge using a local SDK simulation and real test signatures:
-cargo test -p market-app --test gateway telegram_react_bridge -- --ignored
+# Verify API-only browsing against an API-only React build:
+cargo test -p market-api --test market_api api_only_browser -- --ignored
+# Build Mini App assets, then verify its bridge using a local SDK simulation and real test signatures:
+MARKET_SCHEMA_FEATURES=miniapp npm --prefix web run build
+cargo test -p market-api --features miniapp --test market_api telegram_react_bridge -- --ignored
 cargo build --locked --bins
 python3 scripts/smoke.py --hub-bin /path/to/market-hub --adapter-manifest /path/to/adapters/Cargo.toml
 ```

@@ -1,7 +1,37 @@
 import type { components } from "./gen/api";
-export type TelegramConfig = components["schemas"]["TelegramConfig"];
-export type Session = components["schemas"]["Session"];
-export type Identity = components["schemas"]["Identity"];
+// Mini App schemas are absent from API-only builds; keep the dormant adapter type-safe.
+type OptionalSchema<
+  Key extends string,
+  Fallback,
+> = Key extends keyof components["schemas"]
+  ? components["schemas"][Key]
+  : Fallback;
+type User = OptionalSchema<
+  "User",
+  {
+    id: string;
+    first_name: string;
+    last_name?: string | null;
+    username?: string | null;
+  }
+>;
+export type TelegramConfig = OptionalSchema<
+  "TelegramConfig",
+  {
+    auth_enabled: boolean;
+    bot_id?: string | null;
+    bot_username?: string | null;
+    public_url?: string | null;
+  }
+>;
+export type Identity = OptionalSchema<
+  "Identity",
+  { expires_at: string; user: User }
+>;
+export type Session = OptionalSchema<"Session", Identity & { token: string }>;
+export const miniappEnabled = import.meta.env
+  ? import.meta.env.VITE_MARKET_MINIAPP !== "false"
+  : true;
 export type Insets = {
   top: number;
   right: number;
@@ -64,6 +94,7 @@ function fragmentData(): string {
   return new URLSearchParams(location.hash.slice(1)).get("tgWebAppData") || "";
 }
 export async function initializeTelegram(): Promise<TelegramContext> {
+  if (!miniappEnabled) return { initData: "" };
   const raw = fragmentData();
   const launched = Boolean(
     raw || window.Telegram?.WebApp?.initData || readStorage(marker),

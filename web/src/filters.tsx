@@ -1,6 +1,6 @@
 import React from "react";
-import type { Entry, Predicate, AttrValue } from "./data";
-import { dateInput, timestamp } from "./data";
+import type { Entry, Predicate, AttrValue } from "./market";
+import { dateInput, timestamp } from "./market";
 type Attribute = Extract<Entry, { kind: "attribute" }>;
 type Rule = { required: boolean; allowed_values?: string[] | null };
 export function Field({

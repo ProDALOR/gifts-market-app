@@ -9,8 +9,8 @@ import {
   text,
   dateInput,
   timestamp,
-} from "./data";
-import type { Book, Entry, Order, Page, Predicate, Query } from "./data";
+} from "./market";
+import type { Book, Entry, Order, Page, Predicate, Query } from "./market";
 import { Field } from "./filters";
 import { initializeTelegram, launchSelection } from "./telegram";
 import type { TelegramContext } from "./telegram";
@@ -18,7 +18,7 @@ import {
   useTelegram,
   useTelegramBack,
   TelegramAccount,
-} from "./telegram-react";
+} from "./telegram-ui";
 import "./style.css";
 type ItemType = Extract<Entry, { kind: "item_type" }>;
 type Attribute = Extract<Entry, { kind: "attribute" }>;

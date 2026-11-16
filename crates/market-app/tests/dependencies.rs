@@ -1,0 +1,99 @@
+use std::{collections::BTreeSet, process::Command};
+
+#[test]
+fn api_only_build_resolves_no_telegram_or_grammers_dependencies() {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "--locked",
+            "--offline",
+            "-p",
+            "market-app",
+            "--no-default-features",
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let graph = String::from_utf8(output.stdout).unwrap();
+    for dependency in ["market-telegram", "market-miniapp", "grammers-"] {
+        assert!(
+            !graph.lines().any(|line| line.starts_with(dependency)),
+            "API-only graph includes {dependency}"
+        );
+    }
+}
+
+#[test]
+fn production_dependencies_follow_the_service_boundaries() {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--locked",
+            "--offline",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let boundaries: &[(&str, &[&str])] = &[
+        (
+            "market-app",
+            &[
+                "market-actors",
+                "market-api",
+                "market-hub-client",
+                "market-miniapp",
+                "market-replica",
+                "market-telegram",
+            ],
+        ),
+        ("market-api", &["market-actors", "market-miniapp"]),
+        ("market-telegram", &["market-actors"]),
+        ("market-miniapp", &[]),
+        ("market-actors", &["market-replica", "market-hub-protocol"]),
+        (
+            "market-replica",
+            &["market-hub-client", "market-hub-protocol"],
+        ),
+        ("market-hub-client", &["market-hub-protocol"]),
+        ("market-hub-protocol", &[]),
+    ];
+    for (name, allowed) in boundaries {
+        let package = metadata["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|package| package["name"] == *name)
+            .unwrap();
+        let dependencies: BTreeSet<_> = package["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|dependency| dependency["kind"].is_null())
+            .filter_map(|dependency| dependency["name"].as_str())
+            .filter(|dependency| dependency.starts_with("market-"))
+            .collect();
+        assert_eq!(
+            dependencies,
+            allowed.iter().copied().collect(),
+            "{name} crossed its production dependency boundary"
+        );
+    }
+}

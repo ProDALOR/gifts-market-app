@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { amount, text } from "../src/data.ts";
+import { amount, text } from "../src/market.ts";
 test("amount formatting preserves precision beyond JavaScript's numeric range", () => {
   assert.equal(
     amount("10000000000000000.000000001"),

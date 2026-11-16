@@ -1,0 +1,43 @@
+[package]
+name = "market-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+market-actors.workspace = true
+market-miniapp = { workspace = true, optional = true, features = ["schema"] }
+actix-web.workspace = true
+actix-ws.workspace = true
+actix-cors.workspace = true
+anyhow.workspace = true
+futures-util.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+url.workspace = true
+
+[features]
+default = []
+miniapp = ["dep:market-miniapp"]
+
+[[test]]
+name = "miniapp_api"
+required-features = ["miniapp"]
+
+[dev-dependencies]
+market-hub-protocol.workspace = true
+tonic.workspace = true
+market-hub-client.workspace = true
+market-replica.workspace = true
+ed25519-dalek.workspace = true
+base64.workspace = true
+tempfile = "3"
+tokio-stream = { workspace = true, features = ["sync"] }
+tokio-tungstenite = "0.29"
+
+[lints]
+workspace = true
