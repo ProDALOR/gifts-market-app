@@ -92,20 +92,22 @@ impl MarketDataService {
                         environment: environment.clone(),
                     }
                     .start();
+                    let catalog = CatalogHandle {
+                        projections: Arc::new(Semaphore::new((query_limit / 2).clamp(1, 4))),
+                        address: catalog,
+                        budget,
+                    };
                     let subscriptions = UserSubscriptionsActor::new(
                         environment,
                         orderbooks.clone(),
+                        catalog.clone(),
                         reader.clone(),
                         subscription_limit,
                     )
                     .start();
                     MarketDataHandle {
                         orderbooks,
-                        catalog: CatalogHandle {
-                            projections: Arc::new(Semaphore::new((query_limit / 2).clamp(1, 4))),
-                            address: catalog,
-                            budget,
-                        },
+                        catalog,
                         subscriptions,
                     }
                 });

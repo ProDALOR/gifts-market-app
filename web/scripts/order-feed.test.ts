@@ -59,7 +59,9 @@ function sockets(t: TestContext) {
     send() {}
     close() {}
     deliver(data: Page<Order>) {
-      this.onmessage?.({ data: JSON.stringify({ type: "page", page: data }) });
+      this.onmessage?.({
+        data: JSON.stringify({ id: "offers", type: "page", page: data }),
+      });
     }
   }
   const oldSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket"),
@@ -275,6 +277,7 @@ test("freshness frames keep data identities and make no continuation requests", 
   const socket = Socket.opened[0];
   socket.onmessage!({
     data: JSON.stringify({
+      id: "offers",
       type: "page",
       page: page([order("head")], "tail"),
       revision: "1",
@@ -287,6 +290,7 @@ test("freshness frames keep data identities and make no continuation requests", 
   for (let i = 0; i < 5; i++)
     socket.onmessage!({
       data: JSON.stringify({
+        id: "offers",
         type: "sync",
         sync: { ready: true, state: "stale", updated_at: null },
         revision: "1",
@@ -299,6 +303,7 @@ test("freshness frames keep data identities and make no continuation requests", 
   // A tail-only change has a new book revision even if the head is unchanged.
   socket.onmessage!({
     data: JSON.stringify({
+      id: "offers",
       type: "sync",
       sync: { ready: true, state: "live", updated_at: null },
       revision: "2",
@@ -340,6 +345,7 @@ test("live updates revalidate only the viewport and refresh stale pages on entry
   tokens.length = 0;
   Socket.opened[0].onmessage!({
     data: JSON.stringify({
+      id: "offers",
       type: "sync",
       sync: { ready: true, state: "live", updated_at: null },
       revision: "new",
@@ -382,6 +388,7 @@ test("tail updates coalesce without starving in-flight reads and moved head anch
   const deliver = (revision: string, token = "tail") =>
     Socket.opened[0].onmessage!({
       data: JSON.stringify({
+        id: "offers",
         type: "page",
         revision,
         page: page([order("a")], token),

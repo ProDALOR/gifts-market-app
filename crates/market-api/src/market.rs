@@ -35,10 +35,33 @@ impl MarketApi {
         Ok(self.data.status().await?)
     }
     pub async fn catalog(&self) -> Result<GiftCatalog> {
-        Ok(self.data.catalog().await?)
+        Ok(self.catalog_snapshot().await?.data)
     }
     pub async fn collection(&self, id: CollectionId) -> Result<GiftCollectionCatalog> {
-        Ok(self.data.collection(id).await?)
+        Ok(self.collection_snapshot(id).await?.data)
+    }
+    pub async fn catalog_snapshot(&self) -> Result<market_actors::CatalogSnapshot<GiftCatalog>> {
+        let snapshot = self.data.catalog_snapshot().await?;
+        Ok(market_actors::CatalogSnapshot {
+            data: snapshot.data.into(),
+            revision: crate::catalog::revision(snapshot.revision),
+        })
+    }
+    pub async fn collection_snapshot(
+        &self,
+        id: CollectionId,
+    ) -> Result<market_actors::CatalogSnapshot<GiftCollectionCatalog>> {
+        let snapshot = self.data.collection_snapshot(id).await?;
+        Ok(market_actors::CatalogSnapshot {
+            data: snapshot.data.into(),
+            revision: crate::catalog::revision(snapshot.revision),
+        })
+    }
+    pub async fn subscribe_catalog(
+        &self,
+        ids: Vec<CollectionId>,
+    ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
+        Ok(self.data.subscribe_catalog(ids).await?)
     }
     pub(crate) async fn media_document(&self, target: MediaTarget) -> Result<TelegramDocumentId> {
         Ok(self.data.media_document(target).await?)

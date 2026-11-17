@@ -29,7 +29,9 @@ impl CatalogHandle {
 }
 
 impl CatalogHandle {
-    pub async fn bootstrap(&self) -> Result<market_gifts::GiftCatalog, Status> {
+    pub async fn bootstrap(
+        &self,
+    ) -> Result<super::CatalogSnapshot<market_gifts::GiftCatalog>, Status> {
         let projection = self
             .projections
             .clone()
@@ -44,7 +46,7 @@ impl CatalogHandle {
     pub async fn collection(
         &self,
         id: market_gifts::CollectionId,
-    ) -> Result<market_gifts::GiftCollectionCatalog, Status> {
+    ) -> Result<super::CatalogSnapshot<market_gifts::GiftCollectionCatalog>, Status> {
         let projection = self
             .projections
             .clone()
@@ -54,6 +56,24 @@ impl CatalogHandle {
         self.address
             .send(super::messages::GiftCollection {
                 id,
+                permit,
+                projection,
+            })
+            .await
+            .map_err(closed)?
+    }
+    pub async fn versions(
+        &self,
+        ids: Vec<market_gifts::CollectionId>,
+    ) -> Result<market_gifts::CatalogVersions, Status> {
+        let projection = tokio::select! { biased;
+            _ = self.budget.stop.cancelled() => return Err(Status::unavailable("Catalog stopped")),
+            result = self.projections.clone().acquire_owned() => result.map_err(|_| Status::unavailable("Catalog stopped"))?,
+        };
+        let permit = self.budget.wait().await?;
+        self.address
+            .send(super::messages::Versions {
+                ids,
                 permit,
                 projection,
             })
@@ -70,10 +90,18 @@ impl CatalogHandle {
             .await
             .map_err(closed)?
     }
-    pub async fn model_documents(&self) -> Result<Vec<market_gifts::TelegramDocumentId>, Status> {
+    pub async fn model_documents(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<market_gifts::TelegramDocumentId>, Status> {
+        if !(1..=1000).contains(&limit) {
+            return Err(Status::invalid_argument(
+                "model document limit must be 1..1000",
+            ));
+        }
         let permit = self.budget.try_query()?;
         self.address
-            .send(super::messages::ModelDocuments { permit })
+            .send(super::messages::ModelDocuments { limit, permit })
             .await
             .map_err(closed)?
     }

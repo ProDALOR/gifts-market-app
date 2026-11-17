@@ -1,0 +1,14 @@
+[package]
+name = "market-gifts-hub"
+version.workspace = true
+edition.workspace = true
+description = "Pure mapping between generic hub facts and gift-domain models"
+[dependencies]
+market-gifts.workspace = true
+market-hub-protocol.workspace = true
+jiff.workspace = true
+rust_decimal.workspace = true
+[dev-dependencies]
+serde_json.workspace = true
+[lints]
+workspace = true

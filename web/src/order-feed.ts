@@ -1,3 +1,4 @@
+import { liveSocket } from "./live-socket.ts";
 import { ApiFailure, request } from "./market.ts";
 import type { Order, Page, FeedQuery } from "./market.ts";
 export type FeedState = {
@@ -46,8 +47,7 @@ export function mergePages(
  * data. Offscreen pages retain scroll history and refresh when they enter view. */
 export class OrderFeed {
   private stop = new AbortController();
-  private socket?: WebSocket;
-  private reconnect?: ReturnType<typeof setTimeout>;
+  private unsubscribe?: () => void;
   private head?: Page<Order>;
   private revision?: string;
   private epoch = 0;
@@ -90,11 +90,7 @@ export class OrderFeed {
   close() {
     this.stop.abort();
     this.pending?.abort();
-    clearTimeout(this.reconnect);
-    if (this.socket) {
-      this.socket.onclose = null;
-      this.socket.close();
-    }
+    this.unsubscribe?.();
   }
   loadMore() {
     if (this.working || this.state.error || !this.pages.at(-1)?.next_page_token)
@@ -133,49 +129,23 @@ export class OrderFeed {
       });
   }
   private connect() {
-    if (this.stop.signal.aborted) return;
-    this.emit({ status: this.pages.length ? "Reconnecting" : "Connecting" });
-    const socket = new WebSocket(
-      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`,
-    );
-    this.socket = socket;
-    socket.onopen = () => {
-      if (this.stop.signal.aborted || this.socket !== socket) return;
-      socket.send(
-        JSON.stringify({
-          type: "subscribe",
-          id: "offers",
-          query: this.selection?.query,
-        }),
-      );
-    };
-    socket.onmessage = (event) => {
-      if (this.stop.signal.aborted || this.socket !== socket) return;
-      try {
-        const frame = JSON.parse(event.data);
+    if (this.stop.signal.aborted || this.selection?.kind !== "orders") return;
+    this.unsubscribe = liveSocket.subscribe(
+      { type: "subscribe", id: "offers", query: this.selection.query },
+      (frame) => {
+        if (this.stop.signal.aborted) return;
         if (frame.type === "page")
           this.accept(
             { ...frame.page, sync: frame.sync || frame.page.sync },
             frame.revision,
           );
-        else if (frame.type === "sync" && this.head) {
+        else if (frame.type === "sync" && this.head)
           this.accept({ ...this.head, sync: frame.sync }, frame.revision);
-        } else if (frame.type === "error") {
+        else if (frame.type === "error")
           this.fail(new Error(frame.error.message));
-          if (["unavailable", "capacity_exceeded"].includes(frame.error.code))
-            socket.close();
-        }
-      } catch (error) {
-        this.fail(error);
-      }
-    };
-    socket.onerror = () => socket.close();
-    socket.onclose = () => {
-      if (!this.stop.signal.aborted && this.socket === socket) {
-        this.emit({ status: "Reconnecting" });
-        this.reconnect = setTimeout(() => this.connect(), 1000);
-      }
-    };
+      },
+      (status) => this.emit({ status }),
+    );
   }
   private read(token: string, signal = this.stop.signal): Promise<Page<Order>> {
     const selection = this.selection;

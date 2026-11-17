@@ -1951,11 +1951,14 @@ dependencies = [
  "actix",
  "jiff",
  "market-gifts",
+ "market-gifts-hub",
  "market-hub-protocol",
  "market-replica",
- "percent-encoding",
  "prost",
  "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -1983,6 +1986,7 @@ dependencies = [
  "market-media",
  "market-miniapp",
  "market-replica",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tempfile",
@@ -2032,6 +2036,17 @@ dependencies = [
  "serde",
  "serde_json",
  "utoipa",
+]
+
+[[package]]
+name = "market-gifts-hub"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "market-gifts",
+ "market-hub-protocol",
+ "rust_decimal",
+ "serde_json",
 ]
 
 [[package]]

@@ -101,8 +101,9 @@
         <h2 id="protocol-heading">How the stream works</h2>
         <ul>
           <li>
-            <code>subscribe</code> starts or replaces a live page using an ID.
-            <code>unsubscribe</code> releases it without an acknowledgement.
+            <code>subscribe</code> starts a live page using an ID. Unsubscribe
+            before reusing an ID. <code>unsubscribe</code> releases it without
+            an acknowledgement.
           </li>
           <li>
             <code>page</code> replaces the requested page. Use the frame-level
@@ -127,6 +128,12 @@
             Slow consumers close with code <code>1013</code>. Error frames
             include a subscription ID, or an empty ID for connection-level
             errors.
+          </li>
+          <li>
+            <code>watch_catalog</code> watches catalog revisions for up to eight
+            collections. Compare <code>catalog</code> frames with HTTP
+            <code>ETag</code> headers to reload changed choices without polling.
+            Reconnects send the complete current revision set.
           </li>
         </ul>
       </section>

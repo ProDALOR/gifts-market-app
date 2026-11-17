@@ -98,7 +98,13 @@ fn references(value: &Value, pending: &mut Vec<String>) {
 }
 fn summary(name: &str) -> &'static str {
     match name {
-        "subscribe" => "Start or replace a live order-page subscription with this ID.",
+        "subscribe" => "Start a live order-page subscription with this ID.",
+        "watch_catalog" => {
+            "Watch catalog content revisions for up to eight collections, without polling."
+        }
+        "catalog" => {
+            "Current catalog content revisions. Compare with HTTP ETags to revalidate changed entries."
+        }
         "unsubscribe" => "Release this subscription. No acknowledgement is sent.",
         "status" => "The subscription is connecting.",
         "page" => "Replace the requested order page. Frame-level sync is authoritative.",
@@ -127,6 +133,21 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
                 query: Box::new(query),
             })?
         }
+        "watch_catalog" => serde_json::to_value(Command::WatchCatalog {
+            id: "catalog".into(),
+            collection_ids: vec!["tg.gift.123".into()],
+        })?,
+        "catalog" => serde_json::to_value(ServerFrame::Catalog {
+            id: "catalog".into(),
+            versions: CatalogVersions {
+                directory: "opaque-directory-content-revision".into(),
+                collections: [(
+                    "tg.gift.123".into(),
+                    Some("opaque-collection-content-revision".into()),
+                )]
+                .into(),
+            },
+        })?,
         "unsubscribe" => serde_json::to_value(Command::Unsubscribe {
             id: "offers".into(),
         })?,
@@ -180,7 +201,7 @@ mod tests {
         assert!(refs.iter().all(|name| names.contains(name)));
         assert!(!names.contains("GiftCatalog"));
         assert!(!names.contains("Session"));
-        for command in ["subscribe", "unsubscribe"] {
+        for command in ["subscribe", "watch_catalog", "unsubscribe"] {
             serde_json::from_value::<Command>(
                 spec["components"]["messages"][command]["examples"][0]["payload"].clone(),
             )
@@ -191,14 +212,14 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            2
+            3
         );
         assert_eq!(
             spec["operations"]["sendUpdates"]["messages"]
                 .as_array()
                 .unwrap()
                 .len(),
-            4
+            5
         );
     }
 }

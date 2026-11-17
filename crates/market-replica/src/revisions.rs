@@ -6,7 +6,7 @@ use crate::{
 };
 use im::OrdMap;
 use market_hub_protocol::wire as w;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 use tonic::Status;
 
 type Book = (String, String, String);
@@ -18,6 +18,8 @@ pub(crate) struct Revisions {
     pub dataset: u64,
     pub catalog: u64,
     pub directory: u64,
+    metadata: [u64; 5],
+    option_groups: OrdMap<String, OptionGroup>,
     books: OrdMap<Scope, u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,12 +30,44 @@ pub struct ReadRevision {
     data: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CatalogRevision {
+pub struct MetadataRevision {
     instance: uuid::Uuid,
     dataset: u64,
-    catalog: u64,
+    kinds: [u64; 5],
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectoryRevision {
+    instance: uuid::Uuid,
+    dataset: u64,
     directory: u64,
 }
+
+#[derive(Clone)]
+struct OptionGroup {
+    count: usize,
+    revision: u64,
+}
+/// Exact reference dependencies of a projection, including absent keys and unrestricted options.
+/// Only selected entity payloads are retained; this never retains a whole replica view.
+pub struct MetadataDependencies {
+    instance: uuid::Uuid,
+    dataset: u64,
+    entities: Vec<(Key, Option<Arc<w::Entity>>)>,
+    option_groups: Vec<(String, u64)>,
+}
+impl MetadataDependencies {
+    /// Retained key count, including missing references, for bounded projection caches.
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
+}
+fn option_group(entity: &w::Entity) -> Option<&str> {
+    match entity.entity.as_ref()? {
+        w::entity::Entity::AttributeOption(option) => Some(&option.attribute_id),
+        _ => None,
+    }
+}
+
 fn book(value: &w::BookKey) -> Book {
     (
         value.item_type_id.clone(),
@@ -53,14 +87,31 @@ fn affected(entity: &w::Entity, books: &mut BTreeSet<Book>) {
     }
 }
 impl Revisions {
-    pub fn replaced(previous: Option<&ReplicaView>) -> Self {
+    pub fn replaced(previous: Option<&ReplicaView>, state: &State) -> Self {
         let sequence = previous.map_or(1, |view| view.revisions.sequence + 1);
+        let mut option_groups = OrdMap::<String, OptionGroup>::new();
+        for (_, entity) in state
+            .entities
+            .range(Key::first(EntityKind::AttributeOption)..Key::first(EntityKind::Feed))
+        {
+            if let Some(attribute) = option_group(entity) {
+                let group = option_groups
+                    .entry(attribute.to_owned())
+                    .or_insert(OptionGroup {
+                        count: 0,
+                        revision: sequence,
+                    });
+                group.count += 1;
+            }
+        }
         Self {
             instance: previous.map_or_else(uuid::Uuid::new_v4, |view| view.revisions.instance),
             sequence,
             dataset: sequence,
             catalog: sequence,
             directory: sequence,
+            metadata: [sequence; 5],
+            option_groups,
             books: OrdMap::new(),
         }
     }
@@ -74,6 +125,7 @@ impl Revisions {
         next.sequence += 1;
         let mut touched = BTreeSet::new();
         let mut orders = BTreeSet::new();
+        let mut changed_options = BTreeSet::new();
         for change in changes {
             let key = match &change.change {
                 Some(w::change::Change::Upsert(value)) => state::entity_key(value)?,
@@ -85,6 +137,9 @@ impl Revisions {
                 )?,
                 None => return Err(Status::data_loss("empty change")),
             };
+            if key.kind == EntityKind::AttributeOption && !changed_options.insert(key.id.clone()) {
+                continue;
+            }
             let old = before.entities.get(&key);
             let new = after.entities.get(&key);
             // Immutable execution retries and identical observations need no active-book invalidation.
@@ -93,6 +148,30 @@ impl Revisions {
             }
             if key.kind != EntityKind::Order && key.kind != EntityKind::Feed {
                 next.catalog = next.sequence;
+                next.metadata[key.kind as usize - 1] = next.sequence;
+            }
+            if let Some(attribute) = old.and_then(|e| option_group(e)) {
+                let group = next
+                    .option_groups
+                    .get_mut(attribute)
+                    .expect("existing option group");
+                group.count -= 1;
+                if group.count == 0 {
+                    next.option_groups.remove(attribute);
+                } else {
+                    group.revision = next.sequence;
+                }
+            }
+            if let Some(attribute) = new.and_then(|e| option_group(e)) {
+                let group = next
+                    .option_groups
+                    .entry(attribute.to_owned())
+                    .or_insert(OptionGroup {
+                        count: 0,
+                        revision: next.sequence,
+                    });
+                group.count += 1;
+                group.revision = next.sequence;
             }
             if let Some(entity) = old {
                 affected(entity, &mut touched);
@@ -188,16 +267,187 @@ impl ReplicaReader {
             data,
         })
     }
-    pub fn catalog_revision(&self) -> Result<CatalogRevision, Status> {
+    /// Revision of selected reference entity kinds, independent of order/feed updates.
+    pub fn metadata_revision(&self, kinds: &[w::EntityKind]) -> Result<MetadataRevision, Status> {
         let view = self.view()?;
-        Ok(CatalogRevision {
+        let mut selected = [0; 5];
+        for kind in kinds {
+            let kind = EntityKind::try_from(*kind as i32)?;
+            if matches!(kind, EntityKind::Order | EntityKind::Feed) {
+                return Err(Status::invalid_argument(
+                    "metadata revision requires reference entity kinds",
+                ));
+            }
+            let index = kind as usize - 1;
+            selected[index] = view.revisions.metadata[index];
+        }
+        Ok(MetadataRevision {
             instance: view.revisions.instance,
             dataset: view.revisions.dataset,
-            catalog: view.revisions.catalog,
+            kinds: selected,
+        })
+    }
+    /// Capture exact references and unrestricted attribute-option groups over a pinned read.
+    pub fn metadata_dependencies(
+        &self,
+        keys: Vec<w::Key>,
+        option_attributes: Vec<String>,
+    ) -> Result<MetadataDependencies, Status> {
+        let view = self.view()?;
+        let mut keys = keys
+            .iter()
+            .map(Key::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        if keys
+            .iter()
+            .any(|key| matches!(key.kind, EntityKind::Order | EntityKind::Feed))
+        {
+            return Err(Status::invalid_argument(
+                "metadata dependencies require reference entity keys",
+            ));
+        }
+        keys.sort();
+        keys.dedup();
+        let mut attributes = option_attributes;
+        attributes.sort();
+        attributes.dedup();
+        Ok(MetadataDependencies {
+            instance: view.revisions.instance,
+            dataset: view.revisions.dataset,
+            entities: keys
+                .into_iter()
+                .map(|key| {
+                    let entity = view.state.entities.get(&key).cloned();
+                    (key, entity)
+                })
+                .collect(),
+            option_groups: attributes
+                .into_iter()
+                .map(|attribute| {
+                    let revision = view
+                        .revisions
+                        .option_groups
+                        .get(&attribute)
+                        .map_or(0, |group| group.revision);
+                    (attribute, revision)
+                })
+                .collect(),
+        })
+    }
+    /// Check dependencies without scanning the catalog or retaining removed-key tombstones.
+    pub fn metadata_matches(&self, dependencies: &MetadataDependencies) -> Result<bool, Status> {
+        let view = self.view()?;
+        if dependencies.instance != view.revisions.instance
+            || dependencies.dataset != view.revisions.dataset
+        {
+            return Ok(false);
+        }
+        Ok(dependencies
+            .option_groups
+            .iter()
+            .all(|(attribute, revision)| {
+                view.revisions
+                    .option_groups
+                    .get(attribute)
+                    .map_or(0, |group| group.revision)
+                    == *revision
+            })
+            && dependencies.entities.iter().all(|(key, expected)| {
+                let actual = view.state.entities.get(key);
+                match (actual, expected) {
+                    (None, None) => true,
+                    (Some(actual), Some(expected)) => {
+                        Arc::ptr_eq(actual, expected) || actual == expected
+                    }
+                    _ => false,
+                }
+            }))
+    }
+    /// Changes only when available books change or the replica dataset is replaced.
+    pub fn directory_revision(&self) -> Result<DirectoryRevision, Status> {
+        let view = self.view()?;
+        Ok(DirectoryRevision {
+            instance: view.revisions.instance,
+            dataset: view.revisions.dataset,
             directory: view.revisions.directory,
         })
     }
     pub fn cursor(&self) -> Result<String, Status> {
         Ok(self.view()?.cursor.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn option(id: &str, attribute: &str, name: &str) -> w::Change {
+        w::Change {
+            change: Some(w::change::Change::Upsert(w::Entity {
+                entity: Some(w::entity::Entity::AttributeOption(w::AttributeOption {
+                    id: id.into(),
+                    attribute_id: attribute.into(),
+                    name: name.into(),
+                    ..Default::default()
+                })),
+            })),
+        }
+    }
+    fn remove(id: &str) -> w::Change {
+        w::Change {
+            change: Some(w::change::Change::Remove(w::Removal {
+                key: Some(w::Key {
+                    kind: w::EntityKind::AttributeOption as i32,
+                    id: id.into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        }
+    }
+    #[test]
+    fn option_group_revisions_handle_duplicate_keys_moves_and_churn_without_tombstones() {
+        let mut state = State::default();
+        state
+            .apply(&[option("a", "one", "A"), option("b", "one", "B")])
+            .unwrap();
+        // Replacement/reopen reconstructs group counts from existing reference entities.
+        let mut revisions = Revisions::replaced(None, &state);
+        assert_eq!(revisions.option_groups.get("one").unwrap().count, 2);
+        let changes = [
+            option("a", "two", "Intermediate"),
+            option("a", "two", "Final"),
+        ];
+        let mut after = state.clone();
+        after.apply(&changes).unwrap();
+        revisions = revisions.updated(&state, &after, &changes).unwrap();
+        assert_eq!(revisions.option_groups.get("one").unwrap().count, 1);
+        assert_eq!(revisions.option_groups.get("two").unwrap().count, 1);
+        assert_eq!(
+            revisions.option_groups.get("one").unwrap().revision,
+            revisions.sequence
+        );
+        state = after;
+        let changes = [remove("a"), remove("a"), remove("b")];
+        let mut after = state.clone();
+        after.apply(&changes).unwrap();
+        revisions = revisions.updated(&state, &after, &changes).unwrap();
+        assert!(revisions.option_groups.is_empty());
+        state = after;
+        for i in 0..100 {
+            let changes = [option("a", &format!("group.{i}"), "A")];
+            let mut after = state.clone();
+            after.apply(&changes).unwrap();
+            revisions = revisions.updated(&state, &after, &changes).unwrap();
+            assert_eq!(revisions.option_groups.len(), 1);
+            assert_eq!(
+                revisions
+                    .option_groups
+                    .get(&format!("group.{i}"))
+                    .unwrap()
+                    .count,
+                1
+            );
+            state = after;
+        }
     }
 }

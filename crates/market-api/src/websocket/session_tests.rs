@@ -31,6 +31,7 @@ async fn connect(
         move |key, query, tx, cancel, _| {
             let scenario = scenario.clone();
             async move {
+            let subscription::Query::Orders(query) = query else { return End::Failed; };
             if query.limit==1 {
                 scenario.started.notify_one();cancel.cancelled().await;scenario.cancelled.notify_one();return End::Cancelled;
             }

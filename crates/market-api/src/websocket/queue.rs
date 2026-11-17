@@ -19,6 +19,7 @@ pub(super) enum Payload {
         sync: market_gifts::SyncStatus,
         revision: String,
     },
+    Catalog(market_gifts::CatalogVersions),
     Error(ApiError),
 }
 impl Payload {
@@ -62,6 +63,11 @@ impl Payload {
                 state: SubscriptionStatus::Connecting,
             })
             .expect("public status serializes"),
+            Self::Catalog(versions) => serde_json::to_string(&ServerFrame::Catalog {
+                id: id.into(),
+                versions: crate::catalog::versions(versions.clone()),
+            })
+            .expect("catalog frame serializes"),
             Self::Error(error) => serde_json::to_string(&ServerFrame::Error {
                 id: id.into(),
                 error: error.clone(),

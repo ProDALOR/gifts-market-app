@@ -1,5 +1,6 @@
 //! HTTP/WebSocket adapters, gift-domain models and transport envelopes.
 mod asyncapi;
+mod catalog;
 mod config;
 mod connections;
 mod encoding;

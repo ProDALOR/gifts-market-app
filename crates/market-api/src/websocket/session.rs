@@ -36,7 +36,7 @@ async fn drive(
     stop: CancellationToken,
     start: impl Fn(
         Key,
-        crate::models::GiftOrdersQuery,
+        subscription::Query,
         queue::Sender,
         CancellationToken,
         WebSocketLimits,
@@ -86,7 +86,7 @@ async fn drive(
                         Ok(command)=>command,
                         Err(_)=>{if tx.error(Scope::Global,ApiError::invalid("invalid subscription message")).is_err() {break CloseCode::Again;}continue;}
                     };
-                    let (id,query)=match command {Command::Subscribe{id,query}=>(id,Some(query)),Command::Unsubscribe{id}=>(id,None)};
+                    let (id,query)=match command {Command::Subscribe{id,query}=>(id,Some(subscription::Query::Orders(query))),Command::WatchCatalog{id,collection_ids}=>(id,Some(subscription::Query::Catalog(collection_ids))),Command::Unsubscribe{id}=>(id,None)};
                     let id=match SubscriptionId::parse(id) {
                         Ok(id)=>id,
                         Err(error)=>{if tx.error(Scope::Global,error).is_err() {break CloseCode::Again;}continue;}
@@ -101,7 +101,7 @@ async fn drive(
                             if tx.error(scope,error).is_err() {break CloseCode::Again;}continue;
                         }
                     };
-                    let work=start(key.clone(),*query,tx.clone(),cancel,limits.clone());
+                    let work=start(key.clone(),query,tx.clone(),cancel,limits.clone());
                     jobs.push(async move {
                         let result=AssertUnwindSafe(work).catch_unwind().await;
                         (key,result.unwrap_or_else(|_| {tracing::warn!("WebSocket subscription task panicked");End::Failed}))

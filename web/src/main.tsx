@@ -92,6 +92,7 @@ function App({ context }: { context: TelegramContext }) {
     optionsLoading,
     optionsError,
     retryOptions,
+    retryCatalog,
   } = useCatalog(refresh, choice.collection);
   useBackgroundPlaybackSuspension(!!selected || accountOpen);
   useEffect(() => {
@@ -282,6 +283,7 @@ function App({ context }: { context: TelegramContext }) {
             <button
               onClick={() => {
                 if (optionsError) retryOptions();
+                else if (startupError) retryCatalog();
                 else setRefresh((v) => v + 1);
               }}
             >
@@ -477,12 +479,7 @@ function App({ context }: { context: TelegramContext }) {
             IGIFTS
           </a>
           <span>Every venue. One view.</span>
-          <a
-            className="api-link"
-            href="/docs"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a className="api-link" href="/docs" target="_blank" rel="noreferrer">
             API ↗
           </a>
         </footer>

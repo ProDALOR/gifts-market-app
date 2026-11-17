@@ -4,13 +4,16 @@ version.workspace = true
 edition.workspace = true
 [dependencies]
 market-gifts.workspace = true
+market-gifts-hub.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 actix.workspace = true
 jiff.workspace = true
 rust_decimal.workspace = true
 market-replica.workspace = true
 market-hub-protocol.workspace = true
 prost.workspace = true
-percent-encoding.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tonic.workspace = true

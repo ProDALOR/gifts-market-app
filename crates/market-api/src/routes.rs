@@ -3,7 +3,7 @@ use super::{
     error::{ApiError, ErrorResponse, Result},
     models::*,
 };
-use actix_web::{HttpResponse, web};
+use actix_web::{HttpRequest, HttpResponse, http::header, web};
 #[utoipa::path(get,path="/healthz",tag="Health",summary="Process health",responses((status=200,description="Process is running")))]
 pub(crate) async fn health() -> HttpResponse {
     HttpResponse::Ok().finish()
@@ -17,18 +17,47 @@ pub(crate) async fn ready(state: web::Data<MarketApi>) -> Result<HttpResponse> {
 pub(crate) async fn sync(state: web::Data<MarketApi>) -> Result<web::Json<SyncStatus>> {
     Ok(web::Json(state.sync().await?))
 }
-#[utoipa::path(get,path="/catalog",tag="Catalog",summary="Collections, currencies and venues",responses((status=200,body=GiftCatalog),(status=503,body=ErrorResponse)))]
-pub(crate) async fn catalog(state: web::Data<MarketApi>) -> Result<web::Json<GiftCatalog>> {
-    Ok(web::Json(state.catalog().await?))
+#[utoipa::path(get,path="/catalog",tag="Catalog",summary="Collections, currencies and venues",description="Catalog data. Use GET /sync for replica readiness and freshness.",responses((status=200,body=GiftCatalog,headers(("ETag"=String,description="Catalog content revision"))),(status=304,description="Catalog content is unchanged"),(status=503,body=ErrorResponse)))]
+pub(crate) async fn catalog(state: web::Data<MarketApi>, req: HttpRequest) -> Result<HttpResponse> {
+    Ok(catalog_response(state.catalog_snapshot().await?, &req))
 }
-#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog),(status=404,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Collection choices. Use GET /sync for replica readiness and freshness.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Collection content revision"))),(status=304,description="Collection content is unchanged"),(status=404,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn collection(
     state: web::Data<MarketApi>,
     id: web::Path<String>,
-) -> Result<web::Json<GiftCollectionCatalog>> {
+    req: HttpRequest,
+) -> Result<HttpResponse> {
     let id =
         CollectionId::new(id.into_inner()).map_err(|error| ApiError::invalid(error.to_string()))?;
-    Ok(web::Json(state.collection(id).await?))
+    Ok(catalog_response(state.collection_snapshot(id).await?, &req))
+}
+fn catalog_response<T: serde::Serialize>(
+    snapshot: market_actors::CatalogSnapshot<T>,
+    req: &HttpRequest,
+) -> HttpResponse {
+    let etag = format!("\"{}\"", snapshot.revision);
+    let unchanged = req
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|value| value.trim().trim_start_matches("W/") == etag || value.trim() == "*")
+        });
+    let mut response = if unchanged {
+        HttpResponse::NotModified()
+    } else {
+        HttpResponse::Ok()
+    };
+    response
+        .insert_header((header::ETAG, etag))
+        .insert_header((header::CACHE_CONTROL, "no-cache"));
+    if unchanged {
+        response.finish()
+    } else {
+        response.json(snapshot.data)
+    }
 }
 #[utoipa::path(post,path="/orders/query",tag="Orders",summary="Query current asks or bids",request_body=GiftOrdersQuery,responses((status=200,body=Page<GiftOrder>),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn orders(

@@ -13,12 +13,16 @@ pub enum DataUpdate {
         sync: market_gifts::SyncStatus,
         revision: String,
     },
+    Catalog(market_gifts::CatalogVersions),
     Error(DataError),
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct SubscriberId(pub u64);
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub(super) struct QueryKey(pub Vec<u8>);
+pub(super) enum QueryKey {
+    Orders(Vec<u8>),
+    Catalog(Vec<market_gifts::CollectionId>),
+}
 /// One caller's lease. Dropping its final Arc releases only that caller.
 pub struct DataSubscription {
     pub(super) id: SubscriberId,

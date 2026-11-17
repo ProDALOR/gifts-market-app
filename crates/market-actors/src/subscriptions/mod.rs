@@ -3,12 +3,13 @@ pub(crate) mod messages;
 mod producer;
 mod types;
 use crate::{
+    catalog::handle::CatalogHandle,
     orderbooks::handle::OrderbooksHandle,
     runtime::{ActorEnvironment, capacity},
     selection,
 };
 use actix::prelude::*;
-use messages::{Release, Subscribe};
+use messages::{Release, Subscribe, SubscribeCatalog};
 use prost::Message;
 use std::{
     collections::{HashMap, HashSet},
@@ -28,6 +29,7 @@ struct FeedEntry {
 pub(crate) struct UserSubscriptionsActor {
     environment: ActorEnvironment,
     orders: OrderbooksHandle,
+    catalog: CatalogHandle,
     reader: market_replica::ReplicaReader,
     slots: Arc<Semaphore>,
     feeds: HashMap<QueryKey, FeedEntry>,
@@ -38,12 +40,14 @@ impl UserSubscriptionsActor {
     pub fn new(
         environment: ActorEnvironment,
         orders: OrderbooksHandle,
+        catalog: CatalogHandle,
         reader: market_replica::ReplicaReader,
         limit: usize,
     ) -> Self {
         Self {
             environment,
             orders,
+            catalog,
             reader,
             slots: Arc::new(Semaphore::new(limit)),
             feeds: HashMap::new(),
@@ -67,9 +71,31 @@ impl Handler<Subscribe> for UserSubscriptionsActor {
     type Result = Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status>;
     fn handle(&mut self, message: Subscribe, ctx: &mut Self::Context) -> Self::Result {
         selection::orders(&message.0)?;
+        self.register(
+            QueryKey::Orders(message.0.encode_to_vec()),
+            Some(message.0),
+            ctx,
+        )
+    }
+}
+impl Handler<SubscribeCatalog> for UserSubscriptionsActor {
+    type Result = Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status>;
+    fn handle(&mut self, message: SubscribeCatalog, ctx: &mut Self::Context) -> Self::Result {
+        if message.0.len() > 8 {
+            return Err(Status::invalid_argument("Watch at most eight collections"));
+        }
+        self.register(QueryKey::Catalog(message.0), None, ctx)
+    }
+}
+impl UserSubscriptionsActor {
+    fn register(
+        &mut self,
+        key: QueryKey,
+        request: Option<market_hub_protocol::wire::ReadRequest>,
+        ctx: &mut Context<Self>,
+    ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status> {
         let next = self.next_id.checked_add(1).ok_or_else(capacity)?;
         let id = SubscriberId(next);
-        let key = QueryKey(message.0.encode_to_vec());
         let running = self
             .feeds
             .get(&key)
@@ -88,14 +114,24 @@ impl Handler<Subscribe> for UserSubscriptionsActor {
             });
             // Register the receiver before starting the producer so it cannot observe a closed channel.
             let updates = feed.sender.subscribe();
-            producer::start(
-                &self.environment,
-                &feed,
-                self.orders.clone(),
-                message.0,
-                self.reader.clone(),
-                permit,
-            );
+            match &key {
+                QueryKey::Orders(_) => producer::start(
+                    &self.environment,
+                    &feed,
+                    self.orders.clone(),
+                    request.expect("order request"),
+                    self.reader.clone(),
+                    permit,
+                ),
+                QueryKey::Catalog(ids) => producer::start_catalog(
+                    &self.environment,
+                    &feed,
+                    self.catalog.clone(),
+                    ids.clone(),
+                    self.reader.clone(),
+                    permit,
+                ),
+            }
             self.feeds.insert(
                 key.clone(),
                 FeedEntry {

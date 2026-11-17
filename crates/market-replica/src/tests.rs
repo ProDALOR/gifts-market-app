@@ -791,11 +791,11 @@ fn scoped_revisions_survive_coalescing_moves_deletions_and_replacements() {
     );
     let request = read(w::ReadMode::Live as i32, false);
     let revision = replica.reader.read_revision(&request).unwrap();
-    let catalog = replica.reader.catalog_revision().unwrap();
+    let directory = replica.reader.directory_revision().unwrap();
     other.price = "3".into();
     apply(&replica, vec![upsert(entity(E::Order(other)))], "c2");
     assert_eq!(replica.reader.read_revision(&request).unwrap(), revision);
-    assert_eq!(replica.reader.catalog_revision().unwrap(), catalog);
+    assert_eq!(replica.reader.directory_revision().unwrap(), directory);
     let mut changed = a.clone();
     changed.price = "4".into();
     apply(
@@ -805,7 +805,7 @@ fn scoped_revisions_survive_coalescing_moves_deletions_and_replacements() {
     );
     apply(&replica, vec![], "c4"); // coalesced notification must not hide c3
     assert_ne!(replica.reader.read_revision(&request).unwrap(), revision);
-    assert_eq!(replica.reader.catalog_revision().unwrap(), catalog);
+    assert_eq!(replica.reader.directory_revision().unwrap(), directory);
     let current = replica.reader.read_revision(&request).unwrap();
     apply(
         &replica,
@@ -816,7 +816,7 @@ fn scoped_revisions_survive_coalescing_moves_deletions_and_replacements() {
     changed.book.as_mut().unwrap().currency_id = "XTR".into();
     apply(&replica, vec![upsert(entity(E::Order(changed)))], "c6");
     assert_ne!(replica.reader.read_revision(&request).unwrap(), current);
-    assert_ne!(replica.reader.catalog_revision().unwrap(), catalog);
+    assert_ne!(replica.reader.directory_revision().unwrap(), directory);
     apply(&replica, vec![upsert(entity(E::Order(a)))], "c7");
     let before = replica.reader.read_revision(&request).unwrap();
     let store = replica.writer.lock().unwrap().store.clone();
@@ -873,4 +873,94 @@ async fn maintenance_releases_expired_snapshots_during_idle_upstream() {
     .unwrap();
     stop.cancel();
     task.await.unwrap().unwrap();
+}
+
+#[test]
+fn metadata_revisions_track_selected_kinds_deletions_and_dataset_identity() {
+    let (_dir, replica) = setup();
+    let kinds = [w::EntityKind::Venue, w::EntityKind::Currency];
+    let reference = replica.reader.metadata_revision(&kinds).unwrap();
+    assert_eq!(
+        reference,
+        replica
+            .reader
+            .metadata_revision(&[
+                w::EntityKind::Currency,
+                w::EntityKind::Venue,
+                w::EntityKind::Venue
+            ])
+            .unwrap()
+    );
+    let gifts = replica
+        .reader
+        .metadata_revision(&[w::EntityKind::ItemType, w::EntityKind::AttributeOption])
+        .unwrap();
+    let directory = replica.reader.directory_revision().unwrap();
+    let venue = w::Venue {
+        id: "venue".into(),
+        name: "Updated".into(),
+    };
+    apply(
+        &replica,
+        vec![upsert(entity(E::Venue(venue.clone())))],
+        "metadata.1",
+    );
+    apply(&replica, vec![], "metadata.heartbeat");
+    let changed = replica.reader.metadata_revision(&kinds).unwrap();
+    assert_ne!(changed, reference);
+    assert_eq!(
+        gifts,
+        replica
+            .reader
+            .metadata_revision(&[w::EntityKind::ItemType, w::EntityKind::AttributeOption])
+            .unwrap()
+    );
+    assert_eq!(directory, replica.reader.directory_revision().unwrap());
+    apply(
+        &replica,
+        vec![upsert(entity(E::Venue(venue.clone())))],
+        "metadata.identical",
+    );
+    assert_eq!(changed, replica.reader.metadata_revision(&kinds).unwrap());
+    apply(
+        &replica,
+        vec![w::Change {
+            change: Some(w::change::Change::Remove(w::Removal {
+                key: Some(w::Key {
+                    kind: w::EntityKind::Venue as i32,
+                    id: "venue".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        }],
+        "metadata.removed",
+    );
+    let removed = replica.reader.metadata_revision(&kinds).unwrap();
+    assert_ne!(removed, changed);
+    apply(
+        &replica,
+        vec![upsert(entity(E::Venue(venue)))],
+        "metadata.restored",
+    );
+    assert_ne!(removed, replica.reader.metadata_revision(&kinds).unwrap());
+    for kind in [
+        w::EntityKind::Order,
+        w::EntityKind::Feed,
+        w::EntityKind::Unspecified,
+    ] {
+        assert_eq!(
+            replica
+                .reader
+                .metadata_revision(&[kind])
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+    }
+    let before = replica.reader.metadata_revision(&kinds).unwrap();
+    let store = replica.writer.lock().unwrap().store.clone();
+    replica.install(store).unwrap();
+    assert_ne!(before, replica.reader.metadata_revision(&kinds).unwrap());
+    assert_ne!(directory, replica.reader.directory_revision().unwrap());
 }

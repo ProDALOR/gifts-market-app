@@ -1,4 +1,7 @@
 //! Gift domain models plus the HTTP/WebSocket envelope. No public generic hub DTOs.
+pub use crate::catalog::{
+    GiftCatalog, GiftCollection, GiftCollectionCatalog, GiftMedia, GiftModel, GiftPattern,
+};
 pub use market_gifts::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -8,6 +11,10 @@ pub enum Command {
     Subscribe {
         id: String,
         query: Box<GiftOrdersQuery>,
+    },
+    WatchCatalog {
+        id: String,
+        collection_ids: Vec<CollectionId>,
     },
     Unsubscribe {
         id: String,
@@ -32,6 +39,10 @@ pub enum ServerFrame {
         id: String,
         sync: SyncStatus,
         revision: String,
+    },
+    Catalog {
+        id: String,
+        versions: CatalogVersions,
     },
     Error {
         id: String,

@@ -51,3 +51,90 @@ fn backdrop_colors_are_validated_and_normalized() {
         assert!(RgbColor::try_from(invalid.to_owned()).is_err());
     }
 }
+
+#[test]
+fn domain_ranges_reject_reversed_bounds_and_zero_gift_numbers() {
+    for (min, max) in [(Some(0), None), (None, Some(0)), (Some(10), Some(1))] {
+        let mut filters = GiftFilters::new("collection".into(), "GRAM".into());
+        filters.number = Some(GiftNumberRange { min, max });
+        assert!(filters.validate().is_err());
+    }
+    for (min, max) in [
+        (None, None),
+        (Some(1), None),
+        (None, Some(10)),
+        (Some(10), Some(10)),
+    ] {
+        assert!(GiftNumberRange { min, max }.validate().is_ok());
+    }
+    let mut filters = GiftFilters::new("collection".into(), "GRAM".into());
+    filters.price = Some(PriceRange {
+        min: Some("10".into()),
+        max: Some("1".into()),
+    });
+    assert!(filters.validate().is_err());
+    assert!(
+        PriceRange {
+            min: Some("1".into()),
+            max: Some("1".into())
+        }
+        .validate()
+        .is_ok()
+    );
+    let earlier = "2026-01-01T00:00:00Z".parse().unwrap();
+    let later = "2026-01-02T00:00:00Z".parse().unwrap();
+    assert!(
+        Period {
+            from: Some(later),
+            until: Some(earlier)
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        Period {
+            from: Some(earlier),
+            until: Some(later)
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        Period {
+            from: Some(later),
+            until: None
+        }
+        .validate()
+        .is_ok()
+    );
+}
+
+#[test]
+fn valuation_validates_positive_positions_names_and_total_overflow() {
+    use crate::valuation::{ModelLookup, ModelPosition, ValuationRequest};
+    let mut request = ValuationRequest {
+        positions: vec![ModelPosition {
+            model: ModelLookup::Name {
+                collection: "Gift".into(),
+                model: "Model".into(),
+            },
+            quantity: 0,
+        }],
+        currency_id: "GRAM".into(),
+    };
+    assert!(request.validate().is_err());
+    request.positions[0].quantity = 1;
+    assert!(request.validate().is_ok());
+    request.positions[0].model = ModelLookup::Name {
+        collection: " ".into(),
+        model: "Model".into(),
+    };
+    assert!(request.validate().is_err());
+    request.positions[0].model = ModelLookup::Catalog {
+        collection: "collection".into(),
+        model: "model".into(),
+    };
+    request.positions[0].quantity = u32::MAX;
+    request.positions.push(request.positions[0].clone());
+    assert!(request.validate().is_err());
+}

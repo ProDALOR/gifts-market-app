@@ -6,7 +6,8 @@ pub(crate) async fn warmup(data: MarketDataHandle, cache: MediaCache) {
     while !data.status().await.is_ok_and(|status| status.ready) {
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
-    let Ok(documents) = data.model_documents().await else {
+    const WARMUP_DOCUMENTS: usize = 64;
+    let Ok(documents) = data.model_documents(WARMUP_DOCUMENTS).await else {
         return;
     };
     let mut cached = 0;

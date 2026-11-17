@@ -1,5 +1,9 @@
 //! Model floors and portfolio positions, independent of Telegram inventory retrieval.
-use crate::*;
+use crate::{
+    Amount, CollectionId, CurrencyId, InvalidValue, ModelId, SyncStatus, TelegramDocumentId,
+    TelegramGiftId, VenueId,
+};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -75,16 +79,13 @@ pub struct Valuation {
 }
 impl ValuationRequest {
     pub fn validate(&self) -> Result<(), InvalidValue> {
-        if self.positions.len() > 1000 {
-            return Err(InvalidValue("at most 1000 model positions are allowed"));
-        }
         let mut count = 0u32;
         for position in &self.positions {
             count = count
                 .checked_add(position.quantity)
                 .ok_or(InvalidValue("portfolio quantity is too large"))?;
-            if position.quantity == 0 || count > 10_000 {
-                return Err(InvalidValue("portfolio quantity must be 1..10000"));
+            if position.quantity == 0 {
+                return Err(InvalidValue("portfolio quantities must be positive"));
             }
             if let ModelLookup::Name { collection, model } = &position.model
                 && [collection, model]

@@ -4,7 +4,7 @@ mod query;
 mod ranking;
 mod reader;
 mod revisions;
-pub use revisions::{CatalogRevision, ReadRevision};
+pub use revisions::{DirectoryRevision, MetadataDependencies, MetadataRevision, ReadRevision};
 mod replication;
 mod runtime;
 pub use replication::ReplicationWorker;
@@ -93,9 +93,10 @@ impl ReplicaWriter {
         let published = if cursor.is_empty() {
             None
         } else {
+            let state = store.state()?;
             Some(Arc::new(ReplicaView {
-                revisions: revisions::Revisions::replaced(None),
-                state: store.state()?,
+                revisions: revisions::Revisions::replaced(None, &state),
+                state,
                 history: store.snapshot()?,
                 cursor,
             }))
@@ -231,7 +232,7 @@ impl ReplicaWriter {
     }
     fn install_state(&mut self, store: Store, state: State) -> Result<(), Status> {
         self.reader.expire();
-        let revisions = revisions::Revisions::replaced(self.reader.view().ok().as_deref());
+        let revisions = revisions::Revisions::replaced(self.reader.view().ok().as_deref(), &state);
         let view = Arc::new(ReplicaView {
             revisions,
             state,

@@ -6,6 +6,7 @@ export type HistoryQuery = components["schemas"]["GiftHistoryQuery"];
 export type FeedQuery =
   { kind: "orders"; query: Query } | { kind: "history"; query: HistoryQuery };
 export type GiftMedia = components["schemas"]["GiftMedia"];
+export type CatalogVersions = components["schemas"]["CatalogVersions"];
 export type Catalog = components["schemas"]["GiftCatalog"];
 export type CollectionCatalog = components["schemas"]["GiftCollectionCatalog"];
 export type Collection = components["schemas"]["GiftCollection"];
@@ -35,6 +36,7 @@ export async function request<T>(
   body?: unknown,
   signal?: AbortSignal,
   token?: string,
+  revision?: (value: string) => void,
 ): Promise<T> {
   const response = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
@@ -51,15 +53,27 @@ export async function request<T>(
       value.error?.code || "unavailable",
       value.error?.message || "Market data is unavailable",
     );
+  const etag = response.headers.get("etag");
+  if (etag) revision?.(etag.replace(/^W\//, "").replace(/^"|"$/g, ""));
   return value;
 }
-export const catalog = (signal: AbortSignal): Promise<Catalog> =>
-  request("/catalog", undefined, signal);
+export const catalog = (
+  signal: AbortSignal,
+  revision?: (value: string) => void,
+): Promise<Catalog> =>
+  request("/catalog", undefined, signal, undefined, revision);
 export const collectionCatalog = (
   id: string,
   signal: AbortSignal,
+  revision?: (value: string) => void,
 ): Promise<CollectionCatalog> =>
-  request(`/collections/${encodeURIComponent(id)}`, undefined, signal);
+  request(
+    `/collections/${encodeURIComponent(id)}`,
+    undefined,
+    signal,
+    undefined,
+    revision,
+  );
 /** Exact string formatting; no conversion to JavaScript floating point. */
 export function amount(value: string) {
   const [whole, fraction] = value.split(".");

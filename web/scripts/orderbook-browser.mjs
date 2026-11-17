@@ -203,10 +203,14 @@ try {
       body: Buffer.from(png, "base64"),
     }),
   );
+  const collectionRevisions = { bunny: "bunny.0", pepe: "pepe.0" };
+  let catalogRequests = 0;
   let failOptions = true,
     optionRequests = 0;
-  await page.route("**/catalog", (route) =>
-    route.fulfill({
+  await page.route("**/catalog", (route) => {
+    catalogRequests++;
+    return route.fulfill({
+      headers: { etag: '"directory.0"' },
       json: {
         collections,
         venues,
@@ -223,11 +227,9 @@ try {
             })),
           ),
         ),
-        cursor: "fixture",
-        sync,
       },
-    }),
-  );
+    });
+  });
   await page.route(
     (url) => url.pathname.startsWith("/collections/"),
     (route) => {
@@ -245,13 +247,12 @@ try {
         new URL(route.request().url()).pathname.split("/").at(-1),
       );
       return route.fulfill({
+        headers: { etag: `"${collectionRevisions[id]}"` },
         json: {
           collection: collections.find((c) => c.id === id),
           models,
           backdrops,
           patterns,
-          cursor: "fixture",
-          sync,
         },
       });
     },
@@ -263,11 +264,45 @@ try {
       }),
     );
   const connections = new Set();
+  const catalogPeers = new Set();
+  const openSockets = new Set();
+  let socketCount = 0,
+    orderSubscriptions = 0;
+  const sendCatalog = (peer) =>
+    peer.socket.send(
+      JSON.stringify({
+        type: "catalog",
+        id: "catalog",
+        versions: {
+          directory: "directory.0",
+          collections: Object.fromEntries(
+            peer.ids.map((id) => [id, collectionRevisions[id] ?? null]),
+          ),
+        },
+      }),
+    );
+  const notifyCatalog = () => {
+    for (const peer of catalogPeers) sendCatalog(peer);
+  };
   await page.routeWebSocket("**/ws", (socket) => {
-    let connection;
+    socketCount++;
+    openSockets.add(socket);
+    let connection, catalogPeer;
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
+      if (frame.type === "unsubscribe") {
+        if (frame.id === "offers") connections.delete(connection);
+        if (frame.id === "catalog") catalogPeers.delete(catalogPeer);
+      }
+      if (frame.type === "watch_catalog") {
+        catalogPeers.delete(catalogPeer);
+        catalogPeer = { socket, ids: frame.collection_ids };
+        catalogPeers.add(catalogPeer);
+        sendCatalog(catalogPeer);
+      }
       if (frame.type === "subscribe") {
+        orderSubscriptions++;
+        connections.delete(connection);
         connection = { socket, query: frame.query };
         connections.add(connection);
         socket.send(
@@ -279,7 +314,11 @@ try {
         );
       }
     });
-    socket.onClose(() => connections.delete(connection));
+    socket.onClose(() => {
+      connections.delete(connection);
+      catalogPeers.delete(catalogPeer);
+      openSockets.delete(socket);
+    });
   });
   const base = `http://127.0.0.1:${server.httpServer.address().port}`;
   await page.goto(`${base}/?collection=bunny&currency=GRAM&sort=price_asc`);
@@ -694,9 +733,162 @@ try {
   await opener.click();
   await page.mouse.click(5, 5);
   await page.waitForFunction(() => !document.querySelector(".detail"));
+  // Exercise live metadata inside Telegram's Mini App context, with no account credentials.
+  await page.route("**/telegram", (route) =>
+    route.fulfill({
+      json: {
+        auth_enabled: false,
+        bot_id: null,
+        bot_username: null,
+        miniapp_url: null,
+      },
+    }),
+  );
+  await page.addInitScript(() => {
+    window.Telegram = {
+      WebApp: {
+        initData: "fixture",
+        colorScheme: "dark",
+        themeParams: {},
+        ready() {},
+        expand() {},
+        onEvent() {},
+        offEvent() {},
+        BackButton: { show() {}, hide() {}, onClick() {}, offClick() {} },
+      },
+    };
+    window.catalogDocument = "same-document";
+  });
+  await page.reload();
+  await cards(50);
+  await page.waitForFunction(() =>
+    document.documentElement.classList.contains("telegram"),
+  );
+  const choose = async (name) => {
+    await button("Search collections").click();
+    await page.getByLabel("Filter collections").fill(name);
+    await page.getByLabel("Filter collections").press("Enter");
+    await cards(50);
+  };
+  await choose("pepe");
+  await choose("bunny");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  let beforeRequests = optionRequests;
+  const beforeCatalog = catalogRequests;
+  collectionRevisions.pepe = "pepe.1";
+  notifyCatalog();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(optionRequests, beforeRequests, "Inactive changes remain lazy");
+  assert.equal(openSockets.size, 1, "Catalog and orders share one socket");
+  await button("History").click();
+  await cards(50);
+  models[0].name = "Live model";
+  collectionRevisions.bunny = "bunny.1";
+  notifyCatalog();
+  await button("Model").click();
+  await button("Live model").waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal(
+    optionRequests,
+    beforeRequests + 1,
+    "Only the changed active collection downloads",
+  );
+  assert.equal(
+    catalogRequests,
+    beforeCatalog,
+    "Trait changes do not download the directory",
+  );
+  assert.equal(
+    await page.evaluate(() => window.catalogDocument),
+    "same-document",
+  );
+  beforeRequests = optionRequests;
+  const previousSockets = socketCount;
+  [...catalogPeers][0].socket.close();
+  for (let i = 0; i < 100 && socketCount === previousSockets; i++)
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.ok(socketCount > previousSockets);
+  assert.equal(
+    optionRequests,
+    beforeRequests,
+    "An unchanged reconnect reuses cached metadata",
+  );
+  models[0].name = "Updated while disconnected";
+  collectionRevisions.bunny = "bunny.2";
+  [...catalogPeers][0].socket.close();
+  await button("Model").click();
+  await button("Updated while disconnected").waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal(
+    optionRequests,
+    beforeRequests + 1,
+    "Reconnect detects missed catalog changes",
+  );
+  assert.equal(openSockets.size, 1);
+  assert.equal(
+    await page.evaluate(() => window.catalogDocument),
+    "same-document",
+  );
+  await button("Asks").click();
+  await cards(50);
+  const healthyOrders = orderSubscriptions,
+    healthySockets = socketCount;
+  const beforeRecovery = optionRequests;
+  let peer = [...catalogPeers][0];
+  peer.socket.send(
+    JSON.stringify({
+      type: "error",
+      id: "catalog",
+      error: { code: "capacity_exceeded", message: "Catalog busy" },
+    }),
+  );
+  catalogPeers.delete(peer);
+  await page.getByRole("alert").filter({ hasText: "Catalog busy" }).waitFor();
+  await page.waitForFunction(() => !document.querySelector('[role="alert"]'));
+  assert.equal(
+    socketCount,
+    healthySockets,
+    "A catalog retry preserves the socket",
+  );
+  assert.equal(
+    orderSubscriptions,
+    healthyOrders,
+    "A catalog retry preserves healthy orders",
+  );
+  assert.equal(
+    optionRequests,
+    beforeRecovery,
+    "Matching retry revisions preserve cached choices",
+  );
+  peer = [...catalogPeers][0];
+  peer.socket.send(
+    JSON.stringify({
+      type: "error",
+      id: "catalog",
+      error: { code: "invalid_query", message: "Catalog needs retry" },
+    }),
+  );
+  catalogPeers.delete(peer);
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Catalog needs retry" })
+    .waitFor();
+  await button("Reload").click();
+  await page.waitForFunction(() => !document.querySelector('[role="alert"]'));
+  assert.equal(
+    orderSubscriptions,
+    healthyOrders,
+    "Manual catalog recovery preserves healthy orders",
+  );
+  assert.equal(optionRequests, beforeRecovery);
+  assert.equal(
+    await page.evaluate(() => window.catalogDocument),
+    "same-document",
+  );
   assert.deepEqual(errors, []);
   console.log(
-    "Orderbook browser passed: unlimited trait previews, infinite scroll, Time/Gift #/Price sorting, currencies, URL restore, modes and accessible details.",
+    "Orderbook browser passed: unlimited trait previews, infinite scroll, Time/Gift #/Price sorting, currencies, URL restore, modes, accessible details and automatic Mini App catalog updates.",
   );
 } finally {
   await browser?.close();

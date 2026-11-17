@@ -36,6 +36,7 @@ macro_rules! identifiers {
             fn from(value: &'static str) -> Self { Self::new(value).expect("valid static identifier") }
         }
         impl Deref for $name { type Target = str; fn deref(&self) -> &str { &self.0 } }
+        impl std::borrow::Borrow<str> for $name { fn borrow(&self) -> &str { &self.0 } }
         impl AsRef<str> for $name { fn as_ref(&self) -> &str { &self.0 } }
         impl fmt::Display for $name { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) } }
     )+};

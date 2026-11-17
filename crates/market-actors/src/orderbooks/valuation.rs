@@ -5,12 +5,9 @@ use market_gifts::{CurrencyId, VenueId};
 use market_hub_protocol::wire as w;
 use market_replica::ReplicaReader;
 use rust_decimal::Decimal;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tonic::Status;
 
-fn decimal(value: &str) -> Result<Decimal, Status> {
-    Decimal::from_str_exact(value).map_err(|_| Status::data_loss("invalid order amount"))
-}
 /// A single ascending-price scan per collection supplies every requested model.
 /// The reader is pinned by the caller, so catalog identity and all quotes agree.
 fn floors(
@@ -29,13 +26,13 @@ fn scan_floors(
     now: i64,
     mut read: impl FnMut(w::ReadRequest) -> Result<w::Page, Status>,
 ) -> Result<BTreeMap<ModelIdentity, (Decimal, VenueId)>, Status> {
-    let mut groups: BTreeMap<market_gifts::CollectionId, BTreeMap<String, market_gifts::ModelId>> =
+    let mut groups: BTreeMap<market_gifts::CollectionId, BTreeSet<market_gifts::ModelId>> =
         BTreeMap::new();
     for key in keys {
         groups
             .entry(key.collection_id)
             .or_default()
-            .insert(key.model_id.to_string(), key.model_id);
+            .insert(key.model_id);
     }
     let mut quotes = BTreeMap::new();
     let mut budget = 2560; // bounded across the whole portfolio, not per model
@@ -65,39 +62,26 @@ fn scan_floors(
                 let Some(w::entity::Entity::Order(order)) = entity.entity else {
                     continue;
                 };
-                if order.expires_at_ms.is_some_and(|expires| expires <= now)
-                    || decimal(&order.quantity)? <= Decimal::ZERO
-                {
+                let Some(model) = market_gifts_hub::concrete_model(&order) else {
+                    continue;
+                };
+                if !missing.contains(model) {
                     continue;
                 }
-                let Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
-                    value: Some(w::attribute_value::Value::OptionId(model)),
-                })) = order
-                    .attributes
-                    .get(crate::protocol::MODEL)
-                    .and_then(|value| value.predicate.as_ref())
+                let Some(quote) = market_gifts_hub::floor_quote(order, now)
+                    .map_err(|error| Status::data_loss(error.to_string()))?
                 else {
                     continue;
                 };
-                let Some(model_id) = missing.remove(model.as_str()) else {
+                if !missing.remove(quote.model_id.as_str()) {
                     continue;
-                };
-                let price = decimal(&order.price)?;
-                if price < Decimal::ZERO {
-                    return Err(Status::data_loss("negative order price"));
                 }
-                let venue: VenueId = order
-                    .book
-                    .ok_or_else(|| Status::data_loss("missing book"))?
-                    .venue_id
-                    .try_into()
-                    .map_err(|e| Status::data_loss(format!("{e}")))?;
                 quotes.insert(
                     ModelIdentity {
                         collection_id: collection_id.clone(),
-                        model_id,
+                        model_id: quote.model_id,
                     },
-                    (price, venue),
+                    (quote.price.decimal(), quote.venue_id),
                 );
             }
             if missing.is_empty() || page.next_page_token.is_empty() {
@@ -212,6 +196,87 @@ mod tests {
         }
     }
     #[test]
+    fn floor_scan_skips_unsupported_asks_and_prices_singleton_model_selections() {
+        let ask = |price: &str| w::Order {
+            id: format!("order.{price}"),
+            book: Some(w::BookKey {
+                venue_id: "venue".into(),
+                item_type_id: "collection".into(),
+                currency_id: "GRAM".into(),
+            }),
+            mode: w::OrderMode::Ask as i32,
+            item_id: Some("gift".into()),
+            price: price.into(),
+            quantity: "1".into(),
+            attributes: [(
+                market_gifts_hub::MODEL.into(),
+                w::AttributePredicate {
+                    predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                        value: Some(w::attribute_value::Value::OptionId("model".into())),
+                    })),
+                },
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let mut unsupported = ask("1");
+        unsupported
+            .attributes
+            .insert("unsupported".into(), w::AttributePredicate::default());
+        let mut expired = ask("2");
+        expired.expires_at_ms = Some(10);
+        let mut singleton = ask("3");
+        singleton.attributes.insert(
+            market_gifts_hub::MODEL.into(),
+            w::AttributePredicate {
+                predicate: Some(w::attribute_predicate::Predicate::OneOf(
+                    w::AttributeValues {
+                        values: vec![w::AttributeValue {
+                            value: Some(w::attribute_value::Value::OptionId("model".into())),
+                        }],
+                    },
+                )),
+            },
+        );
+        let key = ModelIdentity {
+            collection_id: "collection".into(),
+            model_id: "model".into(),
+        };
+        let mut calls = 0;
+        let quotes = scan_floors(std::iter::once(key.clone()), &"GRAM".into(), 10, |_| {
+            calls += 1;
+            Ok(w::Page {
+                entities: [
+                    unsupported.clone(),
+                    expired.clone(),
+                    singleton.clone(),
+                    ask("4"),
+                ]
+                .into_iter()
+                .map(|order| w::Entity {
+                    entity: Some(w::entity::Entity::Order(order)),
+                })
+                .collect(),
+                ..Default::default()
+            })
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(quotes[&key].0, Decimal::from(3));
+        let mut fractional = ask("1");
+        fractional.quantity = "1.5".into();
+        let error = scan_floors(std::iter::once(key), &"GRAM".into(), 10, |_| {
+            Ok(w::Page {
+                entities: vec![w::Entity {
+                    entity: Some(w::entity::Entity::Order(fractional.clone())),
+                }],
+                ..Default::default()
+            })
+        })
+        .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::DataLoss);
+    }
+    #[test]
     fn many_models_use_one_book_pass_instead_of_one_scan_per_model() {
         let directory = tempfile::tempdir().unwrap();
         let mut writer =
@@ -248,7 +313,7 @@ mod tests {
                     price: (i + 1).to_string(),
                     quantity: "1".into(),
                     attributes: [(
-                        crate::protocol::MODEL.into(),
+                        market_gifts_hub::MODEL.into(),
                         w::AttributePredicate {
                             predicate: Some(w::attribute_predicate::Predicate::Eq(
                                 w::AttributeValue {
@@ -303,7 +368,7 @@ mod tests {
             upsert(w::entity::Entity::AttributeOption(w::AttributeOption {
                 id: "model".into(),
                 name: name.into(),
-                attribute_id: crate::protocol::MODEL.into(),
+                attribute_id: market_gifts_hub::MODEL.into(),
                 aliases: vec![w::ExternalId {
                     namespace: "tg".into(),
                     id: document.into(),
@@ -323,7 +388,7 @@ mod tests {
                 price: price.into(),
                 quantity: "1".into(),
                 attributes: [(
-                    crate::protocol::MODEL.into(),
+                    market_gifts_hub::MODEL.into(),
                     w::AttributePredicate {
                         predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
                             value: Some(w::attribute_value::Value::OptionId("model".into())),
@@ -346,7 +411,7 @@ mod tests {
                 decimals: 9,
             })),
             upsert(w::entity::Entity::Attribute(w::Attribute {
-                id: crate::protocol::MODEL.into(),
+                id: market_gifts_hub::MODEL.into(),
                 name: "Model".into(),
                 value_type: w::AttributeType::Enum as i32,
                 ..Default::default()
@@ -360,7 +425,7 @@ mod tests {
                     id: "99".into(),
                 }],
                 attributes: [(
-                    crate::protocol::MODEL.into(),
+                    market_gifts_hub::MODEL.into(),
                     w::AttributeRule {
                         required: true,
                         allowed_values: Some(w::AllowedAttributeValues {

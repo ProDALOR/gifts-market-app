@@ -308,6 +308,8 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     .await;
     assert_eq!(directory["books"][0]["currency_id"], "GRAM");
     assert_eq!(directory["collections"][0]["name"], "Gift");
+    assert!(directory.get("sync").is_none());
+    assert!(directory.get("cursor").is_none());
     assert_eq!(directory["books"][0]["collection_id"], "tg.gift.123");
     assert!(directory["books"][0].get("item_type_id").is_none());
     let response = test::call_service(
@@ -320,6 +322,17 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     assert_eq!(response.status(), 200);
     let collection: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(collection["collection"]["id"], "tg.gift.123");
+    assert!(collection.get("sync").is_none());
+    assert!(collection.get("cursor").is_none());
+    let status: serde_json::Value = test::read_body_json(
+        test::call_service(&app, test::TestRequest::get().uri("/sync").to_request()).await,
+    )
+    .await;
+    assert_eq!(status["ready"], true);
+    assert!(status["state"].is_string());
+    assert!(status.get("updated_at").is_some());
+    // Other response kinds retain their own freshness envelope.
+    assert!(body["sync"]["ready"].as_bool().unwrap());
     for field in ["models", "backdrops", "patterns"] {
         assert!(collection[field].is_array());
     }
@@ -382,6 +395,14 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
             .is_none()
     );
     assert!(schema["paths"]["/orders/query"].is_object());
+    for catalog in ["GiftCatalog", "GiftCollectionCatalog"] {
+        let properties = &schema["components"]["schemas"][catalog]["properties"];
+        assert!(properties.get("sync").is_none());
+        assert!(properties.get("cursor").is_none());
+    }
+    for path in ["/catalog", "/collections/{id}", "/sync"] {
+        assert!(schema["paths"][path].is_object());
+    }
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
@@ -1124,4 +1145,131 @@ async fn developer_docs_render_rest_and_websocket_console_with_local_assets() {
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+}
+
+#[actix_web::test]
+async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
+    let (state, runtime, peer, stop) = setup().await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let web_dir = peer._directory.path().join("web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "<html></html>").unwrap();
+    let server = api_server(&runtime, web_dir);
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(server.run(api_stop.child_token()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({"type":"watch_catalog","id":"catalog","collection_ids":["tg.gift.123","missing"]}).to_string().into())).await.unwrap();
+    async fn receive(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                    socket.next().await
+                {
+                    let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if frame["type"] == "catalog" {
+                        return frame["versions"].clone();
+                    }
+                    assert_ne!(frame["type"], "error", "{frame}");
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+    let first = receive(&mut socket).await;
+    assert!(first["collections"]["missing"].is_null());
+    for (path, revision) in [
+        ("/catalog", &first["directory"]),
+        (
+            "/collections/tg.gift.123",
+            &first["collections"]["tg.gift.123"],
+        ),
+    ] {
+        let response =
+            test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+        assert_eq!(response.status(), 200);
+        let etag = response
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(etag, format!("\"{}\"", revision.as_str().unwrap()));
+        let cached = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(path)
+                .insert_header(("if-none-match", etag))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(cached.status(), 304);
+        assert!(test::read_body(cached).await.is_empty());
+    }
+    peer.page.send_replace(page("2.000000002"));
+    let unexpected_catalog = tokio::time::timeout(Duration::from_millis(350), async {
+        loop {
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                socket.next().await
+            {
+                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if frame["type"] == "catalog" {
+                    return frame;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(
+        unexpected_catalog.is_err(),
+        "Price updates must not emit catalog invalidations"
+    );
+    let mut renamed = page("2.000000002");
+    renamed.cursor = "catalog-renamed".into();
+    for entity in &mut renamed.entities {
+        if let Some(w::entity::Entity::ItemType(item)) = &mut entity.entity {
+            item.name = "Renamed gift".into();
+        }
+    }
+    peer.page.send_replace(renamed);
+    let changed = receive(&mut socket).await;
+    assert_ne!(changed["directory"], first["directory"]);
+    assert_ne!(
+        changed["collections"]["tg.gift.123"],
+        first["collections"]["tg.gift.123"]
+    );
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/collections/tg.gift.123")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        response.headers().get("etag").unwrap().to_str().unwrap(),
+        format!(
+            "\"{}\"",
+            changed["collections"]["tg.gift.123"].as_str().unwrap()
+        )
+    );
+    let body: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(body["collection"]["name"], "Renamed gift");
+    socket.close(None).await.unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
 }

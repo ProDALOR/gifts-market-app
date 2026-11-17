@@ -26,9 +26,7 @@ impl MarketDataHandle {
         &self,
         request: market_gifts::valuation::ValuationRequest,
     ) -> error::Result<market_gifts::valuation::Valuation> {
-        request
-            .validate()
-            .map_err(|error| error::DataError::invalid(error.to_string()))?;
+        crate::query::valuation(&request)?;
         Ok(self.orderbooks.value_models(request).await?)
     }
     pub(crate) async fn orders_raw(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
@@ -71,16 +69,42 @@ impl MarketDataHandle {
         protocol::orders(self.orders_raw(crate::query::history(query)?).await?)
     }
     pub async fn catalog(&self) -> error::Result<GiftCatalog> {
-        Ok(self.catalog.bootstrap().await?)
+        Ok(self.catalog_snapshot().await?.data)
     }
     pub async fn collection(&self, id: CollectionId) -> error::Result<GiftCollectionCatalog> {
+        Ok(self.collection_snapshot(id).await?.data)
+    }
+    pub async fn catalog_snapshot(&self) -> error::Result<crate::CatalogSnapshot<GiftCatalog>> {
+        Ok(self.catalog.bootstrap().await?)
+    }
+    pub async fn collection_snapshot(
+        &self,
+        id: CollectionId,
+    ) -> error::Result<crate::CatalogSnapshot<GiftCollectionCatalog>> {
         Ok(self.catalog.collection(id).await?)
+    }
+    pub async fn subscribe_catalog(
+        &self,
+        mut ids: Vec<CollectionId>,
+    ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
+        self.catalog.budget.check()?;
+        if ids.len() > 8 {
+            return Err(error::DataError::invalid("Watch at most eight collections"));
+        }
+        ids.sort();
+        ids.dedup();
+        Ok(self
+            .subscriptions
+            .send(crate::subscriptions::messages::SubscribeCatalog(ids))
+            .await
+            .map_err(closed)??)
     }
     pub async fn media_document(&self, target: MediaTarget) -> error::Result<TelegramDocumentId> {
         Ok(self.catalog.media_document(target).await?)
     }
-    pub async fn model_documents(&self) -> error::Result<Vec<TelegramDocumentId>> {
-        Ok(self.catalog.model_documents().await?)
+    /// Return at most `limit` distinct model documents (1..=1000).
+    pub async fn model_documents(&self, limit: usize) -> error::Result<Vec<TelegramDocumentId>> {
+        Ok(self.catalog.model_documents(limit).await?)
     }
     pub async fn status(&self) -> error::Result<SyncStatus> {
         protocol::sync(self.status_raw().await?)

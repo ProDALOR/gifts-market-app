@@ -8,6 +8,7 @@ edition = "2024"
 
 [workspace.dependencies]
 market-gifts = { path = "crates/market-gifts" }
+market-gifts-hub = { path = "crates/market-gifts-hub" }
 flate2 = "1"
 market-media = { path = "crates/market-media" }
 market-api = { path = "crates/market-api", default-features = false }

@@ -6,6 +6,10 @@ use super::{
 use crate::{MarketApi, config::WebSocketLimits, error::ApiError, models::GiftOrdersQuery};
 use market_actors::DataUpdate;
 use tokio_util::sync::CancellationToken;
+pub(super) enum Query {
+    Orders(Box<GiftOrdersQuery>),
+    Catalog(Vec<market_gifts::CollectionId>),
+}
 #[derive(Debug)]
 pub(super) enum End {
     TerminalQueued,
@@ -23,15 +27,21 @@ fn end(result: Result<(), QueueError>) -> End {
 pub(super) async fn run(
     market: MarketApi,
     key: Key,
-    query: GiftOrdersQuery,
+    query: Query,
     tx: Sender,
     cancel: CancellationToken,
     limits: WebSocketLimits,
 ) -> End {
     let _cancel_on_exit = cancel.clone().drop_guard();
+    let setup = async {
+        match query {
+            Query::Orders(query) => market.subscribe(*query).await,
+            Query::Catalog(ids) => market.subscribe_catalog(ids).await,
+        }
+    };
     let result = tokio::select! {biased;
         _=cancel.cancelled()=>return End::Cancelled,
-        result=tokio::time::timeout(limits.setup_timeout,market.subscribe(query))=>result.unwrap_or_else(|_|Err(ApiError::unavailable("Subscription setup timed out"))),
+        result=tokio::time::timeout(limits.setup_timeout,setup)=>result.unwrap_or_else(|_|Err(ApiError::unavailable("Subscription setup timed out"))),
     };
     let (_lease, mut updates) = match result {
         Ok(subscription) => subscription,
@@ -51,6 +61,7 @@ pub(super) async fn run(
         let update = updates.borrow_and_update().clone();
         let (payload, terminal) = match update {
             DataUpdate::Connecting => (Payload::Connecting, false),
+            DataUpdate::Catalog(versions) => (Payload::Catalog(versions), false),
             DataUpdate::Error(error) => (Payload::Error(error.into()), true),
             DataUpdate::View {
                 page,

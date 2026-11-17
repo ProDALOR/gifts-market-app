@@ -128,7 +128,7 @@ try {
     .waitFor();
   await page
     .locator("#asyncapi-reference")
-    .getByText(/Start or replace a live order-page subscription/)
+    .getByText(/Start a live order-page subscription/)
     .first()
     .waitFor();
   await page
@@ -145,6 +145,14 @@ try {
       .evaluate((node) => node.open),
     true,
   );
+  await page
+    .locator("#ws-message-watch_catalog")
+    .getByText(/Watch catalog content revisions/)
+    .waitFor();
+  await page
+    .locator("#ws-message-catalog td code")
+    .filter({ hasText: /^versions$/ })
+    .waitFor();
   await mkdir(new URL("../test-artifacts", import.meta.url), {
     recursive: true,
   });

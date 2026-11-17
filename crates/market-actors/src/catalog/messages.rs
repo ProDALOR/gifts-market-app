@@ -13,13 +13,13 @@ pub(crate) struct ReadCatalog {
     pub permit: OwnedSemaphorePermit,
 }
 #[derive(Message)]
-#[rtype(result = "Result<market_gifts::GiftCatalog,Status>")]
+#[rtype(result = "Result<super::CatalogSnapshot<market_gifts::GiftCatalog>,Status>")]
 pub(crate) struct GiftCatalog {
     pub projection: OwnedSemaphorePermit,
     pub permit: OwnedSemaphorePermit,
 }
 #[derive(Message)]
-#[rtype(result = "Result<market_gifts::GiftCollectionCatalog,Status>")]
+#[rtype(result = "Result<super::CatalogSnapshot<market_gifts::GiftCollectionCatalog>,Status>")]
 pub(crate) struct GiftCollection {
     pub projection: OwnedSemaphorePermit,
     pub id: market_gifts::CollectionId,
@@ -34,5 +34,14 @@ pub(crate) struct MediaDocument {
 #[derive(Message)]
 #[rtype(result = "Result<Vec<market_gifts::TelegramDocumentId>,Status>")]
 pub(crate) struct ModelDocuments {
+    pub limit: usize,
     pub permit: OwnedSemaphorePermit,
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<market_gifts::CatalogVersions,Status>")]
+pub(crate) struct Versions {
+    pub ids: Vec<market_gifts::CollectionId>,
+    pub permit: OwnedSemaphorePermit,
+    pub projection: OwnedSemaphorePermit,
 }

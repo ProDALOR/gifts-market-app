@@ -1,136 +1,418 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CollectionCatalogCache } from "../src/catalog/collection-cache.ts";
-import { collectionOptions } from "../src/catalog/selectors.ts";
-import type { Collection, CollectionCatalog } from "../src/market.ts";
-const collection = (
-  id: string,
-  ids: string[],
-): Collection & { models: string[] } => ({
-  id,
-  name: id,
-  preview: null,
-  models: ids,
-});
-const signal = () => new AbortController().signal;
-const result = (
-  gift: Collection & { models: string[] },
-): CollectionCatalog => ({
-  collection: gift,
-  models: (gift.models || []).map((id) => ({ id, name: id, media: null })),
-  backdrops: [],
-  patterns: [],
-  cursor: "test",
-  sync: { ready: true, state: "live", updated_at: null },
-});
-test("collection visits reuse complete responses and catalog changes invalidate them", async () => {
-  let calls = 0;
-  const definitions = new Map([
-    ["gift", collection("gift", ["a", "b"])],
-    ["other", collection("other", ["c"])],
+import type { TestContext } from "node:test";
+import { CatalogController } from "../src/catalog/controller.ts";
+import { ApiFailure } from "../src/market.ts";
+import type { Catalog, CollectionCatalog } from "../src/market.ts";
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+async function until(predicate: () => boolean) {
+  for (let i = 0; i < 100; i++) {
+    if (predicate()) return;
+    await tick();
+  }
+  assert.fail("Catalog did not settle");
+}
+function gate() {
+  let release: () => void = () => {};
+  const promise = new Promise<void>((r) => {
+    release = r;
+  });
+  return { promise, release };
+}
+function fixture(t: TestContext) {
+  const definitions = new Map<
+    string,
+    { name: string; version: string; count: number }
+  >([
+    ["a", { name: "A", version: "a1", count: 2 }],
+    ["b", { name: "B", version: "b1", count: 1 }],
   ]);
-  const cache = new CollectionCatalogCache(async (id) => {
-    calls++;
-    return result(definitions.get(id)!);
+  let directoryVersion = "d1";
+  const requests: { kind: string; id: string; signal: AbortSignal }[] = [];
+  let waitDirectory: (() => Promise<void>) | undefined,
+    waitCollection: ((id: string) => Promise<void>) | undefined;
+  let failure: Error | undefined;
+  let callback: ((frame: any) => void) | undefined;
+  let status: ((state: string) => void) | undefined;
+  let command: any;
+  let retries = 0;
+  const emit = () =>
+    callback?.({
+      type: "catalog",
+      id: "catalog",
+      versions: {
+        directory: directoryVersion,
+        collections: Object.fromEntries(
+          (command?.collection_ids ?? []).map((id: string) => [
+            id,
+            definitions.get(id)?.version ?? null,
+          ]),
+        ),
+      },
+    });
+  const socket = {
+    subscribe(
+      cmd: any,
+      frame: (frame: any) => void,
+      changed?: (status: string) => void,
+    ) {
+      command = cmd;
+      callback = frame;
+      status = changed;
+      queueMicrotask(emit);
+      return () => {
+        callback = undefined;
+      };
+    },
+    update(cmd: any) {
+      command = cmd;
+      queueMicrotask(emit);
+    },
+    retry() {
+      retries++;
+      queueMicrotask(emit);
+    },
+  };
+  const controller = new CatalogController({
+    socket,
+    random: () => 0.5,
+    catalog: async (signal, received) => {
+      requests.push({ kind: "directory", id: "", signal });
+      const version = directoryVersion;
+      const collections = [...definitions].map(([id, v]) => ({
+        id,
+        name: v.name,
+        preview: null,
+      }));
+      const result: Catalog = {
+        collections,
+        venues: [],
+        currencies: [],
+        books: collections.map((c) => ({
+          collection_id: c.id,
+          venue_id: "test",
+          currency_id: "GRAM",
+        })),
+      };
+      await waitDirectory?.();
+      received?.(version);
+      return result;
+    },
+    collection: async (id, signal, received) => {
+      requests.push({ kind: "choices", id, signal });
+      const data = definitions.get(id)!;
+      const version = data.version;
+      const result: CollectionCatalog = {
+        collection: { id, name: data.name, preview: null },
+        models: Array.from({ length: data.count }, (_, i) => ({
+          id: `${id}.${i}`,
+          name: version,
+          media: null,
+        })),
+        backdrops: [],
+        patterns: [],
+      };
+      await waitCollection?.(id);
+      if (failure) {
+        const error = failure;
+        failure = undefined;
+        throw error;
+      }
+      received?.(version);
+      return result;
+    },
   });
-  const first = definitions.get("gift")!,
-    second = definitions.get("other")!;
-  await cache.load(first, signal());
-  await cache.load(second, signal());
-  await cache.load({ ...first }, signal());
-  assert.equal(calls, 2);
-  assert.deepEqual(
-    collectionOptions(first, "models", cache.options).map((row) => row.id),
-    ["a", "b"],
+  t.after(() => controller.close());
+  const start = async (id = "a") => {
+    controller.select(id);
+    controller.start();
+    await until(
+      () =>
+        !!controller.getSnapshot().options.size &&
+        !controller.getSnapshot().optionsLoading,
+    );
+  };
+  return {
+    controller,
+    start,
+    definitions,
+    requests,
+    emit,
+    directory: (version: string) => {
+      directoryVersion = version;
+    },
+    holdDirectory: (wait?: () => Promise<void>) => {
+      waitDirectory = wait;
+    },
+    holdCollection: (wait?: (id: string) => Promise<void>) => {
+      waitCollection = wait;
+    },
+    fail: (error: Error) => {
+      failure = error;
+    },
+    error: (code: string) =>
+      callback?.({
+        type: "error",
+        id: "catalog",
+        error: { code, message: "catalog failed" },
+      }),
+    status: (value: string) => status?.(value),
+    watched: () => command.collection_ids,
+    retries: () => retries,
+  };
+}
+const choiceCalls = (f: ReturnType<typeof fixture>, id = "a") =>
+  f.requests.filter((r) => r.kind === "choices" && r.id === id).length;
+test("initial manifest avoids duplicate reads and cached switching preserves options", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const a = f.controller.getSnapshot().options;
+  assert.equal(f.requests.length, 2);
+  f.controller.select("b");
+  await until(() => f.controller.getSnapshot().options.has("b.0"));
+  f.controller.select("a");
+  await until(() => f.controller.getSnapshot().options === a);
+  assert.equal(choiceCalls(f), 1);
+  assert.equal(choiceCalls(f, "b"), 1);
+  f.emit();
+  await tick();
+  assert.equal(f.requests.length, 3);
+});
+test("renaming a selected collection does not cancel or duplicate its choices download", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const pending = gate();
+  f.holdCollection(() => pending.promise);
+  f.definitions.get("a")!.name = "Renamed";
+  f.definitions.get("a")!.version = "a2";
+  f.directory("d2");
+  f.emit();
+  await until(() => f.controller.getSnapshot().item?.name === "Renamed");
+  assert.equal(choiceCalls(f), 2);
+  assert.equal(
+    f.requests
+      .filter((r) => r.kind === "choices")
+      .some((r) => r.signal.aborted),
+    false,
   );
-  const changed = { ...collection("gift", ["a", "b", "d"]), name: "Changed" };
-  definitions.set("gift", changed);
-  await cache.load(changed, signal());
-  assert.equal(calls, 3);
-});
-test("failed or cancelled collection responses do not commit and remain retryable", async () => {
-  let calls = 0;
-  const gift = collection("gift", ["a", "b"]);
-  const cache = new CollectionCatalogCache(async () => {
-    if (++calls === 1) throw Error("temporary");
-    return result(gift);
-  });
-  await assert.rejects(cache.load(gift, signal()), /temporary/);
-  assert.equal(cache.options.size, 0);
-  await cache.load(gift, signal());
-  assert.equal(cache.options.size, 2);
-  const stop = new AbortController();
-  const abandoned = new CollectionCatalogCache(async () => {
-    stop.abort();
-    return result(gift);
-  });
-  await assert.rejects(abandoned.load(gift, stop.signal));
-  assert.equal(abandoned.options.size, 0);
-});
-test("one typed collection request loads large model catalogs without generic fan-out", async () => {
-  let calls = 0;
-  const gift = collection(
-    "gift",
-    Array.from({ length: 700 }, (_, i) => String(i)),
+  pending.release();
+  await until(
+    () => f.controller.getSnapshot().options.get("a.0")?.name === "a2",
   );
-  const cache = new CollectionCatalogCache(async (id) => {
-    calls++;
-    assert.equal(id, gift.id);
-    return result(gift);
-  });
-  await cache.load(gift, signal());
-  assert.equal(calls, 1);
-  assert.equal(cache.options.size, 700);
+  assert.equal(choiceCalls(f), 2);
 });
-
-test("only the active collection exposes options while other visits stay cached", async () => {
-  let models = ["old"];
-  const cache = new CollectionCatalogCache(async (id) =>
-    result(collection(id, id === "gift" ? models : ["other-model"])),
+test("directory bursts coalesce behind one request and fetch the latest target once", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const pending = gate();
+  f.holdDirectory(() => pending.promise);
+  for (let i = 2; i < 8; i++) {
+    f.directory(`d${i}`);
+    f.definitions.get("a")!.name = `A${i}`;
+    f.emit();
+  }
+  assert.equal(f.requests.filter((r) => r.kind === "directory").length, 2);
+  f.holdDirectory();
+  pending.release();
+  await until(() => f.controller.getSnapshot().item?.name === "A7");
+  assert.equal(f.requests.filter((r) => r.kind === "directory").length, 3);
+  assert.equal(
+    f.requests.some((r) => r.signal.aborted),
+    false,
   );
-  await cache.load(collection("gift", ["old"]), signal());
-  await cache.load(collection("other", ["other-model"]), signal());
-  models = ["new"];
-  await cache.load(
-    { ...collection("gift", ["new"]), name: "Updated" },
-    signal(),
+  assert.equal(choiceCalls(f), 1);
+});
+test("choice invalidations coalesce and an obsolete response cannot overwrite current data", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const pending = gate();
+  f.holdCollection(() => pending.promise);
+  f.definitions.get("a")!.version = "a2";
+  f.emit();
+  f.definitions.get("a")!.version = "a3";
+  f.emit();
+  assert.equal(choiceCalls(f), 2);
+  assert.equal(f.controller.getSnapshot().options.get("a.0")?.name, "a1");
+  f.holdCollection();
+  pending.release();
+  await until(
+    () => f.controller.getSnapshot().options.get("a.0")?.name === "a3",
   );
-  assert.deepEqual([...cache.options.keys()].sort(), ["new"]);
+  assert.equal(choiceCalls(f), 3);
 });
-
-test("newer collection responses win when cached collections share an option", async () => {
-  let name = "Old";
-  const cache = new CollectionCatalogCache(async (id) => ({
-    ...result(collection(id, ["shared"])),
-    models: [{ id: "shared", name, media: null }],
-  }));
-  const first = collection("first", ["shared"]);
-  await cache.load(first, signal());
-  await cache.load(collection("second", ["shared"]), signal());
-  name = "Updated";
-  await cache.load({ ...first, name: "New catalog definition" }, signal());
-  assert.equal(cache.options.get("shared")?.name, "Updated");
+test("a newer target recovers an already-stale entry after a non-retried refresh error", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.fail(new ApiFailure("not_found", "temporarily missing"));
+  f.definitions.get("a")!.version = "a2";
+  f.emit();
+  await until(() => !!f.controller.getSnapshot().optionsError);
+  assert.equal(f.controller.getSnapshot().options.get("a.0")?.name, "a1");
+  f.definitions.get("a")!.version = "a3";
+  f.emit();
+  await until(
+    () => f.controller.getSnapshot().options.get("a.0")?.name === "a3",
+  );
+  assert.equal(f.controller.getSnapshot().optionsError, "");
 });
-
-test("collection cache evicts least recent entries and bounds retained choices", async () => {
-  const calls: string[] = [];
-  const cache = new CollectionCatalogCache(async (id) => {
-    calls.push(id);
-    return result(collection(id, [id]));
-  });
+test("transient retries survive unrelated updates without starting an immediate retry loop", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture(t);
+  await f.start();
+  f.fail(new ApiFailure("capacity_exceeded", "busy"));
+  f.definitions.get("a")!.version = "a2";
+  f.emit();
+  await until(() => !!f.controller.getSnapshot().optionsError);
+  f.directory("d2");
+  f.emit();
+  await tick();
+  assert.equal(choiceCalls(f), 2);
+  t.mock.timers.tick(999);
+  await tick();
+  assert.equal(choiceCalls(f), 2);
+  t.mock.timers.tick(1);
+  await until(
+    () => f.controller.getSnapshot().options.get("a.0")?.name === "a2",
+  );
+  assert.equal(choiceCalls(f), 3);
+});
+test("inactive changes stay lazy and reconnects preserve matching snapshots", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.controller.select("b");
+  await until(() => !!f.controller.getSnapshot().options.get("b.0"));
+  f.controller.select("a");
+  const a = f.controller.getSnapshot().options;
+  f.definitions.get("b")!.version = "b2";
+  f.emit();
+  await tick();
+  assert.equal(choiceCalls(f, "b"), 1);
+  f.status("Reconnecting");
+  f.emit();
+  await tick();
+  assert.equal(f.controller.getSnapshot().options, a);
+  assert.equal(choiceCalls(f), 1);
+  f.controller.select("b");
+  await until(
+    () => f.controller.getSnapshot().options.get("b.0")?.name === "b2",
+  );
+  assert.equal(choiceCalls(f, "b"), 2);
+});
+test("A to B to A reuses pending work and late inactive data never changes the selection", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const a = gate(),
+    b = gate();
+  f.holdCollection((id) => (id === "a" ? a.promise : b.promise));
+  f.definitions.get("a")!.version = "a2";
+  f.emit();
+  f.controller.select("b");
+  await until(() => choiceCalls(f, "b") === 1);
+  f.controller.select("a");
+  assert.equal(choiceCalls(f), 2);
+  a.release();
+  await until(
+    () => f.controller.getSnapshot().options.get("a.0")?.name === "a2",
+  );
+  b.release();
+  await tick();
+  await tick();
+  assert.equal(f.controller.getSnapshot().selectedId, "a");
+  assert.equal(choiceCalls(f), 2);
+  assert.equal(
+    f.requests.some((r) => r.signal.aborted),
+    false,
+  );
+});
+test("terminal live errors are visible and targeted recovery preserves valid HTTP data", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const before = f.requests.length;
+  f.error("invalid_query");
+  assert.match(f.controller.getSnapshot().startupError, /catalog failed/);
+  f.controller.retryCatalog();
+  await until(() => !f.controller.getSnapshot().startupError);
+  assert.equal(f.retries(), 1);
+  assert.equal(
+    f.requests.length,
+    before,
+    "Live recovery preserves valid HTTP data",
+  );
+  f.controller.retryOptions();
+  await until(
+    () =>
+      f.requests.length === before + 1 &&
+      !f.controller.getSnapshot().optionsLoading,
+  );
+});
+test("LRU retention stays bounded and oversized active collections remain live", async (t) => {
+  const f = fixture(t);
   for (let i = 0; i < 9; i++)
-    await cache.load(collection(String(i), [String(i)]), signal());
-  await cache.load(collection("1", ["1"]), signal());
-  assert.equal(calls.length, 9);
-  assert.deepEqual([...cache.options.keys()], ["1"]);
-  await cache.load(collection("0", ["0"]), signal());
-  assert.equal(calls.length, 10);
-  const huge = collection(
-    "huge",
-    Array.from({ length: 10001 }, (_, i) => `m${i}`),
+    f.definitions.set(`gift${i}`, {
+      name: `Gift${i}`,
+      version: `v${i}`,
+      count: 1,
+    });
+  await f.start();
+  for (let i = 0; i < 9; i++) {
+    f.controller.select(`gift${i}`);
+    await until(() => f.controller.getSnapshot().options.has(`gift${i}.0`));
+  }
+  assert.ok(f.watched().length <= 8);
+  f.controller.select("a");
+  await until(() => f.controller.getSnapshot().options.has("a.0"));
+  assert.equal(choiceCalls(f), 2);
+  f.definitions.get("a")!.count = 10001;
+  f.definitions.get("a")!.version = "large1";
+  f.emit();
+  await until(() => f.controller.getSnapshot().options.size === 10001);
+  f.definitions.get("a")!.version = "large2";
+  f.emit();
+  await until(
+    () => f.controller.getSnapshot().options.get("a.0")?.name === "large2",
   );
-  const large = new CollectionCatalogCache(async () => result(huge));
-  await large.load(huge, signal());
-  await large.load(huge, signal()); // oversized response is usable but not retained
-  assert.equal(large.options.size, 10001);
+  assert.ok(f.watched().length <= 8);
+});
+test("closing aborts pending requests and prevents late results or retries from publishing", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const pending = gate();
+  f.holdCollection(() => pending.promise);
+  f.definitions.get("a")!.version = "a2";
+  f.emit();
+  const snapshot = f.controller.getSnapshot();
+  f.controller.close();
+  assert.equal(f.requests.at(-1)!.signal.aborted, true);
+  pending.release();
+  await tick();
+  await tick();
+  assert.equal(f.controller.getSnapshot(), snapshot);
+});
+
+test("rapid switching bounds in-flight reads and discarded responses cannot publish", async (t) => {
+  const f = fixture(t);
+  f.definitions.set("c", { name: "C", version: "c1", count: 1 });
+  await f.start();
+  const a = gate(),
+    b = gate();
+  f.holdCollection((id) =>
+    id === "a" ? a.promise : id === "b" ? b.promise : Promise.resolve(),
+  );
+  f.definitions.get("a")!.version = "a2";
+  f.emit();
+  f.controller.select("b");
+  await until(() => choiceCalls(f, "b") === 1);
+  f.controller.select("c");
+  await until(() => f.controller.getSnapshot().options.has("c.0"));
+  assert.equal(
+    f.requests.filter((r) => r.kind === "choices" && r.id === "a").at(-1)!
+      .signal.aborted,
+    true,
+  );
+  a.release();
+  b.release();
+  await tick();
+  await tick();
+  assert.equal(f.controller.getSnapshot().selectedId, "c");
+  assert.equal(f.controller.getSnapshot().options.has("c.0"), true);
 });
