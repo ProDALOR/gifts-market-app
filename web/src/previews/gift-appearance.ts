@@ -1,5 +1,5 @@
-import type { Entry, Order } from "./market.ts";
-import { modelThumbnailUrl } from "./market.ts";
+import type { Entry, Order } from "../market.ts";
+import { modelThumbnailUrl } from "../market.ts";
 export type GiftOption = Extract<Entry, { kind: "attribute_option" }>;
 export type BackdropPalette = { center: string; edge: string; pattern: string };
 function exactOption(

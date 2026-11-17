@@ -1,0 +1,66 @@
+.account-bar:empty {
+  display: none;
+}
+.account-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.account-button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  min-height: 30px;
+}
+.account-dot {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: #d0aa67;
+}
+.account-dot.verified {
+  background: #aaf3cf;
+}
+.account-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 9px);
+  min-width: 230px;
+  max-width: 85vw;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+  z-index: 70;
+  box-shadow: 0 14px 36px #0004;
+}
+.account-menu span,
+.account-menu small,
+.account-menu p {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.account-menu button {
+  background: var(--plum);
+  color: white;
+  border-radius: 8px;
+  min-height: 36px;
+  margin-top: 6px;
+}
+
+.telegram-link {
+  font-size: 11px;
+  color: var(--accent);
+}
+.telegram-account {
+  position: relative;
+  margin-left: auto;
+}

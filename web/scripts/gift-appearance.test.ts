@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { giftAppearance } from "../src/gift-appearance.ts";
-import type { GiftOption } from "../src/gift-appearance.ts";
+import { giftAppearance } from "../src/previews/gift-appearance.ts";
+import type { GiftOption } from "../src/previews/gift-appearance.ts";
 import type { Order } from "../src/market.ts";
 function options(): Map<string, GiftOption> {
   return new Map([

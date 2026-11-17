@@ -1,0 +1,332 @@
+.venues::-webkit-scrollbar {
+  display: none;
+}
+.market-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: var(--control-gap);
+}
+.segments {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 2px;
+  border-radius: 9px;
+}
+.segments button {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 20px;
+  min-height: 30px;
+  border-radius: 6px;
+  padding: 3px 8px;
+  color: var(--muted);
+}
+.segments button.active {
+  background: var(--plum);
+  color: white;
+}
+.market-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: var(--control-gap) 0 0;
+}
+.venues {
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  scrollbar-width: none;
+  gap: 2px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  padding: 2px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overscroll-behavior-x: contain;
+}
+.venue {
+  flex: 0 0 34px;
+  height: 30px;
+  padding: 0;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.venue svg,
+.venue > .venue-logo {
+  width: 17px;
+  height: 17px;
+}
+.venue > .venue-logo {
+  width: 22px;
+  height: 18px;
+  object-fit: contain;
+}
+.venue[data-venue="Telegram"] {
+  color: #63c9ff;
+}
+.venue[data-venue="Portals"] {
+  color: #c7a5ff;
+}
+.venue[data-venue="MRKT"] {
+  color: var(--ink);
+}
+.venue[aria-pressed="true"] {
+  background: var(--plum);
+  color: white;
+}
+.venue:focus-visible {
+  outline-offset: -2px;
+}
+.sort-control {
+  justify-self: end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  min-width: 0;
+  max-width: 155px;
+  height: 36px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+}
+.sort-control .picker-trigger {
+  border: 0;
+  background: transparent;
+  border-radius: 9px 0 0 9px;
+}
+.sort-control > button {
+  color: var(--accent);
+  border-left: 1px solid var(--line);
+  font-size: 20px;
+  padding: 0;
+}
+.quote {
+  text-align: center;
+  margin-top: 1px;
+  line-height: 16px;
+}
+.price {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.price small {
+  font-size: 8px;
+  margin-left: 4px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.star {
+  color: #ffde89;
+}
+@media (max-width: 365px) {
+  .segments button {
+    padding: 3px 5px;
+  }
+  .venue {
+    flex-basis: 31px;
+  }
+}
+
+.quote {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 3px;
+}
+.quote-amount {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.market-controls .segments {
+  flex: 1;
+}
+.select-picker {
+  position: relative;
+  min-width: 0;
+}
+.currency-picker {
+  flex: 0 0 58px;
+}
+.picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  height: 36px;
+  min-width: 0;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 20px;
+}
+.picker-trigger > span:first-child {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+}
+.picker-trigger:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.picker-chevron {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--muted);
+}
+.picker-trigger[aria-expanded="true"] .picker-chevron {
+  transform: rotate(180deg);
+}
+.picker-options {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: max(100%, 112px);
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  z-index: 20;
+  box-shadow: 0 8px 24px #0005;
+}
+.currency-picker .picker-options {
+  min-width: 72px;
+}
+.picker-options button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 9px;
+  text-align: left;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+.picker-options [aria-selected="true"] {
+  background: var(--plum);
+  color: white;
+}
+.picker-options button:hover,
+.picker-options button:focus-visible {
+  background: var(--tint);
+}
+.picker-check {
+  margin-left: auto;
+}
+.currency-symbol {
+  width: 1em;
+  height: 1em;
+  flex: none;
+  display: inline-block;
+  align-self: center;
+}
+.currency-symbol.gram {
+  color: #6ecbff;
+}
+.picker-trigger .currency-symbol,
+.picker-options .currency-symbol {
+  width: 20px;
+  height: 20px;
+}
+.scroll-loader {
+  text-align: center;
+  padding: 12px 0 4px;
+  min-height: 36px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.selection-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.selection-note button {
+  color: var(--accent);
+  padding: 3px 0;
+}
+
+.text-button {
+  color: var(--accent);
+  font-size: 11px;
+  padding: 0;
+}
+.primary {
+  color: #2a1728;
+  background: var(--accent);
+  font-weight: 650;
+  min-height: 36px;
+  border-radius: 9px;
+  margin-top: 12px;
+  padding: 6px 10px;
+  width: 100%;
+}
+.detail {
+  position: fixed;
+  inset: auto 0 0;
+  width: min(100%, 480px);
+  max-width: 100%;
+  max-height: min(90dvh, calc(100dvh - var(--tg-safe-top, 0px)));
+  margin: 0 auto;
+  padding: 0 0
+    max(14px, env(safe-area-inset-bottom), var(--tg-safe-bottom, 0px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 0;
+  border-radius: 20px 20px 0 0;
+  background: var(--paper);
+  color: var(--ink);
+}
+.detail::backdrop {
+  background: #08070bc4;
+}
+body:has(.detail[open]) {
+  overflow: hidden;
+}
+.detail dl {
+  margin: 12px 0 14px;
+  font-size: 13px;
+}
+.detail dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 16px;
+  margin-bottom: 7px;
+}
+.detail dt {
+  color: var(--muted);
+}
+.detail dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}

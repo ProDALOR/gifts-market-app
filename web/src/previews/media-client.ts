@@ -1,24 +1,24 @@
-/** Shared bounded resources: one producer, independent consumers, byte-based LRU. */
+import { TaskQueue } from "./task-queue.ts";
+/** Shared bounded resources: queued producers, independent consumers, byte-based LRU. */
 export class MediaStore<T> {
   private entries = new Map<string, Entry<T>>();
   private bytes = 0;
+  private queue: TaskQueue;
   constructor(
     private load: (
       key: string,
       signal: AbortSignal,
+      priority: number,
     ) => Promise<{ value: T; bytes: number }>,
     private budget = 16 * 1024 * 1024,
-    private maxPending = 16,
-  ) {}
-  async get(key: string, signal: AbortSignal): Promise<T> {
+    concurrency = 4,
+  ) {
+    this.queue = new TaskQueue(concurrency);
+  }
+  async get(key: string, signal: AbortSignal, priority = 0): Promise<T> {
     signal.throwIfAborted();
     let entry = this.entries.get(key);
     if (!entry) {
-      if (
-        [...this.entries.values()].filter((value) => !value.settled).length >=
-        this.maxPending
-      )
-        throw new Error("Too many media requests");
       const controller = new AbortController();
       const created: Entry<T> = {
         controller,
@@ -28,8 +28,19 @@ export class MediaStore<T> {
         promise: Promise.resolve(undefined as T),
       };
       this.entries.set(key, created);
-      const timeout = setTimeout(() => controller.abort(), 35000);
-      created.promise = this.load(key, controller.signal)
+      created.promise = this.queue
+        .run(
+          async () => {
+            const timeout = setTimeout(() => controller.abort(), 35000);
+            try {
+              return await this.load(key, controller.signal, priority);
+            } finally {
+              clearTimeout(timeout);
+            }
+          },
+          controller.signal,
+          priority,
+        )
         .then(({ value, bytes }) => {
           controller.signal.throwIfAborted();
           if (this.entries.get(key) === created) {
@@ -46,7 +57,6 @@ export class MediaStore<T> {
         })
         .finally(() => {
           created.settled = true;
-          clearTimeout(timeout);
         });
       entry = created;
     } else {
@@ -58,6 +68,7 @@ export class MediaStore<T> {
     const cancelled = new Promise<never>((_, reject) => {
       aborted = () => reject(signal.reason);
       signal.addEventListener("abort", aborted, { once: true });
+      if (signal.aborted) aborted();
     });
     try {
       return await Promise.race([entry.promise, cancelled]);
@@ -117,7 +128,16 @@ export function retryDelay(response: Response): number | undefined {
     : undefined;
 }
 /** Keep native HTTP caching and cap streamed bytes, including chunked responses. */
-export async function fetchMedia(
+const downloads = new TaskQueue(4);
+export function fetchMedia(
+  url: string,
+  signal: AbortSignal,
+  kind: "image" | "tgs",
+  priority = 0,
+) {
+  return downloads.run(() => download(url, signal, kind), signal, priority);
+}
+async function download(
   url: string,
   signal: AbortSignal,
   kind: "image" | "tgs",

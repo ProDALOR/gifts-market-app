@@ -189,8 +189,22 @@ try {
       body: Buffer.from(png, "base64"),
     }),
   );
+  let failOptions = true,
+    optionRequests = 0;
   await page.route("**/catalog/query", (route) => {
     const body = route.request().postDataJSON();
+    if (body.kind === "attribute_option") {
+      optionRequests++;
+      if (failOptions) {
+        failOptions = false;
+        return route.fulfill({
+          status: 503,
+          json: {
+            error: { code: "unavailable", message: "Choices unavailable" },
+          },
+        });
+      }
+    }
     return route.fulfill({
       json: {
         data: entities.filter(
@@ -274,6 +288,13 @@ try {
   };
   await cards(50);
   await price("0.500000001");
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Choices unavailable" })
+    .waitFor();
+  await button("Reload").click();
+  await page.waitForFunction(() => !document.querySelector('[role="alert"]'));
+  assert.equal(optionRequests, 2, "Failed choice loads expose a working retry");
   const sortTrigger = page.getByRole("combobox", {
     name: "Sort by",
     exact: true,
@@ -445,16 +466,20 @@ try {
       const viewport = rail
         .querySelector(".collection-list")
         .getBoundingClientRect();
-      const selected = rail
-        .querySelector('.collection-tile[aria-pressed="true"]')
-        .getBoundingClientRect();
+      const selectedTile = rail.querySelector(
+        '.collection-tile[aria-pressed="true"]',
+      );
+      const selected = selectedTile.getBoundingClientRect();
+      const previous =
+        selectedTile.previousElementSibling.getBoundingClientRect();
       return (
         Math.abs(viewport.left - search.right - 7) < 1 &&
-        Math.abs(selected.left - viewport.left) < 1
+        Math.abs(previous.left - viewport.left) < 1 &&
+        Math.abs(selected.left - previous.right - 7) < 1
       );
     }),
     true,
-    "The last selected collection aligns after the search block, inside its own scroll viewport",
+    "The selected collection occupies the second visible slot after search",
   );
   await button("Search collections").click();
   await page.keyboard.press("Escape");
@@ -468,6 +493,11 @@ try {
   await page.getByLabel("Filter collections").fill("bunny");
   await page.getByLabel("Filter collections").press("Enter");
   await cards(50);
+  assert.equal(
+    optionRequests,
+    3,
+    "Returning to a loaded collection reuses its complete metadata",
+  );
   // Every selected trait must appear in the composition, not only the first three.
   await button("Model").click();
   for (const model of models) await button(model.name).click();

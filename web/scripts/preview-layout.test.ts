@@ -4,7 +4,7 @@ import {
   balancedRows,
   previewLayout,
   bannerPatternTiles,
-} from "../src/preview-layout.ts";
+} from "../src/previews/preview-layout.ts";
 test("backdrops split into balanced complete rows, including twelve as six plus six", () => {
   assert.deepEqual(
     balancedRows(
@@ -75,4 +75,30 @@ test("taller pattern wallpaper repeats the one-row geometry without scaling or s
   assert.equal(new Set(tall.map((tile) => tile.symbol)).size, 12);
   assert.deepEqual(bannerPatternTiles(0, 84, 12), []);
   assert.deepEqual(bannerPatternTiles(358, 84, 0), []);
+});
+test("flat balanced grids cover each row without overlaps and preserve model order", async () => {
+  const { balancedGrid } = await import("../src/previews/preview-layout.ts");
+  for (let count = 1; count <= 100; count++)
+    for (const capacity of [1, 3, 4, 6, 8]) {
+      const items = Array.from({ length: count }, (_, i) => i),
+        grid = balancedGrid(items, capacity);
+      assert.deepEqual(
+        grid.cells.map((cell) => cell.item),
+        items,
+      );
+      for (let row = 1; row <= grid.rows; row++) {
+        const cells = grid.cells.filter((cell) => cell.row === row);
+        assert.ok(cells.length <= capacity);
+        assert.equal(cells[0].column, 1);
+        assert.equal(
+          cells.at(-1)!.column + cells.at(-1)!.span,
+          grid.columns + 1,
+        );
+        for (let i = 1; i < cells.length; i++)
+          assert.equal(
+            cells[i].column,
+            cells[i - 1].column + cells[i - 1].span,
+          );
+      }
+    }
 });

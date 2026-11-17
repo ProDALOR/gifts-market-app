@@ -6,20 +6,25 @@ import { createServer } from "vite";
 import { chromium } from "playwright";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style.css"></head><body>
-<div id="fixture" style="margin:50px;height:4000px"></div>
+<style>.detail-test{position:fixed;top:0;left:0;width:160px;height:160px;z-index:10}</style><div id="fixture" style="margin:50px;height:4000px"></div>
 <script type="module">
 import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {GiftPreview} from '/src/gift-preview.tsx';
-import {CollectionRail,TraitPreview,VenueIcon} from '/src/orderbook-ui.tsx';
+import {GiftPreview} from '/src/previews/gift-preview.tsx';
+import {GiftArtwork} from '/src/previews/gift-artwork.tsx';
+import { CollectionRail } from "/src/collections/collection-picker.tsx";
+import { TraitPreview } from "/src/previews/trait-preview.tsx";
+import { VenueIcon } from "/src/ui/icons.tsx";
 const order={attributes:Object.fromEntries(['model','backdrop','pattern'].map(id=>['tg.'+id,{op:'eq',value:{type:'enum',value:id}}]))};
 const options=new Map([
  ['model',{kind:'attribute_option',id:'model',name:'Model',attribute_id:'tg.model',meta:{},aliases:[]}],
  ['backdrop',{id:'backdrop',name:'Backdrop',attribute_id:'tg.backdrop',meta:{'colors.center_color':'#b789e4','colors.edge_color':'#8a5abc','colors.pattern_color':'#5b10ab'}}],
  ['pattern',{id:'pattern',name:'Pattern',attribute_id:'tg.pattern',meta:{}}]
 ]);
+import {loadAnimationData} from '/src/previews/animation-data.ts';
+import {useBackgroundPlaybackSuspension} from '/src/previews/use-playback.ts';
 const root=createRoot(document.getElementById('fixture'));
-window.mount=(large=false)=>root.render(React.createElement(GiftPreview,{order,options,fallback:'G',large},
+window.mount=(large=false)=>root.render(React.createElement(GiftPreview,{order,options,fallback:'G',size:large?'large':'small',playback:large?'detail':'interaction'},
  React.createElement('span',{className:'venue-icon',style:{position:'relative',zIndex:4}},React.createElement(VenueIcon,{name:'MRKT'}))));
 window.unmount=()=>root.render(null);
 window.mountSelection=()=>{
@@ -28,6 +33,20 @@ window.mountSelection=()=>{
   React.createElement(CollectionRail,{collections,selected:'gift',select:()=>{}}),
   React.createElement(TraitPreview,{collection:collections[0],options,filters:{'tg.model':{op:'eq',value:{type:'enum',value:'model'}}},reset:()=>{}})));
 };
+const bulk=Array.from({length:24},(_,i)=>({kind:'attribute_option',id:'bulk-'+i,name:'Bulk '+String(i).padStart(2,'0'),attribute_id:'tg.model',meta:{},aliases:[]}));
+const bulkOptions=new Map(bulk.map(item=>[item.id,item]));
+const bulkCollection={id:'bulk',attributes:{'tg.model':{allowed_values:bulk.map(item=>item.id)}}};
+const bulkFilters={'tg.model':{op:'one_of',values:bulk.map(item=>({type:'enum',value:item.id}))}};
+const reset=()=>{};
+function Many({detail}) {
+ useBackgroundPlaybackSuspension(detail);
+ return React.createElement(React.Fragment,null,
+  React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook'},React.createElement(TraitPreview,{collection:bulkCollection,options:bulkOptions,filters:bulkFilters,reset}))),
+  detail?React.createElement(GiftArtwork,{url:'/media/models/model',fallback:'D',playback:'detail',className:'detail-test'}):null);
+}
+window.preload=()=>Promise.all(bulk.map(item=>loadAnimationData('/media/models/'+item.id+'/animation',new AbortController().signal)));
+window.mountMany=(detail=false)=>{document.getElementById('fixture').style.margin='0';root.render(React.createElement(Many,{detail}));};
+window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,attributes:{'tg.model':{allowed_values:['rail-'+i]}}}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
 window.mount();
 </script></body></html>`;
 const server = await createServer({
@@ -66,7 +85,9 @@ try {
     };
   });
   let animations = 0,
-    patterns = 0;
+    patterns = 0,
+    activeDownloads = 0,
+    peakDownloads = 0;
   const tgs = gzipSync(
     JSON.stringify({
       v: "5.7.4",
@@ -127,10 +148,17 @@ try {
     const url = route.request().url();
     if (url.endsWith("/animation")) {
       animations++;
-      await route.fulfill({
-        contentType: "application/x-tgsticker",
-        body: tgs,
-      });
+      peakDownloads = Math.max(peakDownloads, ++activeDownloads);
+      if (url.includes("/bulk-"))
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      try {
+        await route.fulfill({
+          contentType: "application/x-tgsticker",
+          body: tgs,
+        });
+      } finally {
+        activeDownloads--;
+      }
     } else {
       if (url.includes("/patterns/")) patterns++;
       await route.fulfill({ contentType: "image/png", body: image });
@@ -275,9 +303,96 @@ try {
     "repeated playback shares downloaded and decoded TGS",
   );
   assert.equal(patterns, 1, "patterns share their decoded still");
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    return window.preload();
+  });
+  assert.equal(
+    animations,
+    25,
+    "All twenty-four distinct queued animations complete",
+  );
+  assert.ok(
+    peakDownloads <= 4,
+    "Concurrent downloads stay within the shared budget",
+  );
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.evaluate(() => window.mountMany());
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".preview-model .model-animation.ready canvas")
+        .length === 6,
+  );
+  await page.evaluate(() => {
+    window.before = new Map(
+      [...document.querySelectorAll(".preview-model")]
+        .map((model) => [
+          model.querySelector("span[title]").title,
+          model.querySelector(".model-animation canvas"),
+        ])
+        .filter(([, canvas]) => canvas),
+    );
+  });
+  await page.setViewportSize({ width: 480, height: 844 });
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector(".preview-model .gift-preview")
+        .getBoundingClientRect().width === 40,
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        [...document.querySelectorAll(".preview-model")].filter(
+          (model) =>
+            window.before.has(model.querySelector("span[title]").title) &&
+            window.before.get(model.querySelector("span[title]").title) ===
+              model.querySelector(".model-animation canvas"),
+        ).length,
+    ),
+    6,
+    "Reflow keeps every admitted player mounted",
+  );
+  await page.locator(".preview-model").last().locator(".gift-preview").hover();
+  await page
+    .locator(".preview-model")
+    .last()
+    .locator(".model-animation.ready canvas")
+    .waitFor();
+  assert.equal(
+    await page.locator(".model-animation.ready canvas").count(),
+    6,
+    "Interacting with a waiting model preempts autoplay instead of exceeding the limit",
+  );
+  await page.mouse.move(479, 800);
+  await page.evaluate(() => window.mountMany(true));
+  await page.locator(".detail-test .model-animation.ready canvas").waitFor();
+  assert.equal(
+    await page.locator(".preview-model .model-animation.ready canvas").count(),
+    0,
+    "Opening details suspends background players",
+  );
+  await page.evaluate(() => window.mountMany(false));
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".preview-model .model-animation.ready canvas")
+        .length === 6,
+  );
+  await page.evaluate(() => window.mountRail());
+  await page
+    .locator(
+      '.collection-tile[aria-pressed="true"] .model-animation.ready canvas',
+    )
+    .waitFor();
+  assert.ok(
+    animations - 25 <= 2,
+    "Initial positioning skips transient animation downloads across the entire catalog",
+  );
+  assert.equal(await page.locator(".preview-model").count(), 0);
+  await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(
-    "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details and unmount.",
+    "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details, bounded downloads/playback, stable reflow, long-rail initialization and unmount.",
   );
 } finally {
   await browser?.close();

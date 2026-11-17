@@ -11,6 +11,27 @@ export function balancedRows<T>(items: readonly T[], capacity: number): T[][] {
     return row;
   });
 }
+/** Flat grid placement preserves keyed media nodes when row membership changes. */
+export function balancedGrid<T>(items: readonly T[], capacity: number) {
+  const rows = balancedRows(items, capacity);
+  const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+  const columns = rows.reduce(
+    (total, row) => (total * row.length) / gcd(total, row.length),
+    1,
+  );
+  return {
+    columns,
+    rows: rows.length,
+    cells: rows.flatMap((row, index) =>
+      row.map((item, column) => ({
+        item,
+        row: index + 1,
+        column: column * (columns / row.length) + 1,
+        span: columns / row.length,
+      })),
+    ),
+  };
+}
 export function previewLayout(
   width: number,
   models: number,

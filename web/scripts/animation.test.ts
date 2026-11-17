@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { gzipSync, strToU8 } from "fflate";
-import { decodeTgs, loadAnimationData } from "../src/animation-data.ts";
+import { decodeTgs, loadAnimationData } from "../src/previews/animation-data.ts";
 const data = {
   v: "5.7.4",
   w: 512,

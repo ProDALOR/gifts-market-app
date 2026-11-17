@@ -39,12 +39,17 @@ export function decodeTgs(bytes: Uint8Array): AnimationData {
   }
   return data;
 }
-const animations = new MediaStore<AnimationData>(async (url, signal) => {
-  const data = decodeTgs(await fetchMedia(url, signal, "tgs"));
-  return {
-    value: data,
-    bytes: new TextEncoder().encode(JSON.stringify(data)).length * 2,
-  };
-});
-export const loadAnimationData = (url: string, signal: AbortSignal) =>
-  animations.get(url, signal);
+const animations = new MediaStore<AnimationData>(
+  async (url, signal, priority) => {
+    const data = decodeTgs(await fetchMedia(url, signal, "tgs", priority));
+    return {
+      value: data,
+      bytes: new TextEncoder().encode(JSON.stringify(data)).length * 2,
+    };
+  },
+);
+export const loadAnimationData = (
+  url: string,
+  signal: AbortSignal,
+  priority = 0,
+) => animations.get(url, signal, priority);

@@ -1,24 +1,31 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { loadAnimationData } from "./animation-data";
 import { AnimationLifecycle } from "./animation-lifecycle";
+import { playbackBudget } from "./playback-budget";
 export default function ModelAnimation({
   url,
   active,
   retain,
+  priority,
 }: {
   url: string;
   active: boolean;
   retain: boolean;
+  priority: number;
 }) {
   const container = useRef<HTMLSpanElement>(null);
   const lifecycle = useRef<AnimationLifecycle | null>(null);
+  const [failed, setFailed] = useState(false);
+  const priorityRef = useRef(priority);
+  priorityRef.current = priority;
+  useEffect(() => setFailed(false), [active, url]);
   useEffect(() => {
     const host = container.current;
     if (!host) return;
     const controller = new AnimationLifecycle(
       async (signal) => {
         const [data, player] = await Promise.all([
-          loadAnimationData(url, signal),
+          loadAnimationData(url, signal, priorityRef.current),
           import("lottie-web/build/player/lottie_light_canvas"),
         ]);
         signal.throwIfAborted();
@@ -44,6 +51,8 @@ export default function ModelAnimation({
         };
       },
       (ready) => host.classList.toggle("ready", ready),
+      350,
+      () => setFailed(true),
     );
     lifecycle.current = controller;
     return () => {
@@ -52,8 +61,16 @@ export default function ModelAnimation({
     };
   }, [url]);
   useEffect(() => {
-    lifecycle.current?.setActive(active, retain);
-  }, [url, active, retain]);
+    const controller = lifecycle.current;
+    if (!controller) return;
+    if (!active || failed) {
+      controller.setActive(false, failed ? false : retain);
+      return;
+    }
+    return playbackBudget.request(priority, (granted, preempted) =>
+      controller.setActive(granted, preempted ? false : retain),
+    );
+  }, [url, active, retain, priority, failed]);
   return (
     <span ref={container} className="model-animation" aria-hidden="true" />
   );

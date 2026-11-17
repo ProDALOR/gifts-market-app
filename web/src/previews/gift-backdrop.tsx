@@ -31,7 +31,11 @@ export function GiftBackdrop({
   }>();
   const symbols = frame?.key === key ? frame.canvases : [];
   useEffect(() => {
-    if (!visible || !urls.length) return;
+    if (!visible) {
+      setFrame(undefined);
+      return;
+    }
+    if (!urls.length) return;
     const stop = new AbortController();
     void (async () => {
       const canvases: (HTMLCanvasElement | undefined)[] = new Array(
@@ -57,6 +61,10 @@ export function GiftBackdrop({
   useEffect(() => {
     const target = canvas.current;
     if (!target) return;
+    if (!visible) {
+      target.width = target.height = 1;
+      return;
+    }
     const draw = () => {
       const width = target.clientWidth,
         height = target.clientHeight;
@@ -104,6 +112,6 @@ export function GiftBackdrop({
     const unobserve = observePreviewSize(target, draw);
     draw();
     return unobserve;
-  }, [center, edge, frame, key, layout, background]);
+  }, [center, edge, frame, key, layout, background, visible]);
   return <canvas ref={canvas} className="gift-backdrop" aria-hidden="true" />;
 }

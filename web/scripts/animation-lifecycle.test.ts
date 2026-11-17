@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnimationLifecycle } from "../src/animation-lifecycle.ts";
-import type { PreviewPlayer } from "../src/animation-lifecycle.ts";
+import { AnimationLifecycle } from "../src/previews/animation-lifecycle.ts";
+import type { PreviewPlayer } from "../src/previews/animation-lifecycle.ts";
 function fixture() {
   let creates = 0,
     plays = 0,
@@ -172,4 +172,29 @@ test("a synchronous player error event cannot re-enable the failed canvas", asyn
   lifecycle.setActive(true);
   await flush();
   assert.equal(visible, false);
+});
+test("temporary queue saturation retries while active and cancellation prevents later creation", async (t) => {
+  const { QueueFullError } = await import("../src/previews/task-queue.ts");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let attempts = 0;
+  const controller = new AnimationLifecycle(
+    async () => {
+      attempts++;
+      throw new QueueFullError();
+    },
+    () => {},
+  );
+  controller.setActive(true);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(attempts, 1);
+  t.mock.timers.tick(150);
+  assert.equal(attempts, 2);
+  controller.setActive(false, false);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  t.mock.timers.tick(1000);
+  assert.equal(attempts, 2);
 });

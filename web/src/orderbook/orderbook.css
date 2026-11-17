@@ -1,0 +1,333 @@
+.workspace {
+  max-width: 480px;
+  min-height: 100dvh;
+  margin: auto;
+  background: var(--paper);
+}
+.orderbook {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding: max(10px, env(safe-area-inset-top), var(--tg-safe-top, 0px))
+    max(16px, env(safe-area-inset-right), var(--tg-safe-right, 0px))
+    max(16px, env(safe-area-inset-bottom), var(--tg-safe-bottom, 0px))
+    max(16px, env(safe-area-inset-left), var(--tg-safe-left, 0px));
+  min-width: 0;
+}
+.gift-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.gift-card {
+  position: relative;
+  min-width: 0;
+  border-radius: 13px;
+}
+.gift-card.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.card-head {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  justify-content: space-between;
+  gap: 2px;
+  align-items: flex-start;
+  width: 100%;
+  height: 28px;
+  pointer-events: none;
+}
+.serial {
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: #24192c91;
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 12px;
+}
+.venue-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22.4px;
+  height: 22.4px;
+  flex: none;
+  color: white;
+}
+.venue-icon svg,
+.venue-icon .venue-logo {
+  width: 19.2px;
+  height: 19.2px;
+  display: block;
+}
+.venue-icon .venue-logo {
+  width: 22.4px;
+  object-fit: contain;
+}
+.card-copy {
+  position: relative;
+  z-index: 3;
+  width: 100%;
+  min-width: 0;
+  margin-top: auto;
+  padding-top: 24px;
+  pointer-events: none;
+  text-align: center;
+}
+.card-copy strong {
+  display: block;
+  font-size: 12px;
+  line-height: 15px;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+  font-weight: 650;
+}
+.card-open {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  z-index: 4;
+  border-radius: inherit;
+}
+.card-open:focus-visible {
+  outline: 3px solid white;
+  outline-offset: -4px;
+}
+.feed-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 0;
+  min-height: 28px;
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+}
+.status i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #d5ad76;
+}
+.status.live i {
+  background: #aaf3cf;
+}
+.empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 40px 10px;
+}
+.empty > span {
+  display: block;
+  font-size: 32px;
+  margin-bottom: 8px;
+  color: var(--accent);
+}
+.empty strong {
+  display: block;
+  font-size: 14px;
+}
+.empty p {
+  font-size: 12px;
+  margin-top: 8px;
+}
+.app-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding: 16px 0 4px;
+  color: var(--muted);
+  font-size: 9px;
+}
+.brand {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 1px;
+}
+.api-link {
+  margin-left: auto;
+}
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #8b6c5f;
+  border-radius: 10px;
+  color: #eac6b3;
+  background: #3b2d29;
+  font-size: 12px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.notice button {
+  color: inherit;
+  font-size: 11px;
+}
+.detail-art {
+  position: relative;
+  height: 140px;
+  background: var(--raised);
+}
+.detail-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 22px;
+  line-height: 1;
+  z-index: 5;
+}
+.detail-body {
+  padding: 16px 18px 0;
+}
+.detail-body h2 {
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 650;
+}
+.detail-market {
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #2a1728;
+  font-weight: 650;
+}
+.source-details {
+  color: var(--muted);
+  font-size: 11px;
+  padding-top: 12px;
+}
+.source-details summary {
+  cursor: pointer;
+}
+.source-details dl {
+  font-size: 11px;
+}
+.telegram .api-link {
+  display: none;
+}
+.telegram[data-telegram-theme="light"] .detail-market {
+  background: #75506e;
+  color: white;
+}
+.gift-preview.card-preview {
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  min-height: 96px;
+  padding: 4px 5px 3px;
+  border: 0;
+  border-radius: 13px;
+  color: white;
+  background: radial-gradient(ellipse at 15% 38%, #4c4658, #302d3c 85%);
+}
+.card-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(19, 12, 27, 0.09) 32%,
+    rgba(19, 12, 27, 0.53) 76%,
+    rgba(19, 12, 27, 0.56)
+  );
+}
+.card-preview .gift-model-image,
+.card-preview .model-animation {
+  inset: 8px auto auto calc(50% - 22px);
+  width: 44px;
+  height: 44px;
+  filter: drop-shadow(0 2px 2px #21132638);
+}
+.card-preview .gift-preview-fallback {
+  position: absolute;
+  top: 13px;
+  left: 0;
+  width: 100%;
+  text-align: center;
+  font-size: 30px;
+  line-height: 36px;
+}
+.detail-art .gift-preview-large {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+}
+.detail-art .gift-model-image,
+.detail-art .model-animation {
+  inset: 15px auto auto calc(50% - 55px);
+  width: 110px;
+  height: 110px;
+}
+.card-copy .quote-amount.precise {
+  font-size: 11px;
+}
+.card-copy .price small {
+  font-size: 7px;
+  margin-left: 0;
+}
+.detail-price {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 7px 0 14px;
+  color: var(--accent);
+  font-size: 22px;
+  line-height: 1.2;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.detail-price small {
+  font-size: 11px;
+}
+.detail-price .quote-amount {
+  overflow-wrap: anywhere;
+}
+
+.orderbook > * {
+  flex-shrink: 0;
+}
+
+.feed-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 5px;
+}
+.feed-actions button {
+  font-size: 10px;
+  padding: 2px 5px;
+  color: var(--muted);
+  min-height: 28px;
+}
+.feed-actions button[aria-label] {
+  font-size: 18px;
+}

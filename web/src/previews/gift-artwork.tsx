@@ -1,87 +1,35 @@
-import {
-  lazy,
-  memo,
-  Suspense,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Order } from "./market";
-import { giftAppearance } from "./gift-appearance";
-import type { GiftOption, BackdropPalette } from "./gift-appearance";
+import type { BackdropPalette } from "./gift-appearance";
 import { GiftBackdrop } from "./gift-backdrop";
-
 import {
   usePreviewEnvironment,
   usePreviewVisibility,
 } from "./preview-environment";
 import { recoverImage } from "./media-client";
-
+import { useSettledVisibility } from "./use-playback";
+import type { PlaybackPolicy } from "./use-playback";
 const ModelAnimation = lazy(() => import("./model-animation"));
 
-export function GiftPreview({
-  order,
-  fallback,
-  options,
-  large = false,
-  autoplay = false,
-  className = "",
-  children,
-}: {
-  order: Pick<Order, "attributes">;
-  options: ReadonlyMap<string, GiftOption>;
-  fallback: string;
-  large?: boolean;
-  autoplay?: boolean;
-  className?: string;
-  children?: ReactNode;
-}) {
-  const appearance = giftAppearance(order, options);
-  const url = appearance.modelUrl;
-  const palette = useMemo(
-    () => appearance.palette,
-    [
-      appearance.palette?.center,
-      appearance.palette?.edge,
-      appearance.palette?.pattern,
-    ],
-  );
-  return (
-    <Preview
-      key={url || "none"}
-      url={url}
-      palette={palette}
-      patternUrl={appearance.patternUrl}
-      label={appearance.label}
-      fallback={fallback}
-      large={large}
-      autoplay={autoplay}
-      className={className}
-      children={children}
-    />
-  );
-}
-const Preview = memo(function Preview({
+export const GiftArtwork = memo(function GiftArtwork({
+  url,
   palette,
   patternUrl,
-  label,
-  url,
+  label = "Gift preview",
   fallback,
-  large,
-  autoplay,
-  className,
+  size = "small",
+  playback = "interaction",
+  className = "",
   children,
 }: {
   url?: string;
   palette?: BackdropPalette;
   patternUrl?: string;
-  label: string;
+  label?: string;
   fallback: string;
-  large: boolean;
-  autoplay: boolean;
-  className: string;
+  size?: "small" | "large";
+  playback?: PlaybackPolicy;
+  className?: string;
   children?: ReactNode;
 }) {
   const host = useRef<HTMLSpanElement>(null);
@@ -92,12 +40,28 @@ const Preview = memo(function Preview({
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
+  const settled = useSettledVisibility(
+    visible,
+    playback === "collection" ? 180 : 100,
+  );
+  const interactive = hovered || focused;
+  const priority =
+    playback === "detail"
+      ? 100
+      : interactive
+        ? 30
+        : playback === "selected"
+          ? 20
+          : 10;
   const shouldAnimate =
     !!url &&
     visible &&
     pageVisible &&
     !reducedMotion &&
-    (large || autoplay || hovered || focused);
+    playback !== "static" &&
+    (playback === "detail" ||
+      interactive ||
+      (settled && playback !== "interaction"));
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
@@ -136,10 +100,16 @@ const Preview = memo(function Preview({
       }}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
-      tabIndex={url && !large && !autoplay && !children ? 0 : undefined}
+      tabIndex={
+        url &&
+        (playback === "interaction" || playback === "selected") &&
+        !children
+          ? 0
+          : undefined
+      }
       role={children ? "group" : "img"}
       aria-label={label}
-      className={`item-icon gift-preview${large ? " gift-preview-large" : ""}${palette ? " gift-preview-decorated" : ""} ${className}`}
+      className={`item-icon gift-preview${size === "large" ? " gift-preview-large" : ""}${palette ? " gift-preview-decorated" : ""} ${className}`}
     >
       {palette && (
         <GiftBackdrop
@@ -154,7 +124,7 @@ const Preview = memo(function Preview({
           key={attempt}
           src={url}
           alt=""
-          loading={large ? "eager" : "lazy"}
+          loading={playback === "detail" ? "eager" : "lazy"}
           decoding="async"
           className={`gift-model-image${loaded ? " loaded" : ""}`}
           onLoad={() => setLoaded(true)}
@@ -169,6 +139,7 @@ const Preview = memo(function Preview({
           <ModelAnimation
             url={`${url}/animation`}
             active={shouldAnimate}
+            priority={priority}
             retain={visible && pageVisible && !reducedMotion}
           />
         </Suspense>

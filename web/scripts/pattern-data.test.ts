@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadPattern } from "../src/pattern-data.ts";
+import { loadPattern } from "../src/previews/pattern-data.ts";
 test("rows and details share in-flight pattern decoding and tinting", async (t) => {
   let downloads = 0,
     decodes = 0,

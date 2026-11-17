@@ -1,10 +1,10 @@
+import { collectionOptions } from "../src/catalog/selectors.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   selectedOptions,
   optionPredicate,
   listingLink,
-  collectionOptions,
 } from "../src/orderbook.ts";
 import type { Collection, CatalogOption } from "../src/orderbook.ts";
 import type { Order, Predicate } from "../src/market.ts";

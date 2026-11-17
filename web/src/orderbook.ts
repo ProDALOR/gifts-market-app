@@ -28,23 +28,6 @@ export function optionPredicate(ids: string[]): Predicate | undefined {
       ? { op: "eq", value: values[0] }
       : { op: "one_of", values };
 }
-export function collectionOptions(
-  collection: Collection | undefined,
-  id: string,
-  options: ReadonlyMap<string, CatalogOption>,
-) {
-  const rule = collection?.attributes[id];
-  if (!rule) return [];
-  const allowed = rule.allowed_values
-    ? new Set(rule.allowed_values)
-    : undefined;
-  return [...options.values()]
-    .filter(
-      (option) =>
-        option.attribute_id === id && (!allowed || allowed.has(option.id)),
-    )
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
 export function serial(order: Order): string | undefined {
   const value = order.attributes["tg.number"];
   return value?.op === "eq" && ["integer", "text"].includes(value.value.type)

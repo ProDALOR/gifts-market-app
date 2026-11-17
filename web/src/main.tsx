@@ -1,29 +1,22 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ApiFailure, books, catalog, request, text } from "./market";
-import type { Book, Entry, Order, Predicate, Query } from "./market";
+import type { Order, Predicate, Query } from "./market";
+import { useCatalog } from "./catalog/use-catalog";
 import { useOrderFeed } from "./use-order-feed";
-import { GiftPreview } from "./gift-preview";
-import {
-  CollectionRail,
-  TraitPickers,
-  TraitPreview,
-  VenueIcon,
-  GiftCard,
-  DetailSheet,
-  Quote,
-  CurrencyPicker,
-  SortPicker,
-  ScrollLoader,
-} from "./orderbook-ui";
-import { listingLink, serial } from "./orderbook";
+import { useBackgroundPlaybackSuspension } from "./previews/use-playback";
+import { CollectionRail } from "./collections/collection-picker";
+import { TraitPickers } from "./collections/trait-pickers";
+import { TraitPreview } from "./previews/trait-preview";
+import { VenueIcon } from "./ui/icons";
+import { OrderDetails } from "./orderbook/order-details";
+import { GiftCard } from "./orderbook/gift-card";
+import { CurrencyPicker } from "./ui/pickers";
+import { SortPicker } from "./ui/pickers";
+import { ScrollLoader } from "./orderbook/scroll-loader";
 import { initializeTelegram, launchSelection } from "./telegram";
 import type { TelegramContext } from "./telegram";
 import { useTelegram, useTelegramBack, TelegramAccount } from "./telegram-ui";
 import "./style.css";
-type ItemType = Extract<Entry, { kind: "item_type" }>;
-type Attribute = Extract<Entry, { kind: "attribute" }>;
-type Option = Extract<Entry, { kind: "attribute_option" }>;
 type Choice = {
   item: string;
   currency: string;
@@ -76,94 +69,49 @@ function App({ context }: { context: TelegramContext }) {
   const telegram = useTelegram(context);
   const [accountOpen, setAccountOpen] = useState(false);
   const [choice, setChoice] = useState(() => saved(context)),
-    [types, setTypes] = useState<ItemType[]>([]),
-    [directory, setDirectory] = useState<Book[]>([]),
-    [venues, setVenues] = useState<Entry[]>([]),
-    [attributes, setAttributes] = useState(new Map<string, Attribute>()),
-    [options, setOptions] = useState(new Map<string, Option>()),
-    [startupError, setStartupError] = useState(""),
     [refresh, setRefresh] = useState(0),
     [paused, setPaused] = useState(false),
     [selected, setSelected] = useState<Order>(),
     [openTrait, setOpenTrait] = useState<string>();
+  const {
+    types,
+    directory,
+    options,
+    names,
+    item,
+    startupError,
+    optionsLoading,
+    optionsError,
+    retryOptions,
+  } = useCatalog(refresh, choice.item);
+  useBackgroundPlaybackSuspension(!!selected || accountOpen);
   useEffect(() => {
-    const c = new AbortController();
-    let retry: ReturnType<typeof setTimeout>;
-    void Promise.all([
-      catalog("item_type", c.signal),
-      catalog("venue", c.signal),
-      catalog("attribute", c.signal),
-      books(c.signal),
-    ])
-      .then(([items, venues, attrs, books]) => {
-        if (c.signal.aborted) return;
-        setTypes(
-          items
-            .filter((e): e is ItemType => e.kind === "item_type")
-            .sort((a, b) => a.name.localeCompare(b.name)),
-        );
-        setVenues(venues);
-        setAttributes(
-          new Map(
-            attrs
-              .filter((e): e is Attribute => e.kind === "attribute")
-              .map((e) => [e.id, e]),
-          ),
-        );
-        setDirectory(books);
-        setStartupError("");
-        if (books[0])
-          setChoice((old) => {
-            const selectedItem = old.item || books[0].item_type_id;
-            const available = books.filter(
-              (book) => book.item_type_id === selectedItem,
-            );
-            const currency = available.some(
-              (book) => book.currency_id === old.currency,
-            )
-              ? old.currency
-              : available.find((book) => book.currency_id === "GRAM")
-                  ?.currency_id ||
-                available[0]?.currency_id ||
-                old.currency;
-            return {
-              ...old,
-              item: selectedItem,
-              currency,
-              venue: available.some(
-                (book) =>
-                  book.currency_id === currency && book.venue_id === old.venue,
-              )
-                ? old.venue
-                : "",
-            };
-          });
-      })
-      .catch((e) => {
-        if (!c.signal.aborted) {
-          setStartupError(e.message);
-          if (
-            e instanceof ApiFailure &&
-            ["unavailable", "capacity_exceeded"].includes(e.code)
-          )
-            retry = setTimeout(() => setRefresh((v) => v + 1), 2000);
-        }
-      });
-    return () => {
-      c.abort();
-      clearTimeout(retry);
-    };
-  }, [refresh]);
-  const item = types.find((t) => t.id === choice.item);
-  const names = useMemo(
-    () =>
-      new Map<string, string>(
-        [...types, ...venues, ...attributes.values(), ...options.values()].map(
-          (v) => [v.id, v.name],
-        ),
-      ),
-    [types, venues, attributes, options],
-  );
+    if (!directory[0]) return;
+    setChoice((old) => {
+      const selectedItem = old.item || directory[0].item_type_id;
+      const available = directory.filter(
+        (book) => book.item_type_id === selectedItem,
+      );
+      const currency = available.some(
+        (book) => book.currency_id === old.currency,
+      )
+        ? old.currency
+        : available.find((book) => book.currency_id === "GRAM")?.currency_id ||
+          available[0]?.currency_id ||
+          old.currency;
+      return {
+        ...old,
+        item: selectedItem,
+        currency,
+        venue: available.some(
+          (book) =>
+            book.currency_id === currency && book.venue_id === old.venue,
+        )
+          ? old.venue
+          : "",
+      };
+    });
+  }, [directory]);
   useEffect(() => {
     const p = new URLSearchParams();
     for (const [key, value] of Object.entries(choice)) {
@@ -180,39 +128,6 @@ function App({ context }: { context: TelegramContext }) {
     window.addEventListener("popstate", pop);
     return () => window.removeEventListener("popstate", pop);
   }, []);
-  useEffect(() => {
-    if (!item) return;
-    const c = new AbortController();
-    const ids = [
-      ...new Set(
-        Object.values(item.attributes).flatMap(
-          (rule) => rule.allowed_values || [],
-        ),
-      ),
-    ];
-    void (async () => {
-      const rows: Entry[] = [];
-      for (let n = 0; n < ids.length && !c.signal.aborted; n += 500)
-        rows.push(
-          ...(await catalog(
-            "attribute_option",
-            c.signal,
-            ids.slice(n, n + 500),
-          )),
-        );
-      if (!c.signal.aborted)
-        setOptions(
-          (previous) =>
-            new Map([
-              ...previous,
-              ...rows
-                .filter((v): v is Option => v.kind === "attribute_option")
-                .map((v) => [v.id, v] as const),
-            ]),
-        );
-    })().catch(() => {});
-    return () => c.abort();
-  }, [item]);
   const query: Query & {
     period?: { from: string | null; until: string | null };
   } = {
@@ -263,24 +178,28 @@ function App({ context }: { context: TelegramContext }) {
     setChoice(next);
     setOpenTrait(undefined);
   };
-  const selectedType = (id: string) => {
-    const available = directory.filter((b) => b.item_type_id === id);
-    set({
-      ...choice,
-      item: id,
-      currency: available.some((b) => b.currency_id === choice.currency)
-        ? choice.currency
-        : available[0]?.currency_id || choice.currency,
-      venue: "",
-      filters: {},
-      min: "",
-      max: "",
-      from: "",
-      until: "",
-    });
-  };
-  const availableTypes = types.filter((t) =>
-    directory.some((b) => b.item_type_id === t.id),
+  const selectedType = useCallback(
+    (id: string) => {
+      const available = directory.filter((b) => b.item_type_id === id);
+      set({
+        ...choice,
+        item: id,
+        currency: available.some((b) => b.currency_id === choice.currency)
+          ? choice.currency
+          : available[0]?.currency_id || choice.currency,
+        venue: "",
+        filters: {},
+        min: "",
+        max: "",
+        from: "",
+        until: "",
+      });
+    },
+    [directory, choice],
+  );
+  const availableTypes = useMemo(
+    () => types.filter((t) => directory.some((b) => b.item_type_id === t.id)),
+    [types, directory],
   );
   const currencies = [
     ...new Set(
@@ -299,14 +218,19 @@ function App({ context }: { context: TelegramContext }) {
         .map((b) => b.venue_id),
     ),
   ].sort();
-  function changeTrait(id: string, value?: Predicate) {
-    const filters = { ...choice.filters };
-    if (value) filters[id] = value;
-    else delete filters[id];
-    setChoice({ ...choice, filters });
-  }
-  const selectedSerial = selected ? serial(selected) : undefined;
-  const marketLink = selected ? listingLink(selected) : undefined;
+  const changeTrait = useCallback((id: string, value?: Predicate) => {
+    setChoice((previous) => {
+      const filters = { ...previous.filters };
+      if (value) filters[id] = value;
+      else delete filters[id];
+      return { ...previous, filters };
+    });
+  }, []);
+  const resetTraits = useCallback(
+    () => setChoice((previous) => ({ ...previous, filters: {} })),
+    [],
+  );
+
   return (
     <div className="workspace">
       <main className="orderbook">
@@ -325,12 +249,13 @@ function App({ context }: { context: TelegramContext }) {
           selected={choice.item}
           select={selectedType}
         />
-        {(startupError || error) && (
+        {(startupError || optionsError || error) && (
           <div role="alert" className="notice">
-            {startupError || error}
+            {startupError || optionsError || error}
             <button
               onClick={() => {
-                setRefresh((v) => v + 1);
+                if (optionsError) retryOptions();
+                else setRefresh((v) => v + 1);
               }}
             >
               Reload
@@ -341,6 +266,8 @@ function App({ context }: { context: TelegramContext }) {
           key={choice.item}
           collection={item}
           options={options}
+          loading={optionsLoading}
+          loadError={optionsError}
           filters={choice.filters}
           disabled={choice.mode === "bid"}
           change={changeTrait}
@@ -351,9 +278,7 @@ function App({ context }: { context: TelegramContext }) {
           collection={item}
           options={options}
           filters={choice.filters}
-          reset={() => {
-            setChoice({ ...choice, filters: {} });
-          }}
+          reset={resetTraits}
         />
         <div className="market-controls">
           <div className="segments" role="group" aria-label="Market view">
@@ -501,7 +426,7 @@ function App({ context }: { context: TelegramContext }) {
                   selected?.id === order.id &&
                   selected.book.venue_id === order.book.venue_id
                 }
-                open={() => setSelected(order)}
+                open={setSelected}
               />
             ))}
           </ul>
@@ -545,126 +470,18 @@ function App({ context }: { context: TelegramContext }) {
         </footer>
       </main>
       {selected && (
-        <DetailSheet close={() => setSelected(undefined)}>
-          <div className="detail-art">
-            <GiftPreview
-              order={selected}
-              options={options}
-              fallback={item?.name[0] || "◇"}
-              large
-            />
-            <button
-              className="detail-close"
-              aria-label="Close details"
-              onClick={() => setSelected(undefined)}
-              autoFocus
-            >
-              ×
-            </button>
-          </div>
-          <div className="detail-body">
-            <h2 id="detail-title">
-              {names.get(selected.book.item_type_id) ||
-                selected.book.item_type_id}
-              {selectedSerial && ` #${selectedSerial}`}
-            </h2>
-            <div className="detail-price">
-              <Quote
-                price={selected.price}
-                currency={selected.book.currency_id}
-              />
-            </div>
-            <dl>
-              {Object.entries(selected.attributes).map(([id, predicate]) => (
-                <div key={id}>
-                  <dt>
-                    {id === "tg.pattern" ? "Symbol" : names.get(id) || id}
-                  </dt>
-                  <dd>{describe(predicate, names)}</dd>
-                </div>
-              ))}
-              {[
-                [
-                  "Venue",
-                  names.get(selected.book.venue_id) || selected.book.venue_id,
-                ],
-                ["Quantity", selected.quantity],
-                [
-                  "Mode",
-                  selected.mode === "ask"
-                    ? "Offer"
-                    : selected.mode === "bid"
-                      ? "Bid"
-                      : "Executed",
-                ],
-                [
-                  selected.executed_at ? "Executed" : "Observed",
-                  new Date(
-                    selected.executed_at || selected.observed_at,
-                  ).toLocaleString(),
-                ],
-              ].map(([key, value]) => (
-                <div key={key}>
-                  <dt>{key}</dt>
-                  <dd>{value}</dd>
-                </div>
-              ))}
-            </dl>
-            {marketLink && (
-              <a
-                className="detail-market"
-                href={marketLink}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open on{" "}
-                {names.get(selected.book.venue_id) || selected.book.venue_id} ↗
-              </a>
-            )}
-            <details className="source-details">
-              <summary>Listing information</summary>
-              <dl>
-                {[
-                  ["Order ID", selected.id],
-                  ["Item ID", selected.item_id || "—"],
-                  ["Currency", selected.book.currency_id],
-                  ...(selected.parent_order_id
-                    ? [["Parent order", selected.parent_order_id]]
-                    : []),
-                  ...Object.entries(selected.meta),
-                ].map(([key, value]) => (
-                  <div key={key}>
-                    <dt>{key}</dt>
-                    <dd>{value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </details>
-          </div>
-        </DetailSheet>
+        <OrderDetails
+          selected={selected}
+          options={options}
+          names={names}
+          collectionName={item?.name || ""}
+          close={() => setSelected(undefined)}
+        />
       )}
     </div>
   );
 }
 
-function describe(p: Predicate, names: Map<string, string>): string {
-  switch (p.op) {
-    case "eq":
-      return text(p.value, names);
-    case "one_of":
-      return p.values.map((v) => text(v, names)).join(" / ");
-    case "range":
-      return `${p.min ? text(p.min, names) : "Any"} – ${p.max ? text(p.max, names) : "Any"}`;
-    case "object":
-      return Object.entries(p.fields || {})
-        .map(([k, v]) => `${names.get(k) || k}: ${describe(v, names)}`)
-        .join(" · ");
-    case "contains":
-      return `Contains ${p.min_count ?? 1}${p.max_count == null ? "+" : "–" + p.max_count}: ${describe(p.predicate, names)}`;
-    case "all_of":
-      return p.predicates.map((v) => describe(v, names)).join("; ");
-  }
-}
 void initializeTelegram().then((context) =>
   createRoot(document.getElementById("root")!).render(
     <App context={context} />,

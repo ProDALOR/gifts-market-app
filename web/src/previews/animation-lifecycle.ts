@@ -1,3 +1,4 @@
+import { QueueFullError } from "./task-queue.ts";
 /** Owns one renderer across brief hover transitions. Visibility loss is immediate. */
 export interface PreviewPlayer {
   play(): void;
@@ -18,6 +19,7 @@ export class AnimationLifecycle {
     private create: (signal: AbortSignal) => Promise<PreviewPlayer>,
     private show: (ready: boolean) => void,
     private grace = 350,
+    private failed: () => void = () => {},
   ) {}
   setActive(active: boolean, retain = true) {
     this.active = active;
@@ -53,15 +55,22 @@ export class AnimationLifecycle {
           if (this.player === player) this.resume();
         });
         player.listen("data_failed", () => {
-          if (this.player === player) this.stop();
+          if (this.player === player) this.fail();
         });
         player.listen("error", () => {
-          if (this.player === player) this.stop();
+          if (this.player === player) this.fail();
         });
         this.resume();
       })
-      .catch(() => {
-        if (this.load === load) this.stop();
+      .catch((error) => {
+        if (this.load !== load) return;
+        const retry =
+          error instanceof QueueFullError &&
+          this.active &&
+          !load.signal.aborted;
+        this.stop();
+        if (retry) this.timer = setTimeout(() => this.setActive(true), 150);
+        else this.failed();
       });
   }
   private resume() {
@@ -71,9 +80,13 @@ export class AnimationLifecycle {
         player.play();
         if (this.player === player && this.active) this.show(true);
       } catch {
-        this.stop();
+        this.fail();
       }
     }
+  }
+  private fail() {
+    this.stop();
+    this.failed();
   }
   stop() {
     clearTimeout(this.timer);

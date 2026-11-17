@@ -6,7 +6,7 @@ import { chromium } from "playwright";
 const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style.css"></head><body><div id="root"></div>
 <script type="module">
 import React from 'react';import {createRoot} from 'react-dom/client';
-import {TraitPreview} from '/src/orderbook-ui.tsx';import {optionPredicate} from '/src/orderbook.ts';
+import { TraitPreview } from "/src/previews/trait-preview.tsx";import {optionPredicate} from '/src/orderbook.ts';
 const make=(id,name,attribute_id,meta={})=>({kind:'attribute_option',id,name,attribute_id,meta,aliases:[]});
 const models=Array.from({length:30},(_,i)=>make('model-'+i,'Model '+String(i+1).padStart(2,'0'),'tg.model'));
 const backdrops=Array.from({length:24},(_,i)=>make('backdrop-'+i,'Backdrop '+i,'tg.backdrop',{'colors.center_color':'#'+(0x906090+i*0x030502).toString(16),'colors.edge_color':'#'+(0x503850+i*0x030201).toString(16),'colors.pattern_color':'#'+(0x301830+i*0x010203).toString(16)}));
@@ -170,8 +170,12 @@ try {
   );
   assert.deepEqual(
     await page
-      .locator(".preview-model-row")
-      .evaluateAll((rows) => rows.map((row) => row.children.length)),
+      .locator(".preview-model")
+      .evaluateAll((models) => Object.values(models.reduce((rows, model) => {
+        const row = getComputedStyle(model).gridRowStart;
+        rows[row] = (rows[row] || 0) + 1;
+        return rows;
+      }, {}))),
     [5, 5, 5, 5],
   );
   const modelSize = () =>
@@ -189,8 +193,12 @@ try {
   );
   assert.deepEqual(
     await page
-      .locator(".preview-model-row")
-      .evaluateAll((rows) => rows.map((row) => row.children.length)),
+      .locator(".preview-model")
+      .evaluateAll((models) => Object.values(models.reduce((rows, model) => {
+        const row = getComputedStyle(model).gridRowStart;
+        rows[row] = (rows[row] || 0) + 1;
+        return rows;
+      }, {}))),
     [5, 5, 5, 5],
   );
   assert.equal(
@@ -214,8 +222,12 @@ try {
   );
   assert.deepEqual(
     await page
-      .locator(".preview-model-row")
-      .evaluateAll((rows) => rows.map((row) => row.children.length)),
+      .locator(".preview-model")
+      .evaluateAll((models) => Object.values(models.reduce((rows, model) => {
+        const row = getComputedStyle(model).gridRowStart;
+        rows[row] = (rows[row] || 0) + 1;
+        return rows;
+      }, {}))),
     [6, 6, 6, 6, 6],
   );
   for (const width of [320, 390, 480]) {

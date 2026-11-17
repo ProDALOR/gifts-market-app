@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MediaStore, fetchMedia, retryDelay } from "../src/media-client.ts";
+import { MediaStore, fetchMedia, retryDelay } from "../src/previews/media-client.ts";
 const signal = () => new AbortController().signal;
 test("resource cache uses byte limits and least-recently-used eviction", async () => {
   const calls: string[] = [];
@@ -35,7 +35,10 @@ test("pending resources are bounded, shared, and cancelled by their last consume
     secondStop = new AbortController();
   const first = store.get("same", firstStop.signal),
     second = store.get("same", secondStop.signal);
-  await assert.rejects(store.get("other", signal()), /Too many/);
+  const queuedStop = new AbortController();
+  const queued = store.get("other", queuedStop.signal);
+  queuedStop.abort();
+  await assert.rejects(queued);
   firstStop.abort();
   await assert.rejects(first);
   assert.equal(aborted, false);
