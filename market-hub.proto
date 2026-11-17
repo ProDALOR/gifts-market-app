@@ -252,10 +252,16 @@ enum ReadMode {
   // Return a live page, then replacements including refills. Reconnect with the same request.
   READ_MODE_LIVE = 1;
 }
+// Local public reads support complete-book ranking. Time uses observed_at for
+// active orders and executed_at for history; number uses the exact tg.number fact.
 enum ReadSort {
   READ_SORT_IDENTITY = 0;
   READ_SORT_PRICE_ASC = 1;
   READ_SORT_PRICE_DESC = 2;
+  READ_SORT_TIME_ASC = 3;
+  READ_SORT_TIME_DESC = 4;
+  READ_SORT_NUMBER_ASC = 5;
+  READ_SORT_NUMBER_DESC = 6;
 }
 // Follow snapshot continuations until empty, then Watch at the page cursor.
 // Active paging renews the idle view lifetime. A full replica can use an omitted selection:

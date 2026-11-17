@@ -7,9 +7,14 @@
     "generate": "node scripts/generate.mjs",
     "dev": "npm run generate && vite --host 127.0.0.1",
     "build": "npm run generate && tsc --noEmit && vite build",
-    "test": "node --experimental-transform-types --test scripts/*.test.ts"
+    "test": "node --experimental-transform-types --test scripts/*.test.ts",
+    "test:previews": "node scripts/preview-browser.mjs",
+    "test:orderbook": "node scripts/orderbook-browser.mjs",
+    "test:traits": "node scripts/trait-preview-browser.mjs"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
+    "lottie-web": "^5.13.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
@@ -17,10 +22,10 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.3.0",
+    "openapi-typescript": "^7",
     "playwright": "^1.65.0",
     "prettier": "^3.10.1",
     "typescript": "~5.9.3",
-    "vite": "^8.3.8",
-    "openapi-typescript": "^7"
+    "vite": "^8.3.8"
   }
 }

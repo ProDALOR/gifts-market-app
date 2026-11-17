@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     query::Filter,
-    types::{EntityKind, Key, Position, PriceKey, Sort},
+    types::{EntityKind, Key, Position, RankKey, Sort},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use prost::Message;
@@ -11,6 +11,8 @@ enum Boundary {
     Current(Option<Key>),
     History(Option<Position>),
     Price(Option<(String, Key)>),
+    Ranked(Option<(String, Key)>),
+    SortedHistory(Option<(String, Position)>),
 }
 #[derive(Serialize, Deserialize)]
 struct Continuation {
@@ -78,9 +80,15 @@ impl ReplicaReader {
             .map(|t| t.position.clone())
             .unwrap_or_else(|| {
                 if filter.history() {
-                    Boundary::History(None)
-                } else if filter.sort != Sort::Identity {
+                    if filter.sort == Sort::Identity {
+                        Boundary::History(None)
+                    } else {
+                        Boundary::SortedHistory(None)
+                    }
+                } else if filter.sort.is_price() {
                     Boundary::Price(None)
+                } else if filter.sort != Sort::Identity {
+                    Boundary::Ranked(None)
                 } else {
                     Boundary::Current(None)
                 }
@@ -141,6 +149,13 @@ fn scan(
     limit: usize,
 ) -> Result<(Vec<w::Entity>, Option<Boundary>), Status> {
     if filter.history() {
+        if filter.sort != Sort::Identity {
+            let Boundary::SortedHistory(after) = boundary else {
+                return Err(Status::invalid_argument("invalid sorted history boundary"));
+            };
+            let (data, next) = view.history.ranked_history(filter, after, limit)?;
+            return Ok((data, next.map(|p| Boundary::SortedHistory(Some(p)))));
+        }
         let Boundary::History(after) = boundary else {
             return Err(Status::invalid_argument("invalid history boundary"));
         };
@@ -151,15 +166,15 @@ fn scan(
     let mut bytes = 0;
     let keys: Box<dyn Iterator<Item = (Option<rust_decimal::Decimal>, Key)> + '_> = match &boundary
     {
-        Boundary::Price(after) if filter.sort != Sort::Identity => {
-            let after: Option<PriceKey> = after
+        Boundary::Price(after) | Boundary::Ranked(after) if filter.sort != Sort::Identity => {
+            let after: Option<RankKey> = after
                 .as_ref()
-                .map(|(p, k)| Ok::<_, Status>(PriceKey::new(state::decimal(p)?, k.clone())))
+                .map(|(p, k)| Ok::<_, Status>(RankKey::new(state::decimal(p)?, k.clone())))
                 .transpose()?;
             Box::new(
                 view.state
                     .books
-                    .prices(
+                    .ranked(
                         filter
                             .scope
                             .as_ref()
@@ -231,7 +246,10 @@ fn scan(
             data.push(entity.as_ref().clone());
         }
         boundary = match price {
-            Some(price) => Boundary::Price(Some((price.to_string(), key))),
+            Some(price) if filter.sort.is_price() => {
+                Boundary::Price(Some((price.to_string(), key)))
+            }
+            Some(value) => Boundary::Ranked(Some((value.to_string(), key))),
             None => Boundary::Current(Some(key)),
         };
     }

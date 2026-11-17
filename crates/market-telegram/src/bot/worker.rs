@@ -18,6 +18,7 @@ pub struct BotWorker {
     data_dir: PathBuf,
     identity_observer: Option<IdentityObserver>,
     limits: RateLimits,
+    media: Option<tokio::sync::Mutex<market_media::MediaDownloader>>,
 }
 pub struct BotInspection {
     pub user: BotUser,
@@ -58,12 +59,17 @@ impl BotWorker {
             data_dir: config.data_dir,
             identity_observer: None,
             limits: RateLimits::default(),
+            media: None,
         })
     }
     /// Observe the authenticated profile after each login or session reconnect.
     /// Runs before command configuration; observers must be quick and nonblocking.
     pub fn on_authenticated(&mut self, observer: impl Fn(&BotUser) + Send + Sync + 'static) {
         self.identity_observer = Some(Box::new(observer));
+    }
+    /// Attach background media work to the same authenticated transport generation.
+    pub fn set_media_downloader(&mut self, downloader: market_media::MediaDownloader) {
+        self.media = Some(tokio::sync::Mutex::new(downloader));
     }
     pub async fn run<H: CommandHandler>(
         self,
@@ -145,14 +151,24 @@ impl BotWorker {
             return Ok(user);
         }
         tracing::info!(bot_id = user.id, bot_username = %user.username, "MTProto bot worker started");
-        dispatcher::run(
+        let commands = dispatcher::run(
             transport,
             handler,
             self.url.as_ref(),
             &user.active_usernames,
             Limits::default(),
-        )
-        .await?;
+        );
+        let media = async {
+            if let Some(media) = &self.media {
+                let mut downloader = media.lock().await;
+                downloader.run(|id| actions.media(id)).await;
+            }
+            std::future::pending::<()>().await;
+        };
+        tokio::select! {
+            result = commands => result?,
+            _ = media => unreachable!(),
+        }
         Ok(user)
     }
 }

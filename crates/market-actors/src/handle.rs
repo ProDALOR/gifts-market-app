@@ -4,7 +4,7 @@ use crate::{
     error,
     models::{
         BooksPage, BooksQuery, CatalogEntry, CatalogQuery, ExecutionsQuery, Order, OrdersQuery,
-        Page,
+        Page, ReadConsistency,
     },
     orderbooks::handle::OrderbooksHandle,
     protocol,
@@ -72,10 +72,11 @@ impl MarketDataHandle {
 
 impl MarketDataHandle {
     pub async fn orders(&self, query: OrdersQuery) -> error::Result<Page<Order>> {
-        protocol::orders(
-            self.orders_raw(query.into_read(w::ReadMode::Snapshot)?)
-                .await?,
-        )
+        let mode = match query.consistency {
+            ReadConsistency::Snapshot => w::ReadMode::Snapshot,
+            ReadConsistency::Live => w::ReadMode::Live,
+        };
+        protocol::orders(self.orders_raw(query.into_read(mode)?).await?)
     }
     pub async fn executions(&self, query: ExecutionsQuery) -> error::Result<Page<Order>> {
         protocol::orders(self.orders_raw(query.into_read()?).await?)

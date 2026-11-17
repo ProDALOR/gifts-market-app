@@ -11,6 +11,8 @@ pub(crate) enum TaskKind {
     Replication,
     #[cfg(feature = "bot")]
     Bot,
+    #[cfg(feature = "bot")]
+    MediaWarmup,
     Api,
 }
 #[derive(Debug, Clone, Copy)]

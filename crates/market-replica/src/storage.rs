@@ -1,7 +1,7 @@
 use crate::{
     query::Filter,
     state::{self, State},
-    types::{IndexKind, IndexTerm, Key, Leaf, OrderMode},
+    types::{IndexKind, IndexTerm, Key, Leaf, OrderMode, Sort},
 };
 use market_hub_protocol::wire as w;
 use prost::Message;
@@ -21,6 +21,10 @@ const CURRENT: TableDefinition<Identity<'static>, &[u8]> = TableDefinition::new(
 const EXECUTIONS: TableDefinition<TimeKey<'static>, &[u8]> = TableDefinition::new("executions");
 const IDENTITIES: TableDefinition<(&str, &str), i64> = TableDefinition::new("identities");
 const INDEX: TableDefinition<IndexKey<'static>, ()> = TableDefinition::new("index");
+pub(crate) type RankedHistoryPage = (Vec<w::Entity>, Option<(String, Position)>);
+type RankedExecution<'a> = (u8, &'a str, &'a str, &'a [u8], TimeKey<'a>);
+const SORTED: TableDefinition<RankedExecution<'static>, ()> =
+    TableDefinition::new("execution_ranks_v1");
 const JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("bootstrap_journal");
 #[derive(Clone)]
 pub struct Store(Arc<Database>);
@@ -67,6 +71,20 @@ impl Store {
         tx.open_table(IDENTITIES).map_err(failure)?;
         tx.open_table(INDEX).map_err(failure)?;
         tx.open_table(JOURNAL).map_err(failure)?;
+        {
+            let mut meta = tx.open_table(META).map_err(failure)?;
+            let mut ranked = tx.open_table(SORTED).map_err(failure)?;
+            if value(&meta, "execution_ranks_v1")?.is_empty() {
+                let executions = tx.open_table(EXECUTIONS).map_err(failure)?;
+                for row in executions.iter().map_err(failure)? {
+                    let (_, raw) = row.map_err(failure)?;
+                    let order = w::Order::decode(raw.value()).map_err(failure)?;
+                    insert_ranks(&mut ranked, &order)?;
+                }
+                meta.insert("execution_ranks_v1", b"1".as_slice())
+                    .map_err(failure)?;
+            }
+        }
         tx.commit().map_err(failure)?;
         Ok(Self(Arc::new(database)))
     }
@@ -118,6 +136,7 @@ impl Store {
             let mut executions = tx.open_table(EXECUTIONS).map_err(failure)?;
             let mut identities = tx.open_table(IDENTITIES).map_err(failure)?;
             let mut index = tx.open_table(INDEX).map_err(failure)?;
+            let mut ranked = tx.open_table(SORTED).map_err(failure)?;
             for change in changes {
                 match change
                     .change
@@ -167,6 +186,7 @@ impl Store {
                                 .insert((time, venue, id), order.encode_to_vec().as_slice())
                                 .map_err(failure)?;
                             identities.insert((venue, id), time).map_err(failure)?;
+                            insert_ranks(&mut ranked, order)?;
                             for IndexTerm { kind, path, value } in execution_indexes(order)? {
                                 index
                                     .insert(
@@ -228,6 +248,34 @@ impl Store {
         tx.open_table(JOURNAL).map_err(failure)?;
         tx.commit().map_err(failure)
     }
+}
+fn insert_ranks(
+    table: &mut redb::Table<'_, RankedExecution<'static>, ()>,
+    order: &w::Order,
+) -> Result<(), Status> {
+    let book = order
+        .book
+        .as_ref()
+        .ok_or_else(|| Status::data_loss("missing book"))?;
+    let time = order
+        .executed_at_ms
+        .ok_or_else(|| Status::data_loss("missing execution time"))?;
+    for sort in [Sort::PriceAsc, Sort::TimeAsc, Sort::NumberAsc] {
+        let rank = crate::ranking::ordered_decimal(sort.rank(order, true)?);
+        table
+            .insert(
+                (
+                    sort.criterion(),
+                    book.item_type_id.as_str(),
+                    book.currency_id.as_str(),
+                    rank.as_slice(),
+                    (time, book.venue_id.as_str(), order.id.as_str()),
+                ),
+                (),
+            )
+            .map_err(failure)?;
+    }
+    Ok(())
 }
 pub fn leaves(
     path: &mut Vec<String>,
@@ -302,6 +350,116 @@ fn execution_indexes(order: &w::Order) -> Result<BTreeSet<IndexTerm>, Status> {
     Ok(rows)
 }
 impl Snapshot {
+    pub fn ranked_history(
+        &self,
+        filter: &Filter,
+        after: Option<(String, Position)>,
+        limit: usize,
+    ) -> Result<RankedHistoryPage, Status> {
+        use std::ops::Bound::{Excluded, Included};
+        let scope = filter
+            .scope
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("missing ranked scope"))?;
+        let item = scope
+            .item_type_id
+            .as_deref()
+            .ok_or_else(|| Status::invalid_argument("missing item"))?;
+        let currency = scope
+            .currency_id
+            .as_deref()
+            .ok_or_else(|| Status::invalid_argument("missing currency"))?;
+        let table = self.read.open_table(SORTED).map_err(failure)?;
+        let executions = self.read.open_table(EXECUTIONS).map_err(failure)?;
+        let criterion = filter.sort.criterion();
+        let minimum = [0u8; 58];
+        let maximum = [255u8; 58];
+        let encoded = after
+            .as_ref()
+            .map(|(value, _)| state::decimal(value).map(crate::ranking::ordered_decimal))
+            .transpose()?;
+        let previous = encoded
+            .as_ref()
+            .zip(after.as_ref())
+            .map(|(encoded, (_, position))| {
+                (
+                    criterion,
+                    item,
+                    currency,
+                    encoded.as_slice(),
+                    position.stored(),
+                )
+            });
+        let lower = if !filter.sort.descending() {
+            previous.map(Excluded)
+        } else {
+            None
+        }
+        .unwrap_or(Included((
+            criterion,
+            item,
+            currency,
+            minimum.as_slice(),
+            (i64::MIN, "", ""),
+        )));
+        let upper = if filter.sort.descending() {
+            previous.map(Excluded)
+        } else {
+            None
+        }
+        .unwrap_or(Included((
+            criterion,
+            item,
+            currency,
+            maximum.as_slice(),
+            (i64::MAX, "\u{10ffff}", "\u{10ffff}"),
+        )));
+        let range = table.range((lower, upper)).map_err(failure)?;
+        let rows: Box<dyn Iterator<Item = _>> = if filter.sort.descending() {
+            Box::new(range.rev())
+        } else {
+            Box::new(range)
+        };
+        let mut data = Vec::new();
+        let mut bytes = 0;
+        let mut position = after;
+        for (count, row) in rows.enumerate() {
+            if data.len() == limit || count == 10_000 {
+                return Ok((data, position));
+            }
+            let (key, _) = row.map_err(failure)?;
+            let (_, _, _, _, (time, venue, id)) = key.value();
+            let raw = executions
+                .get((time, venue, id))
+                .map_err(failure)?
+                .ok_or_else(|| failure("missing indexed execution"))?;
+            let order = w::Order::decode(raw.value()).map_err(failure)?;
+            let rank = filter.sort.rank(&order, true)?.to_string();
+            if filter.matches_order(&order)? {
+                let entity = w::Entity {
+                    entity: Some(w::entity::Entity::Order(order)),
+                };
+                let size = entity.encoded_len() + 8;
+                if bytes + size > 512 * 1024 {
+                    if data.is_empty() {
+                        return Err(Status::resource_exhausted("order exceeds page budget"));
+                    }
+                    return Ok((data, position));
+                }
+                bytes += size;
+                data.push(entity);
+            }
+            position = Some((
+                rank,
+                Position {
+                    executed_at_ms: time,
+                    venue_id: venue.into(),
+                    order_id: id.into(),
+                },
+            ));
+        }
+        Ok((data, None))
+    }
     /// Scan a necessary index in chronological order, checking the full predicate afterwards.
     pub fn history(
         &self,
@@ -540,6 +698,15 @@ mod tests {
                 .id,
             "old"
         );
+        for sort in [1, 2, 3, 4, 5, 6] {
+            assert_eq!(
+                state::order(&replica.read(query(3, sort)).unwrap().page.entities[0])
+                    .unwrap()
+                    .id,
+                "old",
+                "legacy history index backfill, sort {sort}"
+            );
+        }
         writer
             .apply(w::Batch {
                 cursor: "typed-checkpoint".into(),

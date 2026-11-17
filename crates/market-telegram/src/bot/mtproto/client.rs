@@ -35,6 +35,7 @@ pub(in crate::bot) struct MtProtoActions {
     credentials: BotCredentials,
     exited: CancellationToken,
     limits: RateLimits,
+    documents: super::media::Documents,
 }
 pub(in crate::bot) struct MtProtoTransport {
     actions: MtProtoActions,
@@ -70,6 +71,7 @@ impl MtProtoTransport {
                 credentials,
                 exited,
                 limits,
+                documents: super::media::Documents::default(),
             },
             updates: Some(pool.updates),
             stream: None,
@@ -112,6 +114,15 @@ impl Drop for MtProtoTransport {
 }
 impl TelegramActions for MtProtoActions {
     type GiftSource = super::gifts::TelegramGifts;
+    async fn media(
+        &self,
+        key: market_media::MediaKey,
+    ) -> Result<market_media::MediaAsset, market_media::MediaError> {
+        if self.exited.is_cancelled() {
+            return Err(market_media::MediaError::Unavailable);
+        }
+        super::media::get(&self.client, &self.limits.media, &self.documents, key).await
+    }
     fn gift_source(&self, message: &Message) -> Self::GiftSource {
         super::gifts::TelegramGifts {
             client: self.client.clone(),

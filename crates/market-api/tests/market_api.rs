@@ -802,3 +802,106 @@ async fn oversized_subscription_pages_report_terminal_errors_and_release_the_id(
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
+
+#[actix_web::test]
+async fn live_rest_continuations_do_not_consume_retained_snapshot_capacity() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let directory = tempfile::tempdir().unwrap();
+    let mut writer = market_replica::ReplicaWriter::open(directory.path(), "scroll-test").unwrap();
+    let mut rows = page("1.000000001").entities;
+    let mut second = rows
+        .iter()
+        .find_map(|entity| match &entity.entity {
+            Some(w::entity::Entity::Order(order)) => Some(order.clone()),
+            _ => None,
+        })
+        .unwrap();
+    second.id = "second".into();
+    second.price = "2".into();
+    rows.push(w::Entity {
+        entity: Some(w::entity::Entity::Order(second)),
+    });
+    let mut snapshot = writer.begin_snapshot().unwrap();
+    snapshot
+        .append(
+            &rows
+                .into_iter()
+                .map(|entity| w::Change {
+                    change: Some(w::change::Change::Upsert(entity)),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    writer
+        .install_snapshot(snapshot.finish("scroll-cursor").unwrap())
+        .unwrap();
+    let service = MarketDataService::start(writer.reader(), 2, 2)
+        .await
+        .unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(MarketApi::new(service.handle)))
+            .configure(configure),
+    )
+    .await;
+    let token_json = |token: &str| {
+        serde_json::from_slice::<serde_json::Value>(&URL_SAFE_NO_PAD.decode(token).unwrap())
+            .unwrap()
+    };
+    let mut body = query();
+    body["limit"] = 1.into();
+    body["consistency"] = "live".into();
+    let mut token = String::new();
+    for _ in 0..160 {
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/orders/query")
+                .set_json(&body)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            200,
+            "live requests must not fill the 128-view snapshot budget"
+        );
+        let response: serde_json::Value = test::read_body_json(response).await;
+        token = response["next_page_token"].as_str().unwrap().to_owned();
+        assert!(token_json(&token)["snapshot"].is_null());
+    }
+    body["page_token"] = token.into();
+    let response: serde_json::Value = test::read_body_json(
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/orders/query")
+                .set_json(&body)
+                .to_request(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(response["data"][0]["id"], "second");
+    assert_eq!(response["next_page_token"], "");
+    body.as_object_mut().unwrap().remove("consistency");
+    body.as_object_mut().unwrap().remove("page_token");
+    let response: serde_json::Value = test::read_body_json(
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/orders/query")
+                .set_json(&body)
+                .to_request(),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        token_json(response["next_page_token"].as_str().unwrap())["snapshot"].is_string(),
+        "REST defaults still pin snapshots"
+    );
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+}

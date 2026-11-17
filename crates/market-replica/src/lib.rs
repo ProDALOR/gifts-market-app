@@ -1,6 +1,7 @@
 //! Protocol-native, disposable read replica. No hub implementation dependencies.
 mod book_index;
 mod query;
+mod ranking;
 mod reader;
 mod replication;
 mod runtime;

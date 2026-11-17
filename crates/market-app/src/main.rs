@@ -60,13 +60,38 @@ async fn main() -> anyhow::Result<()> {
         args.max_live_queries,
     )
     .await?;
-    let api = market_app::api_config::server(
+    let media_dir = args
+        .media_dir
+        .clone()
+        .unwrap_or_else(|| args.data_dir.join("media"));
+    let (media, downloads) = market_media::MediaCache::open(&media_dir).await?;
+    let mut downloads = Some(downloads);
+    let media_origin = args
+        .media_origin
+        .as_deref()
+        .filter(|origin| !origin.is_empty());
+    #[cfg(feature = "bot")]
+    if let Some(bot) = bot.as_mut() {
+        anyhow::ensure!(
+            media_origin.is_none(),
+            "Use either the local bot or MARKET_MEDIA_ORIGIN as the media provider"
+        );
+        bot.set_media_downloader(downloads.take().unwrap());
+        runtime.start_media_warmup(media.clone())?;
+    }
+
+    let mut api = market_app::api_config::server(
         &args,
         runtime.handle(),
         #[cfg(feature = "bot")]
         bot.as_mut(),
     )
-    .await?;
+    .await?
+    .with_media(media);
+    if let Some(origin) = media_origin {
+        api = api.with_media_origin(origin, downloads.take().unwrap())?;
+    }
+    drop(downloads);
     runtime.start_replication(hub)?;
     #[cfg(feature = "bot")]
     if let Some(bot) = bot {

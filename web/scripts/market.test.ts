@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { amount, text } from "../src/market.ts";
+import { amount, text, modelThumbnailUrl } from "../src/market.ts";
 test("amount formatting preserves precision beyond JavaScript's numeric range", () => {
   assert.equal(
     amount("10000000000000000.000000001"),
@@ -25,5 +25,34 @@ test("list and object displays preserve duplicate facts and catalog names", () =
       names,
     ),
     "Model: Gold · Model: Gold",
+  );
+});
+
+test("thumbnails use concrete catalog models and leave conditional bids as placeholders", () => {
+  assert.equal(
+    modelThumbnailUrl({
+      attributes: {
+        "tg.model": {
+          op: "eq",
+          value: { type: "enum", value: "tg.gift.123.model.42" },
+        },
+      },
+    }),
+    "/media/models/tg.gift.123.model.42",
+  );
+  assert.equal(modelThumbnailUrl({ attributes: {} }), undefined);
+  assert.equal(
+    modelThumbnailUrl({
+      attributes: { "tg.model": { op: "one_of", values: [] } },
+    }),
+    undefined,
+  );
+  assert.equal(
+    modelThumbnailUrl({
+      attributes: {
+        "tg.model": { op: "eq", value: { type: "text", value: "untrusted" } },
+      },
+    }),
+    undefined,
   );
 });

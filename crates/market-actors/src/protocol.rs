@@ -48,6 +48,10 @@ impl From<Sort> for w::ReadSort {
             Sort::Identity => Self::Identity,
             Sort::PriceAsc => Self::PriceAsc,
             Sort::PriceDesc => Self::PriceDesc,
+            Sort::TimeAsc => Self::TimeAsc,
+            Sort::TimeDesc => Self::TimeDesc,
+            Sort::NumberAsc => Self::NumberAsc,
+            Sort::NumberDesc => Self::NumberDesc,
         }
     }
 }

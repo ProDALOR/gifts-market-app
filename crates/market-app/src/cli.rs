@@ -13,6 +13,12 @@ pub struct Cli {
     pub hub_token: Option<String>,
     #[arg(long, env = "MARKET_DATA_DIR", default_value = "data")]
     pub data_dir: PathBuf,
+    /// Persistent runtime model media cache; defaults to <data-dir>/media.
+    #[arg(long, env = "MARKET_MEDIA_DIR")]
+    pub media_dir: Option<PathBuf>,
+    /// HTTP origin of a Telegram-enabled market API for cache misses.
+    #[arg(long, env = "MARKET_MEDIA_ORIGIN")]
+    pub media_origin: Option<String>,
     #[cfg(feature = "miniapp")]
     #[arg(long, env = "MARKET_MINIAPP_BOT_ID")]
     pub miniapp_bot_id: Option<u64>,

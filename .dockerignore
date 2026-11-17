@@ -18,3 +18,8 @@ web/src/gen/
 **/*.mtproto.sqlite*
 **/.env
 **/.env.*
+
+# Runtime thumbnail payloads and incomplete cache writes.
+**/*.thumb
+**/*.tgs
+**/*.part

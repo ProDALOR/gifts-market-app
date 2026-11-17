@@ -140,6 +140,10 @@ pub enum Sort {
     Identity = 0,
     PriceAsc = 1,
     PriceDesc = 2,
+    TimeAsc = 3,
+    TimeDesc = 4,
+    NumberAsc = 5,
+    NumberDesc = 6,
 }
 impl TryFrom<i32> for Sort {
     type Error = Status;
@@ -148,6 +152,10 @@ impl TryFrom<i32> for Sort {
             Ok(w::ReadSort::Identity) => Ok(Self::Identity),
             Ok(w::ReadSort::PriceAsc) => Ok(Self::PriceAsc),
             Ok(w::ReadSort::PriceDesc) => Ok(Self::PriceDesc),
+            Ok(w::ReadSort::TimeAsc) => Ok(Self::TimeAsc),
+            Ok(w::ReadSort::TimeDesc) => Ok(Self::TimeDesc),
+            Ok(w::ReadSort::NumberAsc) => Ok(Self::NumberAsc),
+            Ok(w::ReadSort::NumberDesc) => Ok(Self::NumberDesc),
             _ => Err(Status::invalid_argument("unknown read sort")),
         }
     }
@@ -186,39 +194,39 @@ impl From<Position> for (i64, String, String) {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum PriceIdentity {
+enum RankIdentity {
     First,
     Entity(Key),
     Last,
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PriceKey {
-    pub price: Decimal,
-    identity: PriceIdentity,
+pub struct RankKey {
+    pub value: Decimal,
+    identity: RankIdentity,
 }
-impl PriceKey {
-    pub fn new(price: Decimal, key: Key) -> Self {
+impl RankKey {
+    pub fn new(value: Decimal, key: Key) -> Self {
         Self {
-            price,
-            identity: PriceIdentity::Entity(key),
+            value,
+            identity: RankIdentity::Entity(key),
         }
     }
-    pub fn first(price: Decimal) -> Self {
+    pub fn first(value: Decimal) -> Self {
         Self {
-            price,
-            identity: PriceIdentity::First,
+            value,
+            identity: RankIdentity::First,
         }
     }
-    pub fn last(price: Decimal) -> Self {
+    pub fn last(value: Decimal) -> Self {
         Self {
-            price,
-            identity: PriceIdentity::Last,
+            value,
+            identity: RankIdentity::Last,
         }
     }
     pub fn into_entity(self) -> (Decimal, Key) {
         match self.identity {
-            PriceIdentity::Entity(key) => (self.price, key),
-            _ => unreachable!("range boundary cannot be inserted into a price index"),
+            RankIdentity::Entity(key) => (self.value, key),
+            _ => unreachable!("range boundary cannot be inserted into a rank index"),
         }
     }
 }

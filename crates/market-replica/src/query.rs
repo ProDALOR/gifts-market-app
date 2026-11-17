@@ -167,11 +167,11 @@ impl Filter {
                 scope.item_type_id.is_some()
                     && scope.currency_id.is_some()
                     && !scope.modes.is_empty()
-                    && !scope.modes.contains(&OrderMode::Executed)
-            }) || selection.executed_at.is_some())
+                    && (!scope.modes.contains(&OrderMode::Executed) || scope.modes.len() == 1)
+            }))
         {
             return Err(invalid(
-                "price sorting requires active orders in one item type and currency",
+                "sorting requires orders in one item type and currency",
             ));
         }
         let fingerprint = format!("{:x}", Sha256::digest(selection.encode_to_vec()));

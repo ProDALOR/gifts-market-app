@@ -110,3 +110,13 @@ export function dateInput(value: string): string {
 export function timestamp(value: string): string {
   return value ? new Date(value).toISOString() : "";
 }
+
+/** Only a concrete model has one thumbnail; bids with ranges keep their placeholder. */
+export function modelThumbnailUrl(
+  order: Pick<Order, "attributes">,
+): string | undefined {
+  const model = order.attributes["tg.model"];
+  return model?.op === "eq" && model.value.type === "enum" && model.value.value
+    ? `/media/models/${encodeURIComponent(model.value.value)}`
+    : undefined;
+}

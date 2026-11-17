@@ -102,6 +102,18 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
         .route("/catalog/{kind}", web::get().to(list_catalog))
         .route("/orders/query", web::post().to(orders))
         .route("/executions/query", web::post().to(executions))
+        .route(
+            "/media/models/{id}",
+            web::get().to(crate::media::model_thumbnail),
+        )
+        .route(
+            "/media/models/{id}/animation",
+            web::get().to(crate::media::model_animation),
+        )
+        .route(
+            "/media/patterns/{id}",
+            web::get().to(crate::media::pattern_thumbnail),
+        )
         .route("/ws", web::get().to(crate::websocket::connect))
         .route("/openapi.json", web::get().to(crate::schema::schema));
     #[cfg(feature = "miniapp")]

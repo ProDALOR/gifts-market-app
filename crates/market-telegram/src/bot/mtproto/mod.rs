@@ -3,6 +3,7 @@ mod client;
 mod connection;
 mod cooldown;
 mod gifts;
+mod media;
 mod requests;
 mod session_store;
 pub(super) use connection::Connection;

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+market-media.workspace = true
 market-actors.workspace = true
 market-miniapp = { workspace = true, optional = true, features = ["schema"] }
 actix-web.workspace = true
@@ -19,6 +20,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 utoipa.workspace = true
 url.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 
 [features]
 default = []
@@ -29,6 +31,7 @@ name = "miniapp_api"
 required-features = ["miniapp"]
 
 [dev-dependencies]
+flate2.workspace = true
 market-hub-protocol.workspace = true
 tonic.workspace = true
 market-hub-client.workspace = true

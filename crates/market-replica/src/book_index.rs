@@ -2,7 +2,7 @@
 use crate::{
     query::Scope,
     state::{Key, decimal, order},
-    types::{ActiveMode, PriceKey, Sort},
+    types::{ActiveMode, RankKey, Sort},
 };
 use im::{OrdMap, OrdSet};
 use market_hub_protocol::wire as w;
@@ -54,7 +54,9 @@ impl From<Book> for w::BookKey {
 
 #[derive(Clone, Default)]
 pub struct BookIndex {
-    prices: OrdMap<BookPartition, OrdSet<PriceKey>>,
+    prices: OrdMap<BookPartition, OrdSet<RankKey>>,
+    times: OrdMap<BookPartition, OrdSet<RankKey>>,
+    numbers: OrdMap<BookPartition, OrdSet<RankKey>>,
     groups: OrdMap<BookGroup, OrdSet<Book>>,
     declared: OrdMap<Key, OrdSet<Book>>,
     references: OrdMap<Book, usize>,
@@ -96,7 +98,19 @@ impl BookIndex {
                     mode: ActiveMode::try_from(order.mode)?,
                 })
                 .or_default()
-                .insert(PriceKey::new(decimal(&order.price)?, key.clone()));
+                .insert(RankKey::new(decimal(&order.price)?, key.clone()));
+            for (index, sort) in [
+                (&mut self.times, Sort::TimeAsc),
+                (&mut self.numbers, Sort::NumberAsc),
+            ] {
+                index
+                    .entry(BookPartition {
+                        book: book.clone(),
+                        mode: ActiveMode::try_from(order.mode)?,
+                    })
+                    .or_default()
+                    .insert(RankKey::new(sort.rank(order, false)?, key.clone()));
+            }
             self.groups.entry(book.group()).or_default().insert(book);
         }
         if let Some(w::entity::Entity::Feed(feed)) = &entity.entity {
@@ -121,9 +135,20 @@ impl BookIndex {
                 mode: ActiveMode::try_from(order.mode)?,
             };
             if let Some(keys) = self.prices.get_mut(&partition) {
-                keys.remove(&PriceKey::new(decimal(&order.price)?, key.clone()));
+                keys.remove(&RankKey::new(decimal(&order.price)?, key.clone()));
                 if keys.is_empty() {
                     self.prices.remove(&partition);
+                }
+            }
+            for (index, sort) in [
+                (&mut self.times, Sort::TimeAsc),
+                (&mut self.numbers, Sort::NumberAsc),
+            ] {
+                if let Some(keys) = index.get_mut(&partition) {
+                    keys.remove(&RankKey::new(sort.rank(order, false)?, key.clone()));
+                    if keys.is_empty() {
+                        index.remove(&partition);
+                    }
                 }
             }
             if !self.active(&book) {
@@ -160,19 +185,24 @@ impl BookIndex {
             books,
         }
     }
-    pub fn prices<'a>(
+    pub fn ranked<'a>(
         &'a self,
         scope: &Scope,
-        after: Option<PriceKey>,
+        after: Option<RankKey>,
         sort: Sort,
-    ) -> Box<dyn Iterator<Item = PriceKey> + 'a> {
+    ) -> Box<dyn Iterator<Item = RankKey> + 'a> {
         use std::ops::Bound::{Excluded, Included, Unbounded};
-        let descending = sort == Sort::PriceDesc;
+        let descending = sort.descending();
+        let index = match sort {
+            Sort::TimeAsc | Sort::TimeDesc => &self.times,
+            Sort::NumberAsc | Sort::NumberDesc => &self.numbers,
+            _ => &self.prices,
+        };
         let pair = BookGroup {
             item_type_id: scope.item_type_id.clone().unwrap_or_default(),
             currency_id: scope.currency_id.clone().unwrap_or_default(),
         };
-        let mut iterators: Vec<Box<dyn Iterator<Item = &PriceKey> + 'a>> = Vec::new();
+        let mut iterators: Vec<Box<dyn Iterator<Item = &RankKey> + 'a>> = Vec::new();
         for b in self.groups.get(&pair).into_iter().flatten() {
             if scope
                 .venue_id
@@ -185,14 +215,22 @@ impl BookIndex {
                 .into_iter()
                 .filter(|m| scope.modes.is_empty() || scope.modes.contains(&(*m).into()))
             {
-                if let Some(keys) = self.prices.get(&BookPartition {
+                if let Some(keys) = index.get(&BookPartition {
                     book: b.clone(),
                     mode,
                 }) {
-                    let min = scope.price.as_ref().and_then(|p| p.min);
-                    let max = scope.price.as_ref().and_then(|p| p.max);
-                    let lower = min.map(PriceKey::first);
-                    let upper = max.map(PriceKey::last);
+                    let min = scope
+                        .price
+                        .as_ref()
+                        .filter(|_| sort.is_price())
+                        .and_then(|p| p.min);
+                    let max = scope
+                        .price
+                        .as_ref()
+                        .filter(|_| sort.is_price())
+                        .and_then(|p| p.max);
+                    let lower = min.map(RankKey::first);
+                    let upper = max.map(RankKey::last);
                     let low = if !descending
                         && after
                             .as_ref()
@@ -217,13 +255,13 @@ impl BookIndex {
                         continue;
                     }
                     let range = keys.range((low, high));
-                    let iter: Box<dyn Iterator<Item = &PriceKey> + 'a> = if descending {
+                    let iter: Box<dyn Iterator<Item = &RankKey> + 'a> = if descending {
                         Box::new(range.rev())
                     } else {
                         Box::new(range)
                     };
                     let iter = iter.filter(move |key| {
-                        min.is_none_or(|v| key.price >= v) && max.is_none_or(|v| key.price <= v)
+                        min.is_none_or(|v| key.value >= v) && max.is_none_or(|v| key.value <= v)
                     });
                     iterators.push(Box::new(iter));
                 }

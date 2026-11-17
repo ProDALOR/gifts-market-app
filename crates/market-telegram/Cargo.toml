@@ -3,6 +3,7 @@ name = "market-telegram"
 version.workspace = true
 edition.workspace = true
 [dependencies]
+market-media.workspace = true
 market-actors.workspace = true
 anyhow.workspace = true
 futures-util.workspace = true

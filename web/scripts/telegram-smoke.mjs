@@ -60,7 +60,12 @@ try {
     .waitFor();
   await page.getByRole("heading", { name: "Gift", exact: true }).waitFor();
   await page.getByText("Live", { exact: true }).waitFor();
-  assert.equal(await page.getByLabel("Price order").inputValue(), "price_desc");
+  assert.equal(
+    await page
+      .getByRole("combobox", { name: "Sort by", exact: true })
+      .innerText(),
+    "Price",
+  );
   assert.ok(page.url().includes("max=2"));
   assert.ok(!page.url().includes("tgWebAppData"));
   assert.equal(
@@ -85,7 +90,7 @@ try {
   assert.equal(sdkLoads, 1);
   assert.equal(await page.getByText("FORGED", { exact: true }).count(), 0);
   await page
-    .getByRole("button", { name: "Inspect test order", exact: true })
+    .locator('.card-open[data-order-id="order"][data-venue-id="test"]')
     .click();
   await page.getByRole("dialog", { name: "Order details" }).waitFor();
   await page.waitForFunction(() => window.telegramTest.state.visible);

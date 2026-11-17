@@ -27,7 +27,11 @@ async fn application_starts_api_once_and_shutdown_closes_connections_and_release
     let runtime = MarketRuntime::open(directory.path(), "test", 2, 2)
         .await
         .unwrap();
-    let api = server(&runtime, &web_dir);
+    let (cache, downloads) = market_media::MediaCache::open(directory.path().join("media"))
+        .await
+        .unwrap();
+    drop(downloads);
+    let api = server(&runtime, &web_dir).with_media(cache.clone());
     let address = api.local_addr().unwrap();
     runtime.start_api(api).unwrap();
     assert!(runtime.start_api(server(&runtime, &web_dir)).is_err());
@@ -55,6 +59,15 @@ async fn application_starts_api_once_and_shutdown_closes_connections_and_release
     .await
     .unwrap();
     assert!(tokio::net::TcpStream::connect(address).await.is_err());
+    assert_eq!(
+        cache
+            .cached(market_media::MediaKey::thumbnail(
+                market_media::DocumentId::new(42).unwrap()
+            ))
+            .await
+            .unwrap_err(),
+        market_media::MediaError::Unavailable
+    );
     assert!(runtime.start_api(server(&runtime, &web_dir)).is_err());
 }
 
@@ -126,4 +139,42 @@ async fn api_only_process_ignores_telegram_environment_and_creates_no_auth_stora
     assert!(response.contains("\"ready\":false"));
     assert!(!data_dir.join("session.key").exists());
     assert!(!data_dir.join("bot").exists());
+}
+
+#[tokio::test]
+async fn cancelled_server_future_closes_media_admission_and_releases_listener() {
+    let directory = tempfile::tempdir().unwrap();
+    let web_dir = directory.path().join("web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "<html></html>").unwrap();
+    let runtime = MarketRuntime::open(directory.path(), "test", 2, 2)
+        .await
+        .unwrap();
+    let (cache, downloads) = market_media::MediaCache::open(directory.path().join("media"))
+        .await
+        .unwrap();
+    drop(downloads);
+    let api = server(&runtime, &web_dir).with_media(cache.clone());
+    let address = api.local_addr().unwrap();
+    let job = tokio::spawn(api.run(tokio_util::sync::CancellationToken::new()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    job.abort();
+    let _ = job.await;
+    let key = market_media::MediaKey::thumbnail(market_media::DocumentId::new(42).unwrap());
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if cache.cached(key).await.is_err()
+                && tokio::net::TcpStream::connect(address).await.is_err()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let _ = socket.close(None).await;
+    runtime.shutdown().await.unwrap();
 }

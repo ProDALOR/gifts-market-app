@@ -21,3 +21,11 @@ __pycache__/
 
 # MTProto sessions contain authentication keys, including in custom data directories.
 *.mtproto.sqlite*
+
+# Optional runtime image cache outside the default ignored data directory.
+/media-cache/
+
+# Runtime thumbnail payloads and incomplete cache writes.
+**/*.thumb
+**/*.tgs
+**/*.part

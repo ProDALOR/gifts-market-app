@@ -11,9 +11,9 @@ try {
   page.on("request", (request) => requests.push(request.url()));
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`${url}/?item=tg.gift.123&currency=GRAM#tgWebAppData=unused`);
-  await page.locator("tbody .price").first().waitFor();
+  await page.locator(".gift-grid .price").first().waitFor();
   await page.getByText("Live", { exact: true }).waitFor();
-  assert.equal(await page.locator("tbody tr").count(), 1);
+  assert.equal(await page.locator(".gift-card").count(), 1);
   assert.equal(
     await page
       .getByRole("button", { name: "Telegram sign-in", exact: true })

@@ -7,6 +7,7 @@ name = "market-app"
 path = "src/main.rs"
 
 [dependencies]
+market-media.workspace = true
 market-api.workspace = true
 market-actors.workspace = true
 market-hub-client.workspace = true

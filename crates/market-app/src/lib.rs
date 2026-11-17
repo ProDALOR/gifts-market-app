@@ -4,4 +4,6 @@ pub mod api_config;
 pub mod bot_config;
 pub mod cli;
 pub mod market;
+#[cfg(feature = "bot")]
+mod media;
 pub use market::MarketRuntime;

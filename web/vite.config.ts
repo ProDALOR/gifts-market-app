@@ -14,6 +14,7 @@ export default defineConfig({
   server: {
     proxy: Object.fromEntries(
       [
+        "/media",
         "/telegram",
         "/auth",
         "/sync",

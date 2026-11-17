@@ -22,6 +22,10 @@ impl From<Sort> for m::Sort {
             Sort::Identity => Self::Identity,
             Sort::PriceAsc => Self::PriceAsc,
             Sort::PriceDesc => Self::PriceDesc,
+            Sort::TimeAsc => Self::TimeAsc,
+            Sort::TimeDesc => Self::TimeDesc,
+            Sort::NumberAsc => Self::NumberAsc,
+            Sort::NumberDesc => Self::NumberDesc,
         }
     }
 }
@@ -200,6 +204,10 @@ impl From<OrdersQuery> for m::OrdersQuery {
         Self {
             scope: v.scope.into(),
             sort: v.sort.into(),
+            consistency: match v.consistency {
+                ReadConsistency::Snapshot => m::ReadConsistency::Snapshot,
+                ReadConsistency::Live => m::ReadConsistency::Live,
+            },
             limit: v.limit,
             page_token: v.page_token,
         }
@@ -210,6 +218,7 @@ impl From<ExecutionsQuery> for m::ExecutionsQuery {
     fn from(v: ExecutionsQuery) -> Self {
         Self {
             scope: v.scope.into(),
+            sort: v.sort.into(),
             period: v.period.map(Into::into),
             limit: v.limit,
             page_token: v.page_token,

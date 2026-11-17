@@ -95,6 +95,7 @@ impl ExecutionsQuery {
             }),
             limit: limit(self.limit)?,
             page_token: self.page_token,
+            sort: w::ReadSort::from(self.sort) as i32,
             ..Default::default()
         })
     }

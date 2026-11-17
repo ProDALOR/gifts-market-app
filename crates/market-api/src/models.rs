@@ -24,6 +24,10 @@ pub enum Sort {
     #[default]
     PriceAsc,
     PriceDesc,
+    TimeAsc,
+    TimeDesc,
+    NumberAsc,
+    NumberDesc,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -101,6 +105,13 @@ pub struct Scope {
     pub attributes: BTreeMap<String, Predicate>,
     pub price: Option<PriceRange>,
 }
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadConsistency {
+    #[default]
+    Snapshot,
+    Live,
+}
 pub(crate) fn default_limit() -> u32 {
     50
 }
@@ -109,6 +120,8 @@ pub(crate) fn default_limit() -> u32 {
 pub struct OrdersQuery {
     pub scope: Scope,
     pub sort: Sort,
+    #[schema(required = false, default = "snapshot")]
+    pub consistency: ReadConsistency,
     pub limit: u32,
     pub page_token: String,
 }
@@ -117,6 +130,7 @@ impl Default for OrdersQuery {
         Self {
             scope: Scope::default(),
             sort: Sort::default(),
+            consistency: ReadConsistency::default(),
             limit: default_limit(),
             page_token: String::new(),
         }
@@ -134,6 +148,7 @@ pub struct Period {
 #[serde(default, deny_unknown_fields)]
 pub struct ExecutionsQuery {
     pub scope: Scope,
+    pub sort: Sort,
     pub period: Option<Period>,
     pub limit: u32,
     pub page_token: String,
@@ -142,6 +157,7 @@ impl Default for ExecutionsQuery {
     fn default() -> Self {
         Self {
             scope: Scope::default(),
+            sort: Sort::Identity,
             period: None,
             limit: default_limit(),
             page_token: String::new(),

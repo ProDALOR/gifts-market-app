@@ -22,6 +22,7 @@ impl Cooldown {
 #[derive(Clone, Default)]
 pub(in crate::bot) struct RateLimits {
     pub gifts: Cooldown,
+    pub media: Cooldown,
     pub replies: Cooldown,
 }
 #[cfg(test)]

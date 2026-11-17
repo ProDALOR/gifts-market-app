@@ -572,7 +572,7 @@ fn legacy_continuations_keep_their_shape_and_exact_boundaries() {
     assert_eq!(serde_json::to_value(Sort::PriceDesc).unwrap(), json!(2));
     assert!(serde_json::from_value::<Key>(json!([0, "venue", "a"])).is_err());
     assert!(serde_json::from_value::<Key>(json!([1, "venue", "a"])).is_err());
-    assert!(serde_json::from_value::<Sort>(json!(3)).is_err());
+    assert!(serde_json::from_value::<Sort>(json!(99)).is_err());
     let (_directory, replica) = setup();
     apply(
         &replica,
@@ -629,4 +629,106 @@ fn legacy_continuations_keep_their_shape_and_exact_boundaries() {
         .collect::<Vec<_>>();
     keys.sort();
     assert_eq!(keys.first().unwrap().kind, EntityKind::Venue);
+}
+
+#[test]
+fn time_number_and_price_sort_whole_books_and_history_with_stable_keyset_pages() {
+    let (dir, replica) = setup();
+    let numbered = |id: &str, price: &str, time: i64, number: i64, history: bool| {
+        let mut order = order(id, price, history.then_some(time));
+        order.observed_at_ms = if history { 100 - time } else { time };
+        order.attributes.insert(
+            "tg.number".into(),
+            w::AttributePredicate {
+                predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                    value: Some(w::attribute_value::Value::Integer(number)),
+                })),
+            },
+        );
+        order
+    };
+    let mut changes = Vec::new();
+    for history in [false, true] {
+        for (id, price, time, number) in [
+            ("a", "10000000000000000.000000002", 30, 10),
+            ("b", "10000000000000000.000000001", 10, 2),
+            ("c", "2", 20, 5),
+            ("d", "2", 20, 5),
+        ] {
+            changes.push(upsert(entity(E::Order(numbered(
+                &format!("{}-{id}", if history { "hist" } else { "act" }),
+                price,
+                time,
+                number,
+                history,
+            )))));
+        }
+    }
+    apply(&replica, changes, "ranked1");
+    let collect = |replica: &Fixture, sort: i32, history: bool| {
+        let mut query = read(0, history);
+        query.sort = sort;
+        query.limit = 2;
+        let mut result = Vec::new();
+        loop {
+            let page = replica.read(query.clone()).unwrap().page;
+            result.extend(ids(&page));
+            if page.next_page_token.is_empty() {
+                break;
+            }
+            query.page_token = page.next_page_token;
+        }
+        result
+    };
+    for history in [false, true] {
+        for (sort, expected) in [
+            (1, vec!["c", "d", "b", "a"]),
+            (2, vec!["a", "b", "d", "c"]),
+            (3, vec!["b", "c", "d", "a"]),
+            (4, vec!["a", "d", "c", "b"]),
+            (5, vec!["b", "c", "d", "a"]),
+            (6, vec!["a", "d", "c", "b"]),
+        ] {
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|id| format!("{}-{id}", if history { "hist" } else { "act" }))
+                .collect();
+            assert_eq!(
+                collect(&replica, sort, history),
+                expected,
+                "sort {sort}, history {history}"
+            );
+        }
+    }
+    let mut snapshot = read(0, false);
+    snapshot.sort = 4;
+    snapshot.limit = 2;
+    let first = replica.read(snapshot.clone()).unwrap().page;
+    assert_eq!(ids(&first), ["act-a", "act-d"]);
+    apply(
+        &replica,
+        vec![upsert(entity(E::Order(numbered(
+            "act-a", "3", 0, 99, false,
+        ))))],
+        "ranked2",
+    );
+    snapshot.page_token = first.next_page_token;
+    assert_eq!(
+        ids(&replica.read(snapshot).unwrap().page),
+        ["act-c", "act-b"]
+    );
+    assert_eq!(
+        collect(&replica, 4, false),
+        ["act-d", "act-c", "act-b", "act-a"]
+    );
+    drop(replica);
+    let reopened = Fixture::open(dir.path(), "test-source").unwrap();
+    assert_eq!(
+        collect(&reopened, 6, false),
+        ["act-a", "act-d", "act-c", "act-b"]
+    );
+    assert_eq!(
+        collect(&reopened, 4, true),
+        ["hist-a", "hist-d", "hist-c", "hist-b"]
+    );
 }

@@ -7,6 +7,8 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
+flate2 = "1"
+market-media = { path = "crates/market-media" }
 market-api = { path = "crates/market-api", default-features = false }
 market-actors = { path = "crates/market-actors" }
 market-miniapp = { path = "crates/market-miniapp" }

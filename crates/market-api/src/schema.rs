@@ -12,6 +12,9 @@ use utoipa::OpenApi;
         crate::routes::list_catalog,
         crate::routes::orders,
         crate::routes::executions,
+        crate::media::model_thumbnail,
+        crate::media::pattern_thumbnail,
+        crate::media::model_animation,
         crate::websocket::connect
     ),
     components(schemas(Command, ServerFrame, AttributeValue)),
