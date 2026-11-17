@@ -116,8 +116,6 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut args = Cli::try_parse_from([
             "market-app",
-            "--bot-enabled",
-            "true",
             "--telegram-bot-token",
             "42:private_test_secret",
             "--telegram-api-id",

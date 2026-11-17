@@ -98,7 +98,6 @@ async fn api_only_process_ignores_telegram_environment_and_creates_no_auth_stora
             ("MARKET_HTTP_WORKERS", "1"),
             ("MARKET_MAX_CONCURRENT_QUERIES", "3"),
             ("MARKET_MAX_LIVE_QUERIES", "4"),
-            ("MARKET_BOT_ENABLED", "not-a-boolean"),
             ("MARKET_MINIAPP_BOT_ID", "not-an-id"),
             ("MARKET_MINIAPP_BOT_USERNAME", "invalid username"),
             ("MARKET_PUBLIC_URL", "not-a-url"),
@@ -177,4 +176,92 @@ async fn cancelled_server_future_closes_media_admission_and_releases_listener() 
     .unwrap();
     let _ = socket.close(None).await;
     runtime.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "bot")]
+#[tokio::test]
+async fn credential_free_process_starts_api_without_telegram_storage() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for blank in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data_dir = directory.path().join("data");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_market-app"));
+        command
+            .env_clear()
+            .args([
+                "--bind",
+                &address.to_string(),
+                "--hub-url",
+                "http://127.0.0.1:1",
+                "--hub-token",
+                "public-app.private-test-service-token",
+                "--no-web",
+                "--http-workers",
+                "1",
+            ])
+            .arg("--data-dir")
+            .arg(&data_dir);
+        if blank {
+            for name in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_API_ID", "TELEGRAM_API_HASH"] {
+                command.env(name, "");
+            }
+        }
+        let mut child = command
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                assert!(
+                    child.try_wait().unwrap().is_none(),
+                    "Credential-free process exited during startup"
+                );
+                if let Ok(mut stream) = tokio::net::TcpStream::connect(address).await {
+                    stream
+                        .write_all(
+                            b"GET /sync HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    let mut response = String::new();
+                    stream.read_to_string(&mut response).await.unwrap();
+                    break response;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        child.kill().await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(!data_dir.join("bot").exists());
+        assert!(!data_dir.join("session.key").exists());
+    }
+}
+
+#[cfg(feature = "bot")]
+#[tokio::test]
+async fn partial_credentials_fail_before_creating_runtime_storage() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path().join("data");
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_market-app"))
+        .env_clear()
+        .env("TELEGRAM_BOT_TOKEN", "42:private_test_secret")
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .output()
+        .await
+        .unwrap();
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success());
+    assert!(error.contains("TELEGRAM_API_ID"));
+    assert!(error.contains("TELEGRAM_API_HASH"));
+    assert!(!error.contains("private_test_secret"));
+    assert!(!data_dir.exists());
 }

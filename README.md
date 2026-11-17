@@ -46,15 +46,23 @@ The local database is a rebuildable cache, not the authoritative archive. Stop t
 
 ## Docker
 
-Create the shared network once with `docker network create market`. Copy `.env.example` to `.env`, set `MARKET_HUB_TOKEN`, and run `docker compose up --build --detach`.
+Create the shared network once with `docker network create market`. On a new deployment, copy `.env.example` to `.env` and set the hub URL and issued token. Existing deployments can keep their `.env`. Start with:
+
+```sh
+docker compose config --quiet
+docker compose up --build --detach
+docker compose logs --follow --tail=100 market-app
+```
+
+Compose reads runtime configuration from `.env`; unset options use application defaults. Container data, bot, media and frontend paths are fixed to `/data`, `/bot-data`, `/data/media` and `/app/web/dist`, so native paths in `.env` do not override the mounted directories. Custom container paths require a Compose override with matching writable mounts. The listener is fixed to `0.0.0.0:8080`; `MARKET_APP_PORT` controls the published host port. After editing runtime settings, run `docker compose up --detach` to recreate the service with the updated environment.
 
 Compose starts only this application, connects to `http://market-hub:50051`, publishes `0.0.0.0:8080` and persists its replica in `market-app-data:/data`. Configure `MARKET_HUB_URL`, `MARKET_NETWORK` or `MARKET_APP_PORT` for another deployment. Separate deployments use separate volumes. Multiple instances can sit behind a load balancer; retained snapshot pagination requires affinity to the instance holding the view. Live page boundaries can move between instances synchronized to the same market.
 
-Two image targets are available: `market-app` (default, API and website) and `market-api` (headless). Set `MARKET_IMAGE_TARGET=market-api` in `.env` to skip Node, schema/client generation and frontend assets entirely. The headless image starts with `--no-web`. A direct build uses `docker build --target market-api -t market-api .`. `MARKET_NO_WEB=true` can also disable frontend routes in the ordinary image, but does not skip its frontend build.
+One Docker image includes the frontend, REST/WebSocket API, Telegram bot and Mini App support. A direct build uses `docker build -t market-app .`. The bot starts automatically when all three Telegram credentials are configured; serving the website and API requires none.
 
-Both targets bind `0.0.0.0:8080`, store the replica in `/data` and bot state in `/bot-data`, and run as UID/GID 10001. Preserve both directories when running outside Compose. The image uses standard `SIGTERM` shutdown; Compose allows 15 seconds to drain workers.
+The image binds `0.0.0.0:8080`, stores the replica in `/data` and bot state in `/bot-data`, and runs as UID/GID 10001. Preserve both directories when running outside Compose. The image uses standard `SIGTERM` shutdown; Compose allows 15 seconds to drain workers.
 
-The ordinary image generates public OpenAPI and TypeScript types before building React. Generated clients, dependencies and built assets are ignored. The Node build exports its schema using the compiled Rust binary.
+The Dockerfile has three stages: Rust compilation, frontend compilation and the final runtime image. A single `.dockerignore` excludes credentials, local state and generated assets from the build context. The frontend build generates public OpenAPI and TypeScript types before building React. Generated clients, dependencies and built assets are ignored. The Node build exports its schema using the compiled Rust binary.
 
 ## Gift previews and media
 
@@ -74,7 +82,7 @@ Frontend code is organized into `web/src/collections`, `catalog`, `previews`, `o
 
 ## Telegram Mini App and bot
 
-Telegram support is opt-in at compile time. The default `market-app` and `market-api` builds serve the market API and ordinary website without Telegram configuration or dependencies. Disabled features omit their CLI flags and subcommands; an API-only process ignores Telegram environment variables and creates no Telegram session or authentication storage.
+Native Cargo builds keep Telegram support opt-in. Docker images include both `bot` and `miniapp` features; configuring all three Telegram credentials starts the worker automatically. Native builds without these features serve the market API and ordinary website without Telegram dependencies. Disabled features omit their CLI flags and subcommands; an API-only process ignores Telegram environment variables and creates no Telegram session or authentication storage.
 
 | Cargo features on `market-app` | Included support |
 | --- | --- |
@@ -83,7 +91,7 @@ Telegram support is opt-in at compile time. The default `market-app` and `market
 | `miniapp` | Mini App launch settings, HTTP sign-in/session endpoints and `session-key` command |
 | `bot,miniapp` | Both integrations |
 
-`market-api` also exposes its own `miniapp` feature for embedding. The `bot` feature includes bot launch URL validation but does not enable Mini App HTTP routes. Compiling `bot` makes the worker available; `MARKET_BOT_ENABLED=true` still controls whether the process starts it.
+`market-api` also exposes its own `miniapp` feature for embedding. The `bot` feature includes bot launch URL validation but does not enable Mini App HTTP routes. Compiling `bot` makes the worker available; configuring all three Telegram credentials starts it automatically.
 
 ```sh
 # Default: market API and website, with no Telegram settings.
@@ -98,22 +106,20 @@ cargo run --locked -p market-app --features bot,miniapp -- --data-dir data
 
 Build the frontend against the same Mini App capability as the server. `MARKET_SCHEMA_FEATURES=miniapp` selects that capability when the frontend generates its schema through Cargo; with `MARKET_SCHEMA_BIN`, the provided binary's compiled features determine it. The browser build reads the schema and disables Telegram SDK initialization, sign-in requests and account controls when Mini App routes are absent.
 
-For Docker/Compose, set `MARKET_FEATURES=bot,miniapp` in `.env` before building to include both integrations, or choose either feature separately. Leaving it empty builds only the market API. Changing features requires rebuilding the image; runtime environment settings cannot enable code omitted from the binary. A direct Docker build accepts `--build-arg MARKET_FEATURES=bot,miniapp`.
+Docker and Compose always build with `--all-features`. Bot startup is automatic when `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are all configured. Leave all three unset or blank to run without a bot; partial or invalid credentials fail startup with a configuration error. Native Cargo builds still support selecting features explicitly.
 
 The same React interface works as an ordinary website and as a Telegram Mini App. The bridge loads only for Telegram launches, integrates safe areas and theme changes, and connects Telegram's Back button to order details, filters and the account menu. A small account control displays the server-verified identity. Market browsing stays public.
 
 For a real Telegram launch, host the application at a public HTTPS origin. A deployment or HTTPS tunnel can forward to the existing HTTP listener. Configure these values in `.env` for Compose:
 
 ```dotenv
-MARKET_FEATURES=bot,miniapp
 MARKET_PUBLIC_URL=https://markets.example.com
-MARKET_BOT_ENABLED=true
 TELEGRAM_BOT_TOKEN=<BotFather token>
 TELEGRAM_API_ID=<application ID from my.telegram.org>
 TELEGRAM_API_HASH=<application hash from my.telegram.org>
 ```
 
-`market-app` hosts one supervised bot worker when `MARKET_BOT_ENABLED=true` (default false). It uses MTProto through grammers 0.12, logging in as the bot with its BotFather token and a Telegram application API ID/hash from [my.telegram.org](https://my.telegram.org). Supply these three credentials only to the application instance running the worker. Native runs read environment variables or CLI flags; Compose reads `.env`. Keep `.env` private; it is excluded from Git and Docker builds. These credentials and the saved MTProto authentication key are private and never part of public configuration or browser state.
+`market-app` hosts one supervised bot worker when all three Telegram credentials are configured. It uses MTProto through grammers 0.12, logging in as the bot with its BotFather token and a Telegram application API ID/hash from [my.telegram.org](https://my.telegram.org). Supply these three credentials only to the application instance running the worker. Native runs read environment variables or CLI flags; Compose reads `.env`. Keep `.env` private; it is excluded from Git and Docker builds. These credentials and the saved MTProto authentication key are private and never part of public configuration or browser state.
 
 Enable the **Main Mini App** in BotFather for this bot and set its URL to `MARKET_PUBLIC_URL` when launch buttons are wanted. The worker registers `/start`, `/market`, `/help`, `/status`, `/floor` and `/portfolio`; it also configures the chat's **Open market** menu button when a URL is supplied. Commands work in private chats. `/status` reads synchronization status through the shared data actor. Startup verifies the saved session belongs to the token’s bot, then discovers the ID, current username and active aliases from the authenticated Telegram profile. The worker does not manage HTTP Bot API webhooks.
 
@@ -149,10 +155,9 @@ MTProto worker authentication requires `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID` a
 
 The bot can run without `MARKET_PUBLIC_URL`: it registers its commands and sends plain text replies, including `/status`, without Mini App buttons. When a public HTTPS URL is supplied, it also configures the launch menu and attaches launch buttons. Existing menu settings are left unchanged when no URL is configured.
 
-Run the worker on exactly one instance per bot. Instances without a worker keep `MARKET_BOT_ENABLED=false`. Mini App-only deployments and API replicas configure the intended public identity explicitly, without Telegram credentials:
+Run the worker on exactly one instance per bot. Instances without a worker leave all three Telegram credentials unset or blank. Mini App-only deployments and API replicas configure the intended public identity explicitly, without Telegram credentials:
 
 ```dotenv
-MARKET_FEATURES=miniapp
 MARKET_MINIAPP_BOT_ID=123456789
 MARKET_MINIAPP_BOT_USERNAME=your_bot
 MARKET_PUBLIC_URL=https://markets.example.com

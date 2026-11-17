@@ -2,12 +2,7 @@ name: market-app
 
 services:
   market-app:
-    image: ${MARKET_APP_IMAGE:-market-app:local}
-    build:
-      context: .
-      target: ${MARKET_IMAGE_TARGET:-market-app}
-      args:
-        MARKET_FEATURES: ${MARKET_FEATURES:-}
+    build: .
     init: true
     restart: unless-stopped
     read_only: true
@@ -17,28 +12,17 @@ services:
     tmpfs: ["/tmp:size=16m,mode=1777,nosuid,nodev"]
     networks: [market]
     volumes: ["market-app-data:/data", "market-bot-data:/bot-data"]
+    env_file: .env
     environment:
       MARKET_HUB_URL: ${MARKET_HUB_URL:-http://market-hub:50051}
       MARKET_HUB_TOKEN: ${MARKET_HUB_TOKEN:?Set MARKET_HUB_TOKEN to an issued service token}
-      MARKET_NO_WEB: ${MARKET_NO_WEB:-false}
-      MARKET_MEDIA_DIR: ${MARKET_MEDIA_DIR:-/data/media}
-      MARKET_MEDIA_ORIGIN: ${MARKET_MEDIA_ORIGIN:-}
-      MARKET_WEB_DIR: ${MARKET_WEB_DIR:-/app/web/dist}
-      MARKET_CORS_ORIGINS: ${MARKET_CORS_ORIGINS:-}
-      MARKET_HTTP_WORKERS: ${MARKET_HTTP_WORKERS:-2}
-      MARKET_MAX_CONCURRENT_QUERIES: ${MARKET_MAX_CONCURRENT_QUERIES:-32}
-      MARKET_MAX_LIVE_QUERIES: ${MARKET_MAX_LIVE_QUERIES:-128}
-      MARKET_MINIAPP_BOT_ID: ${MARKET_MINIAPP_BOT_ID:-0}
-      MARKET_MINIAPP_BOT_USERNAME: ${MARKET_MINIAPP_BOT_USERNAME:-}
-      MARKET_PUBLIC_URL: ${MARKET_PUBLIC_URL:-}
-      MARKET_BOT_ENABLED: ${MARKET_BOT_ENABLED:-false}
-      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-0}
-      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      MARKET_SESSION_KEY: ${MARKET_SESSION_KEY:-}
-      RUST_LOG: ${RUST_LOG:-info}
+      # Container paths take precedence over native settings in .env.
+      MARKET_DATA_DIR: /data
+      MARKET_BOT_DATA_DIR: /bot-data
+      MARKET_MEDIA_DIR: /data/media
+      MARKET_WEB_DIR: /app/web/dist
     ports:
-      - "0.0.0.0:${MARKET_APP_PORT:-8080}:8080"
+      - "${MARKET_APP_PORT:-8080}:8080"
 
 networks:
   market:

@@ -29,14 +29,11 @@ pub struct Cli {
     #[arg(long, env = "MARKET_PUBLIC_URL")]
     pub public_url: Option<String>,
     #[cfg(feature = "bot")]
-    #[arg(long, env = "MARKET_BOT_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
-    pub bot_enabled: bool,
-    #[cfg(feature = "bot")]
     #[arg(long, env = "TELEGRAM_BOT_TOKEN", hide_env_values = true)]
     pub telegram_bot_token: Option<String>,
     #[cfg(feature = "bot")]
     #[arg(long, env = "TELEGRAM_API_ID")]
-    pub telegram_api_id: Option<i32>,
+    pub telegram_api_id: Option<String>,
     #[cfg(feature = "bot")]
     #[arg(long, env = "TELEGRAM_API_HASH", hide_env_values = true)]
     pub telegram_api_hash: Option<String>,
@@ -90,7 +87,7 @@ mod tests {
                 .get_arguments()
                 .any(|argument| argument.get_id() == id)
         };
-        assert_eq!(has_arg("bot_enabled"), cfg!(feature = "bot"));
+        assert!(!has_arg("bot_enabled"));
         assert_eq!(has_arg("telegram_bot_token"), cfg!(feature = "bot"));
         assert_eq!(has_arg("telegram_api_id"), cfg!(feature = "bot"));
         assert_eq!(has_arg("telegram_api_hash"), cfg!(feature = "bot"));
@@ -168,6 +165,7 @@ mod tests {
             "--workers",
             "--max-streams",
             "--telegram-bot-id",
+            "--bot-enabled",
         ] {
             assert!(Cli::try_parse_from(["market-app", legacy, "1"]).is_err());
         }

@@ -16,8 +16,10 @@ web/node_modules/
 web/dist/
 web/src/gen/
 **/*.mtproto.sqlite*
-**/.env
-**/.env.*
+**/accounts.json
+**/.env*
+**/*.key
+**/*.pem
 
 # Runtime thumbnail payloads and incomplete cache writes.
 **/*.thumb
