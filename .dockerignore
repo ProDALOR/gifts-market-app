@@ -4,10 +4,9 @@
 !Cargo.toml
 !Cargo.lock
 !market-hub.proto
+# Cargo validates declared test and example paths even when building only binaries.
 !crates/
 !crates/**
-**/tests/
-**/examples/
 **/target/
 
 !web/
