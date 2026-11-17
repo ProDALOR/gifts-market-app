@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { Order, Predicate, Query } from "./market";
+import type { Order, TraitFilters, TraitKey, Query, FeedQuery } from "./market";
 import { useCatalog } from "./catalog/use-catalog";
 import { useOrderFeed } from "./use-order-feed";
 import { useBackgroundPlaybackSuspension } from "./previews/use-playback";
@@ -9,7 +9,7 @@ import { TraitPickers } from "./collections/trait-pickers";
 import { TraitPreview } from "./previews/trait-preview";
 import { VenueIcon } from "./ui/icons";
 import { OrderDetails } from "./orderbook/order-details";
-import { GiftCard } from "./orderbook/gift-card";
+import { GiftGrid } from "./orderbook/gift-grid";
 import { CurrencyPicker } from "./ui/pickers";
 import { SortPicker } from "./ui/pickers";
 import { ScrollLoader } from "./orderbook/scroll-loader";
@@ -18,27 +18,36 @@ import type { TelegramContext } from "./telegram";
 import { useTelegram, useTelegramBack, TelegramAccount } from "./telegram-ui";
 import "./style.css";
 type Choice = {
-  item: string;
+  collection: string;
   currency: string;
   venue: string;
   mode: "ask" | "bid" | "executed";
-  sort: Exclude<Query["sort"], "identity">;
+  sort: Exclude<NonNullable<Query["sort"]>, "identity">;
   min: string;
   max: string;
   from: string;
   until: string;
-  filters: Record<string, Predicate>;
+  filters: TraitFilters;
 };
 function saved(context: TelegramContext): Choice {
   const p = launchSelection(context, location.search);
-  let filters = {};
+  let filters: TraitFilters = {};
   try {
     const parsed = JSON.parse(p.get("filters") || "{}");
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-      filters = parsed;
+      for (const key of ["models", "backdrops", "patterns"] as const) {
+        if (
+          Array.isArray(parsed[key]) &&
+          parsed[key].every(
+            (id: unknown) =>
+              typeof id === "string" && id.length > 0 && id.length <= 256,
+          )
+        )
+          filters[key] = [...new Set<string>(parsed[key])];
+      }
   } catch {}
   return {
-    item: p.get("item") || "",
+    collection: p.get("collection") || "",
     currency: p.get("currency") || "",
     venue: p.get("venue") || "",
     mode:
@@ -72,7 +81,7 @@ function App({ context }: { context: TelegramContext }) {
     [refresh, setRefresh] = useState(0),
     [paused, setPaused] = useState(false),
     [selected, setSelected] = useState<Order>(),
-    [openTrait, setOpenTrait] = useState<string>();
+    [openTrait, setOpenTrait] = useState<TraitKey>();
   const {
     types,
     directory,
@@ -83,14 +92,14 @@ function App({ context }: { context: TelegramContext }) {
     optionsLoading,
     optionsError,
     retryOptions,
-  } = useCatalog(refresh, choice.item);
+  } = useCatalog(refresh, choice.collection);
   useBackgroundPlaybackSuspension(!!selected || accountOpen);
   useEffect(() => {
     if (!directory[0]) return;
     setChoice((old) => {
-      const selectedItem = old.item || directory[0].item_type_id;
+      const selectedItem = old.collection || directory[0].collection_id;
       const available = directory.filter(
-        (book) => book.item_type_id === selectedItem,
+        (book) => book.collection_id === selectedItem,
       );
       const currency = available.some(
         (book) => book.currency_id === old.currency,
@@ -101,7 +110,7 @@ function App({ context }: { context: TelegramContext }) {
           old.currency;
       return {
         ...old,
-        item: selectedItem,
+        collection: selectedItem,
         currency,
         venue: available.some(
           (book) =>
@@ -128,34 +137,51 @@ function App({ context }: { context: TelegramContext }) {
     window.addEventListener("popstate", pop);
     return () => window.removeEventListener("popstate", pop);
   }, []);
-  const query: Query & {
-    period?: { from: string | null; until: string | null };
-  } = {
-    scope: {
-      item_type_id: choice.item,
+  const base = {
+    filters: {
+      collection_id: choice.collection,
       currency_id: choice.currency,
       venue_id: choice.venue || null,
-      modes: [choice.mode],
-      attributes: choice.mode === "bid" ? {} : choice.filters,
+      models: choice.filters.models || [],
+      backdrops: choice.filters.backdrops || [],
+      patterns: choice.filters.patterns || [],
+      number: null,
       price:
         choice.min || choice.max
           ? { min: choice.min || null, max: choice.max || null }
           : null,
     },
     sort: choice.sort,
-    consistency: "snapshot",
     limit: 50,
     page_token: "",
-    ...(choice.mode === "executed" && (choice.from || choice.until)
-      ? { period: { from: choice.from || null, until: choice.until || null } }
-      : {}),
   };
-  const { page, status, error, loadingMore, hasMore, loadMore } = useOrderFeed(
-    query,
-    choice.mode === "executed",
-    paused,
-    refresh,
-  );
+  const query: FeedQuery | null =
+    !choice.collection || !choice.currency
+      ? null
+      : choice.mode === "executed"
+        ? {
+            kind: "history",
+            query: {
+              ...base,
+              period:
+                choice.from || choice.until
+                  ? { from: choice.from || null, until: choice.until || null }
+                  : null,
+            },
+          }
+        : {
+            kind: "orders",
+            query: { ...base, side: choice.mode, consistency: "live" },
+          };
+  const {
+    page,
+    status,
+    error,
+    loadingMore,
+    hasMore,
+    loadMore,
+    setVisibleRange,
+  } = useOrderFeed(query, paused, refresh);
   useEffect(
     () =>
       setSelected((current) =>
@@ -180,10 +206,10 @@ function App({ context }: { context: TelegramContext }) {
   };
   const selectedType = useCallback(
     (id: string) => {
-      const available = directory.filter((b) => b.item_type_id === id);
+      const available = directory.filter((b) => b.collection_id === id);
       set({
         ...choice,
-        item: id,
+        collection: id,
         currency: available.some((b) => b.currency_id === choice.currency)
           ? choice.currency
           : available[0]?.currency_id || choice.currency,
@@ -198,13 +224,13 @@ function App({ context }: { context: TelegramContext }) {
     [directory, choice],
   );
   const availableTypes = useMemo(
-    () => types.filter((t) => directory.some((b) => b.item_type_id === t.id)),
+    () => types.filter((t) => directory.some((b) => b.collection_id === t.id)),
     [types, directory],
   );
   const currencies = [
     ...new Set(
       directory
-        .filter((b) => b.item_type_id === choice.item)
+        .filter((b) => b.collection_id === choice.collection)
         .map((b) => b.currency_id),
     ),
   ].sort();
@@ -213,15 +239,16 @@ function App({ context }: { context: TelegramContext }) {
       directory
         .filter(
           (b) =>
-            b.item_type_id === choice.item && b.currency_id === choice.currency,
+            b.collection_id === choice.collection &&
+            b.currency_id === choice.currency,
         )
         .map((b) => b.venue_id),
     ),
   ].sort();
-  const changeTrait = useCallback((id: string, value?: Predicate) => {
+  const changeTrait = useCallback((id: TraitKey, value?: string[]) => {
     setChoice((previous) => {
       const filters = { ...previous.filters };
-      if (value) filters[id] = value;
+      if (value?.length) filters[id] = value;
       else delete filters[id];
       return { ...previous, filters };
     });
@@ -246,7 +273,7 @@ function App({ context }: { context: TelegramContext }) {
         <h1 className="sr">{item?.name || "Select a collection"}</h1>
         <CollectionRail
           collections={availableTypes}
-          selected={choice.item}
+          selected={choice.collection}
           select={selectedType}
         />
         {(startupError || optionsError || error) && (
@@ -263,7 +290,7 @@ function App({ context }: { context: TelegramContext }) {
           </div>
         )}
         <TraitPickers
-          key={choice.item}
+          key={choice.collection}
           collection={item}
           options={options}
           loading={optionsLoading}
@@ -404,32 +431,23 @@ function App({ context }: { context: TelegramContext }) {
             </div>
           </div>
 
-          <ul
-            className="gift-grid"
-            aria-label="Gift listings"
-            aria-busy={status === "Loading" || status === "Connecting"}
-          >
-            {page.data.map((order) => (
-              <GiftCard
-                key={JSON.stringify([order.book.venue_id, order.id])}
-                order={order}
-                options={options}
-                collectionName={
-                  item?.name ||
-                  names.get(order.book.item_type_id) ||
-                  order.book.item_type_id
-                }
-                venueName={
-                  names.get(order.book.venue_id) || order.book.venue_id
-                }
-                selected={
-                  selected?.id === order.id &&
-                  selected.book.venue_id === order.book.venue_id
-                }
-                open={setSelected}
-              />
-            ))}
-          </ul>
+          <GiftGrid
+            orders={page.data}
+            busy={status === "Loading" || status === "Connecting"}
+            visible={setVisibleRange}
+            card={(order) => ({
+              options,
+              collectionName:
+                item?.name ||
+                names.get(order.book.collection_id) ||
+                order.book.collection_id,
+              venueName: names.get(order.book.venue_id) || order.book.venue_id,
+              selected:
+                selected?.id === order.id &&
+                selected.book.venue_id === order.book.venue_id,
+              open: setSelected,
+            })}
+          />
           {!page.data.length && (
             <div className="empty" role="status">
               <span>◇</span>
@@ -461,7 +479,7 @@ function App({ context }: { context: TelegramContext }) {
           <span>Every venue. One view.</span>
           <a
             className="api-link"
-            href="/openapi.json"
+            href="/docs"
             target="_blank"
             rel="noreferrer"
           >

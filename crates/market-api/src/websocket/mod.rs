@@ -15,7 +15,7 @@ pub(crate) struct WebSocketService {
     pub origins: OriginPolicy,
     pub limits: WebSocketLimits,
 }
-#[utoipa::path(get,path="/ws",responses((status=101,description="WebSocket upgraded; Command and ServerFrame define the message protocol"),(status=400,body=crate::error::ErrorResponse),(status=403,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
+#[utoipa::path(get,path="/ws",tag="WebSocket",summary="Open a live order stream",description="Interactive documentation and a subscription console are available at /docs/ws. The AsyncAPI specification is at /asyncapi.json.",responses((status=101,description="WebSocket upgraded; Command and ServerFrame define the message protocol"),(status=400,body=crate::error::ErrorResponse),(status=403,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn connect(
     req: HttpRequest,
     payload: web::Payload,

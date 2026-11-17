@@ -415,10 +415,8 @@ mod tests {
         jobs.close();
         jobs.wait().await;
         drop(storage);
-        assert!(
-            SessionStore::open(directory.path(), 42, 12345, &jobs)
-                .await
-                .is_ok()
-        );
+        SessionStore::open(directory.path(), 42, 12345, &jobs)
+            .await
+            .expect("sender shutdown releases its session");
     }
 }

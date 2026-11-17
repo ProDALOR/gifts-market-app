@@ -1,5 +1,4 @@
-import type { Order, Predicate } from "../market";
-import { text } from "../market";
+import type { Order } from "../market";
 import type { CatalogOption } from "../orderbook";
 import { listingLink, serial } from "../orderbook";
 import { GiftPreview } from "../previews/gift-preview";
@@ -41,17 +40,18 @@ export function OrderDetails({
       </div>
       <div className="detail-body">
         <h2 id="detail-title">
-          {names.get(selected.book.item_type_id) || selected.book.item_type_id}
+          {names.get(selected.book.collection_id) ||
+            selected.book.collection_id}
           {selectedSerial && ` #${selectedSerial}`}
         </h2>
         <div className="detail-price">
           <Quote price={selected.price} currency={selected.book.currency_id} />
         </div>
         <dl>
-          {Object.entries(selected.attributes).map(([id, predicate]) => (
-            <div key={id}>
-              <dt>{id === "tg.pattern" ? "Symbol" : names.get(id) || id}</dt>
-              <dd>{describe(predicate, names)}</dd>
+          {describeTarget(selected, names).map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
             </div>
           ))}
           {[
@@ -63,7 +63,7 @@ export function OrderDetails({
             [
               "Mode",
               selected.mode === "ask"
-                ? "Offer"
+                ? "Ask"
                 : selected.mode === "bid"
                   ? "Bid"
                   : "Executed",
@@ -97,12 +97,16 @@ export function OrderDetails({
           <dl>
             {[
               ["Order ID", selected.id],
-              ["Item ID", selected.item_id || "—"],
+              [
+                "Gift ID",
+                selected.target.kind === "gift"
+                  ? selected.target.gift.id
+                  : "Selection",
+              ],
               ["Currency", selected.book.currency_id],
               ...(selected.parent_order_id
                 ? [["Parent order", selected.parent_order_id]]
                 : []),
-              ...Object.entries(selected.meta),
             ].map(([key, value]) => (
               <div key={key}>
                 <dt>{key}</dt>
@@ -115,21 +119,48 @@ export function OrderDetails({
     </DetailSheet>
   );
 }
-function describe(p: Predicate, names: Map<string, string>): string {
-  switch (p.op) {
-    case "eq":
-      return text(p.value, names);
-    case "one_of":
-      return p.values.map((v) => text(v, names)).join(" / ");
-    case "range":
-      return `${p.min ? text(p.min, names) : "Any"} – ${p.max ? text(p.max, names) : "Any"}`;
-    case "object":
-      return Object.entries(p.fields || {})
-        .map(([k, v]) => `${names.get(k) || k}: ${describe(v, names)}`)
-        .join(" · ");
-    case "contains":
-      return `Contains ${p.min_count ?? 1}${p.max_count == null ? "+" : "–" + p.max_count}: ${describe(p.predicate, names)}`;
-    case "all_of":
-      return p.predicates.map((v) => describe(v, names)).join("; ");
-  }
+function describeTarget(
+  order: Order,
+  names: Map<string, string>,
+): [string, string][] {
+  const target = order.target;
+  if (target.kind === "unsupported") return [["Conditions", target.reason]];
+  const criteria =
+    target.kind === "criteria"
+      ? target.criteria
+      : {
+          models: target.gift.traits.model ? [target.gift.traits.model] : [],
+          backdrops: target.gift.traits.backdrop
+            ? [target.gift.traits.backdrop]
+            : [],
+          patterns: target.gift.traits.pattern
+            ? [target.gift.traits.pattern]
+            : [],
+          number:
+            target.gift.number == null
+              ? null
+              : { min: target.gift.number, max: target.gift.number },
+        };
+  const rows: [string, string][] = (
+    [
+      ["Model", criteria.models],
+      ["Backdrop", criteria.backdrops],
+      ["Symbol", criteria.patterns],
+    ] as const
+  ).map(([label, ids]) => [
+    label,
+    ids.length
+      ? ids.map((id) => names.get(id) || id).join(" / ")
+      : target.kind === "criteria"
+        ? "Any"
+        : "Unknown",
+  ]);
+  if (criteria.number)
+    rows.push([
+      "Gift #",
+      criteria.number.min === criteria.number.max
+        ? String(criteria.number.min)
+        : `${criteria.number.min ?? "Any"} – ${criteria.number.max ?? "Any"}`,
+    ]);
+  return rows;
 }

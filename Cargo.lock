@@ -60,6 +60,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "actix-files"
+version = "0.6.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df8c4f30e3272d7c345f88ae0aac3848507ef5ba871f9cc2a41c8085a0f0523b"
+dependencies = [
+ "actix-http",
+ "actix-service",
+ "actix-utils",
+ "actix-web",
+ "bitflags",
+ "bytes",
+ "derive_more",
+ "futures-core",
+ "http-range",
+ "log",
+ "mime",
+ "mime_guess",
+ "percent-encoding",
+ "pin-project-lite",
+ "v_htmlescape",
+]
+
+[[package]]
 name = "actix-http"
 version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1074,16 +1097,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1476,6 +1489,12 @@ dependencies = [
  "http-body",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "http-range"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21dec9db110f5f872ed9699c3ecf50cf16f423502706ba5c72462e28d3157573"
 
 [[package]]
 name = "httparse"
@@ -1931,8 +1950,10 @@ version = "0.1.0"
 dependencies = [
  "actix",
  "jiff",
+ "market-gifts",
  "market-hub-protocol",
  "market-replica",
+ "percent-encoding",
  "prost",
  "rust_decimal",
  "tempfile",
@@ -1946,6 +1967,7 @@ name = "market-api"
 version = "0.1.0"
 dependencies = [
  "actix-cors",
+ "actix-files",
  "actix-web",
  "actix-ws",
  "anyhow",
@@ -1955,6 +1977,7 @@ dependencies = [
  "futures-util",
  "jiff",
  "market-actors",
+ "market-gifts",
  "market-hub-client",
  "market-hub-protocol",
  "market-media",
@@ -1980,9 +2003,11 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "jiff",
  "market-actors",
  "market-api",
  "market-hub-client",
+ "market-hub-protocol",
  "market-media",
  "market-miniapp",
  "market-replica",
@@ -1990,10 +2015,23 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tokio-tungstenite",
  "tokio-util",
+ "tonic",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "market-gifts"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "utoipa",
 ]
 
 [[package]]
@@ -2084,11 +2122,11 @@ name = "market-telegram"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "fs2",
  "futures-util",
  "grammers-client",
  "grammers-session",
  "market-actors",
+ "market-gifts",
  "market-media",
  "market-replica",
  "sha2 0.10.9",
@@ -3667,6 +3705,12 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "v_htmlescape"
+version = "0.15.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e8257fbc510f0a46eb602c10215901938b5c2a7d5e70fc11483b1d3c9b5b18c"
 
 [[package]]
 name = "valuable"

@@ -29,3 +29,6 @@ __pycache__/
 **/*.thumb
 **/*.tgs
 **/*.part
+
+# Local browser verification artifacts.
+web/test-artifacts/

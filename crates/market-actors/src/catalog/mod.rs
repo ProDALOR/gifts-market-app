@@ -1,13 +1,22 @@
 //! Reference definitions: venues, currencies, collections, attributes and feeds.
+pub(crate) mod cache;
+mod gifts;
 pub(crate) mod handle;
 pub(crate) mod messages;
 mod resolve;
-use crate::{runtime::ActorEnvironment, selection};
+use crate::runtime::ActorEnvironment;
+#[cfg(test)]
+use crate::selection;
 use actix::prelude::*;
-use market_replica::{ReadResult, ReplicaReader};
-use messages::{ReadCatalog, ResolveModels};
+#[cfg(test)]
+use market_replica::ReadResult;
+use market_replica::ReplicaReader;
+#[cfg(test)]
+use messages::ReadCatalog;
+pub(crate) use resolve::resolve as resolve_models;
 use tonic::Status;
 pub(crate) struct CatalogActor {
+    pub cache: std::sync::Arc<cache::ProjectionCache>,
     pub reader: ReplicaReader,
     pub environment: ActorEnvironment,
 }
@@ -22,6 +31,7 @@ impl Drop for CatalogActor {
         self.environment.stopped();
     }
 }
+#[cfg(test)]
 impl Handler<ReadCatalog> for CatalogActor {
     type Result = ResponseFuture<Result<ReadResult, Status>>;
     fn handle(&mut self, message: ReadCatalog, _: &mut Self::Context) -> Self::Result {
@@ -34,12 +44,57 @@ impl Handler<ReadCatalog> for CatalogActor {
             })
     }
 }
-impl Handler<ResolveModels> for CatalogActor {
-    type Result = ResponseFuture<Result<Vec<crate::valuation::ResolvedPosition>, Status>>;
-    fn handle(&mut self, message: ResolveModels, _: &mut Self::Context) -> Self::Result {
+impl Handler<messages::GiftCatalog> for CatalogActor {
+    type Result = ResponseFuture<Result<market_gifts::GiftCatalog, Status>>;
+    fn handle(&mut self, message: messages::GiftCatalog, _: &mut Self::Context) -> Self::Result {
+        let cache = self.cache.clone();
         self.environment
             .blocking(self.reader.clone(), message.permit, move |reader| {
-                resolve::resolve(reader, message.positions)
+                let _projection = message.projection;
+                cache.bootstrap(reader)
             })
     }
+}
+impl Handler<messages::GiftCollection> for CatalogActor {
+    type Result = ResponseFuture<Result<market_gifts::GiftCollectionCatalog, Status>>;
+    fn handle(&mut self, message: messages::GiftCollection, _: &mut Self::Context) -> Self::Result {
+        let cache = self.cache.clone();
+        self.environment
+            .blocking(self.reader.clone(), message.permit, move |reader| {
+                let _projection = message.projection;
+                cache.collection(reader, message.id)
+            })
+    }
+}
+impl Handler<messages::MediaDocument> for CatalogActor {
+    type Result = ResponseFuture<Result<market_gifts::TelegramDocumentId, Status>>;
+    fn handle(&mut self, message: messages::MediaDocument, _: &mut Self::Context) -> Self::Result {
+        self.environment
+            .blocking(self.reader.clone(), message.permit, move |reader| {
+                gifts::media_document(reader, message.target)
+            })
+    }
+}
+impl Handler<messages::ModelDocuments> for CatalogActor {
+    type Result = ResponseFuture<Result<Vec<market_gifts::TelegramDocumentId>, Status>>;
+    fn handle(&mut self, message: messages::ModelDocuments, _: &mut Self::Context) -> Self::Result {
+        self.environment
+            .blocking(self.reader.clone(), message.permit, gifts::model_documents)
+    }
+}
+
+pub(crate) fn validate_order_collection(
+    reader: &ReplicaReader,
+    request: &market_hub_protocol::wire::ReadRequest,
+) -> Result<(), Status> {
+    use market_hub_protocol::wire::selection::Source;
+    if let Some(Source::Scope(scope)) = request
+        .selection
+        .as_ref()
+        .and_then(|selection| selection.source.as_ref())
+        && let Some(id) = &scope.item_type_id
+    {
+        gifts::validate_collection(reader, id)?;
+    }
+    Ok(())
 }

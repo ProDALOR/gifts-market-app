@@ -9,12 +9,12 @@ import {
 } from "../src/telegram.ts";
 test("Telegram links restore market selection without credentials", () => {
   const params = new URLSearchParams({
-    item: "tg.gift.5167939598143193218",
+    collection: "tg.gift.5167939598143193218",
     currency: "GRAM",
     mode: "bid",
     sort: "price_desc",
     filters: JSON.stringify({
-      "tg.number": { op: "eq", value: { type: "integer", value: "42" } },
+      models: ["gold"],
     }),
     token: "private",
     tgWebAppData: "private",
@@ -27,7 +27,7 @@ test("Telegram links restore market selection without credentials", () => {
     { initData: new URLSearchParams({ start_param: payload }).toString() },
     "?currency=XTR",
   );
-  assert.equal(selected.get("item"), params.get("item"));
+  assert.equal(selected.get("collection"), params.get("collection"));
   assert.equal(selected.get("currency"), "XTR");
   const link = telegramLink(
     {
@@ -49,9 +49,9 @@ test("Malformed or excessive launch parameters cannot create arbitrary routes", 
     null,
   );
   assert.equal(
-    cleanSelection(new URLSearchParams("item=one&item=two&secret=hidden")).has(
-      "item",
-    ),
+    cleanSelection(
+      new URLSearchParams("collection=one&collection=two&secret=hidden"),
+    ).has("collection"),
     false,
   );
 });

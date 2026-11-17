@@ -1,9 +1,8 @@
-//! Public API queries and responses mapped directly to the shared actor interface.
-use super::{conversion, error::Result, models::*};
+//! Thin HTTP-facing adapter over gift-domain actor capabilities.
+use super::{error::Result, models::*};
 use market_actors::{DataSubscription, DataUpdate, MarketDataHandle};
 use std::sync::Arc;
 use tokio::sync::watch;
-
 #[derive(Clone)]
 pub struct MarketApi {
     data: MarketDataHandle,
@@ -19,10 +18,7 @@ impl MarketApi {
             encoder: Arc::new(crate::encoding::PageEncoder::new(limit)),
         }
     }
-    pub(crate) async fn encode_page(
-        &self,
-        page: Arc<market_actors::models::Page<market_actors::models::Order>>,
-    ) -> Result<Arc<str>> {
+    pub(crate) async fn encode_page(&self, page: Arc<Page<GiftOrder>>) -> Result<Arc<str>> {
         self.encoder.encode(page).await
     }
     pub(crate) async fn shutdown(&self) {
@@ -35,31 +31,34 @@ impl MarketApi {
             Err(market_actors::error::DataError::unavailable("Market replica is loading").into())
         }
     }
-    pub async fn sync(&self) -> Result<SyncInfo> {
-        Ok(self.data.status().await?.into())
+    pub async fn sync(&self) -> Result<SyncStatus> {
+        Ok(self.data.status().await?)
     }
-    pub async fn books(&self, query: BooksQuery) -> Result<BooksPage> {
-        let page = self.data.books(query.into()).await?;
-        Ok(BooksPage {
-            data: page.data.into_iter().map(Into::into).collect(),
-            next_after: page.next_after.map(Into::into),
-        })
+    pub async fn catalog(&self) -> Result<GiftCatalog> {
+        Ok(self.data.catalog().await?)
     }
-    pub async fn catalog(&self, query: CatalogQuery) -> Result<Page<CatalogEntry>> {
-        conversion::catalog(self.data.catalog(query.into()).await?)
+    pub async fn collection(&self, id: CollectionId) -> Result<GiftCollectionCatalog> {
+        Ok(self.data.collection(id).await?)
     }
-    pub async fn orders(&self, query: OrdersQuery) -> Result<Page<Order>> {
-        Ok(conversion::orders(self.data.orders(query.into()).await?))
+    pub(crate) async fn media_document(&self, target: MediaTarget) -> Result<TelegramDocumentId> {
+        Ok(self.data.media_document(target).await?)
     }
-    pub async fn executions(&self, query: ExecutionsQuery) -> Result<Page<Order>> {
-        Ok(conversion::orders(
-            self.data.executions(query.into()).await?,
-        ))
+    pub async fn orders(&self, query: GiftOrdersQuery) -> Result<Page<GiftOrder>> {
+        Ok(self.data.orders(query).await?)
+    }
+    pub async fn executions(&self, query: GiftHistoryQuery) -> Result<Page<GiftOrder>> {
+        Ok(self.data.executions(query).await?)
+    }
+    pub async fn value_models(
+        &self,
+        query: market_gifts::valuation::ValuationRequest,
+    ) -> Result<market_gifts::valuation::Valuation> {
+        Ok(self.data.value_models(query).await?)
     }
     pub async fn subscribe(
         &self,
-        query: OrdersQuery,
+        query: GiftOrdersQuery,
     ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
-        Ok(self.data.subscribe(query.into()).await?)
+        Ok(self.data.subscribe(query).await?)
     }
 }

@@ -11,6 +11,7 @@ pub(crate) struct ReadOrders {
 }
 #[derive(Message)]
 #[rtype(result = "Result<w::BooksPage,Status>")]
+#[cfg(test)]
 pub(crate) struct ListBooks {
     pub request: w::BooksRequest,
     pub permit: OwnedSemaphorePermit,
@@ -19,9 +20,9 @@ pub(crate) struct ListBooks {
 #[rtype(result = "Result<SyncStatus,Status>")]
 pub(crate) struct GetStatus;
 #[derive(Message)]
-#[rtype(result = "Result<crate::valuation::Valuation,Status>")]
+#[rtype(result = "Result<market_gifts::valuation::Valuation,Status>")]
 pub(crate) struct ValueModels {
-    pub positions: Vec<crate::valuation::ResolvedPosition>,
-    pub currency_id: String,
+    pub heavy: OwnedSemaphorePermit,
+    pub request: market_gifts::valuation::ValuationRequest,
     pub permit: OwnedSemaphorePermit,
 }

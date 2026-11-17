@@ -1,7 +1,7 @@
 import { collectionOptions } from "../catalog/selectors";
 import { memo, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { Predicate } from "../market";
+import type { TraitFilters, TraitKey } from "../market";
 import { GiftArtwork } from "./gift-artwork";
 import { GiftBackdrop } from "./gift-backdrop";
 import { backdropPalette } from "./gift-appearance";
@@ -10,7 +10,6 @@ import {
   observePreviewSize,
   usePreviewVisibility,
 } from "./preview-environment";
-import { selectedOptions } from "../orderbook";
 import type { CatalogOption, Collection } from "../orderbook";
 // Render only explicitly selected catalog traits.
 export const TraitPreview = memo(function TraitPreview({
@@ -21,25 +20,24 @@ export const TraitPreview = memo(function TraitPreview({
 }: {
   collection?: Collection;
   options: ReadonlyMap<string, CatalogOption>;
-  filters: Record<string, Predicate>;
+  filters: TraitFilters;
   reset: () => void;
 }) {
-  const selected = (id: string) => {
-    const ids = new Set(selectedOptions(filters[id]));
+  const selected = (id: TraitKey) => {
+    const ids = new Set(filters[id] || []);
     return collectionOptions(collection, id, options).filter((option) =>
       ids.has(option.id),
     );
   };
-  const models = selected("tg.model"),
-    backdrops = selected("tg.backdrop"),
-    patterns = selected("tg.pattern");
+  const models = selected("models"),
+    backdrops = selected("backdrops"),
+    patterns = selected("patterns");
   if (!models.length && !backdrops.length && !patterns.length) return null;
   return (
     <SelectedTraitPreview
       models={models}
       backdrops={backdrops}
       patterns={patterns}
-      options={options}
       reset={reset}
     />
   );
@@ -48,13 +46,11 @@ function SelectedTraitPreview({
   models,
   backdrops,
   patterns,
-  options,
   reset,
 }: {
   models: CatalogOption[];
   backdrops: CatalogOption[];
   patterns: CatalogOption[];
-  options: ReadonlyMap<string, CatalogOption>;
   reset: () => void;
 }) {
   const host = useRef<HTMLElement>(null),
@@ -118,8 +114,10 @@ function SelectedTraitPreview({
         <div className="preview-symbols" aria-hidden="true">
           <GiftBackdrop
             palette={palette}
-            patternUrls={patterns.map(
-              (option) => `/media/patterns/${encodeURIComponent(option.id)}`,
+            patternUrls={patterns.flatMap((option) =>
+              option.kind === "pattern" && option.media
+                ? [option.media.thumbnail_url]
+                : [],
             )}
             visible={visible}
             layout="banner"
@@ -143,7 +141,9 @@ function SelectedTraitPreview({
             >
               <GiftArtwork
                 key={model.id}
-                url={`/media/models/${encodeURIComponent(model.id)}`}
+                media={
+                  model.kind === "model" ? model.media || undefined : undefined
+                }
                 label={model.name}
                 fallback={model.name[0] || "◇"}
                 playback="selected"

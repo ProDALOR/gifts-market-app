@@ -1,0 +1,19 @@
+[package]
+name = "market-gifts"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+jiff.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[features]
+schema = ["dep:utoipa"]
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -11,11 +11,11 @@ export function GiftPreview({
   options,
   ...props
 }: {
-  order: Pick<Order, "attributes">;
+  order: Pick<Order, "target">;
   options: ReadonlyMap<string, GiftOption>;
 } & Omit<
   ComponentProps<typeof GiftArtwork>,
-  "url" | "palette" | "patternUrl" | "label"
+  "media" | "palette" | "patternUrl" | "label"
 >) {
   const appearance = giftAppearance(order, options);
   const palette = useMemo(
@@ -29,8 +29,8 @@ export function GiftPreview({
   return (
     <GiftArtwork
       {...props}
-      key={appearance.modelUrl || "none"}
-      url={appearance.modelUrl}
+      key={`${appearance.media?.thumbnail_url}|${appearance.media?.animation_url}`}
+      media={appearance.media}
       palette={palette}
       patternUrl={appearance.patternUrl}
       label={appearance.label}

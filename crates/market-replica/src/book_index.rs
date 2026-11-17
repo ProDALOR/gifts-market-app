@@ -62,6 +62,19 @@ pub struct BookIndex {
     references: OrdMap<Book, usize>,
 }
 impl BookIndex {
+    pub(crate) fn contains(&self, key: &w::BookKey) -> bool {
+        self.references.contains_key(&Book::from(key))
+    }
+    pub(crate) fn has_orders(&self, key: &w::BookKey) -> bool {
+        self.active(&Book::from(key))
+    }
+    pub(crate) fn has_group(&self, item: &str, currency: &str) -> bool {
+        self.groups.contains_key(&BookGroup {
+            item_type_id: item.into(),
+            currency_id: currency.into(),
+        })
+    }
+
     fn add_book(&mut self, book: Book) {
         *self.references.entry(book).or_default() += 1;
     }

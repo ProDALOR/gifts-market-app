@@ -1,33 +1,79 @@
-use super::{CatalogActor, messages::ReadCatalog};
-use crate::{
-    runtime::{QueryBudget, closed},
-    selection,
-};
+use super::CatalogActor;
+#[cfg(test)]
+use super::messages::ReadCatalog;
+use crate::runtime::{QueryBudget, closed};
+#[cfg(test)]
+use crate::selection;
 use actix::Addr;
+#[cfg(test)]
 use market_hub_protocol::wire as w;
+#[cfg(test)]
 use market_replica::ReadResult;
 use tonic::Status;
 #[derive(Clone)]
 pub(crate) struct CatalogHandle {
     pub address: Addr<CatalogActor>,
     pub budget: QueryBudget,
+    pub projections: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl CatalogHandle {
-    pub async fn resolve_models(
-        &self,
-        positions: Vec<crate::valuation::ModelPosition>,
-    ) -> Result<Vec<crate::valuation::ResolvedPosition>, Status> {
-        let permit = self.budget.try_query()?;
-        self.address
-            .send(super::messages::ResolveModels { positions, permit })
-            .await
-            .map_err(closed)?
-    }
+    #[cfg(test)]
     pub async fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         selection::catalog(&request)?;
         let permit = self.budget.try_query()?;
         self.address
             .send(ReadCatalog { request, permit })
+            .await
+            .map_err(closed)?
+    }
+}
+
+impl CatalogHandle {
+    pub async fn bootstrap(&self) -> Result<market_gifts::GiftCatalog, Status> {
+        let projection = self
+            .projections
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Status::resource_exhausted("Catalog capacity reached"))?;
+        let permit = self.budget.try_query()?;
+        self.address
+            .send(super::messages::GiftCatalog { permit, projection })
+            .await
+            .map_err(closed)?
+    }
+    pub async fn collection(
+        &self,
+        id: market_gifts::CollectionId,
+    ) -> Result<market_gifts::GiftCollectionCatalog, Status> {
+        let projection = self
+            .projections
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Status::resource_exhausted("Catalog capacity reached"))?;
+        let permit = self.budget.try_query()?;
+        self.address
+            .send(super::messages::GiftCollection {
+                id,
+                permit,
+                projection,
+            })
+            .await
+            .map_err(closed)?
+    }
+    pub async fn media_document(
+        &self,
+        target: market_gifts::MediaTarget,
+    ) -> Result<market_gifts::TelegramDocumentId, Status> {
+        let permit = self.budget.try_query()?;
+        self.address
+            .send(super::messages::MediaDocument { target, permit })
+            .await
+            .map_err(closed)?
+    }
+    pub async fn model_documents(&self) -> Result<Vec<market_gifts::TelegramDocumentId>, Status> {
+        let permit = self.budget.try_query()?;
+        self.address
+            .send(super::messages::ModelDocuments { permit })
             .await
             .map_err(closed)?
     }

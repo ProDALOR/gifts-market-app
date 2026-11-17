@@ -4,9 +4,12 @@ pub(crate) mod messages;
 mod valuation;
 use crate::{runtime::ActorEnvironment, selection};
 use actix::prelude::*;
+#[cfg(test)]
 use market_hub_protocol::wire as w;
 use market_replica::{ReadResult, ReplicaReader, SyncStatus};
-use messages::{GetStatus, ListBooks, ReadOrders};
+#[cfg(test)]
+use messages::ListBooks;
+use messages::{GetStatus, ReadOrders};
 use tonic::Status;
 pub(crate) struct OrderbooksActor {
     pub reader: ReplicaReader,
@@ -31,10 +34,11 @@ impl Handler<ReadOrders> for OrderbooksActor {
         }
         self.environment
             .blocking(self.reader.clone(), message.permit, move |reader| {
-                reader.read(message.request)
+                reader.read_checked(message.request, crate::catalog::validate_order_collection)
             })
     }
 }
+#[cfg(test)]
 impl Handler<ListBooks> for OrderbooksActor {
     type Result = ResponseFuture<Result<w::BooksPage, Status>>;
     fn handle(&mut self, message: ListBooks, _: &mut Self::Context) -> Self::Result {
@@ -51,11 +55,12 @@ impl Handler<GetStatus> for OrderbooksActor {
     }
 }
 impl Handler<messages::ValueModels> for OrderbooksActor {
-    type Result = ResponseFuture<Result<crate::valuation::Valuation, Status>>;
+    type Result = ResponseFuture<Result<market_gifts::valuation::Valuation, Status>>;
     fn handle(&mut self, message: messages::ValueModels, _: &mut Self::Context) -> Self::Result {
         self.environment
             .blocking(self.reader.clone(), message.permit, move |reader| {
-                valuation::value(reader, message.positions, message.currency_id)
+                let _heavy = message.heavy;
+                valuation::value(reader, message.request)
             })
     }
 }

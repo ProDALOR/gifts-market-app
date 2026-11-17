@@ -1,37 +1,17 @@
-import type { Entry, Order, Predicate } from "./market.ts";
-export type CatalogOption = Extract<Entry, { kind: "attribute_option" }>;
-export type Collection = Extract<Entry, { kind: "item_type" }>;
+import type { Order, CatalogOption } from "./market.ts";
+export type { Collection, CatalogOption } from "./market.ts";
 export const traits = [
-  { id: "tg.model", label: "Model" },
-  { id: "tg.backdrop", label: "Backdrop" },
-  { id: "tg.pattern", label: "Symbol" },
+  { id: "models", label: "Model", kind: "model" },
+  {
+    id: "backdrops",
+    label: "Backdrop",
+    kind: "backdrop",
+  },
+  { id: "patterns", label: "Symbol", kind: "pattern" },
 ] as const;
-export function selectedOptions(predicate?: Predicate): string[] {
-  if (predicate?.op === "eq" && predicate.value?.type === "enum")
-    return [predicate.value.value];
-  if (predicate?.op === "one_of" && Array.isArray(predicate.values))
-    return predicate.values.flatMap((value) =>
-      value?.type === "enum" && typeof value.value === "string"
-        ? [value.value]
-        : [],
-    );
-  return [];
-}
-export function optionPredicate(ids: string[]): Predicate | undefined {
-  const values = [...new Set(ids)].map((value) => ({
-    type: "enum" as const,
-    value,
-  }));
-  return values.length === 0
-    ? undefined
-    : values.length === 1
-      ? { op: "eq", value: values[0] }
-      : { op: "one_of", values };
-}
 export function serial(order: Order): string | undefined {
-  const value = order.attributes["tg.number"];
-  return value?.op === "eq" && ["integer", "text"].includes(value.value.type)
-    ? String(value.value.value)
+  return order.target.kind === "gift" && order.target.gift.number != null
+    ? String(order.target.gift.number)
     : undefined;
 }
 export function modelName(
@@ -39,21 +19,27 @@ export function modelName(
   options: ReadonlyMap<string, CatalogOption>,
   fallback: string,
 ) {
-  const id = selectedOptions(order.attributes["tg.model"]);
-  return id.length === 1 ? options.get(id[0])?.name || fallback : fallback;
+  const models =
+    order.target.kind === "gift"
+      ? order.target.gift.traits.model
+        ? [order.target.gift.traits.model]
+        : []
+      : order.target.kind === "criteria"
+        ? order.target.criteria.models
+        : [];
+  return models.length === 1
+    ? options.get(models[0])?.name || fallback
+    : fallback;
 }
 export function listingLink(order: Order): string | undefined {
-  for (const key of ["url", "listing_url", "market_url", "link"]) {
-    const value = order.meta[key];
-    if (!value) continue;
-    try {
-      const url = new URL(value);
-      if (
-        ["http:", "https:"].includes(url.protocol) &&
-        !url.username &&
-        !url.password
-      )
-        return url.href;
-    } catch {}
-  }
+  if (!order.market_url) return;
+  try {
+    const url = new URL(order.market_url);
+    if (
+      ["http:", "https:"].includes(url.protocol) &&
+      !url.username &&
+      !url.password
+    )
+      return url.href;
+  } catch {}
 }

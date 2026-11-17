@@ -1,13 +1,6 @@
 //! Bounded page encoding shared by subscribers to the same actor page.
-use crate::{
-    error::{ApiError, Result},
-    models::{Order, SyncInfo},
-};
-use market_actors::models as m;
-use serde::{
-    Serialize, Serializer,
-    ser::{SerializeSeq, SerializeStruct},
-};
+use crate::error::{ApiError, Result};
+use market_gifts::{GiftOrder, Page};
 use std::{
     collections::VecDeque,
     io::{self, Write},
@@ -15,7 +8,7 @@ use std::{
 };
 use tokio::sync::{OnceCell, Semaphore};
 use tokio_util::task::TaskTracker;
-type NativePage = m::Page<m::Order>;
+type NativePage = Page<GiftOrder>;
 type Cell = Arc<OnceCell<Result<Arc<str>>>>;
 struct Entry {
     source: Weak<NativePage>,
@@ -79,28 +72,6 @@ impl PageEncoder {
         self.jobs.wait().await;
     }
 }
-struct PageView<'a>(&'a NativePage);
-struct OrdersView<'a>(&'a [m::Order]);
-impl Serialize for PageView<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut value = serializer.serialize_struct("Page", 4)?;
-        value.serialize_field("data", &OrdersView(&self.0.data))?;
-        value.serialize_field("next_page_token", &self.0.next_page_token)?;
-        value.serialize_field("cursor", &self.0.cursor)?;
-        value.serialize_field("sync", &SyncInfo::from(self.0.sync.clone()))?;
-        value.end()
-    }
-}
-impl Serialize for OrdersView<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
-        // Convert one row at a time, without cloning the complete native page.
-        for order in self.0 {
-            sequence.serialize_element(&Order::from(order.clone()))?;
-        }
-        sequence.end()
-    }
-}
 struct Limited {
     bytes: Vec<u8>,
     limit: usize,
@@ -125,7 +96,7 @@ fn encode(page: &NativePage, limit: usize) -> Result<Arc<str>> {
         limit,
         overflow: false,
     };
-    if serde_json::to_writer(&mut writer, &PageView(page)).is_err() {
+    if serde_json::to_writer(&mut writer, page).is_err() {
         return Err(if writer.overflow {
             ApiError::capacity("Subscription page is too large; reduce the page limit")
         } else {
@@ -140,13 +111,13 @@ fn encode(page: &NativePage, limit: usize) -> Result<Arc<str>> {
 mod tests {
     use super::*;
     fn page() -> NativePage {
-        m::Page {
+        Page {
             data: vec![],
             next_page_token: "token".into(),
             cursor: "cursor".into(),
-            sync: market_actors::SyncStatus {
+            sync: market_gifts::SyncStatus {
                 ready: true,
-                state: market_actors::SyncState::Live,
+                state: market_gifts::SyncState::Live,
                 updated_at: None,
             },
         }
@@ -160,7 +131,7 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &b));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&a).unwrap(),
-            serde_json::to_value(crate::conversion::orders((*page).clone())).unwrap()
+            serde_json::to_value(&*page).unwrap()
         );
         encoder.shutdown().await;
     }

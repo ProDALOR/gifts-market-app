@@ -11,17 +11,18 @@ pub(super) use render::launch_reply;
 use std::future::Future;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuoteCurrency(String);
+pub struct QuoteCurrency(market_gifts::CurrencyId);
 impl QuoteCurrency {
     /// Normalize a quote symbol; catalog availability is checked by the market actors.
     pub fn parse(text: &str) -> Option<Self> {
         if text.len() > 128 || text.split_whitespace().count() > 1 {
             return None;
         }
-        Some(Self(match text.trim().to_ascii_uppercase().as_str() {
-            "" | "TON" => "GRAM".into(),
-            value => value.into(),
-        }))
+        let value = match text.trim().to_ascii_uppercase().as_str() {
+            "" | "TON" => "GRAM".to_owned(),
+            value => value.to_owned(),
+        };
+        market_gifts::CurrencyId::new(value).ok().map(Self)
     }
     pub fn as_str(&self) -> &str {
         &self.0

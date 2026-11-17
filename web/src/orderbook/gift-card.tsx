@@ -12,7 +12,11 @@ export const GiftCard = memo(function GiftCard({
   venueName,
   selected,
   open,
+  position,
+  total,
 }: {
+  position?: number;
+  total?: number;
   order: Order;
   options: ReadonlyMap<string, CatalogOption>;
   collectionName: string;
@@ -22,7 +26,11 @@ export const GiftCard = memo(function GiftCard({
 }) {
   const number = serial(order);
   return (
-    <li className={`gift-card${selected ? " selected" : ""}`}>
+    <li
+      className={`gift-card${selected ? " selected" : ""}`}
+      aria-posinset={position}
+      aria-setsize={total}
+    >
       <GiftPreview
         order={order}
         options={options}
@@ -33,7 +41,7 @@ export const GiftCard = memo(function GiftCard({
           <span className="serial">
             {number
               ? `#${number}`
-              : order.quantity !== "1"
+              : order.quantity !== 1
                 ? `×${order.quantity}`
                 : "Gift"}
           </span>

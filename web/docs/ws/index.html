@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Gift market · WebSocket API</title>
+  </head>
+  <body>
+    <header class="docs-nav">
+      <a class="brand" href="/">Gift market <span>Developers</span></a>
+      <nav aria-label="Documentation">
+        <a href="/docs">REST API</a
+        ><a aria-current="page" href="/docs/ws">WebSocket</a
+        ><a href="/asyncapi.json">AsyncAPI JSON ↗</a>
+      </nav>
+    </header>
+    <main class="ws-docs">
+      <div class="intro">
+        <p class="eyebrow">LIVE MARKET DATA</p>
+        <h1>WebSocket API</h1>
+        <p>
+          Subscribe to asks and bids on this server. Explore the message
+          reference or try a live subscription below.
+        </p>
+      </div>
+      <section class="console panel" aria-labelledby="console-heading">
+        <div class="section-title">
+          <h2 id="console-heading">Try a subscription</h2>
+          <span id="connection-state" role="status" data-state="closed"
+            >Disconnected</span
+          >
+        </div>
+        <p class="muted">
+          Endpoint <code id="endpoint">/ws</code> · public read access
+        </p>
+        <div class="actions">
+          <button id="connect" type="button">Connect</button
+          ><button id="disconnect" class="secondary" type="button" disabled>
+            Disconnect
+          </button>
+        </div>
+        <p id="console-error" class="error" role="alert" hidden></p>
+        <form id="subscription">
+          <div class="fields">
+            <label
+              >Collection<select id="collection" required>
+                <option value="">Loading collections…</option>
+              </select></label
+            >
+            <label
+              >Currency<select id="currency" required>
+                <option value="">Loading currencies…</option>
+              </select></label
+            >
+            <label
+              >Side<select id="side">
+                <option value="ask">Asks</option>
+                <option value="bid">Bids</option>
+              </select></label
+            >
+            <label
+              >Subscription ID<input
+                id="subscription-id"
+                value="offers"
+                required
+                maxlength="64"
+                pattern="[A-Za-z0-9_.\-]+"
+            /></label>
+          </div>
+          <div class="actions">
+            <button id="subscribe" disabled>Subscribe</button
+            ><button id="unsubscribe" class="secondary" type="button" disabled>
+              Unsubscribe</button
+            ><button id="retry-catalog" class="secondary" type="button" hidden>
+              Reload collections
+            </button>
+          </div>
+        </form>
+        <details class="editor">
+          <summary>Custom JSON command</summary>
+          <label for="command">Edit filters, sort or page boundary</label
+          ><textarea
+            id="command"
+            rows="12"
+            spellcheck="false"
+            autocapitalize="off"
+          ></textarea
+          ><button id="send" type="button" disabled>Send JSON</button>
+        </details>
+        <div class="section-title">
+          <h3>Messages <span id="message-count">0</span></h3>
+          <button id="clear" class="secondary" type="button">Clear log</button>
+        </div>
+        <p class="muted">
+          The log keeps up to 60 events / 256 KiB of text. Large messages are
+          clipped to keep the console responsive.
+        </p>
+        <ol id="messages" class="messages" aria-label="WebSocket messages"></ol>
+      </section>
+      <section class="panel protocol-notes" aria-labelledby="protocol-heading">
+        <h2 id="protocol-heading">How the stream works</h2>
+        <ul>
+          <li>
+            <code>subscribe</code> starts or replaces a live page using an ID.
+            <code>unsubscribe</code> releases it without an acknowledgement.
+          </li>
+          <li>
+            <code>page</code> replaces the requested page. Use the frame-level
+            <code>sync</code> for current freshness.
+          </li>
+          <li>
+            <code>sync</code> leaves orders unchanged. A changed
+            <code>revision</code> can invalidate continuation pages even when
+            the head stays the same.
+          </li>
+          <li>
+            Use HTTP <code>/orders/query</code> with the same query and
+            <code>consistency: live</code> to load more. Execution history uses
+            <code>/history/query</code>.
+          </li>
+          <li>
+            Browsers answer WebSocket pings automatically. After a disconnect,
+            reconnect with backoff and resubscribe. This console connects only
+            on demand and closes when you leave.
+          </li>
+          <li>
+            Slow consumers close with code <code>1013</code>. Error frames
+            include a subscription ID, or an empty ID for connection-level
+            errors.
+          </li>
+        </ul>
+      </section>
+      <details id="protocol-reference" class="panel">
+        <summary>Full message reference · AsyncAPI</summary>
+        <div id="asyncapi-reference">
+          <p role="status">
+            Open this section to load the protocol schemas and examples.
+          </p>
+        </div>
+      </details>
+      <noscript
+        >The console and interactive reference need JavaScript.
+        <a href="/asyncapi.json">Download the AsyncAPI document</a>.</noscript
+      >
+    </main>
+    <script type="module" src="/src/docs/ws.ts"></script>
+  </body>
+</html>

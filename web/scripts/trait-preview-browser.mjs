@@ -6,16 +6,16 @@ import { chromium } from "playwright";
 const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style.css"></head><body><div id="root"></div>
 <script type="module">
 import React from 'react';import {createRoot} from 'react-dom/client';
-import { TraitPreview } from "/src/previews/trait-preview.tsx";import {optionPredicate} from '/src/orderbook.ts';
-const make=(id,name,attribute_id,meta={})=>({kind:'attribute_option',id,name,attribute_id,meta,aliases:[]});
-const models=Array.from({length:30},(_,i)=>make('model-'+i,'Model '+String(i+1).padStart(2,'0'),'tg.model'));
-const backdrops=Array.from({length:24},(_,i)=>make('backdrop-'+i,'Backdrop '+i,'tg.backdrop',{'colors.center_color':'#'+(0x906090+i*0x030502).toString(16),'colors.edge_color':'#'+(0x503850+i*0x030201).toString(16),'colors.pattern_color':'#'+(0x301830+i*0x010203).toString(16)}));
-const patterns=Array.from({length:24},(_,i)=>make('symbol-'+i,'Symbol '+i,'tg.pattern'));
+import { TraitPreview } from "/src/previews/trait-preview.tsx";
+const make=(id,name,kind,palette)=>({id,name,kind,...(kind==='backdrop'?{palette}:{media:{thumbnail_url:'/media/'+(kind==='pattern'?'patterns':'models')+'/'+id,animation_url:kind==='model'?'/media/models/'+id+'/animation':null}})});
+const models=Array.from({length:30},(_,i)=>make('model-'+i,'Model '+String(i+1).padStart(2,'0'),'model'));
+const backdrops=Array.from({length:24},(_,i)=>make('backdrop-'+i,'Backdrop '+i,'backdrop',{center:'#'+(0x906090+i*0x030502).toString(16),edge:'#'+(0x503850+i*0x030201).toString(16),pattern:'#'+(0x301830+i*0x010203).toString(16)}));
+const patterns=Array.from({length:24},(_,i)=>make('symbol-'+i,'Symbol '+i,'pattern'));
 const options=new Map([...models,...backdrops,...patterns].map(o=>[o.id,o]));
-const collection={id:'gift',attributes:Object.fromEntries([models,backdrops,patterns].map(rows=>[rows[0].attribute_id,{allowed_values:rows.map(o=>o.id)}]))};
+const collection={id:'gift',name:'Gift',model_ids:models.map(o=>o.id),backdrop_ids:backdrops.map(o=>o.id),pattern_ids:patterns.map(o=>o.id)};
 const root=createRoot(document.getElementById('root'));
 window.mount=({modelCount=0,backdropCount=0,patternCount=0,long=false}={})=>{
- const filters=Object.fromEntries([[models,modelCount],[backdrops,backdropCount],[patterns,patternCount]].filter(([,count])=>count>0).map(([rows,count])=>[rows[0].attribute_id,optionPredicate(rows.slice(0,count).map(o=>o.id))]));
+ const filters=Object.fromEntries([[models,modelCount],[backdrops,backdropCount],[patterns,patternCount]].filter(([,count])=>count>0).map(([rows,count])=>[{model:'models',backdrop:'backdrops',pattern:'patterns'}[rows[0].kind],rows.slice(0,count).map(o=>o.id)]));
  root.render(React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook'},React.createElement(TraitPreview,{collection,options,filters,reset:()=>window.mount()}),long?React.createElement('div',{id:'long-content',style:{height:1400}},'Long market'):null,React.createElement('footer',{className:'app-footer'},'IGIFTS'))));
 };window.mount();
 </script></body></html>`;
@@ -169,13 +169,15 @@ try {
     ),
   );
   assert.deepEqual(
-    await page
-      .locator(".preview-model")
-      .evaluateAll((models) => Object.values(models.reduce((rows, model) => {
-        const row = getComputedStyle(model).gridRowStart;
-        rows[row] = (rows[row] || 0) + 1;
-        return rows;
-      }, {}))),
+    await page.locator(".preview-model").evaluateAll((models) =>
+      Object.values(
+        models.reduce((rows, model) => {
+          const row = getComputedStyle(model).gridRowStart;
+          rows[row] = (rows[row] || 0) + 1;
+          return rows;
+        }, {}),
+      ),
+    ),
     [5, 5, 5, 5],
   );
   const modelSize = () =>
@@ -192,13 +194,15 @@ try {
         .getBoundingClientRect().width === 52,
   );
   assert.deepEqual(
-    await page
-      .locator(".preview-model")
-      .evaluateAll((models) => Object.values(models.reduce((rows, model) => {
-        const row = getComputedStyle(model).gridRowStart;
-        rows[row] = (rows[row] || 0) + 1;
-        return rows;
-      }, {}))),
+    await page.locator(".preview-model").evaluateAll((models) =>
+      Object.values(
+        models.reduce((rows, model) => {
+          const row = getComputedStyle(model).gridRowStart;
+          rows[row] = (rows[row] || 0) + 1;
+          return rows;
+        }, {}),
+      ),
+    ),
     [5, 5, 5, 5],
   );
   assert.equal(
@@ -221,13 +225,15 @@ try {
         .getBoundingClientRect().width === 32,
   );
   assert.deepEqual(
-    await page
-      .locator(".preview-model")
-      .evaluateAll((models) => Object.values(models.reduce((rows, model) => {
-        const row = getComputedStyle(model).gridRowStart;
-        rows[row] = (rows[row] || 0) + 1;
-        return rows;
-      }, {}))),
+    await page.locator(".preview-model").evaluateAll((models) =>
+      Object.values(
+        models.reduce((rows, model) => {
+          const row = getComputedStyle(model).gridRowStart;
+          rows[row] = (rows[row] || 0) + 1;
+          return rows;
+        }, {}),
+      ),
+    ),
     [6, 6, 6, 6, 6],
   );
   for (const width of [320, 390, 480]) {
@@ -283,6 +289,7 @@ try {
   assert.equal(await page.locator(".trait-preview").count(), 0);
   assert.equal(await bottom(), true);
   await page.evaluate(() => window.mount({ long: true }));
+  await page.locator("#long-content").waitFor({ state: "attached" });
   assert.equal(
     await page
       .locator(".app-footer")

@@ -732,3 +732,145 @@ fn time_number_and_price_sort_whole_books_and_history_with_stable_keyset_pages()
         ["hist-a", "hist-d", "hist-c", "hist-b"]
     );
 }
+
+#[test]
+fn expired_views_release_old_roots_without_client_reads() {
+    let (_dir, replica) = setup();
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Order(order("a", "1", None)))),
+            upsert(entity(E::Order(order("b", "2", None)))),
+        ],
+        "c1",
+    );
+    let first = replica
+        .read(read(w::ReadMode::Snapshot as i32, false))
+        .unwrap();
+    assert!(!first.page.next_page_token.is_empty());
+    let weak = {
+        let mut views = replica.reader.0.views.lock().unwrap();
+        let retained = views.values_mut().next().unwrap();
+        retained.until = Instant::now() - Duration::from_secs(1);
+        Arc::downgrade(&retained.view)
+    };
+    apply(&replica, vec![], "c2"); // no subsequent API read is needed
+    assert!(replica.reader.0.views.lock().unwrap().is_empty());
+    assert!(weak.upgrade().is_none());
+    // Idle maintenance uses the same cleanup, including without a new commit.
+    replica
+        .read(read(w::ReadMode::Snapshot as i32, false))
+        .unwrap();
+    replica
+        .reader
+        .0
+        .views
+        .lock()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap()
+        .until = Instant::now() - Duration::from_secs(1);
+    replica.writer.lock().unwrap().expire_views();
+    assert!(replica.reader.0.views.lock().unwrap().is_empty());
+}
+
+#[test]
+fn scoped_revisions_survive_coalescing_moves_deletions_and_replacements() {
+    let (_dir, replica) = setup();
+    let mut other = order("b", "2", None);
+    other.book.as_mut().unwrap().currency_id = "XTR".into();
+    let a = order("a", "1", None);
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Order(a.clone()))),
+            upsert(entity(E::Order(other.clone()))),
+        ],
+        "c1",
+    );
+    let request = read(w::ReadMode::Live as i32, false);
+    let revision = replica.reader.read_revision(&request).unwrap();
+    let catalog = replica.reader.catalog_revision().unwrap();
+    other.price = "3".into();
+    apply(&replica, vec![upsert(entity(E::Order(other)))], "c2");
+    assert_eq!(replica.reader.read_revision(&request).unwrap(), revision);
+    assert_eq!(replica.reader.catalog_revision().unwrap(), catalog);
+    let mut changed = a.clone();
+    changed.price = "4".into();
+    apply(
+        &replica,
+        vec![upsert(entity(E::Order(changed.clone())))],
+        "c3",
+    );
+    apply(&replica, vec![], "c4"); // coalesced notification must not hide c3
+    assert_ne!(replica.reader.read_revision(&request).unwrap(), revision);
+    assert_eq!(replica.reader.catalog_revision().unwrap(), catalog);
+    let current = replica.reader.read_revision(&request).unwrap();
+    apply(
+        &replica,
+        vec![upsert(entity(E::Order(changed.clone())))],
+        "c5",
+    );
+    assert_eq!(replica.reader.read_revision(&request).unwrap(), current);
+    changed.book.as_mut().unwrap().currency_id = "XTR".into();
+    apply(&replica, vec![upsert(entity(E::Order(changed)))], "c6");
+    assert_ne!(replica.reader.read_revision(&request).unwrap(), current);
+    assert_ne!(replica.reader.catalog_revision().unwrap(), catalog);
+    apply(&replica, vec![upsert(entity(E::Order(a)))], "c7");
+    let before = replica.reader.read_revision(&request).unwrap();
+    let store = replica.writer.lock().unwrap().store.clone();
+    replica.install(store).unwrap();
+    assert_ne!(replica.reader.read_revision(&request).unwrap(), before);
+}
+
+#[tokio::test]
+async fn maintenance_releases_expired_snapshots_during_idle_upstream() {
+    let (_dir, replica) = setup();
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Order(order("a", "1", None)))),
+            upsert(entity(E::Order(order("b", "2", None)))),
+        ],
+        "c1",
+    );
+    replica
+        .read(read(w::ReadMode::Snapshot as i32, false))
+        .unwrap();
+    replica
+        .reader
+        .0
+        .views
+        .lock()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap()
+        .until = Instant::now() - Duration::from_secs(1);
+    // A loopback listener accepts no RPCs; upstream activity cannot do the cleanup.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hub = market_hub_client::HubClient::new(
+        format!("http://{}", listener.local_addr().unwrap()),
+        "idle.synthetic-test-signature".into(),
+    )
+    .unwrap();
+    let writer = replica.writer.into_inner().unwrap();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let worker = crate::ReplicationWorker {
+        writer: Arc::new(Mutex::new(writer)),
+    };
+    let task = tokio::spawn(worker.run(hub, stop.clone()));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if replica.reader.0.views.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    stop.cancel();
+    task.await.unwrap().unwrap();
+}

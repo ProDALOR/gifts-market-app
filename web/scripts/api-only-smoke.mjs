@@ -10,7 +10,9 @@ try {
     errors = [];
   page.on("request", (request) => requests.push(request.url()));
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(`${url}/?item=tg.gift.123&currency=GRAM#tgWebAppData=unused`);
+  await page.goto(
+    `${url}/?collection=tg.gift.123&currency=GRAM#tgWebAppData=unused`,
+  );
   await page.locator(".gift-grid .price").first().waitFor();
   await page.getByText("Live", { exact: true }).waitFor();
   assert.equal(await page.locator(".gift-card").count(), 1);

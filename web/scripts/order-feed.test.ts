@@ -7,9 +7,12 @@ import type { Order, Page, Query } from "../src/market.ts";
 const order = (id: string, currency = "GRAM") =>
   ({
     id,
-    book: { venue_id: "test", currency_id: currency, item_type_id: "gift" },
+    book: { venue_id: "test", currency_id: currency, collection_id: "gift" },
     price: id,
-    attributes: {},
+    target: {
+      kind: "criteria",
+      criteria: { models: [], backdrops: [], patterns: [], number: null },
+    },
   }) as Order;
 const page = (rows: Order[], next = ""): Page<Order> => ({
   data: rows,
@@ -18,7 +21,17 @@ const page = (rows: Order[], next = ""): Page<Order> => ({
   sync: { ready: true, state: "live", updated_at: null },
 });
 const query: Query = {
-  scope: { item_type_id: "gift", currency_id: "GRAM", modes: ["ask"] },
+  filters: {
+    collection_id: "gift",
+    currency_id: "GRAM",
+    models: [],
+    backdrops: [],
+    patterns: [],
+    number: null,
+    venue_id: null,
+    price: null,
+  },
+  side: "ask",
   sort: "price_asc",
   consistency: "snapshot",
   limit: 2,
@@ -98,7 +111,7 @@ test("one live connection appends pages once and reconciles all loaded data", as
       return new Response(JSON.stringify(page([order(newer ? "d" : "c")])));
     },
   );
-  const feed = new OrderFeed(query, false, false, (value) => {
+  const feed = new OrderFeed({ kind: "orders", query }, false, (value) => {
     state = value;
   });
   t.after(() => feed.close());
@@ -131,7 +144,7 @@ test("closing a feed prevents slow continuations leaking across currency changes
         finish = resolve;
       }),
   );
-  const first = new OrderFeed(query, false, false, (value) => {
+  const first = new OrderFeed({ kind: "orders", query }, false, (value) => {
     state = value;
   });
   first.start();
@@ -140,8 +153,10 @@ test("closing a feed prevents slow continuations leaking across currency changes
   first.loadMore();
   first.close();
   const second = new OrderFeed(
-    { ...query, scope: { ...query.scope, currency_id: "XTR" } },
-    false,
+    {
+      kind: "orders",
+      query: { ...query, filters: { ...query.filters, currency_id: "XTR" } },
+    },
     false,
     (value) => {
       state = value;
@@ -186,7 +201,7 @@ test("expired snapshots restart the loaded window and repeated continuations sto
       );
     },
   );
-  const feed = new OrderFeed(query, false, true, (value) => {
+  const feed = new OrderFeed({ kind: "orders", query }, true, (value) => {
     state = value;
   });
   t.after(() => feed.close());
@@ -211,14 +226,26 @@ test("history omits active-only consistency and paused reads force snapshots", a
       "fetch",
       async (url: string, options: RequestInit) => {
         const body = JSON.parse(options.body as string);
-        assert.equal(url, history ? "/executions/query" : "/orders/query");
+        assert.equal(url, history ? "/history/query" : "/orders/query");
         assert.equal(body.consistency, history ? undefined : "snapshot");
+        assert.equal(body.side, history ? undefined : "ask");
+        assert.ok(!("mode" in body.filters));
         return new Response(JSON.stringify(page([order("only")])));
       },
     );
     const feed = new OrderFeed(
-      { ...query, consistency: "live" },
-      history,
+      history
+        ? {
+            kind: "history",
+            query: {
+              filters: query.filters,
+              sort: "identity",
+              limit: 2,
+              page_token: "",
+              period: null,
+            },
+          }
+        : { kind: "orders", query: { ...query, consistency: "live" } },
       !history,
       (value) => {
         state = value;
@@ -228,4 +255,155 @@ test("history omits active-only consistency and paused reads force snapshots", a
     await until(() => state?.page.data.length === 1);
     feed.close();
   }
+});
+
+test("freshness frames keep data identities and make no continuation requests", async (t) => {
+  const Socket = sockets(t);
+  let state: FeedState | undefined;
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return new Response(JSON.stringify(page([order("tail")])));
+  });
+  const feed = new OrderFeed(
+    { kind: "orders", query },
+    false,
+    (value) => (state = value),
+  );
+  t.after(() => feed.close());
+  feed.start();
+  const socket = Socket.opened[0];
+  socket.onmessage!({
+    data: JSON.stringify({
+      type: "page",
+      page: page([order("head")], "tail"),
+      revision: "1",
+    }),
+  });
+  await until(() => !!state && !state.loadingMore);
+  feed.loadMore();
+  await until(() => state!.page.data.length === 2 && !state!.loadingMore);
+  const data = state!.page.data;
+  for (let i = 0; i < 5; i++)
+    socket.onmessage!({
+      data: JSON.stringify({
+        type: "sync",
+        sync: { ready: true, state: "stale", updated_at: null },
+        revision: "1",
+      }),
+    });
+  await tick();
+  assert.equal(calls, 1);
+  assert.equal(state!.page.data, data);
+  assert.equal(state!.status, "Stale");
+  // A tail-only change has a new book revision even if the head is unchanged.
+  socket.onmessage!({
+    data: JSON.stringify({
+      type: "sync",
+      sync: { ready: true, state: "live", updated_at: null },
+      revision: "2",
+    }),
+  });
+  await until(() => calls === 2 && !state!.loadingMore);
+  assert.equal(state!.page.data[0], data[0]);
+});
+
+test("live updates revalidate only the viewport and refresh stale pages on entry", async (t) => {
+  const Socket = sockets(t);
+  let state: FeedState | undefined;
+  const tokens: string[] = [];
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (_: string, options: RequestInit) => {
+      const token = JSON.parse(options.body as string).page_token;
+      tokens.push(token);
+      const index = Number(token);
+      return new Response(
+        JSON.stringify(
+          page([order(String(index))], index < 19 ? String(index + 1) : ""),
+        ),
+      );
+    },
+  );
+  const feed = new OrderFeed(
+    { kind: "orders", query },
+    false,
+    (value) => (state = value),
+    20,
+  );
+  t.after(() => feed.close());
+  feed.start();
+  Socket.opened[0].deliver(page([order("0")], "1"));
+  await until(() => state?.page.data.length === 20 && !state.loadingMore);
+  feed.setVisibleRange(10, 12);
+  tokens.length = 0;
+  Socket.opened[0].onmessage!({
+    data: JSON.stringify({
+      type: "sync",
+      sync: { ready: true, state: "live", updated_at: null },
+      revision: "new",
+    }),
+  });
+  await until(() => tokens.length === 2 && !state!.loadingMore);
+  assert.deepEqual(tokens, ["10", "11"]);
+  feed.setVisibleRange(15, 16);
+  await until(() => tokens.length === 3 && !state!.loadingMore);
+  assert.equal(tokens.at(-1), "15");
+});
+
+test("tail updates coalesce without starving in-flight reads and moved head anchors cancel superseded work", async (t) => {
+  const Socket = sockets(t);
+  let state: FeedState | undefined;
+  let finish: ((response: Response) => void) | undefined;
+  let activeSignal: AbortSignal | undefined;
+  let calls = 0;
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (_: string, options: RequestInit) => {
+      calls++;
+      activeSignal = options.signal as AbortSignal;
+      return await new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    },
+  );
+  const feed = new OrderFeed(
+    { kind: "orders", query },
+    false,
+    (value) => {
+      state = value;
+    },
+    2,
+  );
+  t.after(() => feed.close());
+  feed.start();
+  const deliver = (revision: string, token = "tail") =>
+    Socket.opened[0].onmessage!({
+      data: JSON.stringify({
+        type: "page",
+        revision,
+        page: page([order("a")], token),
+      }),
+    });
+  deliver("1");
+  await until(() => !!finish);
+  for (let i = 2; i < 20; i++) deliver(String(i));
+  assert.equal(activeSignal!.aborted, false);
+  finish!(new Response(JSON.stringify(page([order("slow")]))));
+  await until(
+    () => state!.page.data.some((o) => o.id === "slow") && calls === 2,
+  );
+  assert.equal(state!.page.data[0].id, "a");
+  deliver("20", "moved");
+  assert.equal(activeSignal!.aborted, true);
+  finish!(new Response(JSON.stringify(page([order("superseded")]))));
+  await until(() => calls === 3);
+  finish!(new Response(JSON.stringify(page([order("current")]))));
+  await until(() => !state!.loadingMore);
+  assert.deepEqual(
+    state!.page.data.map((o) => o.id),
+    ["a", "current"],
+  );
 });

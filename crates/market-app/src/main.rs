@@ -26,6 +26,10 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", market_api::schema_json()?);
             return Ok(());
         }
+        Some(Command::Asyncapi) => {
+            println!("{}", market_api::asyncapi_json()?);
+            return Ok(());
+        }
         #[cfg(feature = "miniapp")]
         Some(Command::SessionKey) => {
             println!(

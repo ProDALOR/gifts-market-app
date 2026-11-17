@@ -1,16 +1,18 @@
 use super::{UserSubscriptionsActor, messages::Release};
-use crate::{
-    error::DataError,
-    models::{Order, Page},
-};
+use crate::error::DataError;
 use actix::Addr;
+use market_gifts::{GiftOrder, Page};
 use std::sync::{Arc, atomic::AtomicBool};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub enum DataUpdate {
     Connecting,
-    Page(Arc<Page<Order>>),
+    View {
+        page: Arc<Page<GiftOrder>>,
+        sync: market_gifts::SyncStatus,
+        revision: String,
+    },
     Error(DataError),
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

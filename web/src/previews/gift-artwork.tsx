@@ -1,4 +1,5 @@
 import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
+import type { GiftMedia } from "../market";
 import type { ReactNode } from "react";
 import type { BackdropPalette } from "./gift-appearance";
 import { GiftBackdrop } from "./gift-backdrop";
@@ -12,7 +13,7 @@ import type { PlaybackPolicy } from "./use-playback";
 const ModelAnimation = lazy(() => import("./model-animation"));
 
 export const GiftArtwork = memo(function GiftArtwork({
-  url,
+  media,
   palette,
   patternUrl,
   label = "Gift preview",
@@ -22,7 +23,7 @@ export const GiftArtwork = memo(function GiftArtwork({
   className = "",
   children,
 }: {
-  url?: string;
+  media?: GiftMedia;
   palette?: BackdropPalette;
   patternUrl?: string;
   label?: string;
@@ -32,6 +33,8 @@ export const GiftArtwork = memo(function GiftArtwork({
   className?: string;
   children?: ReactNode;
 }) {
+  const url = media?.thumbnail_url;
+  const animationUrl = media?.animation_url;
   const host = useRef<HTMLSpanElement>(null);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -54,7 +57,7 @@ export const GiftArtwork = memo(function GiftArtwork({
           ? 20
           : 10;
   const shouldAnimate =
-    !!url &&
+    !!animationUrl &&
     visible &&
     pageVisible &&
     !reducedMotion &&
@@ -134,10 +137,10 @@ export const GiftArtwork = memo(function GiftArtwork({
           }}
         />
       )}
-      {requested && url && (
+      {requested && animationUrl && (
         <Suspense fallback={null}>
           <ModelAnimation
-            url={`${url}/animation`}
+            url={animationUrl}
             active={shouldAnimate}
             priority={priority}
             retain={visible && pageVisible && !reducedMotion}

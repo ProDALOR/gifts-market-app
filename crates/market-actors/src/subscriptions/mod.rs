@@ -28,7 +28,7 @@ struct FeedEntry {
 pub(crate) struct UserSubscriptionsActor {
     environment: ActorEnvironment,
     orders: OrderbooksHandle,
-    changed: watch::Receiver<u64>,
+    reader: market_replica::ReplicaReader,
     slots: Arc<Semaphore>,
     feeds: HashMap<QueryKey, FeedEntry>,
     subscribers: HashMap<SubscriberId, QueryKey>,
@@ -38,13 +38,13 @@ impl UserSubscriptionsActor {
     pub fn new(
         environment: ActorEnvironment,
         orders: OrderbooksHandle,
-        changed: watch::Receiver<u64>,
+        reader: market_replica::ReplicaReader,
         limit: usize,
     ) -> Self {
         Self {
             environment,
             orders,
-            changed,
+            reader,
             slots: Arc::new(Semaphore::new(limit)),
             feeds: HashMap::new(),
             subscribers: HashMap::new(),
@@ -93,7 +93,7 @@ impl Handler<Subscribe> for UserSubscriptionsActor {
                 &feed,
                 self.orders.clone(),
                 message.0,
-                self.changed.clone(),
+                self.reader.clone(),
                 permit,
             );
             self.feeds.insert(

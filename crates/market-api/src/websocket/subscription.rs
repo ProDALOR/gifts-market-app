@@ -3,7 +3,7 @@ use super::{
     queue::{Payload, QueueError, Scope, Sender},
     registry::Key,
 };
-use crate::{MarketApi, config::WebSocketLimits, error::ApiError, models::OrdersQuery};
+use crate::{MarketApi, config::WebSocketLimits, error::ApiError, models::GiftOrdersQuery};
 use market_actors::DataUpdate;
 use tokio_util::sync::CancellationToken;
 #[derive(Debug)]
@@ -23,7 +23,7 @@ fn end(result: Result<(), QueueError>) -> End {
 pub(super) async fn run(
     market: MarketApi,
     key: Key,
-    query: OrdersQuery,
+    query: GiftOrdersQuery,
     tx: Sender,
     cancel: CancellationToken,
     limits: WebSocketLimits,
@@ -46,16 +46,36 @@ pub(super) async fn run(
                 .await);
         }
     };
+    let mut previous = None;
     loop {
         let update = updates.borrow_and_update().clone();
         let (payload, terminal) = match update {
             DataUpdate::Connecting => (Payload::Connecting, false),
             DataUpdate::Error(error) => (Payload::Error(error.into()), true),
-            DataUpdate::Page(page) => {
-                let result = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=market.encode_page(page)=>result};
-                match result {
-                    Ok(page) => (Payload::Page(page), false),
-                    Err(error) => (Payload::Error(error), true),
+            DataUpdate::View {
+                page,
+                sync,
+                revision,
+            } => {
+                if previous
+                    .as_ref()
+                    .is_some_and(|old| std::sync::Arc::ptr_eq(old, &page))
+                {
+                    (Payload::Sync { sync, revision }, false)
+                } else {
+                    previous = Some(page.clone());
+                    let result = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=market.encode_page(page)=>result};
+                    match result {
+                        Ok(page) => (
+                            Payload::Page {
+                                page,
+                                sync,
+                                revision,
+                            },
+                            false,
+                        ),
+                        Err(error) => (Payload::Error(error), true),
+                    }
                 }
             }
         };

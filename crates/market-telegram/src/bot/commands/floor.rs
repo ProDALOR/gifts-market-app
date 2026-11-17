@@ -1,16 +1,12 @@
 use super::{FloorQuery, Reply, render};
-use market_actors::{
-    MarketDataHandle,
-    valuation::{ModelLookup, ModelPosition, ValuationRequest},
-};
+use market_actors::MarketDataHandle;
+use market_gifts::valuation::{ModelLookup, ModelPosition, ValuationRequest};
 pub(super) async fn execute(market: &MarketDataHandle, query: FloorQuery) -> Reply {
     match market
         .value_models(ValuationRequest {
             positions: vec![ModelPosition {
-                model: ModelLookup {
-                    namespace: None,
+                model: ModelLookup::Name {
                     collection: query.collection,
-                    attribute_id: "tg.model".into(),
                     model: query.model,
                 },
                 quantity: 1,

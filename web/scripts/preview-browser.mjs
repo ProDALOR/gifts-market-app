@@ -15,11 +15,11 @@ import {GiftArtwork} from '/src/previews/gift-artwork.tsx';
 import { CollectionRail } from "/src/collections/collection-picker.tsx";
 import { TraitPreview } from "/src/previews/trait-preview.tsx";
 import { VenueIcon } from "/src/ui/icons.tsx";
-const order={attributes:Object.fromEntries(['model','backdrop','pattern'].map(id=>['tg.'+id,{op:'eq',value:{type:'enum',value:id}}]))};
+const order={target:{kind:'gift',gift:{id:'gift-1',collection_id:'gift',number:1,traits:{model:'model',backdrop:'backdrop',pattern:'pattern'}}}};
 const options=new Map([
- ['model',{kind:'attribute_option',id:'model',name:'Model',attribute_id:'tg.model',meta:{},aliases:[]}],
- ['backdrop',{id:'backdrop',name:'Backdrop',attribute_id:'tg.backdrop',meta:{'colors.center_color':'#b789e4','colors.edge_color':'#8a5abc','colors.pattern_color':'#5b10ab'}}],
- ['pattern',{id:'pattern',name:'Pattern',attribute_id:'tg.pattern',meta:{}}]
+ ['model',{kind:'model',id:'model',name:'Model',media:{thumbnail_url:'/media/models/model',animation_url:'/media/models/model/animation'}}],
+ ['backdrop',{kind:'backdrop',id:'backdrop',name:'Backdrop',palette:{center:'#b789e4',edge:'#8a5abc',pattern:'#5b10ab'}}],
+ ['pattern',{kind:'pattern',id:'pattern',name:'Pattern',media:{thumbnail_url:'/media/patterns/pattern',animation_url:null}}]
 ]);
 import {loadAnimationData} from '/src/previews/animation-data.ts';
 import {useBackgroundPlaybackSuspension} from '/src/previews/use-playback.ts';
@@ -28,25 +28,26 @@ window.mount=(large=false)=>root.render(React.createElement(GiftPreview,{order,o
  React.createElement('span',{className:'venue-icon',style:{position:'relative',zIndex:4}},React.createElement(VenueIcon,{name:'MRKT'}))));
 window.unmount=()=>root.render(null);
 window.mountSelection=()=>{
- const collections=[{id:'gift',name:'Gift',attributes:{'tg.model':{allowed_values:['model']}}}];
+ const collections=[{id:'gift',name:'Gift',preview:options.get('model').media,model_ids:['model'],backdrop_ids:[],pattern_ids:[]}];
  root.render(React.createElement(React.Fragment,null,
   React.createElement(CollectionRail,{collections,selected:'gift',select:()=>{}}),
-  React.createElement(TraitPreview,{collection:collections[0],options,filters:{'tg.model':{op:'eq',value:{type:'enum',value:'model'}}},reset:()=>{}})));
+  React.createElement(TraitPreview,{collection:collections[0],options,filters:{models:['model']},reset:()=>{}})));
 };
-const bulk=Array.from({length:24},(_,i)=>({kind:'attribute_option',id:'bulk-'+i,name:'Bulk '+String(i).padStart(2,'0'),attribute_id:'tg.model',meta:{},aliases:[]}));
+const bulk=Array.from({length:24},(_,i)=>({kind:'model',id:'bulk-'+i,name:'Bulk '+String(i).padStart(2,'0'),media:{thumbnail_url:'/media/models/bulk-'+i,animation_url:'/media/models/bulk-'+i+'/animation'}}));
 const bulkOptions=new Map(bulk.map(item=>[item.id,item]));
-const bulkCollection={id:'bulk',attributes:{'tg.model':{allowed_values:bulk.map(item=>item.id)}}};
-const bulkFilters={'tg.model':{op:'one_of',values:bulk.map(item=>({type:'enum',value:item.id}))}};
+const bulkCollection={id:'bulk',model_ids:bulk.map(item=>item.id),backdrop_ids:[],pattern_ids:[]};
+const bulkFilters={models:bulk.map(item=>item.id)};
 const reset=()=>{};
 function Many({detail}) {
  useBackgroundPlaybackSuspension(detail);
  return React.createElement(React.Fragment,null,
   React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook'},React.createElement(TraitPreview,{collection:bulkCollection,options:bulkOptions,filters:bulkFilters,reset}))),
-  detail?React.createElement(GiftArtwork,{url:'/media/models/model',fallback:'D',playback:'detail',className:'detail-test'}):null);
+  detail?React.createElement(GiftArtwork,{media:options.get('model').media,fallback:'D',playback:'detail',className:'detail-test'}):null);
 }
 window.preload=()=>Promise.all(bulk.map(item=>loadAnimationData('/media/models/'+item.id+'/animation',new AbortController().signal)));
 window.mountMany=(detail=false)=>{document.getElementById('fixture').style.margin='0';root.render(React.createElement(Many,{detail}));};
-window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,attributes:{'tg.model':{allowed_values:['rail-'+i]}}}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
+window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i,animation_url:'/media/models/rail-'+i+'/animation'},model_ids:['rail-'+i],backdrop_ids:[],pattern_ids:[]}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
+window.mountReference=(animated=true)=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/custom-still?v=1',animation_url:animated?'/media/custom-motion.tgs?v=2':null},fallback:'R',playback:'detail'}));
 window.mount();
 </script></body></html>`;
 const server = await createServer({
@@ -84,6 +85,7 @@ try {
       return clear.apply(this, args);
     };
   });
+  const mediaRequests = [];
   let animations = 0,
     patterns = 0,
     activeDownloads = 0,
@@ -146,7 +148,11 @@ try {
   const image = Buffer.from(png, "base64");
   await page.route("**/media/**", async (route) => {
     const url = route.request().url();
-    if (url.endsWith("/animation")) {
+    mediaRequests.push(new URL(url).pathname + new URL(url).search);
+    if (
+      url.endsWith("/animation") ||
+      new URL(url).pathname === "/media/custom-motion.tgs"
+    ) {
       animations++;
       peakDownloads = Math.max(peakDownloads, ++activeDownloads);
       if (url.includes("/bulk-"))
@@ -389,6 +395,31 @@ try {
     "Initial positioning skips transient animation downloads across the entire catalog",
   );
   assert.equal(await page.locator(".preview-model").count(), 0);
+  await page.evaluate(() => window.unmount());
+  const beforeReferences = animations;
+  await page.evaluate(() => window.mountReference(false));
+  await page.locator('img[src="/media/custom-still?v=1"]').waitFor();
+  await page.waitForTimeout(300);
+  assert.equal(
+    animations,
+    beforeReferences,
+    "A null animation reference never starts playback or downloads",
+  );
+  assert.equal(await page.locator(".model-animation").count(), 0);
+  await page.evaluate(() => window.mountReference(true));
+  await page.locator(".model-animation.ready canvas").waitFor();
+  assert.ok(
+    mediaRequests.includes("/media/custom-motion.tgs?v=2"),
+    "Use the supplied animation URL, including query parameters",
+  );
+  assert.ok(
+    !mediaRequests.some(
+      (url) => url.includes("custom-still") && url.includes("animation"),
+    ),
+    "Never append an animation suffix to a thumbnail URL",
+  );
+  await page.evaluate(() => window.mountReference(false));
+  await page.waitForFunction(() => !document.querySelector(".model-animation"));
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(

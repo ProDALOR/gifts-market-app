@@ -1,0 +1,334 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #101317;
+  color: #e8edf1;
+  --docs-line: #303740;
+  --docs-accent: #90dbba;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+a:hover {
+  color: var(--docs-accent);
+}
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--docs-accent);
+  outline-offset: 3px;
+}
+.docs-nav {
+  min-height: 66px;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--docs-line);
+  background: #101317;
+}
+.brand {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.brand span {
+  margin-left: 10px;
+  color: #9ba7b3;
+  font-size: 13px;
+  font-weight: 400;
+}
+.docs-nav nav {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.docs-nav [aria-current="page"] {
+  color: var(--docs-accent);
+}
+.loading {
+  padding: 24px;
+}
+.ws-docs {
+  max-width: 1160px;
+  margin: auto;
+  padding: 32px 24px 64px;
+}
+.intro {
+  max-width: 700px;
+  margin-bottom: 28px;
+}
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.13em;
+  color: var(--docs-accent);
+}
+.intro h1 {
+  font-size: clamp(28px, 5vw, 42px);
+  margin: 8px 0;
+  letter-spacing: -0.035em;
+}
+.ws-docs h2 {
+  font-size: 19px;
+  margin: 0;
+}
+.ws-docs h3 {
+  font-size: 14px;
+  margin: 0;
+}
+.ws-docs p,
+.ws-docs li {
+  line-height: 1.6;
+}
+.intro p:not(.eyebrow),
+.muted {
+  color: #a8b4bf;
+}
+.muted {
+  font-size: 13px;
+}
+.panel {
+  margin-bottom: 20px;
+  padding: 24px;
+  border: 1px solid var(--docs-line);
+  border-radius: 14px;
+  background: #171c22;
+}
+.section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+#connection-state {
+  border: 1px solid var(--docs-line);
+  border-radius: 20px;
+  padding: 4px 10px;
+  color: #a8b4bf;
+  font-size: 12px;
+}
+#connection-state[data-state="open"] {
+  color: var(--docs-accent);
+  border-color: #37674f;
+}
+.fields {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 14px;
+  margin: 24px 0 14px;
+}
+.console label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+  color: #b9c4cd;
+}
+.console input,
+.console select,
+.console textarea {
+  font: inherit;
+  color: #e8edf1;
+  background: #101317;
+  border: 1px solid #404b58;
+  border-radius: 7px;
+  padding: 10px;
+  width: 100%;
+  min-width: 0;
+}
+.console textarea {
+  font:
+    12px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  resize: vertical;
+  margin-bottom: 10px;
+}
+.console button {
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 9px 15px;
+  font:
+    600 13px/1.3 system-ui,
+    sans-serif;
+  background: var(--docs-accent);
+  color: #132219;
+  cursor: pointer;
+}
+.console button.secondary {
+  border-color: #465360;
+  background: transparent;
+  color: #dce5ed;
+}
+.console button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.error {
+  color: #ffaca7;
+}
+[hidden] {
+  display: none !important;
+}
+.ws-docs code,
+.ws-docs pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ws-docs code {
+  font-size: 0.9em;
+  color: #b9e7d5;
+  overflow-wrap: anywhere;
+}
+.ws-docs summary {
+  cursor: pointer;
+  padding: 8px 0;
+  font-weight: 600;
+  font-size: 14px;
+}
+.editor {
+  margin: 20px 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--docs-line);
+  border-bottom: 1px solid var(--docs-line);
+}
+.editor label {
+  margin: 8px 0;
+}
+.messages {
+  list-style: none;
+  padding: 0;
+  max-height: 520px;
+  overflow: auto;
+  overflow-anchor: none;
+}
+.messages:empty::after {
+  content: "Connect and send a subscription to see messages.";
+  color: #8c9aa8;
+  font-size: 13px;
+}
+.messages li {
+  border-top: 1px solid var(--docs-line);
+  padding: 6px 0;
+}
+.messages summary {
+  font:
+    12px/1.6 ui-monospace,
+    monospace;
+  color: #b8c6d3;
+}
+.messages pre {
+  overflow: auto;
+  max-height: 350px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: #d7e2ec;
+}
+#message-count {
+  font-weight: 400;
+  color: #a8b4bf;
+}
+.protocol-notes li {
+  margin-bottom: 10px;
+  color: #b9c4cd;
+  font-size: 14px;
+}
+#asyncapi-reference {
+  border-top: 1px solid var(--docs-line);
+  margin-top: 12px;
+  padding-top: 24px;
+}
+@media (max-width: 720px) {
+  .docs-nav {
+    padding: 14px 18px;
+  }
+  .docs-nav nav {
+    gap: 16px;
+  }
+  .ws-docs {
+    padding: 24px 14px;
+  }
+  .panel {
+    padding: 18px;
+  }
+  .fields {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+#asyncapi-reference nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 20px 0;
+}
+#asyncapi-reference a {
+  color: var(--docs-accent);
+}
+#asyncapi-reference article {
+  margin: 32px 0;
+  scroll-margin-top: 24px;
+}
+#asyncapi-reference article > p:first-child {
+  color: #a8b4bf;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+#asyncapi-reference > details {
+  border-top: 1px solid var(--docs-line);
+  padding: 8px 0;
+}
+#asyncapi-reference pre {
+  padding: 16px;
+  background: #101317;
+  border-radius: 8px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 500px;
+}
+.schema-table {
+  overflow: auto;
+}
+.schema-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.schema-table th,
+.schema-table td {
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--docs-line);
+  padding: 12px;
+}
+.schema-table td:last-child {
+  min-width: 220px;
+  color: #b9c4cd;
+}
+.schema-table small {
+  display: block;
+  margin-top: 4px;
+  color: #deb391;
+}

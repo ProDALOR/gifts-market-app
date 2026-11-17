@@ -21,6 +21,12 @@ enum Failure {
     UnexpectedExit,
     Failed,
 }
+#[derive(Clone, Copy)]
+enum Lifetime {
+    Service,
+    #[cfg(feature = "bot")]
+    Job,
+}
 #[derive(Debug, Clone, Copy)]
 struct TaskFailure {
     task: TaskKind,
@@ -63,13 +69,14 @@ impl TaskSupervisor {
         stop: CancellationToken,
         failure: watch::Sender<Option<TaskFailure>>,
         critical: bool,
+        lifetime: Lifetime,
     ) {
         let result = AssertUnwindSafe(work).catch_unwind().await;
         let reason = if result.is_err() {
             Some(Failure::Panicked)
         } else if matches!(result, Ok(false)) {
             Some(Failure::Failed)
-        } else if !stop.is_cancelled() {
+        } else if matches!(lifetime, Lifetime::Service) && !stop.is_cancelled() {
             Some(Failure::UnexpectedExit)
         } else {
             None
@@ -97,7 +104,7 @@ impl TaskSupervisor {
         task: TaskKind,
         work: impl Future<Output = bool> + Send + 'static,
     ) -> Result<()> {
-        self.spawn_work(task, work, true)
+        self.spawn_work(task, work, true, Lifetime::Service)
     }
     #[cfg(feature = "bot")]
     pub fn spawn_optional(
@@ -105,13 +112,32 @@ impl TaskSupervisor {
         task: TaskKind,
         work: impl Future<Output = std::result::Result<(), ()>> + Send + 'static,
     ) -> Result<()> {
-        self.spawn_work(task, async move { work.await.is_ok() }, false)
+        self.spawn_work(
+            task,
+            async move { work.await.is_ok() },
+            false,
+            Lifetime::Service,
+        )
+    }
+    #[cfg(feature = "bot")]
+    pub fn spawn_job(
+        &self,
+        task: TaskKind,
+        work: impl Future<Output = std::result::Result<(), ()>> + Send + 'static,
+    ) -> Result<()> {
+        self.spawn_work(
+            task,
+            async move { work.await.is_ok() },
+            false,
+            Lifetime::Job,
+        )
     }
     fn spawn_work(
         &self,
         task: TaskKind,
         work: impl Future<Output = bool> + Send + 'static,
         critical: bool,
+        lifetime: Lifetime,
     ) -> Result<()> {
         let mut admission = self.admission.lock().map_err(|_| stopped())?;
         if self.is_stopping() {
@@ -127,6 +153,7 @@ impl TaskSupervisor {
                 self.stop.clone(),
                 self.failure.clone(),
                 critical,
+                lifetime,
             ),
             &self.runtime,
         );
@@ -155,6 +182,54 @@ mod tests {
     use super::*;
     use std::{sync::Arc, time::Duration};
 
+    #[cfg(feature = "bot")]
+    #[tokio::test]
+    async fn finite_job_completion_is_expected_and_failures_keep_their_policy() {
+        for success in [true, false] {
+            let supervisor = TaskSupervisor::new();
+            supervisor
+                .spawn_work(
+                    TaskKind::MediaWarmup,
+                    async move { success },
+                    true,
+                    Lifetime::Job,
+                )
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !supervisor.tracker.is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(supervisor.is_stopping(), !success);
+            assert_eq!(supervisor.shutdown().await.is_ok(), success);
+        }
+    }
+    #[cfg(feature = "bot")]
+    #[tokio::test]
+    async fn finite_jobs_remain_tracked_until_drained_and_cannot_start_twice() {
+        let supervisor = Arc::new(TaskSupervisor::new());
+        let (release, finish) = tokio::sync::oneshot::channel();
+        supervisor
+            .spawn_job(TaskKind::MediaWarmup, async move {
+                let _ = finish.await;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            supervisor
+                .spawn_job(TaskKind::MediaWarmup, async { Ok(()) })
+                .is_err()
+        );
+        let target = supervisor.clone();
+        let shutdown = tokio::spawn(async move { target.shutdown().await });
+        supervisor.cancelled().await;
+        assert!(!shutdown.is_finished());
+        release.send(()).unwrap();
+        shutdown.await.unwrap().unwrap();
+        assert!(supervisor.tracker.is_empty());
+    }
     #[tokio::test]
     async fn shutdown_drains_workers_and_rejects_new_tasks() {
         let supervisor = Arc::new(TaskSupervisor::new());

@@ -6,71 +6,107 @@ import type { Order } from "../src/market.ts";
 function options(): Map<string, GiftOption> {
   return new Map([
     [
+      "model",
+      {
+        kind: "model",
+        id: "model",
+        name: "Model",
+        media: {
+          thumbnail_url: "/custom/model.webp",
+          animation_url: "/custom/model.tgs",
+        },
+      },
+    ],
+    [
       "backdrop",
       {
-        kind: "attribute_option",
+        kind: "backdrop",
         id: "backdrop",
         name: "Lavender",
-        attribute_id: "tg.backdrop",
-        aliases: [],
-        meta: {
-          "colors.center_color": "#B789E4",
-          "colors.edge_color": "#8a5abc",
-          "colors.pattern_color": "#5b10ab",
-        },
+        palette: { center: "#b789e4", edge: "#8a5abc", pattern: "#5b10ab" },
       },
     ],
     [
       "pattern",
       {
-        kind: "attribute_option",
+        kind: "pattern",
         id: "pattern",
         name: "Lion Head",
-        attribute_id: "tg.pattern",
-        aliases: [],
-        meta: {},
+        media: {
+          thumbnail_url: "/media/patterns/pattern",
+          animation_url: null,
+        },
       },
     ],
   ]);
 }
-function order(): Pick<Order, "attributes"> {
+function order(): Pick<Order, "target"> {
   return {
-    attributes: Object.fromEntries(
-      ["model", "backdrop", "pattern"].map((key) => [
-        `tg.${key}`,
-        { op: "eq", value: { type: "enum", value: key } },
-      ]),
-    ),
+    target: {
+      kind: "gift",
+      gift: {
+        id: "gift-42",
+        collection_id: "collection",
+        number: 42,
+        traits: { model: "model", backdrop: "backdrop", pattern: "pattern" },
+      },
+    },
   };
 }
-test("gift previews resolve the exact backdrop and symbol, preserving catalog RGB colors", () => {
+test("gift previews use named traits and validated catalog appearance", () => {
   assert.deepEqual(giftAppearance(order(), options()), {
-    modelUrl: "/media/models/model",
+    media: {
+      thumbnail_url: "/custom/model.webp",
+      animation_url: "/custom/model.tgs",
+    },
     palette: { center: "#b789e4", edge: "#8a5abc", pattern: "#5b10ab" },
     patternUrl: "/media/patterns/pattern",
     label: "Gift preview, Lavender backdrop, Lion Head pattern",
   });
 });
-test("missing metadata and conditions never fabricate a gift appearance", () => {
+test("missing catalog appearance and bid criteria never fabricate concrete artwork", () => {
   assert.equal(giftAppearance(order(), new Map()).palette, undefined);
-  const conditional = order();
-  conditional.attributes["tg.model"] = { op: "one_of", values: [] };
+  const conditional: Pick<Order, "target"> = {
+    target: {
+      kind: "criteria",
+      criteria: {
+        models: ["model"],
+        backdrops: ["backdrop"],
+        patterns: ["pattern"],
+        number: null,
+      },
+    },
+  };
+  assert.equal(giftAppearance(conditional, options()).media, undefined);
   assert.equal(giftAppearance(conditional, options()).palette, undefined);
-  assert.equal(giftAppearance(conditional, options()).patternUrl, undefined);
-  const exactBackdrop = order();
-  exactBackdrop.attributes["tg.pattern"] = { op: "one_of", values: [] };
-  assert.ok(giftAppearance(exactBackdrop, options()).palette);
-  assert.equal(giftAppearance(exactBackdrop, options()).patternUrl, undefined);
+  const noPattern = order();
+  if (noPattern.target.kind === "gift")
+    noPattern.target.gift.traits.pattern = null;
+  assert.ok(giftAppearance(noPattern, options()).palette);
+  assert.equal(giftAppearance(noPattern, options()).patternUrl, undefined);
 });
-test("palettes validate RGB values and distinguish backdrop and pattern catalog entries", () => {
+test("typed catalog option kinds and unavailable palettes preserve the placeholder", () => {
   const catalog = options();
-  catalog.get("backdrop")!.meta["colors.center_color"] =
-    "url(https://example.com)";
+  catalog.set("backdrop", {
+    kind: "backdrop",
+    id: "backdrop",
+    name: "Unknown",
+    palette: null,
+  });
   assert.equal(giftAppearance(order(), catalog).palette, undefined);
-  const swapped = options();
-  swapped.get("backdrop")!.attribute_id = "tg.pattern";
-  assert.equal(giftAppearance(order(), swapped).palette, undefined);
+  catalog.set("backdrop", {
+    kind: "model",
+    id: "backdrop",
+    name: "Model",
+    media: null,
+  });
+  assert.equal(giftAppearance(order(), catalog).palette, undefined);
   const invalidPattern = options();
-  invalidPattern.get("pattern")!.attribute_id = "tg.model";
+  invalidPattern.set("pattern", {
+    kind: "model",
+    id: "pattern",
+    name: "Model",
+    media: null,
+  });
   assert.equal(giftAppearance(order(), invalidPattern).patternUrl, undefined);
 });

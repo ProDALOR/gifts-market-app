@@ -10,6 +10,7 @@
     "test": "node --experimental-transform-types --test scripts/*.test.ts",
     "test:previews": "node scripts/preview-browser.mjs",
     "test:orderbook": "node scripts/orderbook-browser.mjs",
+    "test:grid": "node scripts/grid-browser.mjs",
     "test:traits": "node scripts/trait-preview-browser.mjs"
   },
   "dependencies": {
@@ -19,6 +20,8 @@
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
+    "@asyncapi/parser": "3.6.6",
+    "@scalar/api-reference": "1.80.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.3.0",
@@ -26,6 +29,7 @@
     "playwright": "^1.65.0",
     "prettier": "^3.10.1",
     "typescript": "~5.9.3",
-    "vite": "^8.3.8"
+    "vite": "^8.3.8",
+    "zod": "4.6.7"
   }
 }

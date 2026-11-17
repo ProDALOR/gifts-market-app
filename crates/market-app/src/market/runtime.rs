@@ -80,10 +80,10 @@ impl MarketRuntime {
         let data = self.handle();
         let stop = self.supervisor.token();
         self.supervisor
-            .spawn_optional(TaskKind::MediaWarmup, async move {
+            .spawn_job(TaskKind::MediaWarmup, async move {
                 tokio::select! {
                     _ = stop.cancelled() => {},
-                    _ = crate::media::warmup(data, cache) => { stop.cancelled().await; },
+                    _ = crate::media::warmup(data, cache) => {},
                 }
                 Ok(())
             })

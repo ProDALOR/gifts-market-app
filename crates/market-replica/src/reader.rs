@@ -33,6 +33,26 @@ fn decode(text: &str) -> Result<Continuation, Status> {
 impl ReplicaReader {
     /// Public tokens contain validated keyset boundaries, never upstream credentials or view IDs.
     pub fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
+        self.read_inner(
+            request,
+            None::<fn(&Self, &w::ReadRequest) -> Result<(), Status>>,
+        )
+    }
+    /// Validate a query against the exact view used for its results, including retained
+    /// continuations. The long-lived reader keeps ownership of pagination state.
+    /// The callback's reader is pinned for short metadata reads; use LIVE mode there.
+    pub fn read_checked(
+        &self,
+        request: w::ReadRequest,
+        validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
+    ) -> Result<ReadResult, Status> {
+        self.read_inner(request, Some(validate))
+    }
+    fn read_inner(
+        &self,
+        request: w::ReadRequest,
+        validate: Option<impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>>,
+    ) -> Result<ReadResult, Status> {
         let live = match w::ReadMode::try_from(request.mode) {
             Ok(w::ReadMode::Snapshot) => false,
             Ok(w::ReadMode::Live) => true,
@@ -66,6 +86,9 @@ impl ReplicaReader {
         } else {
             self.view()?
         };
+        if let Some(validate) = validate {
+            validate(&self.pin(view.clone()), &request)?;
+        }
         let filter = Filter::compile(&view.state, &request)?;
         if token
             .as_ref()

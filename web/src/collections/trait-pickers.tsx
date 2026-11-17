@@ -1,21 +1,18 @@
 import { collectionOptions } from "../catalog/selectors";
 import { memo, useEffect, useRef, useState } from "react";
-import type { Predicate } from "../market";
-import { optionPredicate, selectedOptions, traits } from "../orderbook";
+import type { TraitFilters, TraitKey } from "../market";
+import { traits } from "../orderbook";
 import type { CatalogOption, Collection } from "../orderbook";
 function OptionArt({ option }: { option: CatalogOption }) {
-  if (option.attribute_id === "tg.backdrop") {
-    const colors = [
-      option.meta["colors.center_color"],
-      option.meta["colors.edge_color"],
-    ];
+  if (option.kind === "backdrop") {
+    const colors = option.palette;
     return (
       <span
         className="option-art swatch"
         style={
-          colors.every((color) => /^#[\da-f]{6}$/i.test(color || ""))
+          colors
             ? {
-                background: `radial-gradient(ellipse at 40% 30%,${colors[0]},${colors[1]})`,
+                background: `radial-gradient(ellipse at 40% 30%,${colors.center},${colors.edge})`,
               }
             : undefined
         }
@@ -24,13 +21,13 @@ function OptionArt({ option }: { option: CatalogOption }) {
   }
   return (
     <span
-      className={`option-art${option.attribute_id === "tg.pattern" ? " symbol-thumb" : ""}`}
+      className={`option-art${option.kind === "pattern" ? " symbol-thumb" : ""}`}
     >
       <img
         alt=""
         loading="lazy"
         decoding="async"
-        src={`/media/${option.attribute_id === "tg.pattern" ? "patterns" : "models"}/${encodeURIComponent(option.id)}`}
+        src={option.media?.thumbnail_url}
         onError={(event) => {
           event.currentTarget.style.visibility = "hidden";
         }}
@@ -53,11 +50,11 @@ export const TraitPickers = memo(function TraitPickers({
   loading?: boolean;
   loadError?: string;
   options: ReadonlyMap<string, CatalogOption>;
-  filters: Record<string, Predicate>;
+  filters: TraitFilters;
   disabled: boolean;
-  open?: string;
-  setOpen: (id: string | undefined) => void;
-  change: (id: string, value?: Predicate) => void;
+  open?: TraitKey;
+  setOpen: (id: TraitKey | undefined) => void;
+  change: (id: TraitKey, value?: string[]) => void;
 }) {
   const [query, setQuery] = useState("");
   const host = useRef<HTMLDivElement>(null);
@@ -81,12 +78,12 @@ export const TraitPickers = memo(function TraitPickers({
   }, [open]);
   const trait = traits.find((trait) => trait.id === open);
   const available = open ? collectionOptions(collection, open, options) : [];
-  const chosen = open ? selectedOptions(filters[open]) : [];
+  const chosen = open ? filters[open] || [] : [];
   return (
     <div className="trait-controls" ref={host}>
       <div className="pickers">
         {traits.map((trait) => {
-          const count = selectedOptions(filters[trait.id]).length;
+          const count = (filters[trait.id] || []).length;
           return (
             <button
               key={trait.id}
@@ -95,7 +92,11 @@ export const TraitPickers = memo(function TraitPickers({
               aria-label={trait.label}
               aria-expanded={open === trait.id}
               aria-controls="trait-panel"
-              disabled={disabled || !collection?.attributes[trait.id]}
+              disabled={
+                disabled ||
+                !collection ||
+                collectionOptions(collection, trait.id, options).length === 0
+              }
               onClick={() => {
                 setOpen(open === trait.id ? undefined : trait.id);
                 setQuery("");
@@ -145,11 +146,9 @@ export const TraitPickers = memo(function TraitPickers({
                   onClick={() =>
                     change(
                       open,
-                      optionPredicate(
-                        chosen.includes(option.id)
-                          ? chosen.filter((id) => id !== option.id)
-                          : [...chosen, option.id],
-                      ),
+                      chosen.includes(option.id)
+                        ? chosen.filter((id) => id !== option.id)
+                        : [...chosen, option.id],
                     )
                   }
                 >

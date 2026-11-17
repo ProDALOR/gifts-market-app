@@ -1,5 +1,85 @@
 //! Synthetic contract fixture. Never opens Telegram accounts or contacts a venue.
-use market_adapter::{catalog_admin, client::CoreClient, publisher::FeedClient, wire as w};
+use market_hub_protocol::wire as w;
+use std::time::Duration;
+use tonic::{
+    Request,
+    metadata::MetadataValue,
+    transport::{Channel, Endpoint},
+};
+struct FixtureClient {
+    client: w::market_write_client::MarketWriteClient<Channel>,
+    authorization: MetadataValue<tonic::metadata::Ascii>,
+}
+impl FixtureClient {
+    async fn connect(endpoint: String, token: String) -> Result<Self, Box<dyn std::error::Error>> {
+        let channel = Endpoint::from_shared(endpoint)?
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .connect()
+            .await?;
+        let mut authorization: MetadataValue<_> = format!("Bearer {token}").parse()?;
+        authorization.set_sensitive(true);
+        Ok(Self {
+            client: w::market_write_client::MarketWriteClient::new(channel),
+            authorization,
+        })
+    }
+    fn request<T>(&self, value: T) -> Request<T> {
+        let mut request = Request::new(value);
+        request
+            .metadata_mut()
+            .insert("authorization", self.authorization.clone());
+        request
+    }
+    async fn configure(&mut self, entries: Vec<w::Entity>) -> Result<(), tonic::Status> {
+        let request = self.request(tokio_stream::iter([w::CatalogChunk {
+            bundle_id: "test.market".into(),
+            changes: entries
+                .into_iter()
+                .map(|entity| w::Change {
+                    change: Some(w::change::Change::Upsert(entity)),
+                })
+                .collect(),
+        }]));
+        self.client.configure_catalog(request).await?;
+        Ok(())
+    }
+    async fn observe(&mut self) -> Result<w::Observation, tonic::Status> {
+        let request = self.request(w::FeedRequest {
+            feed_id: "test.offers".into(),
+        });
+        Ok(self.client.observe_feed(request).await?.into_inner())
+    }
+    async fn publish(
+        &mut self,
+        observation: &w::Observation,
+        changes: Vec<w::Change>,
+    ) -> Result<(), tonic::Status> {
+        let request = self.request(w::PublishRequest {
+            observation_token: observation.token.clone(),
+            changes,
+        });
+        self.client.publish(request).await?;
+        Ok(())
+    }
+}
+fn upsert(order: w::Order) -> w::Change {
+    w::Change {
+        change: Some(w::change::Change::Upsert(entry(E::Order(order)))),
+    }
+}
+fn remove(venue: &str, id: &str) -> w::Change {
+    w::Change {
+        change: Some(w::change::Change::Remove(w::Removal {
+            key: Some(w::Key {
+                kind: w::EntityKind::Order as i32,
+                venue_id: venue.into(),
+                id: id.into(),
+            }),
+            observed_at_ms: None,
+        })),
+    }
+}
 use w::entity::Entity as E;
 fn entry(value: E) -> w::Entity {
     w::Entity {
@@ -36,10 +116,11 @@ fn facts(number: i64) -> std::collections::BTreeMap<String, w::AttributePredicat
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let node = CoreClient::new(
+    let mut feed = FixtureClient::connect(
         std::env::var("MARKET_FIXTURE_HUB_URL")?,
         std::env::var("MARKET_HUB_TOKEN")?,
-    )?;
+    )
+    .await?;
     let action = std::env::var("MARKET_FIXTURE_ACTION").unwrap_or_else(|_| "seed".into());
     if action.starts_with("seed") {
         let mut entries = vec![
@@ -132,31 +213,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             books,
             ..Default::default()
         })));
-        catalog_admin::apply(
-            node.channel(),
-            &node.authorization(),
-            &w::CatalogChunk {
-                bundle_id: "test.market".into(),
-                changes: entries.into_iter().map(catalog_admin::upsert).collect(),
-            },
-        )
-        .await?;
+        feed.configure(entries).await?;
     }
-    let feed = FeedClient::new(node, "test.offers");
     let observation = feed.observe().await?;
     let now = jiff::Timestamp::now().as_millisecond();
     if action == "delete" {
-        feed.publish(
-            &observation,
-            vec![market_adapter::remove("partner", "ask-15:GRAM", None)],
-        )
-        .await?;
+        feed.publish(&observation, vec![remove("partner", "ask-15:GRAM")])
+            .await?;
         return Ok(());
     }
     if action == "update" {
         feed.publish(
             &observation,
-            vec![market_adapter::upsert(w::Order {
+            vec![upsert(w::Order {
                 id: "ask-15:GRAM".into(),
                 book: Some(w::BookKey {
                     venue_id: "partner".into(),
@@ -179,7 +248,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backfill = action == "backfill";
         feed.publish(
             &observation,
-            vec![market_adapter::upsert(w::Order {
+            vec![upsert(w::Order {
                 id: if backfill {
                     "old-execution".into()
                 } else {
@@ -220,7 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                     let whole = if venue == "partner" { 16 - n } else { 31 - n };
-                    rows.push(market_adapter::upsert(w::Order {
+                    rows.push(upsert(w::Order {
                         id: format!(
                             "{}-ask-{n:02}:{currency}",
                             if item.ends_with("123") { "" } else { "skull" }
@@ -249,7 +318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ..Default::default()
                     }));
                 }
-                rows.push(market_adapter::upsert(w::Order {
+                rows.push(upsert(w::Order {
                     id: format!("{}-bid:{currency}", item),
                     book: Some(w::BookKey {
                         venue_id: venue.into(),
@@ -287,7 +356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if action == "seed" {
-        rows.push(market_adapter::upsert(w::Order {
+        rows.push(upsert(w::Order {
             id: "execution-1".into(),
             book: Some(w::BookKey {
                 venue_id: "partner".into(),

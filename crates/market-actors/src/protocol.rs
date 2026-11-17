@@ -1,380 +1,346 @@
-//! Private adapters between actor contracts and replica/hub representations.
-use super::{
-    error::{DataError, Result},
-    models::*,
-};
+//! Gift projection at the generic replica boundary. Generic attributes stay private.
+use crate::error::{DataError, Result};
 use jiff::Timestamp;
+use market_gifts::*;
 use market_hub_protocol::wire as w;
 use std::collections::BTreeMap;
-fn missing() -> DataError {
-    DataError::unavailable("invalid market response")
+pub(crate) const MODEL: &str = "tg.model";
+pub(crate) const BACKDROP: &str = "tg.backdrop";
+pub(crate) const PATTERN: &str = "tg.pattern";
+pub(crate) const NUMBER: &str = "tg.number";
+pub(crate) fn invalid(value: impl std::fmt::Display) -> DataError {
+    DataError::unavailable(value.to_string())
 }
-fn required<T>(v: Option<T>) -> Result<T> {
-    v.ok_or_else(missing)
+fn required<T>(value: Option<T>) -> Result<T> {
+    value.ok_or_else(|| invalid("missing gift market field"))
 }
-fn time(ms: i64) -> Result<Timestamp> {
-    Timestamp::from_millisecond(ms).map_err(|_| missing())
+fn time(value: i64) -> Result<Timestamp> {
+    Timestamp::from_millisecond(value).map_err(invalid)
 }
-impl From<BookKey> for w::BookKey {
-    fn from(v: BookKey) -> Self {
-        Self {
-            venue_id: v.venue_id,
-            item_type_id: v.item_type_id,
-            currency_id: v.currency_id,
-        }
-    }
-}
-impl From<w::BookKey> for BookKey {
-    fn from(v: w::BookKey) -> Self {
-        Self {
-            venue_id: v.venue_id,
-            item_type_id: v.item_type_id,
-            currency_id: v.currency_id,
-        }
-    }
-}
-impl From<Mode> for w::OrderMode {
-    fn from(v: Mode) -> Self {
-        match v {
-            Mode::Ask => Self::Ask,
-            Mode::Bid => Self::Bid,
-            Mode::Executed => Self::Executed,
-        }
-    }
-}
-impl From<Sort> for w::ReadSort {
-    fn from(v: Sort) -> Self {
-        match v {
-            Sort::Identity => Self::Identity,
-            Sort::PriceAsc => Self::PriceAsc,
-            Sort::PriceDesc => Self::PriceDesc,
-            Sort::TimeAsc => Self::TimeAsc,
-            Sort::TimeDesc => Self::TimeDesc,
-            Sort::NumberAsc => Self::NumberAsc,
-            Sort::NumberDesc => Self::NumberDesc,
-        }
-    }
-}
-impl TryFrom<AttributeValue> for w::AttributeValue {
-    type Error = DataError;
-    fn try_from(v: AttributeValue) -> Result<Self> {
-        use w::attribute_value::Value as V;
-        Ok(Self {
-            value: Some(match v {
-                AttributeValue::Enum { value: v } => V::OptionId(v),
-                AttributeValue::Integer { value: v } => V::Integer(
-                    v.parse()
-                        .map_err(|_| DataError::invalid("invalid integer attribute"))?,
-                ),
-                AttributeValue::Decimal { value: v } => V::Decimal(v),
-                AttributeValue::Boolean { value: v } => V::Boolean(v),
-                AttributeValue::Text { value: v } => V::Text(v),
-                AttributeValue::Timestamp { value: v } => V::TimestampMs(v.as_millisecond()),
-                AttributeValue::List { value: v } => V::List(w::AttributeValues {
-                    values: v
-                        .into_iter()
-                        .map(TryInto::try_into)
-                        .collect::<Result<_>>()?,
-                }),
-                AttributeValue::Object { value: v } => V::Object(w::AttributeObject {
-                    fields: v
-                        .into_iter()
-                        .map(|(k, v)| Ok((k, v.try_into()?)))
-                        .collect::<Result<_>>()?,
-                }),
-            }),
-        })
-    }
-}
-impl TryFrom<w::AttributeValue> for AttributeValue {
-    type Error = DataError;
-    fn try_from(v: w::AttributeValue) -> Result<Self> {
-        use w::attribute_value::Value as V;
-        Ok(match required(v.value)? {
-            V::OptionId(v) => Self::Enum { value: v },
-            V::Integer(v) => Self::Integer {
-                value: v.to_string(),
-            },
-            V::Decimal(v) => Self::Decimal { value: v },
-            V::Boolean(v) => Self::Boolean { value: v },
-            V::Text(v) => Self::Text { value: v },
-            V::TimestampMs(v) => Self::Timestamp { value: time(v)? },
-            V::List(v) => Self::List {
-                value: v
-                    .values
-                    .into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_>>()?,
-            },
-            V::Object(v) => Self::Object {
-                value: v
-                    .fields
-                    .into_iter()
-                    .map(|(k, v)| Ok((k, v.try_into()?)))
-                    .collect::<Result<_>>()?,
-            },
-        })
-    }
-}
-fn encode(v: BTreeMap<String, Predicate>) -> Result<BTreeMap<String, w::AttributePredicate>> {
-    v.into_iter().map(|(k, v)| Ok((k, v.try_into()?))).collect()
-}
-fn decode(v: BTreeMap<String, w::AttributePredicate>) -> Result<BTreeMap<String, Predicate>> {
-    v.into_iter().map(|(k, v)| Ok((k, v.try_into()?))).collect()
-}
-impl TryFrom<Predicate> for w::AttributePredicate {
-    type Error = DataError;
-    fn try_from(v: Predicate) -> Result<Self> {
-        use w::attribute_predicate::Predicate as P;
-        Ok(Self {
-            predicate: Some(match v {
-                Predicate::Eq { value } => P::Eq(value.try_into()?),
-                Predicate::OneOf { values } => P::OneOf(w::AttributeValues {
-                    values: values
-                        .into_iter()
-                        .map(TryInto::try_into)
-                        .collect::<Result<_>>()?,
-                }),
-                Predicate::Range { min, max } => P::Range(w::AttributeRange {
-                    min: min.map(TryInto::try_into).transpose()?,
-                    max: max.map(TryInto::try_into).transpose()?,
-                }),
-                Predicate::Object { fields } => P::Object(w::ObjectPredicate {
-                    fields: encode(fields)?,
-                }),
-                Predicate::Contains {
-                    predicate,
-                    min_count,
-                    max_count,
-                } => P::Contains(Box::new(w::ContainsPredicate {
-                    predicate: Some(Box::new((*predicate).try_into()?)),
-                    min_count,
-                    max_count,
-                })),
-                Predicate::AllOf { predicates } => P::AllOf(w::AttributePredicates {
-                    predicates: predicates
-                        .into_iter()
-                        .map(TryInto::try_into)
-                        .collect::<Result<_>>()?,
-                }),
-            }),
-        })
-    }
-}
-impl TryFrom<w::AttributePredicate> for Predicate {
-    type Error = DataError;
-    fn try_from(v: w::AttributePredicate) -> Result<Self> {
-        use w::attribute_predicate::Predicate as P;
-        Ok(match required(v.predicate)? {
-            P::Eq(value) => Self::Eq {
-                value: value.try_into()?,
-            },
-            P::OneOf(v) => Self::OneOf {
-                values: v
-                    .values
-                    .into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_>>()?,
-            },
-            P::Range(v) => Self::Range {
-                min: v.min.map(TryInto::try_into).transpose()?,
-                max: v.max.map(TryInto::try_into).transpose()?,
-            },
-            P::Object(v) => Self::Object {
-                fields: decode(v.fields)?,
-            },
-            P::Contains(v) => Self::Contains {
-                predicate: Box::new((*required(v.predicate)?).try_into()?),
-                min_count: v.min_count,
-                max_count: v.max_count,
-            },
-            P::AllOf(v) => Self::AllOf {
-                predicates: v
-                    .predicates
-                    .into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_>>()?,
-            },
-        })
-    }
-}
-impl TryFrom<Scope> for w::Scope {
-    type Error = DataError;
-    fn try_from(v: Scope) -> Result<Self> {
-        Ok(Self {
-            venue_id: v.venue_id,
-            item_type_id: v.item_type_id,
-            currency_id: v.currency_id,
-            modes: v
-                .modes
-                .into_iter()
-                .map(|v| w::OrderMode::from(v) as i32)
-                .collect(),
-            attributes: encode(v.attributes)?,
-            price: v.price.map(|p| w::PriceRange {
-                min: p.min,
-                max: p.max,
-            }),
-        })
-    }
-}
-impl TryFrom<w::Order> for Order {
-    type Error = DataError;
-    fn try_from(v: w::Order) -> Result<Self> {
-        Ok(Self {
-            id: v.id,
-            book: required(v.book)?.into(),
-            mode: match w::OrderMode::try_from(v.mode).map_err(|_| missing())? {
-                w::OrderMode::Ask => Mode::Ask,
-                w::OrderMode::Bid => Mode::Bid,
-                w::OrderMode::Executed => Mode::Executed,
-                _ => return Err(missing()),
-            },
-            item_id: v.item_id,
-            attributes: decode(v.attributes)?,
-            price: v.price,
-            quantity: v.quantity,
-            observed_at: time(v.observed_at_ms)?,
-            expires_at: v.expires_at_ms.map(time).transpose()?,
-            executed_at: v.executed_at_ms.map(time).transpose()?,
-            parent_order_id: v.parent_order_id,
-            meta: v.meta,
-        })
-    }
-}
-pub fn orders(result: market_replica::ReadResult) -> Result<Page<Order>> {
-    let v = result.page;
-    Ok(Page {
-        sync: result.sync.into(),
-        data: v
-            .entities
-            .into_iter()
-            .map(|e| match required(e.entity)? {
-                w::entity::Entity::Order(o) => o.try_into(),
-                _ => Err(missing()),
-            })
-            .collect::<Result<_>>()?,
-        next_page_token: v.next_page_token,
-        cursor: v.cursor,
+pub(crate) fn book(value: w::BookKey) -> Result<GiftBook> {
+    Ok(GiftBook {
+        venue_id: value.venue_id.try_into().map_err(invalid)?,
+        collection_id: value.item_type_id.try_into().map_err(invalid)?,
+        currency_id: value.currency_id.try_into().map_err(invalid)?,
     })
 }
-fn aliases(v: Vec<w::ExternalId>) -> Vec<Alias> {
-    v.into_iter()
-        .map(|v| Alias {
-            namespace: v.namespace,
-            id: v.id,
-        })
-        .collect()
+pub(crate) fn sync(value: market_replica::SyncStatus) -> Result<SyncStatus> {
+    Ok(SyncStatus {
+        ready: value.ready,
+        state: match value.state {
+            market_replica::SyncState::Starting => SyncState::Starting,
+            market_replica::SyncState::Syncing => SyncState::Syncing,
+            market_replica::SyncState::Live => SyncState::Live,
+            market_replica::SyncState::Stale => SyncState::Stale,
+        },
+        updated_at: value.updated_at.map(time).transpose()?,
+    })
 }
-fn rules(v: BTreeMap<String, w::AttributeRule>) -> BTreeMap<String, AttributeRule> {
-    v.into_iter()
-        .map(|(k, v)| {
-            (
-                k,
-                AttributeRule {
-                    required: v.required,
-                    allowed_values: v.allowed_values.map(|v| v.ids),
+fn required_option(value: w::AttributeValue) -> Result<String> {
+    match required(value.value)? {
+        w::attribute_value::Value::OptionId(id) => Ok(id),
+        _ => Err(invalid("gift trait must reference a catalog option")),
+    }
+}
+fn options(value: w::AttributePredicate) -> Result<Vec<String>> {
+    use w::attribute_predicate::Predicate as P;
+    let mut ids = match required(value.predicate)? {
+        P::Eq(value) => vec![required_option(value)?],
+        P::OneOf(values) if !values.values.is_empty() => values
+            .values
+            .into_iter()
+            .map(required_option)
+            .collect::<Result<_>>()?,
+        _ => return Err(invalid("unsupported gift trait constraint")),
+    };
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+fn number(value: w::AttributeValue) -> Result<u32> {
+    match required(value.value)? {
+        w::attribute_value::Value::Integer(value) => u32::try_from(value)
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| invalid("gift number must be positive")),
+        _ => Err(invalid("gift number must be an integer")),
+    }
+}
+fn number_range(value: w::AttributePredicate) -> Result<GiftNumberRange> {
+    use w::attribute_predicate::Predicate as P;
+    let range = match required(value.predicate)? {
+        P::Eq(value) => {
+            let n = number(value)?;
+            GiftNumberRange {
+                min: Some(n),
+                max: Some(n),
+            }
+        }
+        P::Range(value) => GiftNumberRange {
+            min: value.min.map(number).transpose()?,
+            max: value.max.map(number).transpose()?,
+        },
+        _ => return Err(invalid("unsupported gift number constraint")),
+    };
+    if range.min.zip(range.max).is_some_and(|(min, max)| min > max) {
+        return Err(invalid("invalid gift number range"));
+    }
+    Ok(range)
+}
+fn criteria(attributes: BTreeMap<String, w::AttributePredicate>) -> Result<GiftCriteria> {
+    let mut result = GiftCriteria::default();
+    for (key, value) in attributes {
+        match key.as_str() {
+            MODEL => {
+                result.models = options(value)?
+                    .into_iter()
+                    .map(|v| v.try_into().map_err(invalid))
+                    .collect::<Result<_>>()?
+            }
+            BACKDROP => {
+                result.backdrops = options(value)?
+                    .into_iter()
+                    .map(|v| v.try_into().map_err(invalid))
+                    .collect::<Result<_>>()?
+            }
+            PATTERN => {
+                result.patterns = options(value)?
+                    .into_iter()
+                    .map(|v| v.try_into().map_err(invalid))
+                    .collect::<Result<_>>()?
+            }
+            NUMBER => result.number = Some(number_range(value)?),
+            _ => return Err(invalid("gift has additional unsupported constraints")),
+        }
+    }
+    Ok(result)
+}
+fn target(
+    id: Option<String>,
+    collection_id: CollectionId,
+    attributes: BTreeMap<String, w::AttributePredicate>,
+) -> GiftTarget {
+    let criteria = match criteria(attributes) {
+        Ok(value) => value,
+        Err(error) => {
+            return GiftTarget::Unsupported {
+                reason: error.message().to_owned(),
+            };
+        }
+    };
+    match id {
+        None => GiftTarget::Criteria { criteria },
+        Some(id) => {
+            let number = criteria
+                .number
+                .as_ref()
+                .and_then(|range| range.min.zip(range.max))
+                .filter(|(min, max)| min == max)
+                .map(|(min, _)| min);
+            if criteria.models.len() > 1
+                || criteria.backdrops.len() > 1
+                || criteria.patterns.len() > 1
+                || (criteria.number.is_some() && number.is_none())
+            {
+                return GiftTarget::Unsupported {
+                    reason: "identified gift has non-concrete traits".into(),
+                };
+            }
+            match id.try_into() {
+                Ok(id) => GiftTarget::Gift {
+                    gift: CollectibleGift {
+                        id,
+                        collection_id,
+                        number,
+                        traits: GiftTraits {
+                            model: criteria.models.into_iter().next(),
+                            backdrop: criteria.backdrops.into_iter().next(),
+                            pattern: criteria.patterns.into_iter().next(),
+                        },
+                    },
                 },
-            )
-        })
-        .collect()
-}
-pub fn catalog(result: market_replica::ReadResult) -> Result<Page<CatalogEntry>> {
-    let v = result.page;
-    Ok(Page {
-        sync: result.sync.into(),
-        data: v
-            .entities
-            .into_iter()
-            .map(|e| {
-                use w::entity::Entity as E;
-                Ok(match required(e.entity)? {
-                    E::Venue(v) => CatalogEntry::Venue {
-                        id: v.id,
-                        name: v.name,
-                    },
-                    E::Currency(v) => CatalogEntry::Currency {
-                        id: v.id,
-                        name: v.name,
-                        decimals: v.decimals,
-                    },
-                    E::ItemType(v) => CatalogEntry::ItemType {
-                        id: v.id,
-                        name: v.name,
-                        quantity_step: v.quantity_step,
-                        aliases: aliases(v.aliases),
-                        attributes: rules(v.attributes),
-                    },
-                    E::Attribute(v) => CatalogEntry::Attribute {
-                        id: v.id,
-                        name: v.name,
-                        value_type: w::AttributeType::try_from(v.value_type)
-                            .map_err(|_| missing())?
-                            .as_str_name()
-                            .trim_start_matches("ATTRIBUTE_TYPE_")
-                            .to_lowercase(),
-                        minimum: v.minimum.map(TryInto::try_into).transpose()?,
-                        maximum: v.maximum.map(TryInto::try_into).transpose()?,
-                        max_length: v.max_length,
-                        element: v.element,
-                        fields: rules(v.fields),
-                    },
-                    E::AttributeOption(v) => CatalogEntry::AttributeOption {
-                        id: v.id,
-                        name: v.name,
-                        attribute_id: v.attribute_id,
-                        aliases: aliases(v.aliases),
-                        meta: v.meta,
-                    },
-                    E::Feed(v) => CatalogEntry::Feed {
-                        id: v.id,
-                        books: v.books.into_iter().map(Into::into).collect(),
-                        modes: v
-                            .modes
-                            .into_iter()
-                            .map(|mode| match w::OrderMode::try_from(mode) {
-                                Ok(w::OrderMode::Ask) => Ok(Mode::Ask),
-                                Ok(w::OrderMode::Bid) => Ok(Mode::Bid),
-                                Ok(w::OrderMode::Executed) => Ok(Mode::Executed),
-                                _ => Err(missing()),
-                            })
-                            .collect::<Result<_>>()?,
-                        attributes: decode(v.attributes)?,
-                        last_verified_at: v.last_verified_at_ms.map(time).transpose()?,
-                    },
-                    _ => return Err(missing()),
-                })
-            })
-            .collect::<Result<_>>()?,
-        next_page_token: v.next_page_token,
-        cursor: v.cursor,
-    })
-}
-
-impl From<CatalogKind> for w::EntityKind {
-    fn from(value: CatalogKind) -> Self {
-        match value {
-            CatalogKind::Venue => w::EntityKind::Venue,
-            CatalogKind::Currency => w::EntityKind::Currency,
-            CatalogKind::ItemType => w::EntityKind::ItemType,
-            CatalogKind::Attribute => w::EntityKind::Attribute,
-            CatalogKind::AttributeOption => w::EntityKind::AttributeOption,
-            CatalogKind::Feed => w::EntityKind::Feed,
+                Err(_) => GiftTarget::Unsupported {
+                    reason: "invalid collectible gift ID".into(),
+                },
+            }
         }
     }
 }
+pub(crate) fn order(value: w::Order) -> Result<GiftOrder> {
+    let book = book(required(value.book)?)?;
+    let decimal = rust_decimal::Decimal::from_str_exact(&value.quantity)
+        .map_err(invalid)?
+        .normalize();
+    let quantity: u32 = decimal
+        .to_string()
+        .parse()
+        .ok()
+        .filter(|q| *q > 0)
+        .ok_or_else(|| invalid("gift quantity must be a positive integer"))?;
+    let market_url = ["url", "listing_url", "market_url", "link"]
+        .into_iter()
+        .find_map(|key| value.meta.get(key).cloned());
+    Ok(GiftOrder {
+        id: value.id.try_into().map_err(invalid)?,
+        target: target(value.item_id, book.collection_id.clone(), value.attributes),
+        book,
+        mode: match w::OrderMode::try_from(value.mode) {
+            Ok(w::OrderMode::Ask) => GiftOrderKind::Ask,
+            Ok(w::OrderMode::Bid) => GiftOrderKind::Bid,
+            Ok(w::OrderMode::Executed) => GiftOrderKind::Executed,
+            _ => return Err(invalid("unknown gift order kind")),
+        },
+        price: value.price.try_into().map_err(invalid)?,
+        quantity,
+        observed_at: time(value.observed_at_ms)?,
+        expires_at: value.expires_at_ms.map(time).transpose()?,
+        executed_at: value.executed_at_ms.map(time).transpose()?,
+        parent_order_id: value
+            .parent_order_id
+            .map(TryInto::try_into)
+            .transpose()
+            .map_err(invalid)?,
+        market_url,
+    })
+}
+pub(crate) fn orders(result: market_replica::ReadResult) -> Result<Page<GiftOrder>> {
+    Ok(Page {
+        sync: sync(result.sync)?,
+        cursor: result.page.cursor,
+        next_page_token: result.page.next_page_token,
+        data: result
+            .page
+            .entities
+            .into_iter()
+            .map(|entity| match required(entity.entity)? {
+                w::entity::Entity::Order(value) => order(value),
+                _ => Err(invalid("expected a gift order")),
+            })
+            .collect::<Result<_>>()?,
+    })
+}
 
-impl From<market_replica::SyncStatus> for SyncStatus {
-    fn from(value: market_replica::SyncStatus) -> Self {
-        Self {
-            ready: value.ready,
-            state: match value.state {
-                market_replica::SyncState::Starting => SyncState::Starting,
-                market_replica::SyncState::Syncing => SyncState::Syncing,
-                market_replica::SyncState::Live => SyncState::Live,
-                market_replica::SyncState::Stale => SyncState::Stale,
-            },
-            updated_at: value.updated_at,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn eq(value: w::attribute_value::Value) -> w::AttributePredicate {
+        w::AttributePredicate {
+            predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                value: Some(value),
+            })),
         }
+    }
+    fn fixture() -> w::Order {
+        w::Order {
+            id: "order".into(),
+            book: Some(w::BookKey {
+                venue_id: "venue".into(),
+                item_type_id: "collection".into(),
+                currency_id: "GRAM".into(),
+            }),
+            mode: w::OrderMode::Ask as i32,
+            item_id: Some("9007199254740993".into()),
+            price: "10000000000000000.000000001".into(),
+            quantity: "1.00".into(),
+            attributes: [
+                (
+                    MODEL.into(),
+                    eq(w::attribute_value::Value::OptionId("model".into())),
+                ),
+                (NUMBER.into(), eq(w::attribute_value::Value::Integer(42))),
+            ]
+            .into(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn projection_preserves_exact_amounts_and_distinct_concrete_identity() {
+        let projected = order(fixture()).unwrap();
+        assert_eq!(projected.price.as_str(), "10000000000000000.000000001");
+        assert_eq!(projected.quantity, 1);
+        let GiftTarget::Gift { gift } = projected.target else {
+            panic!("expected concrete gift")
+        };
+        assert_eq!(gift.id.as_str(), "9007199254740993");
+        assert_eq!(gift.number, Some(42));
+        assert_eq!(gift.traits.model.as_deref(), Some("model"));
+        let mut conditional = fixture();
+        conditional.item_id = None;
+        conditional.mode = w::OrderMode::Bid as i32;
+        assert!(matches!(
+            order(conditional).unwrap().target,
+            GiftTarget::Criteria { .. }
+        ));
+    }
+    #[test]
+    fn unsupported_or_nonconcrete_conditions_are_never_reported_as_any_or_as_a_collectible() {
+        let mut unknown = fixture();
+        unknown.attributes.insert(
+            "future.condition".into(),
+            eq(w::attribute_value::Value::Boolean(true)),
+        );
+        assert!(matches!(
+            order(unknown).unwrap().target,
+            GiftTarget::Unsupported { .. }
+        ));
+        let mut multiple = fixture();
+        multiple.attributes.insert(
+            MODEL.into(),
+            w::AttributePredicate {
+                predicate: Some(w::attribute_predicate::Predicate::OneOf(
+                    w::AttributeValues {
+                        values: vec![
+                            w::AttributeValue {
+                                value: Some(w::attribute_value::Value::OptionId("a".into())),
+                            },
+                            w::AttributeValue {
+                                value: Some(w::attribute_value::Value::OptionId("b".into())),
+                            },
+                        ],
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            order(multiple.clone()).unwrap().target,
+            GiftTarget::Unsupported { .. }
+        ));
+        multiple.item_id = None;
+        let GiftTarget::Criteria { criteria } = order(multiple).unwrap().target else {
+            panic!("expected selection")
+        };
+        assert_eq!(criteria.models.len(), 2);
+        let mut fractional = fixture();
+        fractional.quantity = "1.5".into();
+        assert!(order(fractional).is_err());
+        let mut negative = fixture();
+        negative.price = "-1".into();
+        assert!(order(negative).is_err());
+    }
+    #[test]
+    fn gift_filters_compile_to_canonical_hub_constraints_and_validate_ranges() {
+        let mut query = GiftOrdersQuery::new(GiftFilters::new("collection".into(), "GRAM".into()));
+        query.filters.models = vec!["b".into(), "a".into(), "a".into()];
+        query.filters.number = Some(GiftNumberRange {
+            min: Some(1),
+            max: Some(100),
+        });
+        let request = crate::query::orders(query.clone(), w::ReadMode::Live).unwrap();
+        let Some(w::selection::Source::Scope(scope)) = request.selection.unwrap().source else {
+            panic!("missing scope")
+        };
+        assert_eq!(scope.item_type_id.as_deref(), Some("collection"));
+        let Some(w::attribute_predicate::Predicate::OneOf(values)) =
+            &scope.attributes[MODEL].predicate
+        else {
+            panic!("missing models")
+        };
+        assert_eq!(values.values.len(), 2);
+        let mut invalid = query;
+        invalid.filters.number = Some(GiftNumberRange {
+            min: Some(100),
+            max: Some(1),
+        });
+        assert!(crate::query::orders(invalid, w::ReadMode::Live).is_err());
     }
 }

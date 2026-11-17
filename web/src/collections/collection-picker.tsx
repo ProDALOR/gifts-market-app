@@ -164,7 +164,7 @@ export const CollectionRail = memo(function CollectionRail({
       </div>
       <div className="collection-list" ref={rail}>
         {matches.map((item) => {
-          const model = item.attributes["tg.model"]?.allowed_values?.[0];
+          const media = item.preview;
           return (
             <button
               ref={item.id === selected ? selectedButton : undefined}
@@ -179,10 +179,10 @@ export const CollectionRail = memo(function CollectionRail({
               }}
             >
               <span className="collection-art">
-                {model ? (
+                {media ? (
                   <GiftArtwork
-                    key={model}
-                    url={`/media/models/${encodeURIComponent(model)}`}
+                    key={media.thumbnail_url}
+                    media={media}
                     fallback={item.name[0]}
                     label={item.name}
                     playback="collection"

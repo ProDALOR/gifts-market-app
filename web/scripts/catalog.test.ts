@@ -1,77 +1,136 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CatalogOptionsCache } from "../src/catalog/options-cache.ts";
+import { CollectionCatalogCache } from "../src/catalog/collection-cache.ts";
 import { collectionOptions } from "../src/catalog/selectors.ts";
-import type { Collection, CatalogOption } from "../src/orderbook.ts";
-const collection = (id: string, ids: string[]) =>
-  ({ id, attributes: { "tg.model": { allowed_values: ids } } }) as Collection;
-const option = (id: string) =>
-  ({
-    kind: "attribute_option",
-    id,
-    name: id,
-    attribute_id: "tg.model",
-  }) as CatalogOption;
+import type { Collection, CollectionCatalog } from "../src/market.ts";
+const collection = (
+  id: string,
+  ids: string[],
+): Collection & { models: string[] } => ({
+  id,
+  name: id,
+  preview: null,
+  models: ids,
+});
 const signal = () => new AbortController().signal;
-test("catalog visits reuse completed loads and metadata changes invalidate them", async () => {
+const result = (
+  gift: Collection & { models: string[] },
+): CollectionCatalog => ({
+  collection: gift,
+  models: (gift.models || []).map((id) => ({ id, name: id, media: null })),
+  backdrops: [],
+  patterns: [],
+  cursor: "test",
+  sync: { ready: true, state: "live", updated_at: null },
+});
+test("collection visits reuse complete responses and catalog changes invalidate them", async () => {
   let calls = 0;
-  const cache = new CatalogOptionsCache(async (_kind, _signal, ids) => {
+  const definitions = new Map([
+    ["gift", collection("gift", ["a", "b"])],
+    ["other", collection("other", ["c"])],
+  ]);
+  const cache = new CollectionCatalogCache(async (id) => {
     calls++;
-    return ids!.map(option);
+    return result(definitions.get(id)!);
   });
-  const first = collection("gift", ["a", "b"]),
-    second = collection("other", ["c"]);
+  const first = definitions.get("gift")!,
+    second = definitions.get("other")!;
   await cache.load(first, signal());
   await cache.load(second, signal());
   await cache.load({ ...first }, signal());
   assert.equal(calls, 2);
   assert.deepEqual(
-    collectionOptions(first, "tg.model", cache.options).map((row) => row.id),
+    collectionOptions(first, "models", cache.options).map((row) => row.id),
     ["a", "b"],
   );
-  await cache.load(collection("gift", ["a", "b", "d"]), signal());
+  const changed = { ...collection("gift", ["a", "b", "d"]), name: "Changed" };
+  definitions.set("gift", changed);
+  await cache.load(changed, signal());
   assert.equal(calls, 3);
 });
-test("failed or aborted catalog batches never commit incomplete choices and can retry", async () => {
-  const stop = new AbortController();
-  let attempt = 0;
-  const gift = collection(
-    "gift",
-    Array.from({ length: 501 }, (_, i) => String(i)),
-  );
-  const cache = new CatalogOptionsCache(async (_kind, _signal, ids) => {
-    if (++attempt === 2) throw Error("temporary failure");
-    return ids!.map(option);
+test("failed or cancelled collection responses do not commit and remain retryable", async () => {
+  let calls = 0;
+  const gift = collection("gift", ["a", "b"]);
+  const cache = new CollectionCatalogCache(async () => {
+    if (++calls === 1) throw Error("temporary");
+    return result(gift);
   });
   await assert.rejects(cache.load(gift, signal()), /temporary/);
   assert.equal(cache.options.size, 0);
   await cache.load(gift, signal());
-  assert.equal(cache.options.size, 501);
-  const abandoned = new CatalogOptionsCache(async () => {
+  assert.equal(cache.options.size, 2);
+  const stop = new AbortController();
+  const abandoned = new CollectionCatalogCache(async () => {
     stop.abort();
-    return [option("x")];
+    return result(gift);
   });
-  await assert.rejects(
-    abandoned.load(collection("abandoned", ["x"]), stop.signal),
-  );
+  await assert.rejects(abandoned.load(gift, stop.signal));
   assert.equal(abandoned.options.size, 0);
 });
-test("numeric facts never trigger a full option scan, and choice batches match API pages", async () => {
-  const calls: string[][] = [];
+test("one typed collection request loads large model catalogs without generic fan-out", async () => {
+  let calls = 0;
   const gift = collection(
     "gift",
-    Array.from({ length: 297 }, (_, i) => String(i)),
+    Array.from({ length: 700 }, (_, i) => String(i)),
   );
-  gift.attributes["tg.number"] = { required: false };
-  const cache = new CatalogOptionsCache(async (_kind, _signal, ids) => {
-    assert.ok(ids?.length, "Only explicitly requested choice IDs are loaded");
-    calls.push(ids);
-    return ids.map(option);
+  const cache = new CollectionCatalogCache(async (id) => {
+    calls++;
+    assert.equal(id, gift.id);
+    return result(gift);
   });
   await cache.load(gift, signal());
-  assert.deepEqual(
-    calls.map((ids) => ids.length),
-    [200, 97],
+  assert.equal(calls, 1);
+  assert.equal(cache.options.size, 700);
+});
+
+test("only the active collection exposes options while other visits stay cached", async () => {
+  let models = ["old"];
+  const cache = new CollectionCatalogCache(async (id) =>
+    result(collection(id, id === "gift" ? models : ["other-model"])),
   );
-  assert.equal(cache.options.size, 297);
+  await cache.load(collection("gift", ["old"]), signal());
+  await cache.load(collection("other", ["other-model"]), signal());
+  models = ["new"];
+  await cache.load(
+    { ...collection("gift", ["new"]), name: "Updated" },
+    signal(),
+  );
+  assert.deepEqual([...cache.options.keys()].sort(), ["new"]);
+});
+
+test("newer collection responses win when cached collections share an option", async () => {
+  let name = "Old";
+  const cache = new CollectionCatalogCache(async (id) => ({
+    ...result(collection(id, ["shared"])),
+    models: [{ id: "shared", name, media: null }],
+  }));
+  const first = collection("first", ["shared"]);
+  await cache.load(first, signal());
+  await cache.load(collection("second", ["shared"]), signal());
+  name = "Updated";
+  await cache.load({ ...first, name: "New catalog definition" }, signal());
+  assert.equal(cache.options.get("shared")?.name, "Updated");
+});
+
+test("collection cache evicts least recent entries and bounds retained choices", async () => {
+  const calls: string[] = [];
+  const cache = new CollectionCatalogCache(async (id) => {
+    calls.push(id);
+    return result(collection(id, [id]));
+  });
+  for (let i = 0; i < 9; i++)
+    await cache.load(collection(String(i), [String(i)]), signal());
+  await cache.load(collection("1", ["1"]), signal());
+  assert.equal(calls.length, 9);
+  assert.deepEqual([...cache.options.keys()], ["1"]);
+  await cache.load(collection("0", ["0"]), signal());
+  assert.equal(calls.length, 10);
+  const huge = collection(
+    "huge",
+    Array.from({ length: 10001 }, (_, i) => `m${i}`),
+  );
+  const large = new CollectionCatalogCache(async () => result(huge));
+  await large.load(huge, signal());
+  await large.load(huge, signal()); // oversized response is usable but not retained
+  assert.equal(large.options.size, 10001);
 });

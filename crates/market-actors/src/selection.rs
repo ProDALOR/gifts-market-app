@@ -26,6 +26,7 @@ pub(crate) fn orders(request: &w::ReadRequest) -> Result<(), Status> {
         ))
     }
 }
+#[cfg(test)]
 pub(crate) fn catalog(request: &w::ReadRequest) -> Result<(), Status> {
     let selection = request
         .selection

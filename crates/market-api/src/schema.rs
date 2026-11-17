@@ -7,9 +7,9 @@ use utoipa::OpenApi;
         crate::routes::health,
         crate::routes::ready,
         crate::routes::sync,
-        crate::routes::books,
         crate::routes::catalog,
-        crate::routes::list_catalog,
+        crate::routes::collection,
+        crate::routes::portfolio,
         crate::routes::orders,
         crate::routes::executions,
         crate::media::model_thumbnail,
@@ -17,8 +17,17 @@ use utoipa::OpenApi;
         crate::media::model_animation,
         crate::websocket::connect
     ),
-    components(schemas(Command, ServerFrame, AttributeValue)),
-    info(title = "Market App", version = "0.1.0")
+    tags(
+        (name="Catalog",description="Discover gift collections and their traits."),
+        (name="Orders",description="Current asks and bids with exact prices and keyset pagination."),
+        (name="History",description="Confirmed executions. Disappearing listings do not imply sales."),
+        (name="Portfolio",description="Model-floor estimates from current asks."),
+        (name="Media",description="Cached Telegram gift thumbnails, animations and patterns."),
+        (name="Health",description="Process health, replica readiness and freshness."),
+        (name="WebSocket",description="See /docs/ws for live-message documentation and a test console.")
+    ),
+    components(schemas(Command, ServerFrame)),
+    info(title = "Market App", description = "Read-only gift markets served from a synchronized local replica. Start with /catalog for collection and currency IDs, then use /collections/{id} for model, backdrop and pattern choices. Prices are exact decimal strings; paged reads include synchronization status. Live message documentation and an interactive subscription console are available at /docs/ws. Public market reads need no hub credentials or Telegram login.")
 )]
 struct MarketDoc;
 pub struct ApiDoc;
@@ -34,6 +43,23 @@ impl OpenApi for ApiDoc {
         doc
     }
 }
+fn encoded(
+    cache: &'static std::sync::OnceLock<actix_web::web::Bytes>,
+    build: fn() -> serde_json::Result<String>,
+) -> actix_web::web::Bytes {
+    cache
+        .get_or_init(|| build().expect("public schema serializes").into())
+        .clone()
+}
 pub(crate) async fn schema() -> HttpResponse {
-    HttpResponse::Ok().json(ApiDoc::openapi())
+    static SCHEMA: std::sync::OnceLock<actix_web::web::Bytes> = std::sync::OnceLock::new();
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .body(encoded(&SCHEMA, crate::schema_json))
+}
+pub(crate) async fn async_schema() -> HttpResponse {
+    static SCHEMA: std::sync::OnceLock<actix_web::web::Bytes> = std::sync::OnceLock::new();
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .body(encoded(&SCHEMA, crate::asyncapi_json))
 }

@@ -112,6 +112,10 @@ fn page(price: &str) -> w::Page {
                     id: "tg.gift.123".into(),
                     name: "Gift".into(),
                     quantity_step: "1".into(),
+                    aliases: vec![w::ExternalId {
+                        namespace: "tg".into(),
+                        id: "123".into(),
+                    }],
                     ..Default::default()
                 })),
             },
@@ -123,14 +127,13 @@ fn page(price: &str) -> w::Page {
                     price: price.into(),
                     quantity: "1".into(),
                     observed_at_ms: 1800000000123,
+                    item_id: Some("9007199254740993".into()),
                     attributes: [(
-                        "number".into(),
+                        "tg.number".into(),
                         w::AttributePredicate {
                             predicate: Some(w::attribute_predicate::Predicate::Eq(
                                 w::AttributeValue {
-                                    value: Some(w::attribute_value::Value::Integer(
-                                        9007199254740993,
-                                    )),
+                                    value: Some(w::attribute_value::Value::Integer(123)),
                                 },
                             )),
                         },
@@ -221,18 +224,18 @@ async fn setup() -> (MarketApi, TestMarket, Peer, CancellationToken) {
             .unwrap()
     });
     let runtime = TestMarket::open(peer._directory.path(), node).await;
-    let gateway = MarketApi::new(runtime.data.clone());
+    let api = MarketApi::new(runtime.data.clone());
     tokio::time::timeout(Duration::from_secs(5), async {
-        while gateway.ready().await.is_err() {
+        while api.ready().await.is_err() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
-    (gateway, runtime, peer, stop)
+    (api, runtime, peer, stop)
 }
 fn query() -> serde_json::Value {
-    serde_json::json!({"scope":{"item_type_id":"tg.gift.123","currency_id":"GRAM","modes":["ask"]},"limit":25})
+    serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"side":"ask","limit":25})
 }
 #[actix_web::test]
 async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_credentials() {
@@ -254,10 +257,7 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     assert!(response.status().is_success());
     let body: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(body["data"][0]["price"], "1.000000001");
-    assert_eq!(
-        body["data"][0]["attributes"]["number"]["value"]["value"],
-        "9007199254740993"
-    );
+    assert_eq!(body["data"][0]["target"]["gift"]["number"], 123);
     assert!(
         body["data"][0]["observed_at"]
             .as_str()
@@ -279,8 +279,8 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
             404
         );
     }
-    assert_eq!(test::call_service(&app,test::TestRequest::post().uri("/orders/query").set_json(serde_json::json!({"scope":{"item_type_id":"tg.gift.123","currency_id":"GRAM","modes":["executed"]}})).to_request()).await.status(),400);
-    // REST and WebSocket requests use the same compiler, including scope defaults and limits.
+    assert_eq!(test::call_service(&app,test::TestRequest::post().uri("/orders/query").set_json(serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM","mode":"executed"}})).to_request()).await.status(),400);
+    // REST and WebSocket requests use the same compiler, including gift-filter defaults and limits.
     for limit in [0, 201] {
         let mut invalid = query();
         invalid["limit"] = limit.into();
@@ -299,15 +299,75 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     }
     let defaults: serde_json::Value = test::read_body_json(test::call_service(&app,
         test::TestRequest::post().uri("/orders/query")
-            .set_json(serde_json::json!({"scope":{"item_type_id":"tg.gift.123","currency_id":"GRAM"}}))
+            .set_json(serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"}}))
             .to_request()).await).await;
     assert_eq!(defaults["data"][0]["mode"], "ask");
     let directory: serde_json::Value = test::read_body_json(
-        test::call_service(&app, test::TestRequest::get().uri("/books").to_request()).await,
+        test::call_service(&app, test::TestRequest::get().uri("/catalog").to_request()).await,
     )
     .await;
-    assert_eq!(directory["data"][0]["currency_id"], "GRAM");
-    assert!(directory["next_after"].is_null());
+    assert_eq!(directory["books"][0]["currency_id"], "GRAM");
+    assert_eq!(directory["collections"][0]["name"], "Gift");
+    assert_eq!(directory["books"][0]["collection_id"], "tg.gift.123");
+    assert!(directory["books"][0].get("item_type_id").is_none());
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/collections/tg.gift.123")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let collection: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(collection["collection"]["id"], "tg.gift.123");
+    for field in ["models", "backdrops", "patterns"] {
+        assert!(collection[field].is_array());
+    }
+    assert_eq!(
+        test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/collections/missing")
+                .to_request()
+        )
+        .await
+        .status(),
+        404
+    );
+    for route in ["/catalog/query", "/executions/query"] {
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(route)
+                    .set_json(serde_json::json!({}))
+                    .to_request()
+            )
+            .await
+            .status(),
+            404
+        );
+    }
+    for invalid in [
+        serde_json::json!({"scope":{"item_type_id":"tg.gift.123","currency_id":"GRAM"}}),
+        serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM","attributes":{}}}),
+        serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM","number":{"min":0}}}),
+        serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM","price":{"min":"2","max":"1"}}}),
+    ] {
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri("/orders/query")
+                    .set_json(invalid)
+                    .to_request()
+            )
+            .await
+            .status(),
+            400
+        );
+    }
+
     let schema = test::call_service(
         &app,
         test::TestRequest::get().uri("/openapi.json").to_request(),
@@ -315,7 +375,12 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     .await;
     let schema: serde_json::Value = test::read_body_json(schema).await;
     assert!(schema["components"]["schemas"]["Command"].is_object());
-    assert!(schema["components"]["schemas"]["AttributeValue"].is_object());
+    assert!(schema["components"]["schemas"]["GiftTarget"].is_object());
+    assert!(
+        schema["components"]["schemas"]
+            .get("AttributeValue")
+            .is_none()
+    );
     assert!(schema["paths"]["/orders/query"].is_object());
     stop.cancel();
     runtime.shutdown().await.unwrap();
@@ -356,7 +421,7 @@ async fn public_websocket_queries_share_local_pages_and_one_replication_stream()
                     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
                     if value["type"] == "page" && value["page"]["data"][0]["price"] == price {
                         assert_eq!(
-                            value["page"]["data"][0]["attributes"]["number"]["value"]["value"],
+                            value["page"]["data"][0]["target"]["gift"]["id"],
                             "9007199254740993"
                         );
                         break;
@@ -381,8 +446,9 @@ async fn public_websocket_queries_share_local_pages_and_one_replication_stream()
         loop {
             if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = a.next().await {
                 let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-                if value["type"] == "page" && value["page"]["sync"]["state"] == "stale" {
-                    assert_eq!(value["page"]["data"][0]["price"], "2.000000002");
+                if value["type"] == "sync" && value["sync"]["state"] == "stale" {
+                    assert!(value.get("page").is_none());
+                    assert!(value["revision"].is_string());
                     break;
                 }
             }
@@ -401,8 +467,23 @@ async fn public_websocket_queries_share_local_pages_and_one_replication_stream()
 async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
     let value = ApiDoc::openapi();
     let json = value.to_json().unwrap();
-    assert!(json.contains("BookKey"));
-    assert!(!json.contains("Money"));
+    assert!(json.contains("GiftBook"));
+    for name in [
+        "BookKey",
+        "AttributeValue",
+        "Predicate",
+        "Scope",
+        "CatalogEntry",
+    ] {
+        assert!(
+            !value
+                .components
+                .as_ref()
+                .unwrap()
+                .schemas
+                .contains_key(name)
+        );
+    }
 }
 use market_api::ApiDoc;
 
@@ -482,7 +563,7 @@ async fn telegram_react_bridge_sign_in_launch_theme_back_button_and_reload() {
     let address = server.local_addr().unwrap();
     let api_stop = CancellationToken::new();
     let api_task = tokio::spawn(server.run(api_stop.child_token()));
-    let selection = "item=tg.gift.123&currency=GRAM&mode=ask&sort=price_desc&max=2";
+    let selection = "collection=tg.gift.123&currency=GRAM&mode=ask&sort=price_desc&max=2";
     let payload = format!("v_{}", URL_SAFE_NO_PAD.encode(selection));
     let values: std::collections::BTreeMap<String, String> = [
         (
@@ -625,9 +706,9 @@ async fn headless_server_normalizes_extractors_framework_errors_and_origin_polic
     let job = tokio::spawn(server.run(api_stop.child_token()));
     assert_eq!(http(address, "GET", "/healthz", "", "").await.0, 200);
     for (method, path, body, headers, status, code) in [
-        ("GET", "/books?limit=bad", "", "", 400, "invalid_query"),
-        ("GET", "/catalog/not_a_kind", "", "", 400, "invalid_query"),
-        ("GET", "/books?after=bad", "", "", 400, "invalid_query"),
+        ("GET", "/books?limit=bad", "", "", 404, "not_found"),
+        ("GET", "/catalog/not_a_kind", "", "", 404, "not_found"),
+        ("GET", "/collections/%20", "", "", 400, "invalid_query"),
         ("GET", "/missing", "", "", 404, "not_found"),
         ("GET", "/", "", "", 404, "not_found"),
         ("GET", "/assets/absent.js", "", "", 404, "not_found"),
@@ -904,4 +985,143 @@ async fn live_rest_continuations_do_not_consume_retained_snapshot_capacity() {
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
+}
+
+#[actix_web::test]
+async fn gift_query_schema_matches_flat_wire_filters_and_required_identities() {
+    use market_gifts::{GiftFilters, GiftHistoryQuery, GiftOrdersQuery};
+    let schema = serde_json::to_value(ApiDoc::openapi()).unwrap();
+    let filters = &schema["components"]["schemas"]["GiftFilters"];
+    assert_eq!(filters["type"], "object");
+    assert_eq!(filters["additionalProperties"], false);
+    assert!(
+        filters.get("allOf").is_none(),
+        "a closed flattened criteria schema rejects identity fields"
+    );
+    let wire = serde_json::to_value(GiftOrdersQuery::new(GiftFilters::new(
+        "gift".into(),
+        "GRAM".into(),
+    )))
+    .unwrap();
+    let properties = filters["properties"].as_object().unwrap();
+    let keys: std::collections::BTreeSet<_> = wire["filters"].as_object().unwrap().keys().collect();
+    assert_eq!(keys, properties.keys().collect());
+    let required = filters["required"].as_array().unwrap();
+    for key in ["collection_id", "currency_id"] {
+        assert!(required.contains(&serde_json::json!(key)));
+    }
+    for example in [
+        serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM"}}),
+        serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM","models":["model"],"number":{"min":1}},"side":"bid"}),
+    ] {
+        let parsed: GiftOrdersQuery = serde_json::from_value(example).unwrap();
+        assert!(
+            serde_json::from_value::<GiftOrdersQuery>(serde_json::to_value(parsed).unwrap())
+                .is_ok()
+        );
+    }
+    for example in [
+        serde_json::json!({}),
+        serde_json::json!({"filters":{"collection_id":"gift"}}),
+        serde_json::json!({"filters":{"currency_id":"GRAM"}}),
+    ] {
+        assert!(serde_json::from_value::<GiftOrdersQuery>(example).is_err());
+    }
+    assert!(serde_json::from_value::<GiftHistoryQuery>(serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM","mode":"ask"}})).is_err());
+    assert!(serde_json::from_value::<GiftOrdersQuery>(serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM"},"side":"executed"})).is_err());
+}
+
+#[actix_web::test]
+async fn rest_snapshot_pagination_reuses_retained_views_across_http_requests() {
+    let (state, runtime, peer, stop) = setup().await;
+    let mut fixture = page("1");
+    fixture.cursor = "pagination".into();
+    let mut second = fixture.entities.last().unwrap().clone();
+    if let Some(w::entity::Entity::Order(order)) = &mut second.entity {
+        order.id = "second".into();
+        order.price = "2".into();
+    }
+    fixture.entities.push(second);
+    peer.page.send_replace(fixture);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while state
+            .orders(serde_json::from_value(query()).unwrap())
+            .await
+            .unwrap()
+            .cursor
+            != "pagination"
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let mut request = query();
+    request["limit"] = 1.into();
+    let first: serde_json::Value = test::read_body_json(
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/orders/query")
+                .set_json(&request)
+                .to_request(),
+        )
+        .await,
+    )
+    .await;
+    assert!(!first["next_page_token"].as_str().unwrap().is_empty());
+    request["page_token"] = first["next_page_token"].clone();
+    let second = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/orders/query")
+            .set_json(request)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(second.status(), 200);
+    let second: serde_json::Value = test::read_body_json(second).await;
+    assert_eq!(second["data"][0]["id"], "second");
+    assert_eq!(second["cursor"], first["cursor"]);
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+#[ignore = "requires the production frontend build and Playwright Chromium"]
+async fn developer_docs_render_rest_and_websocket_console_with_local_assets() {
+    let (_state, runtime, _peer, stop) = setup().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let server = api_server(&runtime, root.join("web/dist"));
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let task = tokio::spawn(server.run(api_stop.child_token()));
+    let result = tokio::process::Command::new("node")
+        .arg("scripts/docs-browser.mjs")
+        .current_dir(root.join("web"))
+        .env("MARKET_DOCS_TEST_URL", format!("http://{address}"))
+        .output()
+        .await
+        .unwrap();
+    api_stop.cancel();
+    task.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
 }

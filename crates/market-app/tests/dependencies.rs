@@ -67,12 +67,24 @@ fn production_dependencies_follow_the_service_boundaries() {
         ),
         (
             "market-api",
-            &["market-actors", "market-miniapp", "market-media"],
+            &[
+                "market-actors",
+                "market-gifts",
+                "market-miniapp",
+                "market-media",
+            ],
         ),
-        ("market-telegram", &["market-actors", "market-media"]),
+        (
+            "market-telegram",
+            &["market-actors", "market-gifts", "market-media"],
+        ),
         ("market-media", &[]),
         ("market-miniapp", &[]),
-        ("market-actors", &["market-replica", "market-hub-protocol"]),
+        (
+            "market-actors",
+            &["market-gifts", "market-replica", "market-hub-protocol"],
+        ),
+        ("market-gifts", &[]),
         (
             "market-replica",
             &["market-hub-client", "market-hub-protocol"],

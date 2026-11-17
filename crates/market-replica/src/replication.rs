@@ -170,7 +170,7 @@ async fn bootstrap(
         .await?;
     Ok(changes)
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Recovery {
     Bootstrap,
     Resume,
@@ -231,7 +231,7 @@ async fn run_replication(
         ) {
             recovery = Recovery::Bootstrap;
         }
-        tracing::warn!(code=?error.code(),"replica disconnected; reconnecting");
+        tracing::warn!(code=?error.code(), message=error.message(), recovery=?recovery, "replica disconnected; reconnecting");
         replication
             .mutate(&jobs, |writer| {
                 writer.mark(SyncState::Stale);

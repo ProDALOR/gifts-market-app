@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { emptyFeed, OrderFeed } from "./order-feed";
-import type { Query } from "./market";
+import type { FeedQuery } from "./market";
 export function useOrderFeed(
-  query: Query & { period?: { from: string | null; until: string | null } },
-  history: boolean,
+  query: FeedQuery | null,
   paused: boolean,
   refresh: number,
 ) {
@@ -16,7 +15,6 @@ export function useOrderFeed(
     if (!same) setState(emptyFeed());
     const current: OrderFeed = new OrderFeed(
       query,
-      history,
       paused,
       (next) => {
         setState((previous) =>
@@ -39,7 +37,11 @@ export function useOrderFeed(
       current.close();
       if (feed.current === current) feed.current = undefined;
     };
-  }, [signature, history, paused, refresh]);
+  }, [signature, paused, refresh]);
   const loadMore = useCallback(() => feed.current?.loadMore(), []);
-  return { ...state, loadMore };
+  const setVisibleRange = useCallback(
+    (start: number, end: number) => feed.current?.setVisibleRange(start, end),
+    [],
+  );
+  return { ...state, loadMore, setVisibleRange };
 }

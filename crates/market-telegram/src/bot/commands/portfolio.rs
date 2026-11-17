@@ -1,19 +1,18 @@
 use super::{QuoteCurrency, Reply, render};
 use crate::bot::{BotError, GiftSource, InventoryError, ProfileGift};
-use market_actors::{
-    MarketDataHandle,
+use market_actors::MarketDataHandle;
+use market_gifts::{
+    InvalidValue, TelegramDocumentId, TelegramGiftId,
     valuation::{ModelLookup, ModelPosition, ValuationRequest},
 };
-fn position(gift: &ProfileGift) -> ModelPosition {
-    ModelPosition {
-        model: ModelLookup {
-            namespace: Some("tg".into()),
-            collection: gift.collection_id.to_string(),
-            attribute_id: "tg.model".into(),
-            model: gift.model_document_id.to_string(),
+fn position(gift: &ProfileGift) -> Result<ModelPosition, InvalidValue> {
+    Ok(ModelPosition {
+        model: ModelLookup::Telegram {
+            gift_id: TelegramGiftId::new(gift.collection_id)?,
+            document_id: TelegramDocumentId::new(gift.model_document_id)?,
         },
         quantity: 1,
-    }
+    })
 }
 pub(super) async fn execute<S: GiftSource>(
     market: &MarketDataHandle,
@@ -25,10 +24,16 @@ pub(super) async fn execute<S: GiftSource>(
         Err(InventoryError::Authorization) => return Err(BotError::Authorization),
         Err(error) => return Ok(render::inventory_error(error)),
     };
+    let positions = inventory
+        .gifts
+        .iter()
+        .map(position)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| BotError::InvalidResponse)?;
     Ok(
         match market
             .value_models(ValuationRequest {
-                positions: inventory.gifts.iter().map(position).collect(),
+                positions,
                 currency_id: currency.0,
             })
             .await
@@ -49,11 +54,15 @@ mod tests {
             collection_id: 42,
             model_document_id: 99,
             relation: GiftRelation::Hosted,
-        });
-        assert_eq!(position.model.namespace.as_deref(), Some("tg"));
-        assert_eq!(position.model.collection, "42");
-        assert_eq!(position.model.model, "99");
-        assert_eq!(position.model.attribute_id, "tg.model");
+        })
+        .unwrap();
+        assert_eq!(
+            position.model,
+            ModelLookup::Telegram {
+                gift_id: TelegramGiftId::new(42).unwrap(),
+                document_id: TelegramDocumentId::new(99).unwrap()
+            }
+        );
         assert_eq!(position.quantity, 1);
     }
 }

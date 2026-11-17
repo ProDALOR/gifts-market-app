@@ -1,10 +1,8 @@
 //! Shared order-page computation; subscriber registration belongs to the actor.
 use super::{DataUpdate, QueryFeed};
-use crate::{
-    error::DataError,
-    models::{Order, Page},
-};
+use crate::error::DataError;
 use crate::{orderbooks::handle::OrderbooksHandle, runtime::ActorEnvironment};
+use market_gifts::{GiftOrder, Page};
 use market_hub_protocol::wire as w;
 use std::{
     sync::{Arc, Weak, atomic::Ordering},
@@ -33,7 +31,7 @@ pub(super) fn start(
     feed: &Arc<QueryFeed>,
     orders: OrderbooksHandle,
     request: w::ReadRequest,
-    mut changed: watch::Receiver<u64>,
+    reader: market_replica::ReplicaReader,
     permit: OwnedSemaphorePermit,
 ) {
     let sender = feed.sender.clone();
@@ -43,25 +41,50 @@ pub(super) fn start(
         sender: sender.clone(),
     };
     environment.jobs.spawn_on(async move {
-        let _completion=completion;let _permit=permit;
-        let work=async {
-            let mut previous:Option<Arc<Page<Order>>>=None;
+        let _completion = completion;
+        let _permit = permit;
+        let mut changed = reader.changes();
+        let work = async {
+            let mut previous: Option<Arc<Page<GiftOrder>>> = None;
+            let mut revision = None;
+            let mut freshness = None;
             loop {
                 changed.borrow_and_update();
-                let result=tokio::select! {biased;_=stop.cancelled()=>return Ok(()),_=sender.closed()=>return Ok(()),result=orders.read_wait(request.clone())=>result?};
-                let page=Arc::new(crate::protocol::orders(result)?);
-                if previous.as_ref().is_none_or(|old|old.data!=page.data || old.next_page_token!=page.next_page_token || old.sync!=page.sync) {
-                    previous=Some(page.clone());sender.send_replace(DataUpdate::Page(page));
+                let current = reader.read_revision(&request)?;
+                if revision != Some(current) {
+                    let result = tokio::select! {
+                        biased;
+                        _ = stop.cancelled() => return Ok(()),
+                        _ = sender.closed() => return Ok(()),
+                        result = orders.read_wait(request.clone()) => result?,
+                    };
+                    let page = Arc::new(crate::protocol::orders(result)?);
+                    if previous.as_ref().is_none_or(|old| old.data != page.data || old.next_page_token != page.next_page_token) {
+                        previous = Some(page);
+                    }
+                    revision = Some(current);
+                }
+                let sync = crate::protocol::sync(reader.status())?;
+                let marker = (current, sync.clone());
+                if freshness.as_ref() != Some(&marker) {
+                    sender.send_replace(DataUpdate::View {
+                        page: previous.as_ref().expect("initial view loaded").clone(),
+                        sync,
+                        revision: current.token(),
+                    });
+                    freshness = Some(marker);
                 }
                 tokio::select! {
-                    _=stop.cancelled()=>return Ok(()),
-                    _=sender.closed()=>return Ok(()),
-                    result=changed.changed()=>{result.map_err(|_|Status::unavailable("Replica updates stopped"))?;},
-                    _=tokio::time::sleep(Duration::from_secs(10))=>previous=None,
+                    _ = stop.cancelled() => return Ok(()),
+                    _ = sender.closed() => return Ok(()),
+                    result = changed.changed() => result.map_err(|_| Status::unavailable("Replica updates stopped"))?,
                 }
-                tokio::select! {_=stop.cancelled()=>return Ok(()),_=sender.closed()=>return Ok::<(),DataError>(()),_=tokio::time::sleep(Duration::from_millis(100))=>{}}
+                tokio::select! {
+                    _ = stop.cancelled() => return Ok::<(), DataError>(()),
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+                }
             }
         };
-        if let Err(error)=work.await {sender.send_replace(DataUpdate::Error(error));}
-    },&environment.runtime);
+        if let Err(error) = work.await { sender.send_replace(DataUpdate::Error(error)); }
+    }, &environment.runtime);
 }

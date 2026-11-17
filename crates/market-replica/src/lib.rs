@@ -3,6 +3,8 @@ mod book_index;
 mod query;
 mod ranking;
 mod reader;
+mod revisions;
+pub use revisions::{CatalogRevision, ReadRevision};
 mod replication;
 mod runtime;
 pub use replication::ReplicationWorker;
@@ -50,6 +52,7 @@ pub struct ReadResult {
     pub sync: SyncStatus,
 }
 struct ReplicaView {
+    revisions: revisions::Revisions,
     state: State,
     history: Snapshot,
     cursor: String,
@@ -91,6 +94,7 @@ impl ReplicaWriter {
             None
         } else {
             Some(Arc::new(ReplicaView {
+                revisions: revisions::Revisions::replaced(None),
                 state: store.state()?,
                 history: store.snapshot()?,
                 cursor,
@@ -126,15 +130,17 @@ impl ReplicaWriter {
 impl ReplicaReader {
     /// Pin one published view for a short, compound read without blocking synchronization.
     pub fn snapshot(&self) -> Result<Self, Status> {
-        let view = self.view()?;
+        Ok(self.pin(self.view()?))
+    }
+    fn pin(&self, view: Arc<ReplicaView>) -> Self {
         let (status, _) = watch::channel(self.status());
         let (changed, _) = watch::channel(0);
-        Ok(Self(Arc::new(ReadState {
+        Self(Arc::new(ReadState {
             published: RwLock::new(Some(view)),
             status,
             changed,
             views: Mutex::default(),
-        })))
+        }))
     }
     pub fn status(&self) -> SyncStatus {
         self.0.status.borrow().clone()
@@ -224,7 +230,10 @@ impl ReplicaWriter {
         self.install_state(store, state)
     }
     fn install_state(&mut self, store: Store, state: State) -> Result<(), Status> {
+        self.reader.expire();
+        let revisions = revisions::Revisions::replaced(self.reader.view().ok().as_deref());
         let view = Arc::new(ReplicaView {
+            revisions,
             state,
             history: store.snapshot()?,
             cursor: store.cursor()?,
@@ -246,11 +255,17 @@ impl ReplicaWriter {
         if batch.cursor.is_empty() {
             return Err(Status::data_loss("empty replication checkpoint"));
         }
-        let mut state = self.reader.view()?.state.clone();
+        self.reader.expire();
+        let previous = self.reader.view()?;
+        let mut state = previous.state.clone();
         state.apply(&batch.changes)?;
+        let revisions = previous
+            .revisions
+            .updated(&previous.state, &state, &batch.changes)?;
         let store = &self.store;
         store.apply(&batch.changes, Some(&batch.cursor))?;
         let view = Arc::new(ReplicaView {
+            revisions,
             state,
             history: store.snapshot()?,
             cursor: batch.cursor,

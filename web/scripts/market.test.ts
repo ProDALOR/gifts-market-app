@@ -1,58 +1,61 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { amount, text, modelThumbnailUrl } from "../src/market.ts";
-test("amount formatting preserves precision beyond JavaScript's numeric range", () => {
+import { amount, modelMedia } from "../src/market.ts";
+import type { Order, CatalogOption } from "../src/market.ts";
+test("amount formatting preserves precision beyond JavaScript numeric range", () => {
   assert.equal(
     amount("10000000000000000.000000001"),
     "10,000,000,000,000,000.000000001",
   );
   assert.equal(amount("0.500000001"), "0.500000001");
 });
-test("list and object displays preserve duplicate facts and catalog names", () => {
-  const names = new Map([
-    ["model", "Model"],
-    ["gold", "Gold"],
-  ]);
-  assert.equal(
-    text(
-      {
-        type: "list",
-        value: [
-          { type: "object", value: { model: { type: "enum", value: "gold" } } },
-          { type: "object", value: { model: { type: "enum", value: "gold" } } },
-        ],
+test("concrete previews use supplied media, never guessed paths or hypothetical targets", () => {
+  const gift: Pick<Order, "target"> = {
+    target: {
+      kind: "gift",
+      gift: {
+        id: "42",
+        collection_id: "gift",
+        number: 42,
+        traits: { model: "model", backdrop: null, pattern: null },
       },
-      names,
-    ),
-    "Model: Gold · Model: Gold",
-  );
-});
-
-test("thumbnails use concrete catalog models and leave conditional bids as placeholders", () => {
+    },
+  };
+  const media = {
+    thumbnail_url: "/assets/thumbnail?v=2",
+    animation_url: "/assets/animation.tgs?v=3",
+  };
+  const options = new Map<string, CatalogOption>([
+    ["model", { id: "model", name: "Model", kind: "model", media }],
+  ]);
+  assert.equal(modelMedia(gift, options), media);
+  assert.equal(modelMedia(gift, new Map()), undefined);
+  const missing = new Map<string, CatalogOption>([
+    ["model", { id: "model", name: "Model", kind: "model", media: null }],
+  ]);
+  assert.equal(modelMedia(gift, missing), undefined);
   assert.equal(
-    modelThumbnailUrl({
-      attributes: {
-        "tg.model": {
-          op: "eq",
-          value: { type: "enum", value: "tg.gift.123.model.42" },
+    modelMedia(
+      {
+        target: {
+          kind: "criteria",
+          criteria: {
+            models: ["model"],
+            backdrops: [],
+            patterns: [],
+            number: null,
+          },
         },
       },
-    }),
-    "/media/models/tg.gift.123.model.42",
-  );
-  assert.equal(modelThumbnailUrl({ attributes: {} }), undefined);
-  assert.equal(
-    modelThumbnailUrl({
-      attributes: { "tg.model": { op: "one_of", values: [] } },
-    }),
+      options,
+    ),
     undefined,
   );
   assert.equal(
-    modelThumbnailUrl({
-      attributes: {
-        "tg.model": { op: "eq", value: { type: "text", value: "untrusted" } },
-      },
-    }),
+    modelMedia(
+      { target: { kind: "unsupported", reason: "unsupported" } },
+      options,
+    ),
     undefined,
   );
 });

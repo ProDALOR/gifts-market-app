@@ -66,6 +66,10 @@ fn fixture() -> (tempfile::TempDir, ReplicaWriter) {
             entity(w::entity::Entity::ItemType(w::ItemType {
                 id: "gift".into(),
                 name: "Gift".into(),
+                aliases: vec![w::ExternalId {
+                    namespace: "tg".into(),
+                    id: "99".into(),
+                }],
                 quantity_step: "1".into(),
                 ..Default::default()
             })),
@@ -80,7 +84,8 @@ fn fixture() -> (tempfile::TempDir, ReplicaWriter) {
 
 #[tokio::test]
 async fn public_actor_contract_serves_typed_queries_results_and_subscription_errors() {
-    use crate::{error::DataErrorCode, models as m};
+    use crate::error::DataErrorCode;
+    use market_gifts as m;
     let (_directory, mut writer) = fixture();
     writer
         .apply(w::Batch {
@@ -100,45 +105,21 @@ async fn public_actor_contract_serves_typed_queries_results_and_subscription_err
     let service = MarketDataService::start(writer.reader(), 2, 1)
         .await
         .unwrap();
-    let query = m::OrdersQuery {
-        scope: m::Scope {
-            item_type_id: Some("gift".into()),
-            currency_id: Some("GRAM".into()),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let query = m::GiftOrdersQuery::new(m::GiftFilters::new("gift".into(), "GRAM".into()));
     let page = service.handle.orders(query.clone()).await.unwrap();
     assert_eq!(page.cursor, "c1");
-    assert_eq!(page.data[0].price, "3");
-    assert_eq!(page.data[0].mode, m::Mode::Ask);
+    assert_eq!(page.data[0].price.as_str(), "3");
+    assert_eq!(page.data[0].mode, m::GiftOrderKind::Ask);
+    let catalog = service.handle.catalog().await.unwrap();
+    assert_eq!(catalog.books[0], page.data[0].book);
+    assert_eq!(catalog.collections[0].id.as_str(), "gift");
     assert_eq!(
         service
             .handle
-            .books(m::BooksQuery::default())
-            .await
-            .unwrap()
-            .data[0],
-        page.data[0].book
-    );
-    let catalog = service
-        .handle
-        .catalog(m::CatalogQuery {
-            kind: m::CatalogKind::Feed,
-            ids: vec!["source-feed".into()],
-            limit: 50,
-            page_token: String::new(),
-        })
-        .await
-        .unwrap();
-    assert!(
-        matches!(&catalog.data[0], m::CatalogEntry::Feed { id, books, modes, .. }
-        if id == "source-feed" && books[0] == page.data[0].book && modes == &[m::Mode::Ask])
-    );
-    assert_eq!(
-        service
-            .handle
-            .orders(m::OrdersQuery::default())
+            .orders(m::GiftOrdersQuery::new(m::GiftFilters::new(
+                "missing".into(),
+                "GRAM".into()
+            )))
             .await
             .err()
             .unwrap()
@@ -160,11 +141,11 @@ async fn public_actor_contract_serves_typed_queries_results_and_subscription_err
 async fn next_page(
     updates: &mut watch::Receiver<DataUpdate>,
     cursor: &str,
-) -> Arc<models::Page<models::Order>> {
+) -> Arc<market_gifts::Page<market_gifts::GiftOrder>> {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let update = updates.borrow_and_update().clone();
-            if let DataUpdate::Page(page) = update
+            if let DataUpdate::View { page, .. } = update
                 && page.cursor == cursor
             {
                 return page;
@@ -205,7 +186,7 @@ async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription
         })
         .unwrap();
     let page = next_page(&mut bot_updates, "c1").await;
-    assert_eq!(page.data[0].price, "1");
+    assert_eq!(page.data[0].price.as_str(), "1");
     assert_eq!(api.orders_raw(query()).await.unwrap().page.cursor, "c1");
     let stop = CancellationToken::new();
     stop.cancel();
@@ -555,7 +536,7 @@ async fn user_subscription_leases_cancel_independently_and_last_release_stops_th
 
 #[tokio::test]
 async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_separately() {
-    use crate::valuation::{ModelLookup, ModelPosition, UnpricedReason, ValuationRequest};
+    use market_gifts::valuation::{ModelLookup, ModelPosition, UnpricedReason, ValuationRequest};
     let (_directory, mut writer) = fixture();
     let option = "gift.model.10";
     let ask = |id: &str,
@@ -712,10 +693,8 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
     let service = MarketDataService::start(writer.reader(), 2, 2)
         .await
         .unwrap();
-    let lookup = ModelLookup {
-        namespace: None,
+    let lookup = ModelLookup::Name {
         collection: "gift".into(),
-        attribute_id: "tg.model".into(),
         model: "rare model".into(),
     };
     let value = service
@@ -727,18 +706,16 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
                     quantity: 2,
                 },
                 ModelPosition {
-                    model: ModelLookup {
-                        namespace: Some("tg".into()),
-                        collection: "99".into(),
-                        attribute_id: "tg.model".into(),
-                        model: "20".into(),
+                    model: ModelLookup::Telegram {
+                        gift_id: market_gifts::TelegramGiftId::new(99).unwrap(),
+                        document_id: market_gifts::TelegramDocumentId::new(20).unwrap(),
                     },
                     quantity: 1,
                 },
                 ModelPosition {
-                    model: ModelLookup {
+                    model: ModelLookup::Name {
+                        collection: "gift".into(),
                         model: "Unknown".into(),
-                        ..lookup.clone()
                     },
                     quantity: 1,
                 },
@@ -747,7 +724,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
         })
         .await
         .unwrap();
-    assert_eq!(value.total, "4.000000000000000002");
+    assert_eq!(value.total.as_str(), "4.000000000000000002");
     assert_eq!((value.priced, value.unpriced), (2, 2));
     assert_eq!(value.cursor, "c2");
     assert_eq!(
@@ -783,7 +760,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
         })
         .await
         .unwrap();
-    assert_eq!(stars.total, "0.0002");
+    assert_eq!(stars.total.as_str(), "0.0002");
     assert!(
         service
             .handle
@@ -797,6 +774,161 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
             .await
             .is_err()
     );
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn gift_snapshot_pages_survive_requests_and_catalog_replacement() {
+    use market_gifts::{GiftFilters, GiftHistoryQuery, GiftOrdersQuery, ReadConsistency};
+    let (_directory, mut writer) = fixture();
+    let row = |id: &str, mode: w::OrderMode, price: &str| {
+        let mut change = order(price);
+        if let Some(w::change::Change::Upsert(w::Entity {
+            entity: Some(w::entity::Entity::Order(order)),
+        })) = &mut change.change
+        {
+            order.id = id.into();
+            order.mode = mode as i32;
+            order.executed_at_ms = (mode == w::OrderMode::Executed).then_some(1000);
+        }
+        change
+    };
+    writer
+        .apply(w::Batch {
+            cursor: "pages".into(),
+            changes: vec![
+                row("a", w::OrderMode::Ask, "1"),
+                row("b", w::OrderMode::Ask, "2"),
+                row("execution-a", w::OrderMode::Executed, "1"),
+                row("execution-b", w::OrderMode::Executed, "2"),
+            ],
+        })
+        .unwrap();
+    let service = MarketDataService::start(writer.reader(), 2, 2)
+        .await
+        .unwrap();
+    let mut query = GiftOrdersQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
+    query.limit = 1;
+    let first = service.handle.orders(query.clone()).await.unwrap();
+    let mut history = GiftHistoryQuery::new(query.filters.clone());
+    history.limit = 1;
+    let first_history = service.handle.executions(history.clone()).await.unwrap();
+    assert!(!first.next_page_token.is_empty());
+    assert!(!first_history.next_page_token.is_empty());
+    // The current catalog no longer describes a gift, but the retained pages still do.
+    writer
+        .apply(w::Batch {
+            cursor: "replacement".into(),
+            changes: vec![
+                row("b", w::OrderMode::Ask, "99"),
+                entity(w::entity::Entity::ItemType(w::ItemType {
+                    id: "gift".into(),
+                    name: "Generic asset".into(),
+                    quantity_step: "1".into(),
+                    ..Default::default()
+                })),
+            ],
+        })
+        .unwrap();
+    query.page_token = first.next_page_token;
+    let second = service.handle.orders(query.clone()).await.unwrap();
+    assert_eq!(second.data[0].id.as_str(), "b");
+    assert_eq!(second.data[0].price.as_str(), "2");
+    assert_eq!(second.cursor, "pages");
+    history.page_token = first_history.next_page_token;
+    let second_history = service.handle.executions(history).await.unwrap();
+    assert_eq!(second_history.data[0].id.as_str(), "execution-b");
+    assert_eq!(second_history.cursor, "pages");
+    query.consistency = ReadConsistency::Live;
+    assert_eq!(
+        service.handle.orders(query).await.unwrap_err().code(),
+        crate::error::DataErrorCode::InvalidQuery
+    );
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn saturated_valuation_capacity_leaves_normal_reads_available() {
+    let (_dir, writer) = fixture();
+    let service = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let busy = service
+        .handle
+        .orderbooks
+        .valuations
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+    let result = service
+        .handle
+        .orderbooks
+        .value_models(market_gifts::valuation::ValuationRequest {
+            currency_id: "GRAM".into(),
+            positions: vec![],
+        })
+        .await;
+    assert_eq!(result.unwrap_err().code(), tonic::Code::ResourceExhausted);
+    assert!(service.handle.orders_raw(query()).await.is_ok());
+    assert!(service.handle.catalog().await.is_ok());
+    drop(busy);
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn freshness_does_not_wait_for_query_capacity_and_valuation_admission_is_isolated() {
+    let (_directory, writer) = fixture();
+    let service = MarketDataService::start(writer.reader(), 2, 1)
+        .await
+        .unwrap();
+    let handle = service.handle.clone();
+    let (_lease, mut updates) = handle.subscribe_raw(query()).await.unwrap();
+    let original = next_page(&mut updates, "c0").await;
+    let query_a = handle.orderbooks.budget.try_query().unwrap();
+    let query_b = handle.orderbooks.budget.try_query().unwrap();
+    writer.mark(market_replica::SyncState::Stale);
+    let (same, sync) = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let DataUpdate::View { page, sync, .. } = updates.borrow_and_update().clone()
+                && sync.state == market_gifts::SyncState::Stale
+            {
+                break (page, sync);
+            }
+            updates.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(Arc::ptr_eq(&original, &same));
+    assert!(sync.ready);
+    drop((query_a, query_b));
+    let heavy = handle
+        .orderbooks
+        .valuations
+        .clone()
+        .try_acquire_owned()
+        .unwrap();
+    let valuation = handle
+        .orderbooks
+        .value_models(market_gifts::valuation::ValuationRequest {
+            positions: vec![],
+            currency_id: "GRAM".into(),
+        })
+        .await;
+    assert_eq!(
+        valuation.unwrap_err().code(),
+        tonic::Code::ResourceExhausted
+    );
+    // An occupied heavy slot does not consume ordinary read capacity.
+    assert_eq!(handle.orders_raw(query()).await.unwrap().page.cursor, "c0");
+    drop(heavy);
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();

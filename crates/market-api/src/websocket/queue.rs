@@ -10,18 +10,53 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(super) enum Payload {
     Connecting,
-    Page(Arc<str>),
+    Page {
+        page: Arc<str>,
+        sync: market_gifts::SyncStatus,
+        revision: String,
+    },
+    Sync {
+        sync: market_gifts::SyncStatus,
+        revision: String,
+    },
     Error(ApiError),
 }
 impl Payload {
+    #[cfg(test)]
+    pub fn test_page(page: Arc<str>) -> Self {
+        Self::Page {
+            page,
+            sync: market_gifts::SyncStatus {
+                ready: false,
+                state: market_gifts::SyncState::Starting,
+                updated_at: None,
+            },
+            revision: "1".into(),
+        }
+    }
+
     pub fn text(&self, id: &str) -> String {
         match self {
             // IDs here have already passed SubscriptionId validation. Page bytes are
             // bounded JSON produced by serde, shared independently of the frame ID.
-            Self::Page(page) => {
+            Self::Page {
+                page,
+                sync,
+                revision,
+            } => {
                 let id = serde_json::to_string(id).expect("string serializes");
-                format!("{{\"type\":\"page\",\"id\":{id},\"page\":{page}}}")
+                let sync = serde_json::to_string(sync).expect("sync serializes");
+                let revision = serde_json::to_string(revision).expect("revision serializes");
+                format!(
+                    "{{\"type\":\"page\",\"id\":{id},\"page\":{page},\"sync\":{sync},\"revision\":{revision}}}"
+                )
             }
+            Self::Sync { sync, revision } => serde_json::to_string(&ServerFrame::Sync {
+                id: id.into(),
+                sync: sync.clone(),
+                revision: revision.clone(),
+            })
+            .expect("sync frame serializes"),
             Self::Connecting => serde_json::to_string(&ServerFrame::Status {
                 id: id.into(),
                 state: SubscriptionStatus::Connecting,
@@ -36,8 +71,19 @@ impl Payload {
     }
     fn bytes(&self, id: &str) -> usize {
         match self {
-            Self::Page(page) => {
-                page.len() + id.len() + b"{\"type\":\"page\",\"id\":\"\",\"page\":}".len()
+            Self::Page {
+                page,
+                sync,
+                revision,
+            } => {
+                // Serialize only the small envelope when reserving the byte budget.
+                let overhead = Self::Sync {
+                    sync: sync.clone(),
+                    revision: revision.clone(),
+                }
+                .text(id)
+                .len();
+                overhead + page.len() + 8 // page field and page/sync tag length difference
             }
             _ => self.text(id).len(),
         }
@@ -158,7 +204,7 @@ mod tests {
         let id = SubscriptionId::parse("offers".into()).unwrap();
         let mut registry = Registry::new(1);
         let (old, _) = registry.reserve(id.clone(), &stop).unwrap();
-        let payload = Payload::Page(Arc::from(" ".repeat(150)));
+        let payload = Payload::test_page(Arc::from(" ".repeat(80)));
         tx.send(Scope::Subscription(old), payload.clone(), false, &stop)
             .await
             .unwrap();
@@ -177,10 +223,10 @@ mod tests {
     fn shared_page_envelopes_preserve_json_and_do_not_escape_subscription_ids_incorrectly() {
         let id = SubscriptionId::parse("offers._-1".into()).unwrap();
         assert!(SubscriptionId::parse("bad\"id".into()).is_err());
-        let text = Payload::Page(Arc::from("{\"data\":[]}")).text(id.as_str());
+        let text = Payload::test_page(Arc::from("{\"data\":[]}")).text(id.as_str());
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&text).unwrap(),
-            serde_json::json!({"type":"page","id":"offers._-1","page":{"data":[]}})
+            serde_json::json!({"type":"page","id":"offers._-1","page":{"data":[]},"sync":{"ready":false,"state":"starting","updated_at":null},"revision":"1"})
         );
     }
 }

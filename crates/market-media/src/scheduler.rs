@@ -105,6 +105,18 @@ impl MediaDownloader {
         let limits = self.cache.0.limits.clone();
         let mut active = FuturesUnordered::new();
         let mut next = tokio::time::Instant::now();
+        let mut maintenance_tick = tokio::time::interval_at(
+            next + std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(60),
+        );
+        maintenance_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let maintenance = async {
+            loop {
+                maintenance_tick.tick().await;
+                self.cache.maintain().await;
+            }
+        };
+        tokio::pin!(maintenance);
         loop {
             while active.len() < limits.downloads && tokio::time::Instant::now() >= next {
                 let Some(job) = queue.pop() else {
@@ -160,6 +172,7 @@ impl MediaDownloader {
             }
             let paced = queue.len() > 0 && active.len() < limits.downloads;
             tokio::select! {
+                _=&mut maintenance=>{},
                 _=active.next(),if !active.is_empty()=>{},
                 _=queue.changed.notified()=>{},
                 _=tokio::time::sleep_until(next),if paced=>{},

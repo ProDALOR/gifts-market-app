@@ -66,7 +66,7 @@ export type TelegramContext = { app?: WebApp; initData: string };
 const marker = "market.telegram.context";
 const sdk = "https://telegram.org/js/telegram-web-app.js";
 const keys = [
-  "item",
+  "collection",
   "currency",
   "venue",
   "mode",

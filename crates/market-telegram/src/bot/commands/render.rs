@@ -2,9 +2,9 @@ use super::{CommandKind, Reply};
 use crate::bot::{
     GiftRelation, InventoryCompletion, InventoryError, PartialReason, VisibleInventory,
 };
-use market_actors::{
+use market_actors::error::DataError;
+use market_gifts::{
     SyncState,
-    error::DataError,
     valuation::{UnpricedReason, Valuation},
 };
 pub(super) fn error_reply(error: DataError) -> Reply {
@@ -174,7 +174,7 @@ pub(super) fn inventory_error(error: InventoryError) -> Reply {
         InventoryError::Unavailable=>"Your visible gifts could not be read from Telegram. Please try again shortly.".into(),
     }}
 }
-pub(super) fn status_reply(status: market_actors::SyncStatus) -> Reply {
+pub(super) fn status_reply(status: market_gifts::SyncStatus) -> Reply {
     let state = match status.state {
         SyncState::Starting => "starting",
         SyncState::Syncing => "synchronizing",
@@ -199,8 +199,9 @@ mod tests {
     use crate::bot::SkipReason;
     #[test]
     fn portfolio_reports_precise_totals_skip_reasons_partial_reads_and_freshness() {
-        let value = market_actors::valuation::Valuation {
-            rows: vec![market_actors::valuation::ModelValue {
+        let value = market_gifts::valuation::Valuation {
+            rows: vec![market_gifts::valuation::ModelValue {
+                identity: None,
                 collection: "Collection".into(),
                 model: "Model".into(),
                 quantity: 2,
@@ -214,9 +215,9 @@ mod tests {
             unpriced: 1,
             currency_id: "GRAM".into(),
             cursor: "c".into(),
-            sync: market_actors::SyncStatus {
+            sync: market_gifts::SyncStatus {
                 ready: true,
-                state: market_actors::SyncState::Stale,
+                state: market_gifts::SyncState::Stale,
                 updated_at: None,
             },
         };

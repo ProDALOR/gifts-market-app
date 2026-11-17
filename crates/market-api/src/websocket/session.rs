@@ -36,7 +36,7 @@ async fn drive(
     stop: CancellationToken,
     start: impl Fn(
         Key,
-        crate::models::OrdersQuery,
+        crate::models::GiftOrdersQuery,
         queue::Sender,
         CancellationToken,
         WebSocketLimits,
@@ -101,7 +101,7 @@ async fn drive(
                             if tx.error(scope,error).is_err() {break CloseCode::Again;}continue;
                         }
                     };
-                    let work=start(key.clone(),query,tx.clone(),cancel,limits.clone());
+                    let work=start(key.clone(),*query,tx.clone(),cancel,limits.clone());
                     jobs.push(async move {
                         let result=AssertUnwindSafe(work).catch_unwind().await;
                         (key,result.unwrap_or_else(|_| {tracing::warn!("WebSocket subscription task panicked");End::Failed}))

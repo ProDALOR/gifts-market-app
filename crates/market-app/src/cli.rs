@@ -56,7 +56,10 @@ pub struct Cli {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Print the public HTTP OpenAPI specification.
     Schema,
+    /// Print the public WebSocket AsyncAPI specification.
+    Asyncapi,
     #[cfg(feature = "miniapp")]
     SessionKey,
     #[cfg(feature = "bot")]

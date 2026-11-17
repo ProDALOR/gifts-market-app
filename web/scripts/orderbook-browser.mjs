@@ -8,39 +8,45 @@ const server = await createServer({
   server: { host: "127.0.0.1", port: 0 },
 });
 let browser;
-const option = (id, name, attribute_id, meta = {}) => ({
-  kind: "attribute_option",
+const option = (id, name, kind, palette) => ({
   id,
   name,
-  attribute_id,
-  meta,
-  aliases: [],
+  kind,
+  ...(kind === "backdrop"
+    ? { palette }
+    : {
+        media: {
+          thumbnail_url: `/media/${kind === "pattern" ? "patterns" : "models"}/${id}`,
+          animation_url:
+            kind === "model" ? `/media/models/${id}/animation` : null,
+        },
+      }),
 });
 const models = [
-  option("barbie", "Barbie", "tg.model"),
-  option("juicy", "Juicy Mint", "tg.model"),
-  option("grape", "Grape Glaze", "tg.model"),
-  option("ivory", "Ivory", "tg.model"),
-  option("rose", "Rose", "tg.model"),
+  option("barbie", "Barbie", "model"),
+  option("juicy", "Juicy Mint", "model"),
+  option("grape", "Grape Glaze", "model"),
+  option("ivory", "Ivory", "model"),
+  option("rose", "Rose", "model"),
 ];
 const backdrops = [
-  option("raspberry", "Raspberry", "tg.backdrop", {
-    "colors.center_color": "#e07b85",
-    "colors.edge_color": "#b65980",
-    "colors.pattern_color": "#783950",
+  option("raspberry", "Raspberry", "backdrop", {
+    center: "#e07b85",
+    edge: "#b65980",
+    pattern: "#783950",
   }),
-  option("hunter", "Hunter Green", "tg.backdrop", {
-    "colors.center_color": "#8fae78",
-    "colors.edge_color": "#4b825b",
-    "colors.pattern_color": "#285038",
+  option("hunter", "Hunter Green", "backdrop", {
+    center: "#8fae78",
+    edge: "#4b825b",
+    pattern: "#285038",
   }),
 ];
 backdrops.push(
   ...["Midnight", "Amber", "Lavender"].map((name, index) =>
-    option(`backdrop-${index}`, name, "tg.backdrop", {
-      "colors.center_color": "#c493ab",
-      "colors.edge_color": "#75506e",
-      "colors.pattern_color": `#${["563447", "254829", "633553"][index]}`,
+    option(`backdrop-${index}`, name, "backdrop", {
+      center: "#c493ab",
+      edge: "#75506e",
+      pattern: `#${["563447", "254829", "633553"][index]}`,
     }),
   ),
 );
@@ -53,64 +59,37 @@ const patterns = [
   "Sun",
   "Cloud",
   "Bolt",
-].map((name) => option(name.toLowerCase(), name, "tg.pattern"));
+].map((name) => option(name.toLowerCase(), name, "pattern"));
 const collections = ["Jelly Bunny", "Plush Pepe"].map((name, index) => ({
-  kind: "item_type",
   id: index ? "pepe" : "bunny",
   name,
-  quantity_step: "1",
-  aliases: [],
-  attributes: {
-    "tg.model": { required: true, allowed_values: models.map((o) => o.id) },
-    "tg.backdrop": {
-      required: true,
-      allowed_values: backdrops.map((o) => o.id),
-    },
-    "tg.pattern": { required: true, allowed_values: patterns.map((o) => o.id) },
-    "tg.number": { required: true },
-  },
+  preview: models[0].media,
+  model_ids: models.map((o) => o.id),
+  backdrop_ids: backdrops.map((o) => o.id),
+  pattern_ids: patterns.map((o) => o.id),
 }));
 const venues = ["Telegram", "Portals", "MRKT"].map((name) => ({
-  kind: "venue",
   id: name.toLowerCase(),
   name,
 }));
-const attributes = ["model", "backdrop", "pattern", "number"].map((name) => ({
-  kind: "attribute",
-  id: `tg.${name}`,
-  name: name[0].toUpperCase() + name.slice(1),
-  value_type: name === "number" ? "integer" : "enum",
-  fields: {},
-  element: null,
-}));
-const entities = [
-  ...collections,
-  ...venues,
-  ...attributes,
-  ...models,
-  ...backdrops,
-  ...patterns,
-];
-const eq = (type, value) => ({ op: "eq", value: { type, value } });
 let revision = 0;
 const sync = { ready: true, state: "live", updated_at: "2026-11-17T00:00:00Z" };
 function result(query, executed = false) {
-  const scope = query.scope;
-  const mode = scope.modes[0];
+  const filters = query.filters;
+  const mode = executed ? "executed" : query.side || "ask";
   let rows = Array.from(
     { length: executed ? 75 : mode === "bid" ? 4 : 125 },
     (_, index) => ({
       id: `order-${index}`,
-      item_id: `gift-${1000 + index}`,
       book: {
-        item_type_id: scope.item_type_id,
-        currency_id: scope.currency_id,
+        collection_id: filters.collection_id,
+        currency_id: filters.currency_id,
         venue_id: venues[index % 3].id,
       },
       mode,
-      quantity: "1",
+      quantity: 1,
       price:
-        scope.currency_id === "XTR"
+        filters.currency_id === "XTR"
           ? String(850 + index)
           : index === 0
             ? revision
@@ -119,40 +98,64 @@ function result(query, executed = false) {
             : index === 59
               ? "10000000000000000.000000001"
               : String(index + 10),
-      attributes: {
-        "tg.model": eq("enum", models[index % models.length].id),
-        "tg.backdrop": eq("enum", backdrops[index % backdrops.length].id),
-        "tg.pattern": eq("enum", patterns[index % patterns.length].id),
-        "tg.number": eq("integer", String(2000 - index)),
-      },
+      target:
+        mode === "bid"
+          ? {
+              kind: "criteria",
+              criteria: {
+                models: [],
+                backdrops: [],
+                patterns: [],
+                number: null,
+              },
+            }
+          : {
+              kind: "gift",
+              gift: {
+                id: `gift-${1000 + index}`,
+                collection_id: filters.collection_id,
+                number: 2000 - index,
+                traits: {
+                  model: models[index % models.length].id,
+                  backdrop: backdrops[index % backdrops.length].id,
+                  pattern: patterns[index % patterns.length].id,
+                },
+              },
+            },
       observed_at: new Date(1700000000000 + index * 1000).toISOString(),
       executed_at: executed
         ? new Date(1700000000000 + index * 1000).toISOString()
         : null,
       parent_order_id: null,
-      meta: { listing_url: "https://t.me/market/app?startapp=gift42" },
+      expires_at: null,
+      market_url: "https://t.me/market/app?startapp=gift42",
     }),
   );
   rows = rows.filter(
     (order) =>
-      (!scope.venue_id || scope.venue_id === order.book.venue_id) &&
-      Object.entries(scope.attributes || {}).every(([id, p]) =>
-        p.op === "eq"
-          ? order.attributes[id]?.value.value === p.value.value
-          : p.op === "one_of"
-            ? p.values.some(
-                (value) => value.value === order.attributes[id]?.value.value,
-              )
-            : true,
+      (!filters.venue_id || filters.venue_id === order.book.venue_id) &&
+      ["models", "backdrops", "patterns"].every(
+        (key) =>
+          !filters[key]?.length ||
+          (order.target.kind === "gift" &&
+            filters[key].includes(
+              order.target.gift.traits[
+                { models: "model", backdrops: "backdrop", patterns: "pattern" }[
+                  key
+                ]
+              ],
+            )),
       ) &&
-      (!scope.price?.max || Number(order.price) <= Number(scope.price.max)),
+      (!filters.price?.max || Number(order.price) <= Number(filters.price.max)),
   );
   rows.sort((a, b) => {
     const rank = (order) =>
       query.sort?.startsWith("time_")
         ? Date.parse(executed ? order.executed_at : order.observed_at)
         : query.sort?.startsWith("number_")
-          ? Number(order.attributes["tg.number"].value.value)
+          ? order.target.kind === "gift"
+            ? order.target.gift.number
+            : 0
           : Number(order.price);
     return (rank(a) - rank(b)) * (query.sort?.endsWith("_desc") ? -1 : 1);
   });
@@ -172,6 +175,17 @@ try {
     viewport: { width: 390, height: 844 },
     reducedMotion: "reduce",
   });
+  await page.route("**/telegram", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        auth_enabled: false,
+        bot_id: null,
+        bot_username: null,
+        public_url: null,
+      }),
+    }),
+  );
   page.setDefaultTimeout(10000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -191,9 +205,32 @@ try {
   );
   let failOptions = true,
     optionRequests = 0;
-  await page.route("**/catalog/query", (route) => {
-    const body = route.request().postDataJSON();
-    if (body.kind === "attribute_option") {
+  await page.route("**/catalog", (route) =>
+    route.fulfill({
+      json: {
+        collections,
+        venues,
+        currencies: [
+          { id: "GRAM", name: "Gram", decimals: 9 },
+          { id: "XTR", name: "Stars", decimals: 0 },
+        ],
+        books: collections.flatMap((item) =>
+          ["GRAM", "XTR"].flatMap((currency) =>
+            venues.map((venue) => ({
+              collection_id: item.id,
+              currency_id: currency,
+              venue_id: venue.id,
+            })),
+          ),
+        ),
+        cursor: "fixture",
+        sync,
+      },
+    }),
+  );
+  await page.route(
+    (url) => url.pathname.startsWith("/collections/"),
+    (route) => {
       optionRequests++;
       if (failOptions) {
         failOptions = false;
@@ -204,39 +241,25 @@ try {
           },
         });
       }
-    }
-    return route.fulfill({
-      json: {
-        data: entities.filter(
-          (row) =>
-            row.kind === body.kind &&
-            (!body.ids?.length || body.ids.includes(row.id)),
-        ),
-        next_page_token: "",
-        cursor: "fixture",
-      },
-    });
-  });
-  await page.route("**/books?*", (route) =>
-    route.fulfill({
-      json: {
-        data: collections.flatMap((item) =>
-          ["GRAM", "XTR"].flatMap((currency) =>
-            venues.map((venue) => ({
-              item_type_id: item.id,
-              currency_id: currency,
-              venue_id: venue.id,
-            })),
-          ),
-        ),
-        next_after: null,
-      },
-    }),
+      const id = decodeURIComponent(
+        new URL(route.request().url()).pathname.split("/").at(-1),
+      );
+      return route.fulfill({
+        json: {
+          collection: collections.find((c) => c.id === id),
+          models,
+          backdrops,
+          patterns,
+          cursor: "fixture",
+          sync,
+        },
+      });
+    },
   );
-  for (const path of ["orders", "executions"])
+  for (const path of ["orders", "history"])
     await page.route(`**/${path}/query`, (route) =>
       route.fulfill({
-        json: result(route.request().postDataJSON(), path === "executions"),
+        json: result(route.request().postDataJSON(), path === "history"),
       }),
     );
   const connections = new Set();
@@ -259,13 +282,22 @@ try {
     socket.onClose(() => connections.delete(connection));
   });
   const base = `http://127.0.0.1:${server.httpServer.address().port}`;
-  await page.goto(`${base}/?item=bunny&currency=GRAM&sort=price_asc`);
+  await page.goto(`${base}/?collection=bunny&currency=GRAM&sort=price_asc`);
   const button = (name) => page.getByRole("button", { name, exact: true });
   const cards = (n) =>
-    page.waitForFunction(
-      (n) => document.querySelectorAll(".gift-card").length === n,
-      n,
-    );
+    page
+      .waitForFunction(
+        (n) =>
+          Number(document.querySelector(".gift-grid")?.dataset.orderCount) ===
+            n &&
+          document.querySelectorAll(".gift-card").length <= Math.min(n, 75),
+        n,
+      )
+      .catch(async (error) => {
+        console.error("UI state:", await page.locator("body").innerText());
+        console.error("Browser errors:", errors);
+        throw error;
+      });
   const price = (value) =>
     page.waitForFunction(
       (value) =>
@@ -283,7 +315,13 @@ try {
       .click();
   };
   const scrollMore = async (count) => {
-    await page.locator(".scroll-loader").scrollIntoViewIfNeeded();
+    if (
+      (await page
+        .locator(".gift-grid")
+        .evaluate((el) => Number(el.dataset.orderCount))) >= count
+    )
+      return;
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await cards(count);
   };
   await cards(50);
@@ -437,7 +475,11 @@ try {
         .locator(".card-open")
         .evaluateAll((elements) => elements.map((el) => el.dataset.orderId)),
     ).size,
-    125,
+    await page.locator(".card-open").count(),
+  );
+  assert.ok(
+    (await page.locator(".gift-card").count()) < 60,
+    "Only viewport rows should be mounted",
   );
   assert.equal(
     await page.getByText("All gifts loaded", { exact: true }).count(),
@@ -458,7 +500,7 @@ try {
   await page.getByLabel("Filter collections").fill("pepe");
   assert.equal(await page.locator(".collection-tile").count(), 1);
   await page.getByLabel("Filter collections").press("Enter");
-  await page.waitForURL(/item=pepe/);
+  await page.waitForURL(/collection=pepe/);
   await cards(50);
   assert.equal(
     await page.locator(".collection-rail").evaluate((rail) => {
@@ -586,7 +628,9 @@ try {
   );
   await currency("GRAM");
   await price("0.500000001");
-  await page.goto(`${base}/?item=bunny&currency=GRAM&sort=price_asc&max=12`);
+  await page.goto(
+    `${base}/?collection=bunny&currency=GRAM&sort=price_asc&max=12`,
+  );
   await cards(3);
   await currency("XTR");
   await cards(50);

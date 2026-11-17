@@ -11,6 +11,16 @@ export default defineConfig({
     ),
   },
   plugins: [react()],
+  build: {
+    manifest: true,
+    rolldownOptions: {
+      input: {
+        market: "index.html",
+        docs: "docs/index.html",
+        websocket: "docs/ws/index.html",
+      },
+    },
+  },
   server: {
     proxy: Object.fromEntries(
       [
@@ -18,11 +28,13 @@ export default defineConfig({
         "/telegram",
         "/auth",
         "/sync",
-        "/books",
         "/catalog",
+        "/collections",
+        "/portfolio",
         "/orders",
-        "/executions",
+        "/history",
         "/openapi.json",
+        "/asyncapi.json",
         "/healthz",
         "/readyz",
         "/ws",

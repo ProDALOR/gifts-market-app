@@ -10,11 +10,10 @@ services:
     security_opt: ["no-new-privileges:true"]
     stop_grace_period: 15s
     tmpfs: ["/tmp:size=16m,mode=1777,nosuid,nodev"]
-    networks: [market]
     volumes: ["market-app-data:/data", "market-bot-data:/bot-data"]
     env_file: .env
     environment:
-      MARKET_HUB_URL: ${MARKET_HUB_URL:-http://market-hub:50051}
+      MARKET_HUB_URL: ${MARKET_HUB_URL:?Set MARKET_HUB_URL to a reachable hub address}
       MARKET_HUB_TOKEN: ${MARKET_HUB_TOKEN:?Set MARKET_HUB_TOKEN to an issued service token}
       # Container paths take precedence over native settings in .env.
       MARKET_DATA_DIR: /data
@@ -23,11 +22,6 @@ services:
       MARKET_WEB_DIR: /app/web/dist
     ports:
       - "${MARKET_APP_PORT:-8080}:8080"
-
-networks:
-  market:
-    name: ${MARKET_NETWORK:-market}
-    external: true
 
 volumes:
   market-app-data:

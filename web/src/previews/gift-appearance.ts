@@ -1,47 +1,33 @@
-import type { Entry, Order } from "../market.ts";
-import { modelThumbnailUrl } from "../market.ts";
-export type GiftOption = Extract<Entry, { kind: "attribute_option" }>;
-export type BackdropPalette = { center: string; edge: string; pattern: string };
-function exactOption(
-  order: Pick<Order, "attributes">,
-  attribute: string,
-): string | undefined {
-  const predicate = order.attributes[attribute];
-  return predicate?.op === "eq" && predicate.value.type === "enum"
-    ? predicate.value.value
-    : undefined;
-}
-function color(value: string | undefined): string | undefined {
-  return value && /^#[\da-f]{6}$/i.test(value)
-    ? value.toLowerCase()
-    : undefined;
-}
+import type { Order, CatalogOption, BackdropPalette } from "../market.ts";
+import { modelMedia } from "../market.ts";
+export type GiftOption = CatalogOption;
+export type { BackdropPalette } from "../market.ts";
 export function backdropPalette(
   backdrop?: GiftOption,
 ): BackdropPalette | undefined {
-  if (backdrop?.attribute_id !== "tg.backdrop") return;
-  const center = color(backdrop.meta["colors.center_color"]);
-  const edge = color(backdrop.meta["colors.edge_color"]);
-  const pattern = color(backdrop.meta["colors.pattern_color"]);
-  return center && edge && pattern ? { center, edge, pattern } : undefined;
+  return backdrop?.kind === "backdrop"
+    ? backdrop.palette || undefined
+    : undefined;
 }
-/** Compose only concrete catalog attributes; conditional bids never invent gift artwork. */
+/** Catalog colors are validated by the gift projection; only concrete gifts get artwork. */
 export function giftAppearance(
-  order: Pick<Order, "attributes">,
+  order: Pick<Order, "target">,
   options: ReadonlyMap<string, GiftOption>,
 ) {
-  const modelUrl = modelThumbnailUrl(order);
-  const backdropId = exactOption(order, "tg.backdrop");
-  const patternId = exactOption(order, "tg.pattern");
-  const backdrop = backdropId ? options.get(backdropId) : undefined;
-  const pattern = patternId ? options.get(patternId) : undefined;
-  const palette = modelUrl ? backdropPalette(backdrop) : undefined;
+  const media = modelMedia(order, options);
+  const selected =
+    order.target.kind === "gift" ? order.target.gift.traits : undefined;
+  const backdrop = selected?.backdrop
+    ? options.get(selected.backdrop)
+    : undefined;
+  const pattern = selected?.pattern ? options.get(selected.pattern) : undefined;
+  const palette = media ? backdropPalette(backdrop) : undefined;
   const patternUrl =
-    palette && pattern?.attribute_id === "tg.pattern"
-      ? `/media/patterns/${encodeURIComponent(pattern.id)}`
+    palette && pattern?.kind === "pattern"
+      ? pattern.media?.thumbnail_url
       : undefined;
   return {
-    modelUrl,
+    media,
     palette,
     patternUrl,
     label: [

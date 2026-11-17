@@ -4,10 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+market-gifts = { workspace = true, features = ["schema"] }
 market-media.workspace = true
 market-actors.workspace = true
 market-miniapp = { workspace = true, optional = true, features = ["schema"] }
 actix-web.workspace = true
+actix-files.workspace = true
 actix-ws.workspace = true
 actix-cors.workspace = true
 anyhow.workspace = true

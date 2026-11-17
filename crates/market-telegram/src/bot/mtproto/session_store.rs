@@ -1,7 +1,6 @@
 //! Private MTProto session storage and an exclusive worker lock.
 //! SQLite operations run on tracked blocking workers, outside the API event loop.
 use crate::bot::BotError;
-use fs2::FileExt;
 use grammers_session::{
     BoxFuture, Session,
     storages::{SqliteSession, SqliteSessionError},
@@ -45,11 +44,11 @@ impl SessionStore {
                     use std::os::unix::fs::OpenOptionsExt;
                     options.mode(0o600);
                 }
-                // Reuse the former worker lock so a legacy HTTP worker cannot share this directory.
+                // Keep the stable bot-scoped lock across API IDs and session upgrades.
                 let lock = options
                     .open(directory.join(format!("{bot_id}.lock")))
                     .map_err(|_| BotError::Session)?;
-                lock.try_lock_exclusive().map_err(|_| {
+                lock.try_lock().map_err(|_| {
                     BotError::Configuration("Another bot worker owns this session directory")
                 })?;
                 let path = directory.join(format!("{bot_id}-{api_id}.mtproto.sqlite"));
@@ -168,6 +167,54 @@ mod tests {
     use super::*;
     use grammers_session::types::PeerAuth;
 
+    #[test]
+    fn child_process_cannot_take_the_worker_lock() {
+        let Some(path) = std::env::var_os("MARKET_TEST_SESSION_LOCK") else {
+            return;
+        };
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        assert!(file.try_lock().is_err());
+    }
+    #[tokio::test]
+    async fn worker_lock_is_exclusive_across_processes_and_released_after_close() {
+        let directory = tempfile::tempdir().unwrap();
+        let jobs = TaskTracker::new();
+        let store = SessionStore::open(directory.path(), 42, 12345, &jobs)
+            .await
+            .unwrap();
+        let path = directory.path().join("42.lock");
+        let child_path = path.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "bot::mtproto::session_store::tests::child_process_cannot_take_the_worker_lock",
+                ])
+                .env("MARKET_TEST_SESSION_LOCK", child_path)
+                .output()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        drop(store);
+        jobs.close();
+        jobs.wait().await;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        file.try_lock().unwrap();
+    }
     #[tokio::test]
     async fn session_persists_login_peers_and_only_acknowledged_progress_under_exclusive_lock() {
         let directory = tempfile::tempdir().unwrap();

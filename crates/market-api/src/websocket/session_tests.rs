@@ -37,7 +37,7 @@ async fn connect(
             if query.limit==4 {return End::SlowConsumer;}
             let label=if query.limit==3 {"😀".repeat(20_000)} else {"ready".into()};
             let page=serde_json::json!({"data":[],"cursor":label,"next_page_token":"","sync":{"ready":true,"state":"live","updated_at":null}}).to_string();
-            if tx.send(Scope::Subscription(key),queue::Payload::Page(Arc::from(page)),false,&cancel).await.is_err() {return End::SlowConsumer;}
+            if tx.send(Scope::Subscription(key),queue::Payload::test_page(Arc::from(page)),false,&cancel).await.is_err() {return End::SlowConsumer;}
             cancel.cancelled().await;End::Cancelled
         }.boxed_local()
         },
@@ -77,7 +77,7 @@ async fn server() -> (
 async fn subscribe(socket: &mut Socket, limit: u32) {
     socket
         .send(Message::Text(
-            serde_json::json!({"type":"subscribe","id":"offers","query":{"limit":limit}})
+            serde_json::json!({"type":"subscribe","id":"offers","query":{"filters":{"collection_id":"gift","currency_id":"GRAM"},"limit":limit}})
                 .to_string()
                 .into(),
         ))

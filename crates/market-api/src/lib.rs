@@ -1,7 +1,7 @@
-//! HTTP/WebSocket adapters, public models and protocol conversions.
+//! HTTP/WebSocket adapters, gift-domain models and transport envelopes.
+mod asyncapi;
 mod config;
 mod connections;
-mod conversion;
 mod encoding;
 pub mod error;
 mod frontend;
@@ -27,4 +27,9 @@ pub use server::ApiServer;
 pub fn schema_json() -> serde_json::Result<String> {
     use utoipa::OpenApi;
     ApiDoc::openapi().to_json()
+}
+
+/// AsyncAPI specification generated from the public WebSocket message types.
+pub fn asyncapi_json() -> serde_json::Result<String> {
+    serde_json::to_string(&asyncapi::document()?)
 }

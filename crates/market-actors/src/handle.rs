@@ -2,10 +2,6 @@
 use crate::{
     catalog::handle::CatalogHandle,
     error,
-    models::{
-        BooksPage, BooksQuery, CatalogEntry, CatalogQuery, ExecutionsQuery, Order, OrdersQuery,
-        Page, ReadConsistency,
-    },
     orderbooks::handle::OrderbooksHandle,
     protocol,
     runtime::closed,
@@ -13,6 +9,7 @@ use crate::{
     subscriptions::{DataSubscription, DataUpdate, UserSubscriptionsActor, messages::Subscribe},
 };
 use actix::Addr;
+use market_gifts::*;
 use market_hub_protocol::wire as w;
 use market_replica::{ReadResult, SyncStatus as ReplicaStatus};
 use std::sync::Arc;
@@ -27,29 +24,21 @@ pub struct MarketDataHandle {
 impl MarketDataHandle {
     pub async fn value_models(
         &self,
-        request: crate::valuation::ValuationRequest,
-    ) -> error::Result<crate::valuation::Valuation> {
-        crate::valuation::validate(&request)?;
-        let mut grouped = std::collections::BTreeMap::new();
-        for position in request.positions {
-            *grouped.entry(position.model).or_insert(0u32) += position.quantity;
-        }
-        let positions = grouped
-            .into_iter()
-            .map(|(model, quantity)| crate::valuation::ModelPosition { model, quantity })
-            .collect();
-        let resolved = self.catalog.resolve_models(positions).await?;
-        Ok(self
-            .orderbooks
-            .value_models(resolved, request.currency_id)
-            .await?)
+        request: market_gifts::valuation::ValuationRequest,
+    ) -> error::Result<market_gifts::valuation::Valuation> {
+        request
+            .validate()
+            .map_err(|error| error::DataError::invalid(error.to_string()))?;
+        Ok(self.orderbooks.value_models(request).await?)
     }
     pub(crate) async fn orders_raw(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         self.orderbooks.read(request).await
     }
+    #[cfg(test)]
     pub(crate) async fn catalog_raw(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         self.catalog.read(request).await
     }
+    #[cfg(test)]
     pub(crate) async fn books_raw(&self, request: w::BooksRequest) -> Result<w::BooksPage, Status> {
         self.orderbooks.books(request).await
     }
@@ -71,35 +60,37 @@ impl MarketDataHandle {
 }
 
 impl MarketDataHandle {
-    pub async fn orders(&self, query: OrdersQuery) -> error::Result<Page<Order>> {
+    pub async fn orders(&self, query: GiftOrdersQuery) -> error::Result<Page<GiftOrder>> {
         let mode = match query.consistency {
             ReadConsistency::Snapshot => w::ReadMode::Snapshot,
             ReadConsistency::Live => w::ReadMode::Live,
         };
-        protocol::orders(self.orders_raw(query.into_read(mode)?).await?)
+        protocol::orders(self.orders_raw(crate::query::orders(query, mode)?).await?)
     }
-    pub async fn executions(&self, query: ExecutionsQuery) -> error::Result<Page<Order>> {
-        protocol::orders(self.orders_raw(query.into_read()?).await?)
+    pub async fn executions(&self, query: GiftHistoryQuery) -> error::Result<Page<GiftOrder>> {
+        protocol::orders(self.orders_raw(crate::query::history(query)?).await?)
     }
-    pub async fn catalog(&self, query: CatalogQuery) -> error::Result<Page<CatalogEntry>> {
-        protocol::catalog(self.catalog_raw(query.into_read()?).await?)
+    pub async fn catalog(&self) -> error::Result<GiftCatalog> {
+        Ok(self.catalog.bootstrap().await?)
     }
-    pub async fn books(&self, query: BooksQuery) -> error::Result<BooksPage> {
-        let page = self.books_raw(query.into_request()?).await?;
-        Ok(BooksPage {
-            data: page.books.into_iter().map(Into::into).collect(),
-            next_after: page.next_after.map(Into::into),
-        })
+    pub async fn collection(&self, id: CollectionId) -> error::Result<GiftCollectionCatalog> {
+        Ok(self.catalog.collection(id).await?)
     }
-    pub async fn status(&self) -> error::Result<crate::SyncStatus> {
-        Ok(self.status_raw().await?.into())
+    pub async fn media_document(&self, target: MediaTarget) -> error::Result<TelegramDocumentId> {
+        Ok(self.catalog.media_document(target).await?)
+    }
+    pub async fn model_documents(&self) -> error::Result<Vec<TelegramDocumentId>> {
+        Ok(self.catalog.model_documents().await?)
+    }
+    pub async fn status(&self) -> error::Result<SyncStatus> {
+        protocol::sync(self.status_raw().await?)
     }
     pub async fn subscribe(
         &self,
-        query: OrdersQuery,
+        query: GiftOrdersQuery,
     ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
         Ok(self
-            .subscribe_raw(query.into_read(w::ReadMode::Live)?)
+            .subscribe_raw(crate::query::orders(query, w::ReadMode::Live)?)
             .await?)
     }
 }

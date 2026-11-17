@@ -82,10 +82,12 @@ impl MarketDataService {
                     }
                     .start();
                     let orderbooks = OrderbooksHandle {
+                        valuations: Arc::new(Semaphore::new(1)),
                         address: orders,
                         budget: budget.clone(),
                     };
                     let catalog = CatalogActor {
+                        cache: Default::default(),
                         reader: reader.clone(),
                         environment: environment.clone(),
                     }
@@ -93,13 +95,14 @@ impl MarketDataService {
                     let subscriptions = UserSubscriptionsActor::new(
                         environment,
                         orderbooks.clone(),
-                        reader.changes(),
+                        reader.clone(),
                         subscription_limit,
                     )
                     .start();
                     MarketDataHandle {
                         orderbooks,
                         catalog: CatalogHandle {
+                            projections: Arc::new(Semaphore::new((query_limit / 2).clamp(1, 4))),
                             address: catalog,
                             budget,
                         },

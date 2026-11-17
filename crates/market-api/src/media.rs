@@ -2,10 +2,10 @@
 use crate::{
     MarketApi,
     error::{ApiError, ErrorCode, Result},
-    models::{CatalogEntry, CatalogKind, CatalogQuery},
+    models::{MediaTarget, ModelId, PatternId},
 };
 use actix_web::{HttpRequest, HttpResponse, http::header, web};
-use market_media::{DocumentId, MediaCache, MediaError, MediaKey, MediaKind};
+use market_media::{MediaCache, MediaError, MediaKey, MediaKind};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 #[derive(Clone)]
@@ -21,85 +21,56 @@ impl MediaApi {
         }
     }
 }
-#[utoipa::path(get,path="/media/models/{id}",params(("id"=String,Path,description="Catalog model attribute-option ID")),responses((status=200,description="PNG, JPEG or WebP thumbnail"),(status=304,description="Cached thumbnail unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
+#[utoipa::path(get,tag="Media",path="/media/models/{id}",params(("id"=String,Path,description="Catalog model ID")),responses((status=200,description="PNG, JPEG or WebP thumbnail"),(status=304,description="Cached thumbnail unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn model_thumbnail(
     market: web::Data<MarketApi>,
     media: Option<web::Data<MediaApi>>,
     id: web::Path<String>,
     request: HttpRequest,
 ) -> Result<HttpResponse> {
-    catalog_media(market, media, id, request, MediaKind::Thumbnail, "tg.model").await
+    let target = MediaTarget::Model(
+        ModelId::new(id.into_inner()).map_err(|e| ApiError::invalid(e.to_string()))?,
+    );
+    catalog_media(market, media, target, request, MediaKind::Thumbnail).await
 }
-#[utoipa::path(get,path="/media/models/{id}/animation",params(("id"=String,Path,description="Catalog model attribute-option ID")),responses((status=200,description="Gzip-compressed TGS (application/x-tgsticker)"),(status=304,description="Cached animation unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
+#[utoipa::path(get,tag="Media",path="/media/models/{id}/animation",params(("id"=String,Path,description="Catalog model ID")),responses((status=200,description="Gzip-compressed TGS (application/x-tgsticker)"),(status=304,description="Cached animation unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn model_animation(
     market: web::Data<MarketApi>,
     media: Option<web::Data<MediaApi>>,
     id: web::Path<String>,
     request: HttpRequest,
 ) -> Result<HttpResponse> {
-    catalog_media(market, media, id, request, MediaKind::Animation, "tg.model").await
+    let target = MediaTarget::Model(
+        ModelId::new(id.into_inner()).map_err(|e| ApiError::invalid(e.to_string()))?,
+    );
+    catalog_media(market, media, target, request, MediaKind::Animation).await
 }
-#[utoipa::path(get,path="/media/patterns/{id}",params(("id"=String,Path,description="Catalog pattern attribute-option ID")),responses((status=200,description="PNG, JPEG or WebP gift pattern thumbnail"),(status=304,description="Cached pattern unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
+#[utoipa::path(get,tag="Media",path="/media/patterns/{id}",params(("id"=String,Path,description="Catalog pattern ID")),responses((status=200,description="PNG, JPEG or WebP gift pattern thumbnail"),(status=304,description="Cached pattern unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn pattern_thumbnail(
     market: web::Data<MarketApi>,
     media: Option<web::Data<MediaApi>>,
     id: web::Path<String>,
     request: HttpRequest,
 ) -> Result<HttpResponse> {
-    catalog_media(
-        market,
-        media,
-        id,
-        request,
-        MediaKind::Thumbnail,
-        "tg.pattern",
-    )
-    .await
+    let target = MediaTarget::Pattern(
+        PatternId::new(id.into_inner()).map_err(|e| ApiError::invalid(e.to_string()))?,
+    );
+    catalog_media(market, media, target, request, MediaKind::Thumbnail).await
 }
 async fn catalog_media(
     market: web::Data<MarketApi>,
     media: Option<web::Data<MediaApi>>,
-    id: web::Path<String>,
+    target: MediaTarget,
     request: HttpRequest,
     kind: MediaKind,
-    attribute: &str,
 ) -> Result<HttpResponse> {
-    if id.is_empty()
-        || id.len() > 256
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-    {
-        return Err(ApiError::invalid("Invalid media catalog ID"));
-    }
     let media = media.ok_or_else(|| ApiError::unavailable("Media cache is unavailable"))?;
     let _slot = media
         .slots
         .try_acquire()
         .map_err(|_| ApiError::capacity("Media service is busy"))?;
-    let page = market
-        .catalog(CatalogQuery {
-            kind: CatalogKind::AttributeOption,
-            ids: vec![id.into_inner()],
-            limit: 1,
-            page_token: String::new(),
-        })
-        .await?;
-    let document = page
-        .data
-        .into_iter()
-        .find_map(|entry| match entry {
-            CatalogEntry::AttributeOption {
-                attribute_id,
-                aliases,
-                ..
-            } if attribute_id == attribute => aliases
-                .iter()
-                .filter(|alias| alias.namespace == "tg")
-                .find_map(|alias| alias.id.parse().ok().and_then(DocumentId::new)),
-            _ => None,
-        })
-        .ok_or_else(ApiError::not_found)?;
+    let document = market.media_document(target).await?;
+    let document = market_media::DocumentId::new(document.get()).ok_or_else(ApiError::not_found)?;
     let key = match kind {
         MediaKind::Thumbnail => MediaKey::thumbnail(document),
         MediaKind::Animation => MediaKey::animation(document),

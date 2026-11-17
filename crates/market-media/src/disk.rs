@@ -1,4 +1,4 @@
-//! Serialized atomic writes and quota maintenance. Work completes on blocking workers even
+//! Concurrent validated reads, atomic writes and background quota maintenance. Work completes on blocking workers even
 //! if its async caller is cancelled, so index updates cannot be separated from a rename.
 use crate::{DocumentId, MediaAsset, MediaError, MediaKey, MediaLimits, MediaResult};
 use std::{
@@ -7,7 +7,7 @@ use std::{
     io::Read,
     path::PathBuf,
     sync::Mutex,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 struct Entry {
     bytes: u64,
@@ -16,7 +16,7 @@ struct Entry {
 struct Index {
     files: HashMap<MediaKey, Entry>,
     bytes: u64,
-    scanned: Instant,
+    generation: u64,
 }
 pub(crate) struct DiskStore {
     directory: PathBuf,
@@ -38,7 +38,7 @@ impl DiskStore {
             index: Mutex::new(Index {
                 files: HashMap::new(),
                 bytes: 0,
-                scanned: Instant::now(),
+                generation: 0,
             }),
         };
         let mut index = store.index.lock().unwrap();
@@ -87,7 +87,7 @@ impl DiskStore {
         *index = Index {
             files,
             bytes,
-            scanned: Instant::now(),
+            generation: index.generation + 1,
         };
         Ok(())
     }
@@ -100,21 +100,23 @@ impl DiskStore {
         let previous = replacing
             .and_then(|key| index.files.get(&key))
             .map_or(0, |entry| entry.bytes);
-        while index
-            .bytes
-            .saturating_sub(previous)
-            .saturating_add(incoming)
-            > self.limits.disk_bytes
-        {
-            let Some(key) = index
-                .files
-                .iter()
-                .filter(|(key, _)| Some(**key) != replacing)
-                .min_by_key(|(_, entry)| entry.accessed)
-                .map(|(key, _)| *key)
-            else {
+        let over_budget = |bytes: u64| {
+            bytes.saturating_sub(previous).saturating_add(incoming) > self.limits.disk_bytes
+        };
+        if !over_budget(index.bytes) {
+            return Ok(());
+        }
+        let mut victims: Vec<_> = index
+            .files
+            .iter()
+            .filter(|(key, _)| Some(**key) != replacing)
+            .map(|(key, entry)| (*key, entry.accessed))
+            .collect();
+        victims.sort_unstable_by_key(|(_, accessed)| *accessed);
+        for (key, _) in victims {
+            if !over_budget(index.bytes) {
                 break;
-            };
+            }
             match fs::remove_file(self.path(key)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -122,6 +124,7 @@ impl DiskStore {
             }
             if let Some(entry) = index.files.remove(&key) {
                 index.bytes = index.bytes.saturating_sub(entry.bytes);
+                index.generation += 1;
             }
         }
         Ok(())
@@ -134,7 +137,19 @@ impl DiskStore {
         }
     }
     pub fn read(&self, key: MediaKey) -> Result<Option<MediaAsset>, MediaError> {
-        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        self.read_validated(key, |bytes| MediaAsset::parse(key.kind(), bytes).ok())
+    }
+    fn read_validated(
+        &self,
+        key: MediaKey,
+        validate: impl FnOnce(Vec<u8>) -> Option<MediaAsset>,
+    ) -> Result<Option<MediaAsset>, MediaError> {
+        // Validation and decompression must not serialize unrelated cache hits.
+        let generation = self
+            .index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation;
         let file = match fs::File::open(self.path(key)) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -144,43 +159,74 @@ impl DiskStore {
         file.take(key.max_bytes() as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| MediaError::Unavailable)?;
-        match MediaAsset::parse(key.kind(), bytes) {
-            Ok(asset) => {
-                let entry = Entry {
-                    bytes: asset.bytes().len() as u64,
-                    accessed: SystemTime::now(),
-                };
-                if let Some(old) = index.files.insert(key, entry) {
-                    index.bytes = index.bytes.saturating_sub(old.bytes);
+        let asset = validate(bytes);
+        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        if generation == index.generation {
+            match &asset {
+                Some(asset) => {
+                    if let Some(old) = index.files.insert(
+                        key,
+                        Entry {
+                            bytes: asset.bytes().len() as u64,
+                            accessed: SystemTime::now(),
+                        },
+                    ) {
+                        index.bytes = index.bytes.saturating_sub(old.bytes);
+                    }
+                    index.bytes += asset.bytes().len() as u64;
                 }
-                index.bytes += asset.bytes().len() as u64;
-                Ok(Some(asset))
-            }
-            Err(_) => {
-                let _ = fs::remove_file(self.path(key));
-                if let Some(old) = index.files.remove(&key) {
-                    index.bytes = index.bytes.saturating_sub(old.bytes);
+                None => {
+                    // A corrupt read cannot delete a concurrently replaced file.
+                    let _ = fs::remove_file(self.path(key));
+                    if let Some(old) = index.files.remove(&key) {
+                        index.bytes = index.bytes.saturating_sub(old.bytes);
+                    }
+                    index.generation += 1;
                 }
-                Ok(None)
             }
         }
+        Ok(asset)
+    }
+    pub fn maintain(&self) -> Result<(), MediaError> {
+        let generation = self
+            .index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation;
+        let mut scanned = Index {
+            files: HashMap::new(),
+            bytes: 0,
+            generation,
+        };
+        self.scan(&mut scanned)
+            .map_err(|_| MediaError::Unavailable)?;
+        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        // Retry on the next maintenance tick if a write raced the directory walk.
+        if index.generation != generation {
+            return Ok(());
+        }
+        for (key, entry) in &mut scanned.files {
+            if let Some(old) = index.files.get(key) {
+                entry.accessed = old.accessed;
+            }
+        }
+        *index = scanned;
+        self.trim(&mut index, 0, None)
+            .map_err(|_| MediaError::Unavailable)
     }
     pub fn write(&self, key: MediaKey, asset: &MediaAsset) -> MediaResult {
         if asset.bytes().len() as u64 > self.limits.disk_bytes {
             return Err(MediaError::Unavailable);
         }
-        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
-        if index.scanned.elapsed() >= Duration::from_secs(60) {
-            self.scan(&mut index).map_err(|_| MediaError::Unavailable)?;
-        }
-        self.trim(&mut index, asset.bytes().len() as u64, Some(key))
-            .map_err(|_| MediaError::Unavailable)?;
         let temporary = Temporary(self.directory.join(format!(
             "{}.{}.part",
             key.document().get(),
             uuid::Uuid::new_v4()
         )));
         fs::write(&temporary.0, asset.bytes()).map_err(|_| MediaError::Unavailable)?;
+        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        self.trim(&mut index, asset.bytes().len() as u64, Some(key))
+            .map_err(|_| MediaError::Unavailable)?;
         fs::rename(&temporary.0, self.path(key)).map_err(|_| MediaError::Unavailable)?;
         if let Some(previous) = index.files.insert(
             key,
@@ -192,6 +238,7 @@ impl DiskStore {
             index.bytes = index.bytes.saturating_sub(previous.bytes);
         }
         index.bytes += asset.bytes().len() as u64;
+        index.generation += 1;
         Ok(asset.clone())
     }
 }
@@ -212,4 +259,76 @@ fn stale_temporary(name: &str, metadata: &fs::Metadata, ttl: Duration) -> bool {
             .ok()
             .and_then(|time| time.elapsed().ok())
             .is_some_and(|age| age >= ttl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+    fn key(id: i64) -> MediaKey {
+        MediaKey::thumbnail(DocumentId::new(id).unwrap())
+    }
+    fn image() -> MediaAsset {
+        MediaAsset::thumbnail(b"\x89PNG\r\n\x1a\nsynthetic".to_vec()).unwrap()
+    }
+    #[test]
+    fn validation_runs_concurrently_and_corrupt_reads_cannot_delete_replacements() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(DiskStore::open(dir.path().into(), MediaLimits::default()).unwrap());
+        store.write(key(1), &image()).unwrap();
+        store.write(key(2), &image()).unwrap();
+        let (entered, wait) = mpsc::channel();
+        let (resume, blocked) = mpsc::channel();
+        let reading = store.clone();
+        let first = std::thread::spawn(move || {
+            reading.read_validated(key(1), |_| {
+                entered.send(()).unwrap();
+                blocked.recv_timeout(Duration::from_secs(3)).unwrap();
+                None // the old file failed validation
+            })
+        });
+        wait.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (done, completion) = mpsc::channel();
+        let other = store.clone();
+        let second = std::thread::spawn(move || {
+            assert!(other.read(key(2)).unwrap().is_some());
+            other.write(key(1), &image()).unwrap();
+            done.send(()).unwrap();
+        });
+        let concurrent = completion.recv_timeout(Duration::from_secs(1));
+        resume.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        second.join().unwrap();
+        concurrent.expect("an unrelated read and atomic replacement must not wait on validation");
+        assert_eq!(store.read(key(1)).unwrap().unwrap().etag(), image().etag());
+        let index = store.index.lock().unwrap();
+        assert_eq!(
+            index.bytes,
+            index.files.values().map(|entry| entry.bytes).sum::<u64>()
+        );
+        assert_eq!(index.files.len(), 2);
+    }
+    #[test]
+    fn maintenance_reconciles_disk_quota_and_cleans_temporary_files_without_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = MediaLimits {
+            disk_bytes: image().bytes().len() as u64 * 2,
+            temporary_ttl: Duration::ZERO,
+            ..Default::default()
+        };
+        let store = DiskStore::open(dir.path().into(), limits).unwrap();
+        store.write(key(1), &image()).unwrap();
+        for id in 2..=4 {
+            fs::write(store.path(key(id)), image().bytes()).unwrap();
+        }
+        let partial = dir.path().join(format!("5.{}.part", uuid::Uuid::new_v4()));
+        fs::write(&partial, b"stale").unwrap();
+        fs::write(dir.path().join("keep.txt"), b"unrelated").unwrap();
+        store.maintain().unwrap();
+        let index = store.index.lock().unwrap();
+        assert!(index.bytes <= store.limits.disk_bytes);
+        assert_eq!(index.files.len(), 2);
+        assert!(!partial.exists());
+        assert!(dir.path().join("keep.txt").exists());
+    }
 }

@@ -1,16 +1,27 @@
 import type { components } from "./gen/api";
-export type Order = components["schemas"]["Order"];
-export type Entry = components["schemas"]["CatalogEntry"];
-export type Book = components["schemas"]["BookKey"];
-export type Query = components["schemas"]["OrdersQuery"];
-export type Predicate = components["schemas"]["Predicate"];
-export type AttrValue = components["schemas"]["AttributeValue"];
-export type Page<T> = {
+export type Order = components["schemas"]["GiftOrder"];
+export type Book = components["schemas"]["GiftBook"];
+export type Query = components["schemas"]["GiftOrdersQuery"];
+export type HistoryQuery = components["schemas"]["GiftHistoryQuery"];
+export type FeedQuery =
+  { kind: "orders"; query: Query } | { kind: "history"; query: HistoryQuery };
+export type GiftMedia = components["schemas"]["GiftMedia"];
+export type Catalog = components["schemas"]["GiftCatalog"];
+export type CollectionCatalog = components["schemas"]["GiftCollectionCatalog"];
+export type Collection = components["schemas"]["GiftCollection"];
+export type Model = components["schemas"]["GiftModel"];
+export type Backdrop = components["schemas"]["GiftBackdrop"];
+export type Pattern = components["schemas"]["GiftPattern"];
+export type BackdropPalette = components["schemas"]["BackdropPalette"];
+export type Page<T> = Omit<components["schemas"]["Page_GiftOrder"], "data"> & {
   data: T[];
-  next_page_token: string;
-  cursor: string;
-  sync?: components["schemas"]["SyncInfo"];
 };
+export type TraitKey = "models" | "backdrops" | "patterns";
+export type TraitFilters = Partial<Record<TraitKey, string[]>>;
+export type CatalogOption =
+  | (Model & { kind: "model" })
+  | (Backdrop & { kind: "backdrop" })
+  | (Pattern & { kind: "pattern" });
 export class ApiFailure extends Error {
   constructor(
     public code: string,
@@ -42,39 +53,13 @@ export async function request<T>(
     );
   return value;
 }
-export async function catalog(
-  kind: string,
+export const catalog = (signal: AbortSignal): Promise<Catalog> =>
+  request("/catalog", undefined, signal);
+export const collectionCatalog = (
+  id: string,
   signal: AbortSignal,
-  ids?: string[],
-): Promise<Entry[]> {
-  const result: Entry[] = [];
-  let page_token = "";
-  do {
-    const page: Page<Entry> = await request(
-      "/catalog/query",
-      { kind, ids: ids || [], limit: 200, page_token },
-      signal,
-    );
-    result.push(...page.data);
-    page_token = page.next_page_token;
-  } while (page_token && !signal.aborted);
-  return result;
-}
-export async function books(signal: AbortSignal): Promise<Book[]> {
-  const result: Book[] = [];
-  let after: Book | null = null;
-  do {
-    const page: { data: Book[]; next_after: Book | null } = await request(
-      "/books?limit=200" +
-        (after ? "&after=" + encodeURIComponent(JSON.stringify(after)) : ""),
-      undefined,
-      signal,
-    );
-    result.push(...page.data);
-    after = page.next_after;
-  } while (after && !signal.aborted);
-  return result;
-}
+): Promise<CollectionCatalog> =>
+  request(`/collections/${encodeURIComponent(id)}`, undefined, signal);
 /** Exact string formatting; no conversion to JavaScript floating point. */
 export function amount(value: string) {
   const [whole, fraction] = value.split(".");
@@ -83,40 +68,13 @@ export function amount(value: string) {
     (fraction ? "." + fraction : "")
   );
 }
-export function text(value: AttrValue, names: Map<string, string>): string {
-  switch (value.type) {
-    case "enum":
-      return names.get(value.value) || value.value;
-    case "object":
-      return Object.entries(value.value || {})
-        .map(([k, v]) => `${names.get(k) || k}: ${text(v, names)}`)
-        .join(" · ");
-    case "list":
-      return (value.value || []).map((v) => text(v, names)).join(" · ");
-    case "timestamp":
-      return new Date(value.value).toLocaleString();
-    default:
-      return String(value.value);
-  }
-}
-
-export function dateInput(value: string): string {
-  const date = new Date(value);
-  if (!value || !Number.isFinite(date.getTime())) return "";
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
-    .toISOString()
-    .slice(0, 19);
-}
-export function timestamp(value: string): string {
-  return value ? new Date(value).toISOString() : "";
-}
-
-/** Only a concrete model has one thumbnail; bids with ranges keep their placeholder. */
-export function modelThumbnailUrl(
-  order: Pick<Order, "attributes">,
-): string | undefined {
-  const model = order.attributes["tg.model"];
-  return model?.op === "eq" && model.value.type === "enum" && model.value.value
-    ? `/media/models/${encodeURIComponent(model.value.value)}`
-    : undefined;
+/** Previews represent actual collectibles, never a bid's hypothetical target. */
+export function modelMedia(
+  order: Pick<Order, "target">,
+  options: ReadonlyMap<string, CatalogOption>,
+): GiftMedia | undefined {
+  const id =
+    order.target.kind === "gift" ? order.target.gift.traits.model : undefined;
+  const model = id ? options.get(id) : undefined;
+  return model?.kind === "model" ? model.media || undefined : undefined;
 }

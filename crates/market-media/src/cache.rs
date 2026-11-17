@@ -293,6 +293,12 @@ impl MediaCache {
         };
         task.await.map_err(|_| MediaError::Unavailable)?
     }
+    pub(crate) async fn maintain(&self) {
+        let disk = self.0.disk.clone();
+        if self.blocking(move || disk.maintain()).await.is_err() {
+            tracing::debug!("media cache maintenance skipped");
+        }
+    }
     pub async fn shutdown(&self) {
         {
             let _guard = self.0.admission.lock().unwrap_or_else(|e| e.into_inner());

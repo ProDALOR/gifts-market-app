@@ -1,6 +1,8 @@
+#[cfg(test)]
+use super::messages::ListBooks;
 use super::{
     OrderbooksActor,
-    messages::{GetStatus, ListBooks, ReadOrders},
+    messages::{GetStatus, ReadOrders},
 };
 use crate::{
     runtime::{QueryBudget, closed},
@@ -14,19 +16,24 @@ use tonic::Status;
 pub(crate) struct OrderbooksHandle {
     pub address: Addr<OrderbooksActor>,
     pub budget: QueryBudget,
+    pub valuations: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl OrderbooksHandle {
     pub async fn value_models(
         &self,
-        positions: Vec<crate::valuation::ResolvedPosition>,
-        currency_id: String,
-    ) -> Result<crate::valuation::Valuation, Status> {
+        request: market_gifts::valuation::ValuationRequest,
+    ) -> Result<market_gifts::valuation::Valuation, Status> {
+        let heavy = self
+            .valuations
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Status::resource_exhausted("Portfolio valuation capacity reached"))?;
         let permit = self.budget.try_query()?;
         self.address
             .send(super::messages::ValueModels {
-                positions,
-                currency_id,
+                request,
                 permit,
+                heavy,
             })
             .await
             .map_err(closed)?
@@ -47,6 +54,7 @@ impl OrderbooksHandle {
             .await
             .map_err(closed)?
     }
+    #[cfg(test)]
     pub async fn books(&self, request: w::BooksRequest) -> Result<w::BooksPage, Status> {
         let permit = self.budget.try_query()?;
         self.address
