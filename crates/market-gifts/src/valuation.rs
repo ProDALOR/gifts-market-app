@@ -22,12 +22,45 @@ pub enum ModelLookup {
         document_id: TelegramDocumentId,
     },
 }
+impl ModelLookup {
+    pub fn named(
+        collection: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Result<Self, InvalidValue> {
+        let lookup = Self::Name {
+            collection: collection.into(),
+            model: model.into(),
+        };
+        lookup.validate()?;
+        Ok(lookup)
+    }
+    pub fn validate(&self) -> Result<(), InvalidValue> {
+        if let Self::Name { collection, model } = self
+            && [collection, model]
+                .iter()
+                .any(|name| name.trim().is_empty() || name.len() > 256)
+        {
+            return Err(InvalidValue(
+                "collection and model names must contain 1..256 bytes",
+            ));
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ModelPosition {
     pub model: ModelLookup,
     pub quantity: u32,
+}
+impl ModelPosition {
+    pub fn validate(&self) -> Result<(), InvalidValue> {
+        if self.quantity == 0 {
+            return Err(InvalidValue("portfolio quantities must be positive"));
+        }
+        self.model.validate()
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,18 +117,7 @@ impl ValuationRequest {
             count = count
                 .checked_add(position.quantity)
                 .ok_or(InvalidValue("portfolio quantity is too large"))?;
-            if position.quantity == 0 {
-                return Err(InvalidValue("portfolio quantities must be positive"));
-            }
-            if let ModelLookup::Name { collection, model } = &position.model
-                && [collection, model]
-                    .iter()
-                    .any(|name| name.trim().is_empty() || name.len() > 256)
-            {
-                return Err(InvalidValue(
-                    "collection and model names must contain 1..256 bytes",
-                ));
-            }
+            position.validate()?;
         }
         Ok(())
     }

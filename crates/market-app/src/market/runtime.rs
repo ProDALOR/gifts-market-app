@@ -64,11 +64,10 @@ impl MarketRuntime {
             })
     }
     #[cfg(feature = "bot")]
-    pub fn start_bot(&self, worker: market_telegram::bot::BotWorker) -> Result<()> {
+    pub fn start_bot(&self, bot: market_telegram_bot::BotService) -> Result<()> {
         let stop = self.supervisor.token();
-        let commands = market_telegram::bot::MarketCommands::new(self.handle());
         self.supervisor.spawn_optional(TaskKind::Bot, async move {
-            if let Err(error) = worker.run(commands, stop).await {
+            if let Err(error) = bot.run(stop).await {
                 tracing::error!(%error, "bot worker stopped");
                 return Err(());
             }

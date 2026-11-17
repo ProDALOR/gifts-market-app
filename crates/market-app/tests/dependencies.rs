@@ -63,6 +63,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-media",
                 "market-replica",
                 "market-telegram",
+                "market-telegram-bot",
             ],
         ),
         (
@@ -74,9 +75,10 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-media",
             ],
         ),
+        ("market-telegram", &["market-gifts", "market-media"]),
         (
-            "market-telegram",
-            &["market-actors", "market-gifts", "market-media"],
+            "market-telegram-bot",
+            &["market-telegram", "market-actors", "market-gifts"],
         ),
         ("market-media", &[]),
         ("market-miniapp", &[]),
@@ -105,6 +107,21 @@ fn production_dependencies_follow_the_service_boundaries() {
             .iter()
             .find(|package| package["name"] == *name)
             .unwrap();
+        if *name == "market-telegram-bot" {
+            assert!(
+                !package["dependencies"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|dependency| {
+                        dependency["kind"].is_null()
+                            && dependency["name"]
+                                .as_str()
+                                .is_some_and(|name| name.starts_with("grammers-"))
+                    }),
+                "bot application must use native Telegram contracts instead of grammers"
+            );
+        }
         let dependencies: BTreeSet<_> = package["dependencies"]
             .as_array()
             .unwrap()

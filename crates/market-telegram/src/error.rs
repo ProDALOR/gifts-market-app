@@ -11,7 +11,6 @@ pub(super) enum ErrorDisposition {
 pub enum BotError {
     Configuration(&'static str),
     Transport,
-    MarketData,
     Session,
     Authorization,
     Runner,
@@ -27,7 +26,6 @@ impl std::fmt::Display for BotError {
             Self::Session => f.write_str("Bot session storage unavailable"),
             Self::Authorization => f.write_str("Telegram bot authorization failed"),
             Self::Runner => f.write_str("Telegram connection runner stopped"),
-            Self::MarketData => f.write_str("Market data service is unavailable"),
             Self::Transport => f.write_str("Telegram connection failed"),
             Self::InvalidResponse => f.write_str("Invalid MTProto response"),
             Self::PeerUnavailable => f.write_str("Telegram peer cannot receive messages"),

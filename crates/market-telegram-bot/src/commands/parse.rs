@@ -1,4 +1,6 @@
-use super::{Command, CommandRequest, FloorQuery, QuoteCurrency};
+use super::{Command, CommandRequest, FloorQuery};
+use market_gifts::{CurrencyId, valuation::ModelLookup};
+use market_telegram::IncomingMessage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
@@ -40,17 +42,11 @@ impl CommandKind {
     }
 }
 
-pub(in crate::bot) struct Incoming<'a> {
-    pub private: bool,
-    pub user_id: Option<u64>,
-    pub message_id: i32,
-    pub text: Option<&'a str>,
-}
-pub(in crate::bot) fn parse<S: AsRef<str>>(
-    message: Incoming<'_>,
+pub(crate) fn parse<S: AsRef<str>>(
+    message: IncomingMessage<'_>,
     usernames: &[S],
 ) -> Option<CommandRequest> {
-    if !message.private {
+    if !message.private || message.outgoing {
         return None;
     }
     let text = message.text?.trim();
@@ -74,33 +70,41 @@ pub(in crate::bot) fn parse<S: AsRef<str>>(
         CommandKind::Market => Command::Market,
         CommandKind::Help => Command::Help,
         CommandKind::Status => Command::Status,
-        CommandKind::Portfolio => QuoteCurrency::parse(arguments)
+        CommandKind::Portfolio => quote_currency(arguments)
             .map(Command::Portfolio)
             .unwrap_or(Command::Invalid(kind)),
-        CommandKind::Floor => {
-            let parts: Vec<_> = arguments.split('|').map(str::trim).collect();
-            if arguments.len() > 1024
-                || !(2..=3).contains(&parts.len())
-                || parts[..2]
-                    .iter()
-                    .any(|part| part.is_empty() || part.len() > 256)
-            {
-                Command::Invalid(kind)
-            } else if let Some(currency) = QuoteCurrency::parse(parts.get(2).copied().unwrap_or(""))
-            {
-                Command::Floor(FloorQuery {
-                    collection: parts[0].into(),
-                    model: parts[1].into(),
-                    currency,
-                })
-            } else {
-                Command::Invalid(kind)
-            }
-        }
+        CommandKind::Floor => floor(arguments)
+            .map(Command::Floor)
+            .unwrap_or(Command::Invalid(kind)),
     };
     Some(CommandRequest {
         command,
         user_id: message.user_id?,
         message_id: message.message_id,
     })
+}
+
+// Command shorthand belongs here; catalog IDs and availability remain domain/actor concerns.
+fn quote_currency(text: &str) -> Option<CurrencyId> {
+    if text.len() > 128 || text.split_whitespace().count() > 1 {
+        return None;
+    }
+    let symbol = text.trim().to_ascii_uppercase();
+    CurrencyId::new(match symbol.as_str() {
+        "" | "TON" => "GRAM".to_owned(),
+        _ => symbol,
+    })
+    .ok()
+}
+fn floor(arguments: &str) -> Option<FloorQuery> {
+    if arguments.len() > 1024 {
+        return None;
+    }
+    let mut parts = arguments.split('|').map(str::trim);
+    let model = ModelLookup::named(parts.next()?, parts.next()?).ok()?;
+    let currency = quote_currency(parts.next().unwrap_or(""))?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(FloorQuery { model, currency })
 }

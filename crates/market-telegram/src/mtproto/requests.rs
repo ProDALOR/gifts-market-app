@@ -1,32 +1,31 @@
 //! TL payload construction stays inside the MTProto adapter.
-use crate::bot::{commands, transport::Message};
+use crate::{LaunchButton, MenuCommand, Reply, transport::Message};
 use grammers_client::tl;
 use sha2::{Digest, Sha256};
-use url::Url;
 
-pub(super) fn command_request() -> tl::functions::bots::SetBotCommands {
+pub(super) fn command_request(commands: &[MenuCommand]) -> tl::functions::bots::SetBotCommands {
     tl::functions::bots::SetBotCommands {
         scope: tl::enums::BotCommandScope::Default,
         lang_code: String::new(),
-        commands: commands::CommandKind::ALL
+        commands: commands
             .iter()
             .map(|command| {
                 tl::types::BotCommand {
                     ephemeral: false,
-                    command: command.name().into(),
-                    description: command.description().into(),
+                    command: command.name.into(),
+                    description: command.description.into(),
                 }
                 .into()
             })
             .collect(),
     }
 }
-pub(super) fn menu_request(url: &Url) -> tl::functions::bots::SetBotMenuButton {
+pub(super) fn menu_request(launch: &LaunchButton) -> tl::functions::bots::SetBotMenuButton {
     tl::functions::bots::SetBotMenuButton {
         user_id: tl::enums::InputUser::Empty,
         button: tl::types::BotMenuButton {
-            text: "Open market".into(),
-            url: url.as_str().into(),
+            text: launch.text.clone(),
+            url: launch.url.as_str().into(),
         }
         .into(),
     }
@@ -34,8 +33,8 @@ pub(super) fn menu_request(url: &Url) -> tl::functions::bots::SetBotMenuButton {
 pub(super) fn reply_request(
     bot_id: u64,
     message: &Message,
-    reply: &commands::Reply,
-    url: Option<&Url>,
+    reply: &Reply,
+    launch: Option<&LaunchButton>,
 ) -> tl::functions::messages::SendMessage {
     use grammers_client::message::{Button, ReplyMarkup};
     let mut hash = Sha256::new();
@@ -57,8 +56,8 @@ pub(super) fn reply_request(
         reply_to: None,
         message: reply.text.clone(),
         random_id,
-        reply_markup: url.map(|url| {
-            ReplyMarkup::from_buttons_row(&[Button::webview("Open market", url.as_str())]).raw
+        reply_markup: launch.map(|launch| {
+            ReplyMarkup::from_buttons_row(&[Button::webview(&launch.text, launch.url.as_str())]).raw
         }),
         entities: None,
         schedule_date: None,

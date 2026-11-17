@@ -2,94 +2,80 @@ use super::{
     client::rpc,
     requests::{command_request, menu_request, reply_request},
 };
-use crate::bot::{config::app_url, tests::message, transport::incoming, *};
+use crate::{config::app_url, tests::message, *};
 use grammers_client::{sender::InvocationError, tl};
 use grammers_session::types::PeerId;
 
 #[test]
-fn mtproto_commands_menu_and_inline_webview_preserve_mini_app_launch() {
-    let url = app_url("https://market.example").unwrap();
-    let commands = command_request();
+fn mtproto_configuration_and_webview_use_application_supplied_menu_and_label() {
+    let launch = LaunchButton {
+        text: "Open test app".into(),
+        url: app_url("https://market.example").unwrap(),
+    };
+    let commands = command_request(&[MenuCommand {
+        name: "test",
+        description: "Custom handler",
+    }]);
     assert!(matches!(
         commands.scope,
         tl::enums::BotCommandScope::Default
     ));
-    assert_eq!(
-        commands
-            .commands
-            .iter()
-            .map(|command| {
-                let tl::enums::BotCommand::Command(command) = command;
-                command.command.as_str()
-            })
-            .collect::<Vec<_>>(),
-        ["start", "market", "help", "status", "floor", "portfolio"]
-    );
-    let menu = menu_request(&url);
-    assert!(matches!(menu.user_id, tl::enums::InputUser::Empty));
-    let tl::enums::BotMenuButton::Button(menu) = menu.button else {
+    let tl::enums::BotCommand::Command(command) = &commands.commands[0];
+    assert_eq!(command.command, "test");
+    assert_eq!(command.description, "Custom handler");
+    let tl::enums::BotMenuButton::Button(menu) = menu_request(&launch).button else {
         panic!("missing menu")
     };
-    assert_eq!(menu.url, url.as_str());
-    for text in ["/start payload", "/market@MARKET_BOT", "/help"] {
-        let message = message(1, text);
-        let reply = commands::launch_reply(
-            commands::parse(incoming(&message), &["market_bot"])
-                .unwrap()
-                .command
-                .kind(),
-        )
-        .unwrap();
-        let request = reply_request(42, &message, &reply, Some(&url));
-        assert_eq!(request.message, reply.text);
-        let Some(tl::enums::ReplyMarkup::ReplyInlineMarkup(markup)) = request.reply_markup else {
-            panic!("missing inline markup")
-        };
-        let tl::enums::KeyboardInlineButtonRow::Row(row) = &markup.rows[0];
-        let tl::enums::KeyboardInlineButton::Button(button) = &row.buttons[0];
-        assert_eq!(button.text, "Open market");
-        let tl::enums::InlineButtonType::WebView(webview) = &button.r#type else {
-            panic!("missing Mini App button")
-        };
-        assert_eq!(webview.url, url.as_str());
-    }
-    for text in ["/start@other_bot", "hello", "/help@other_bot"] {
-        assert!(commands::parse(incoming(&message(1, text)), &["market_bot"]).is_none());
-    }
-    let mut outgoing = message(1, "/start");
-    outgoing.outgoing = true;
-    assert!(commands::parse(incoming(&outgoing), &["market_bot"]).is_none());
+    assert_eq!(menu.text, launch.text);
+    assert_eq!(menu.url, launch.url.as_str());
+    let request = reply_request(
+        42,
+        &message(1, "hello"),
+        &Reply {
+            text: "reply".into(),
+        },
+        Some(&launch),
+    );
+    let Some(tl::enums::ReplyMarkup::ReplyInlineMarkup(markup)) = request.reply_markup else {
+        panic!("missing markup")
+    };
+    let tl::enums::KeyboardInlineButtonRow::Row(row) = &markup.rows[0];
+    let tl::enums::KeyboardInlineButton::Button(button) = &row.buttons[0];
+    assert_eq!(button.text, launch.text);
+    let tl::enums::InlineButtonType::WebView(webview) = &button.r#type else {
+        panic!("missing webview")
+    };
+    assert_eq!(webview.url, launch.url.as_str());
 }
 #[test]
 fn reply_random_id_is_stable_across_retries_and_scoped_to_bot_peer_and_message() {
-    let url = app_url("https://market.example").unwrap();
+    let launch = LaunchButton {
+        text: "Open test app".into(),
+        url: app_url("https://market.example").unwrap(),
+    };
     let mut message = message(1, "/start");
-    let reply = commands::launch_reply(
-        commands::parse(incoming(&message), &["market_bot"])
-            .unwrap()
-            .command
-            .kind(),
-    )
-    .unwrap();
-    let first = reply_request(42, &message, &reply, Some(&url)).random_id;
+    let reply = Reply {
+        text: "reply".into(),
+    };
+    let first = reply_request(42, &message, &reply, Some(&launch)).random_id;
     assert_eq!(
         first,
-        reply_request(42, &message, &reply, Some(&url)).random_id
+        reply_request(42, &message, &reply, Some(&launch)).random_id
     );
     assert_ne!(
         first,
-        reply_request(43, &message, &reply, Some(&url)).random_id
+        reply_request(43, &message, &reply, Some(&launch)).random_id
     );
     message.id = 2;
     assert_ne!(
         first,
-        reply_request(42, &message, &reply, Some(&url)).random_id
+        reply_request(42, &message, &reply, Some(&launch)).random_id
     );
     message.id = 1;
     message.peer.id = PeerId::user(8).unwrap();
     assert_ne!(
         first,
-        reply_request(42, &message, &reply, Some(&url)).random_id
+        reply_request(42, &message, &reply, Some(&launch)).random_id
     );
 }
 #[test]

@@ -1,4 +1,4 @@
-//! HTTP adapters for Mini App sign-in and launch settings; bot execution lives in market-telegram.
+//! HTTP adapters for Mini App sign-in and launch settings; bot application logic lives in market-telegram-bot.
 use crate::error::{ApiError, ErrorCode, ErrorResponse, Result};
 use actix_web::{HttpRequest, web};
 use market_miniapp::{

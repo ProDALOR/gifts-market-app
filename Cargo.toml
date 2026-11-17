@@ -18,6 +18,7 @@ market-hub-protocol = { path = "crates/market-hub-protocol" }
 market-hub-client = { path = "crates/market-hub-client" }
 market-replica = { path = "crates/market-replica" }
 market-telegram = { path = "crates/market-telegram" }
+market-telegram-bot = { path = "crates/market-telegram-bot" }
 ed25519-dalek = "3"
 getrandom = "0.4"
 hmac = "0.12"

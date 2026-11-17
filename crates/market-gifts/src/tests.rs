@@ -138,3 +138,41 @@ fn valuation_validates_positive_positions_names_and_total_overflow() {
     request.positions.push(request.positions[0].clone());
     assert!(request.validate().is_err());
 }
+
+#[test]
+fn named_lookups_and_portfolios_share_the_same_name_validation() {
+    use crate::valuation::{ModelLookup, ModelPosition, ValuationRequest};
+    for name in [
+        "".to_owned(),
+        " \t".to_owned(),
+        "x".repeat(257),
+        "💎".repeat(65),
+    ] {
+        assert!(ModelLookup::named(name.clone(), "Model").is_err());
+        assert!(ModelLookup::named("Collection", name.clone()).is_err());
+        let raw = ModelLookup::Name {
+            collection: "Collection".into(),
+            model: name,
+        };
+        assert!(raw.validate().is_err());
+        let request = ValuationRequest {
+            positions: vec![ModelPosition {
+                model: raw,
+                quantity: 1,
+            }],
+            currency_id: "GRAM".into(),
+        };
+        assert!(request.validate().is_err());
+    }
+    for name in ["x".repeat(256), "💎".repeat(64)] {
+        let model = ModelLookup::named("Collection", name).unwrap();
+        assert!(
+            ValuationRequest {
+                positions: vec![ModelPosition { model, quantity: 1 }],
+                currency_id: "GRAM".into()
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+}

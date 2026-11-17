@@ -1,14 +1,15 @@
 //! TL profile-gift mapping. No market catalog or actor types cross this adapter.
 use super::{client::rpc, cooldown::Cooldown};
-use crate::bot::{
+use crate::{
     GiftRelation, GiftSource, InventoryError, ProfileGift, SkipReason, VisibleInventory,
     inventory::{InventoryPage, collect},
 };
 use grammers_client::{Client, tl};
 use grammers_session::types::PeerRef;
+use market_gifts::{TelegramDocumentId, TelegramGiftId};
 use std::{collections::BTreeMap, time::Duration};
 
-pub(in crate::bot) struct TelegramGifts {
+pub(crate) struct TelegramGifts {
     pub client: Client,
     pub peer: PeerRef,
     pub cooldown: Cooldown,
@@ -45,12 +46,12 @@ impl TelegramGifts {
             .await
             .map_err(|_| InventoryError::Unavailable)?
             .map_err(|error| match rpc(error) {
-                crate::bot::BotError::Authorization => InventoryError::Authorization,
-                crate::bot::BotError::RetryAfter(seconds) => {
+                crate::BotError::Authorization => InventoryError::Authorization,
+                crate::BotError::RetryAfter(seconds) => {
                     self.cooldown.observe(seconds);
                     InventoryError::RetryAfter(seconds)
                 }
-                crate::bot::BotError::Rpc(400 | 403) | crate::bot::BotError::PeerUnavailable => {
+                crate::BotError::Rpc(400 | 403) | crate::BotError::PeerUnavailable => {
                     InventoryError::Forbidden
                 }
                 _ => InventoryError::Unavailable,
@@ -91,9 +92,8 @@ fn map_gift(
     if gift.id == 0 {
         return Err(SkipReason::MissingGiftId);
     }
-    if gift.gift_id == 0 {
-        return Err(SkipReason::MissingCollection);
-    }
+    let collection_id =
+        TelegramGiftId::new(gift.gift_id).map_err(|_| SkipReason::MissingCollection)?;
     let relation = profile_relation(
         gift.owner_id.as_ref(),
         gift.host_id.as_ref(),
@@ -107,11 +107,11 @@ fn map_gift(
             tl::enums::StarGiftAttribute::Model(model) => Some(model.document.id()),
             _ => None,
         })
-        .filter(|id| *id != 0)
+        .and_then(|id| TelegramDocumentId::new(id).ok())
         .ok_or(SkipReason::MissingModel)?;
     Ok(Some(ProfileGift {
         id: gift.id,
-        collection_id: gift.gift_id,
+        collection_id,
         model_document_id: model,
         relation,
     }))
@@ -136,6 +136,89 @@ fn profile_relation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn saved_gift(collection_id: i64, document_id: i64) -> tl::enums::SavedStarGift {
+        let gift = tl::types::StarGiftUnique {
+            require_premium: false,
+            resale_ton_only: false,
+            theme_available: false,
+            burned: false,
+            crafted: false,
+            id: 1,
+            gift_id: collection_id,
+            title: "Gift".into(),
+            slug: "Gift-1".into(),
+            num: 1,
+            owner_id: None,
+            owner_name: None,
+            owner_address: None,
+            attributes: vec![tl::enums::StarGiftAttribute::Model(
+                tl::types::StarGiftAttributeModel {
+                    crafted: false,
+                    name: "Model".into(),
+                    document: tl::enums::Document::Empty(tl::types::DocumentEmpty {
+                        id: document_id,
+                    }),
+                    rarity: tl::enums::StarGiftAttributeRarity::Rare,
+                },
+            )],
+            availability_issued: 1,
+            availability_total: 1,
+            gift_address: None,
+            resell_amount: None,
+            released_by: None,
+            value_amount: None,
+            value_currency: None,
+            value_usd_amount: None,
+            theme_peer: None,
+            peer_color: None,
+            host_id: None,
+            offer_min_stars: None,
+            craft_chance_permille: None,
+        };
+        tl::enums::SavedStarGift::Gift(tl::types::SavedStarGift {
+            name_hidden: false,
+            unsaved: false,
+            refunded: false,
+            can_upgrade: false,
+            pinned_to_top: false,
+            upgrade_separate: false,
+            from_id: None,
+            date: 0,
+            gift: tl::enums::StarGift::Unique(gift),
+            message: None,
+            msg_id: None,
+            saved_id: None,
+            convert_stars: None,
+            upgrade_stars: None,
+            can_export_at: None,
+            transfer_stars: None,
+            can_transfer_at: None,
+            can_resell_at: None,
+            collection_id: None,
+            prepaid_upgrade_hash: None,
+            drop_original_details_stars: None,
+            gift_num: None,
+            can_craft_at: None,
+        })
+    }
+    #[test]
+    fn profile_mapping_validates_source_ids_before_inventory_and_preserves_all_64_bits() {
+        let id = 9_007_199_254_740_993;
+        let gift = map_gift(saved_gift(id, id + 1), Some(7)).unwrap().unwrap();
+        assert_eq!(gift.collection_id.get(), id);
+        assert_eq!(gift.model_document_id.get(), id + 1);
+        assert_eq!(gift.relation, GiftRelation::Unverified);
+        for invalid in [0, -1, i64::MIN] {
+            assert_eq!(
+                map_gift(saved_gift(invalid, 1), Some(7)),
+                Err(SkipReason::MissingCollection)
+            );
+            assert_eq!(
+                map_gift(saved_gift(1, invalid), Some(7)),
+                Err(SkipReason::MissingModel)
+            );
+        }
+    }
     #[test]
     fn ownership_hosting_and_missing_metadata_remain_distinct() {
         let user = |id| tl::enums::Peer::User(tl::types::PeerUser { user_id: id });

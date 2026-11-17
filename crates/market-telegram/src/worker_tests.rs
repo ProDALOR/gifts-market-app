@@ -3,6 +3,8 @@ use super::super::{
     transport::{Delivery, Message, TelegramActions, UpdateCheckpoint},
 };
 use super::*;
+use crate::Reply;
+use crate::tests::{TestHandler, TestRequest, request};
 use grammers_session::updates::{MessageBox, State};
 use std::{
     collections::VecDeque,
@@ -76,15 +78,19 @@ impl TelegramActions for FakeActions {
             has_main_web_app: true,
         })
     }
-    async fn configure(&self, _: Option<&Url>) -> Result<(), BotError> {
+    async fn configure(
+        &self,
+        _: &[crate::MenuCommand],
+        _: Option<&LaunchButton>,
+    ) -> Result<(), BotError> {
         self.events.lock().unwrap().push("configure".into());
         Ok(())
     }
     async fn send(
         &self,
         message: &Message,
-        reply: &commands::Reply,
-        _: Option<&Url>,
+        reply: &Reply,
+        _: Option<&LaunchButton>,
     ) -> Result<(), BotError> {
         self.sent_text.lock().unwrap().push(reply.text.clone());
         self.events
@@ -121,8 +127,8 @@ impl UpdateCheckpoint for FakeActions {
     }
 }
 
-fn worker() -> BotWorker {
-    BotWorker::new(BotConfig {
+fn worker() -> TelegramWorker {
+    TelegramWorker::new(BotConfig {
         credentials: credentials(),
         public_url: Some("https://market.example".into()),
         data_dir: PathBuf::from("unused"),
@@ -141,15 +147,9 @@ async fn authenticated_identity_is_published_before_command_configuration() {
         events.lock().unwrap().push("identity".into());
     });
     assert!(fake.events.lock().unwrap().is_empty());
-    worker
-        .serve(&mut fake, false, &commands::LaunchCommands)
-        .await
-        .unwrap();
+    worker.serve(&mut fake, false, &TestHandler).await.unwrap();
     // Reconnects republish the current Telegram profile.
-    worker
-        .serve(&mut fake, false, &commands::LaunchCommands)
-        .await
-        .unwrap();
+    worker.serve(&mut fake, false, &TestHandler).await.unwrap();
     assert_eq!(
         *fake.events.lock().unwrap(),
         ["identity", "configure", "identity", "configure"]
@@ -157,17 +157,25 @@ async fn authenticated_identity_is_published_before_command_configuration() {
 }
 #[tokio::test]
 async fn generic_handler_receives_peer_identity_and_failure_keeps_pending_update_unacknowledged() {
-    use super::super::{Command, CommandRequest, Reply};
-    struct Handler(Mutex<Vec<CommandRequest>>);
-    impl CommandHandler for Handler {
+    use crate::tests::TestRequest;
+    struct Handler(Mutex<Vec<TestRequest>>);
+    impl MessageHandler for Handler {
+        type Request = TestRequest;
+        fn parse(
+            &self,
+            message: crate::IncomingMessage<'_>,
+            usernames: &[String],
+        ) -> Option<TestRequest> {
+            request(message, usernames)
+        }
         async fn handle<S: super::super::GiftSource>(
             &self,
-            request: CommandRequest,
+            request: TestRequest,
             _: &S,
         ) -> Result<Reply, BotError> {
             self.0.lock().unwrap().push(request.clone());
-            match request.command {
-                Command::Status => Ok(Reply {
+            match request.command.as_str() {
+                "status" => Ok(Reply {
                     text: "custom status".into(),
                 }),
                 _ => Err(BotError::Configuration("custom handler rejected command")),
@@ -189,13 +197,13 @@ async fn generic_handler_receives_peer_identity_and_failure_keeps_pending_update
     assert_eq!(
         *handler.0.lock().unwrap(),
         [
-            CommandRequest {
-                command: Command::Status,
+            TestRequest {
+                command: "status".into(),
                 user_id: 7,
                 message_id: 1,
             },
-            CommandRequest {
-                command: Command::Help,
+            TestRequest {
+                command: "help".into(),
                 user_id: 7,
                 message_id: 2,
             },
@@ -231,7 +239,7 @@ async fn worker_retries_same_message_before_advancing_and_skips_irrelevant_updat
     assert!(
         tokio::time::timeout(
             std::time::Duration::from_millis(1200),
-            worker.serve(&mut fake, true, &commands::LaunchCommands)
+            worker.serve(&mut fake, true, &TestHandler)
         )
         .await
         .is_err()
@@ -258,9 +266,7 @@ async fn authorization_failure_never_acknowledges_pending_message() {
         vec![Err(BotError::Authorization)],
     );
     assert!(matches!(
-        worker()
-            .serve(&mut fake, true, &commands::LaunchCommands)
-            .await,
+        worker().serve(&mut fake, true, &TestHandler).await,
         Err(BotError::Authorization)
     ));
     assert_eq!(*fake.events.lock().unwrap(), ["configure", "send:1"]);
@@ -274,7 +280,7 @@ async fn cancellation_during_flood_wait_leaves_message_unacknowledged() {
     assert!(
         tokio::time::timeout(
             std::time::Duration::from_millis(20),
-            worker().serve(&mut fake, true, &commands::LaunchCommands)
+            worker().serve(&mut fake, true, &TestHandler)
         )
         .await
         .is_err()
@@ -288,95 +294,30 @@ async fn pre_cancelled_worker_opens_no_session_or_connection() {
     worker.data_dir = directory.path().join("not-created");
     let stop = CancellationToken::new();
     stop.cancel();
-    worker
-        .execute(stop, true, &commands::LaunchCommands)
-        .await
-        .unwrap();
+    worker.execute(stop, true, &TestHandler).await.unwrap();
     assert!(!directory.path().join("not-created").exists());
 }
-#[tokio::test]
-async fn bot_status_reads_the_shared_data_actor_without_running_telegram_as_an_actor() {
-    let directory = tempfile::tempdir().unwrap();
-    let writer = market_replica::ReplicaWriter::open(directory.path(), "test").unwrap();
-    let data = market_actors::MarketDataService::start(writer.reader(), 1, 1)
-        .await
-        .unwrap();
-    let mut fake = Fake::new(vec![Some(message(1, "/status@market_bot"))], vec![]);
-    let mut worker = worker();
-    worker.url = None;
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(30),
-            worker.serve(
-                &mut fake,
-                true,
-                &super::super::MarketCommands::new(data.handle.clone())
-            )
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(
-        *fake.events.lock().unwrap(),
-        ["configure", "send:1", "ack:1"]
-    );
-    assert_eq!(
-        *fake.sent_text.lock().unwrap(),
-        ["Market data: starting. Preparing market data. Please check again shortly."]
-    );
-    let stop = CancellationToken::new();
-    stop.cancel();
-    data.task.run(stop).await.unwrap();
-}
-
-#[tokio::test]
-async fn portfolio_permission_failure_is_a_user_reply_and_does_not_stop_following_commands() {
-    let directory = tempfile::tempdir().unwrap();
-    let writer = market_replica::ReplicaWriter::open(directory.path(), "test").unwrap();
-    let data = market_actors::MarketDataService::start(writer.reader(), 1, 1)
-        .await
-        .unwrap();
-    let handler = super::super::MarketCommands::new(data.handle.clone());
-    let mut fake = Fake::new(
-        vec![Some(message(1, "/portfolio")), Some(message(2, "/status"))],
-        vec![],
-    );
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(30),
-            worker().serve(&mut fake, true, &handler)
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(
-        *fake.events.lock().unwrap(),
-        ["configure", "send:1", "ack:1", "send:2", "ack:2"]
-    );
-    {
-        let text = fake.sent_text.lock().unwrap();
-        assert!(text[0].contains("Telegram did not allow"));
-        assert!(!text[0].contains("estimate: 0"));
-        assert!(text[1].starts_with("Market data: starting"));
-    }
-    let stop = CancellationToken::new();
-    stop.cancel();
-    data.task.run(stop).await.unwrap();
-}
-
 struct BlockingHandler {
     release: Arc<tokio::sync::Notify>,
 }
-impl CommandHandler for BlockingHandler {
+impl MessageHandler for BlockingHandler {
+    type Request = TestRequest;
+    fn parse(
+        &self,
+        message: crate::IncomingMessage<'_>,
+        usernames: &[String],
+    ) -> Option<TestRequest> {
+        request(message, usernames)
+    }
     async fn handle<S: super::super::GiftSource>(
         &self,
-        request: super::super::CommandRequest,
+        request: TestRequest,
         _: &S,
-    ) -> Result<super::super::Reply, BotError> {
+    ) -> Result<Reply, BotError> {
         if request.message_id == 1 {
             self.release.notified().await;
         }
-        Ok(super::super::Reply {
+        Ok(Reply {
             text: format!("reply:{}", request.message_id),
         })
     }
@@ -405,7 +346,7 @@ async fn event(actions: &FakeActions, name: &str) {
     .await
     .unwrap_or_else(|_| panic!("missing event {name}: {:?}", actions.events.lock().unwrap()));
 }
-fn start<H: CommandHandler + 'static>(
+fn start<H: MessageHandler + 'static>(
     mut fake: Fake,
     handler: H,
     limits: Limits,
@@ -497,7 +438,7 @@ async fn rejected_reply_is_completed_without_stopping_following_commands() {
         vec![Some(message(1, "/help")), Some(message(2, "/help"))],
         vec![Err(BotError::Rpc(400)), Ok(())],
     );
-    let (actions, stop, job) = start(fake, commands::LaunchCommands, Limits::default());
+    let (actions, stop, job) = start(fake, TestHandler, Limits::default());
     event(&actions, "ack:2").await;
     assert!(actions.events.lock().unwrap().contains(&"send:2".into()));
     stop.cancel();
@@ -529,16 +470,24 @@ async fn a_slow_handler_times_out_without_blocking_another_peer() {
 #[tokio::test]
 async fn handler_panics_and_exhausted_transient_errors_are_isolated() {
     struct Handler;
-    impl CommandHandler for Handler {
+    impl MessageHandler for Handler {
+        type Request = TestRequest;
+        fn parse(
+            &self,
+            message: crate::IncomingMessage<'_>,
+            usernames: &[String],
+        ) -> Option<TestRequest> {
+            request(message, usernames)
+        }
         async fn handle<S: super::super::GiftSource>(
             &self,
-            request: super::super::CommandRequest,
+            request: TestRequest,
             _: &S,
-        ) -> Result<super::super::Reply, BotError> {
+        ) -> Result<Reply, BotError> {
             match request.message_id {
                 1 => panic!("simulated command failure"),
-                2 => Err(BotError::MarketData),
-                _ => Ok(super::super::Reply {
+                2 => Err(BotError::Rpc(500)),
+                _ => Ok(Reply {
                     text: "still running".into(),
                 }),
             }
@@ -682,6 +631,55 @@ async fn receiving_backoff_does_not_suspend_running_commands() {
     )
     .await
     .unwrap();
+    stop.cancel();
+    job.await.unwrap();
+}
+
+#[tokio::test]
+async fn request_fields_cannot_override_transport_peer_scheduling() {
+    struct Handler(BlockingHandler);
+    impl MessageHandler for Handler {
+        type Request = TestRequest;
+        fn parse(
+            &self,
+            message: crate::IncomingMessage<'_>,
+            usernames: &[String],
+        ) -> Option<TestRequest> {
+            let mut request = request(message, usernames)?;
+            request.user_id = 0;
+            Some(request)
+        }
+        async fn handle<S: crate::GiftSource>(
+            &self,
+            request: TestRequest,
+            gifts: &S,
+        ) -> Result<Reply, BotError> {
+            self.0.handle(request, gifts).await
+        }
+    }
+    let release = Arc::new(tokio::sync::Notify::new());
+    let fake = Fake::new(
+        vec![Some(peer_message(1, 7)), Some(peer_message(2, 8))],
+        vec![],
+    );
+    let (actions, stop, job) = start(
+        fake,
+        Handler(BlockingHandler {
+            release: release.clone(),
+        }),
+        Limits::default(),
+    );
+    event(&actions, "send:2").await;
+    assert!(
+        !actions
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("ack:"))
+    );
+    release.notify_one();
+    event(&actions, "ack:2").await;
     stop.cancel();
     job.await.unwrap();
 }

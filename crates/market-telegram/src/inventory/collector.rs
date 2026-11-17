@@ -2,7 +2,7 @@ use super::*;
 use std::{collections::BTreeSet, time::Duration};
 use tokio::time::Instant;
 
-pub(in crate::bot) struct InventoryPage {
+pub(crate) struct InventoryPage {
     pub gifts: Vec<ProfileGift>,
     pub regular: usize,
     pub skipped: BTreeMap<SkipReason, usize>,
@@ -10,7 +10,7 @@ pub(in crate::bot) struct InventoryPage {
     pub total: Option<usize>,
     pub next: Option<String>,
 }
-pub(in crate::bot) async fn collect<F, Fut>(page: F) -> Result<VisibleInventory, InventoryError>
+pub(crate) async fn collect<F, Fut>(page: F) -> Result<VisibleInventory, InventoryError>
 where
     F: FnMut(String) -> Fut,
     Fut: Future<Output = Result<InventoryPage, InventoryError>>,
@@ -95,8 +95,8 @@ mod tests {
             gifts: (start..end)
                 .map(|id| ProfileGift {
                     id,
-                    collection_id: 1,
-                    model_document_id: 2,
+                    collection_id: market_gifts::TelegramGiftId::new(1).unwrap(),
+                    model_document_id: market_gifts::TelegramDocumentId::new(2).unwrap(),
                     relation: GiftRelation::Hosted,
                 })
                 .collect(),

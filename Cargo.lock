@@ -2016,6 +2016,7 @@ dependencies = [
  "market-miniapp",
  "market-replica",
  "market-telegram",
+ "market-telegram-bot",
  "serde_json",
  "tempfile",
  "tokio",
@@ -2140,16 +2141,28 @@ dependencies = [
  "futures-util",
  "grammers-client",
  "grammers-session",
- "market-actors",
  "market-gifts",
  "market-media",
- "market-replica",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "market-telegram-bot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "market-actors",
+ "market-gifts",
+ "market-replica",
+ "market-telegram",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -1,9 +1,9 @@
 //! One owner for the worker lock, sender runner and tracked session writes.
 use super::{client::MtProtoTransport, cooldown::RateLimits, session_store::SessionStore};
-use crate::bot::{BotCredentials, BotError};
+use crate::{BotCredentials, BotError};
 use std::path::{Path, PathBuf};
 use tokio_util::task::TaskTracker;
-pub(in crate::bot) struct Connection {
+pub(crate) struct Connection {
     pub transport: MtProtoTransport,
     store: SessionStore,
     jobs: TaskTracker,

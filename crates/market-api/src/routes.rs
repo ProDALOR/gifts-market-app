@@ -1,6 +1,6 @@
 use super::{
     MarketApi,
-    error::{ApiError, ErrorResponse, Result},
+    error::{ErrorResponse, Result},
     models::*,
 };
 use actix_web::{HttpRequest, HttpResponse, http::header, web};
@@ -21,15 +21,16 @@ pub(crate) async fn sync(state: web::Data<MarketApi>) -> Result<web::Json<SyncSt
 pub(crate) async fn catalog(state: web::Data<MarketApi>, req: HttpRequest) -> Result<HttpResponse> {
     Ok(catalog_response(state.catalog_snapshot().await?, &req))
 }
-#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Collection choices. Use GET /sync for replica readiness and freshness.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Collection content revision"))),(status=304,description="Collection content is unchanged"),(status=404,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Collection choices. Use GET /sync for replica readiness and freshness.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Collection content revision"))),(status=304,description="Collection content is unchanged"),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn collection(
     state: web::Data<MarketApi>,
-    id: web::Path<String>,
+    id: web::Path<CollectionId>,
     req: HttpRequest,
 ) -> Result<HttpResponse> {
-    let id =
-        CollectionId::new(id.into_inner()).map_err(|error| ApiError::invalid(error.to_string()))?;
-    Ok(catalog_response(state.collection_snapshot(id).await?, &req))
+    Ok(catalog_response(
+        state.collection_snapshot(id.into_inner()).await?,
+        &req,
+    ))
 }
 fn catalog_response<T: serde::Serialize>(
     snapshot: market_actors::CatalogSnapshot<T>,

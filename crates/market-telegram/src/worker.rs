@@ -1,6 +1,6 @@
 //! Bot lifecycle and startup. Command scheduling lives in the dispatcher.
 use super::{
-    BotConfig, BotCredentials, BotError, BotUser, CommandHandler, commands,
+    BotConfig, BotCredentials, BotError, BotUser, LaunchButton, MessageHandler,
     config::app_url,
     dispatcher::{self, Limits, retry},
     mtproto::{Connection, RateLimits},
@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 type IdentityObserver = Box<dyn Fn(&BotUser) + Send + Sync>;
 
-pub struct BotWorker {
+pub struct TelegramWorker {
     credentials: BotCredentials,
     url: Option<Url>,
     data_dir: PathBuf,
@@ -41,13 +41,7 @@ pub async fn inspect(
     closed?;
     Ok(BotInspection { user, session_path })
 }
-pub async fn configure(config: BotConfig) -> anyhow::Result<BotUser> {
-    Ok(BotWorker::new(config)?
-        .execute(CancellationToken::new(), false, &commands::LaunchCommands)
-        .await?
-        .ok_or(BotError::Runner)?)
-}
-impl BotWorker {
+impl TelegramWorker {
     pub fn new(config: BotConfig) -> anyhow::Result<Self> {
         Ok(Self {
             credentials: config.credentials,
@@ -71,7 +65,12 @@ impl BotWorker {
     pub fn set_media_downloader(&mut self, downloader: market_media::MediaDownloader) {
         self.media = Some(tokio::sync::Mutex::new(downloader));
     }
-    pub async fn run<H: CommandHandler>(
+    pub async fn configure<H: MessageHandler>(&self, handler: &H) -> Result<BotUser, BotError> {
+        self.execute(CancellationToken::new(), false, handler)
+            .await?
+            .ok_or(BotError::Runner)
+    }
+    pub async fn run<H: MessageHandler>(
         self,
         handler: H,
         stop: CancellationToken,
@@ -87,7 +86,7 @@ impl BotWorker {
             }
         }
     }
-    async fn execute<H: CommandHandler>(
+    async fn execute<H: MessageHandler>(
         &self,
         stop: CancellationToken,
         consume: bool,
@@ -124,7 +123,7 @@ impl BotWorker {
             Err(panic) => std::panic::resume_unwind(panic),
         }
     }
-    async fn serve<T: Transport, H: CommandHandler>(
+    async fn serve<T: Transport, H: MessageHandler>(
         &self,
         transport: &mut T,
         consume: bool,
@@ -141,8 +140,13 @@ impl BotWorker {
         if let Some(observer) = &self.identity_observer {
             observer(&user);
         }
+        let menu = handler.commands();
+        let launch = self.url.as_ref().map(|url| LaunchButton {
+            text: handler.launch_label().into(),
+            url: url.clone(),
+        });
         loop {
-            match actions.configure(self.url.as_ref()).await {
+            match actions.configure(&menu, launch.as_ref()).await {
                 Ok(()) => break,
                 Err(error) => retry(error, &mut backoff).await?,
             }
@@ -154,7 +158,7 @@ impl BotWorker {
         let commands = dispatcher::run(
             transport,
             handler,
-            self.url.as_ref(),
+            launch.as_ref(),
             &user.active_usernames,
             Limits::default(),
         );

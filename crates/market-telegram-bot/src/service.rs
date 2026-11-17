@@ -1,0 +1,25 @@
+//! Bot application assembly; process supervision stays in market-app.
+use crate::commands::{LaunchCommands, MarketCommands};
+use market_actors::MarketDataHandle;
+use market_telegram::{BotConfig, BotError, BotUser, TelegramWorker};
+use tokio_util::sync::CancellationToken;
+pub struct BotService {
+    worker: TelegramWorker,
+    commands: MarketCommands,
+}
+impl BotService {
+    pub fn new(worker: TelegramWorker, data: MarketDataHandle) -> Self {
+        Self {
+            worker,
+            commands: MarketCommands::new(data),
+        }
+    }
+    pub async fn run(self, stop: CancellationToken) -> Result<(), BotError> {
+        self.worker.run(self.commands, stop).await
+    }
+}
+pub async fn configure(config: BotConfig) -> anyhow::Result<BotUser> {
+    Ok(TelegramWorker::new(config)?
+        .configure(&LaunchCommands)
+        .await?)
+}

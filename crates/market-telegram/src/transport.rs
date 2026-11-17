@@ -1,11 +1,10 @@
 //! Native bot actions and update transport contracts, without TL request types.
-use super::{BotError, commands};
+use super::{BotError, IncomingMessage, LaunchButton, MenuCommand, Reply};
 use grammers_session::{
     types::{PeerKind, PeerRef},
     updates::State,
 };
 use std::future::Future;
-use url::Url;
 
 pub struct BotUser {
     pub id: u64,
@@ -37,12 +36,16 @@ pub(super) trait TelegramActions: Clone + Send + Sync {
     }
     fn gift_source(&self, message: &Message) -> Self::GiftSource;
     fn identity(&self) -> impl Future<Output = Result<BotUser, BotError>> + Send;
-    fn configure(&self, url: Option<&Url>) -> impl Future<Output = Result<(), BotError>> + Send;
+    fn configure(
+        &self,
+        commands: &[MenuCommand],
+        launch: Option<&LaunchButton>,
+    ) -> impl Future<Output = Result<(), BotError>> + Send;
     fn send(
         &self,
         message: &Message,
-        reply: &commands::Reply,
-        url: Option<&Url>,
+        reply: &Reply,
+        launch: Option<&LaunchButton>,
     ) -> impl Future<Output = Result<(), BotError>> + Send;
 }
 
@@ -56,14 +59,19 @@ pub(super) trait Transport: Send {
     fn next(&mut self) -> impl Future<Output = Result<Delivery, BotError>> + Send;
 }
 
-pub(super) fn incoming(message: &Message) -> commands::Incoming<'_> {
-    commands::Incoming {
-        private: message.peer.id.kind() == PeerKind::User && !message.outgoing,
-        user_id: message
-            .peer
-            .id
-            .bare_id()
-            .and_then(|id| u64::try_from(id).ok()),
+pub(super) fn incoming(message: &Message) -> IncomingMessage<'_> {
+    IncomingMessage {
+        private: message.peer.id.kind() == PeerKind::User,
+        outgoing: message.outgoing,
+        user_id: (message.peer.id.kind() == PeerKind::User)
+            .then(|| {
+                message
+                    .peer
+                    .id
+                    .bare_id()
+                    .and_then(|id| u64::try_from(id).ok())
+            })
+            .flatten(),
         message_id: message.id,
         text: Some(&message.text),
     }

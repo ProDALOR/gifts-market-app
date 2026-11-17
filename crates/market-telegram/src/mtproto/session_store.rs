@@ -1,6 +1,6 @@
 //! Private MTProto session storage and an exclusive worker lock.
 //! SQLite operations run on tracked blocking workers, outside the API event loop.
-use crate::bot::BotError;
+use crate::BotError;
 use grammers_session::{
     BoxFuture, Session,
     storages::{SqliteSession, SqliteSessionError},
@@ -17,12 +17,12 @@ use std::{
 use tokio_util::task::TaskTracker;
 
 type SqlFuture<T> = Pin<Box<dyn Future<Output = Result<T, SqliteSessionError>> + Send>>;
-pub(in crate::bot) struct SessionStore {
+pub(crate) struct SessionStore {
     pub session: Arc<DurableSession>,
     pub path: PathBuf,
     _lock: File,
 }
-pub(in crate::bot) struct DurableSession {
+pub(crate) struct DurableSession {
     database: Arc<SqliteSession>,
     jobs: TaskTracker,
 }

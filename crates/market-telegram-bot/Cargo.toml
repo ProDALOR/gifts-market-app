@@ -1,0 +1,17 @@
+[package]
+name = "market-telegram-bot"
+version.workspace = true
+edition.workspace = true
+description = "Telegram command application over the market actor layer"
+[dependencies]
+market-telegram.workspace = true
+market-gifts.workspace = true
+market-actors.workspace = true
+anyhow.workspace = true
+tokio-util.workspace = true
+[dev-dependencies]
+market-replica.workspace = true
+tokio.workspace = true
+tempfile = "3"
+[lints]
+workspace = true

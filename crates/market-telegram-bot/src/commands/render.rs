@@ -1,11 +1,11 @@
 use super::{CommandKind, Reply};
-use crate::bot::{
-    GiftRelation, InventoryCompletion, InventoryError, PartialReason, VisibleInventory,
-};
 use market_actors::error::DataError;
 use market_gifts::{
     SyncState,
     valuation::{UnpricedReason, Valuation},
+};
+use market_telegram::{
+    GiftRelation, InventoryCompletion, InventoryError, PartialReason, VisibleInventory,
 };
 pub(super) fn error_reply(error: DataError) -> Reply {
     use market_actors::error::DataErrorCode;
@@ -159,7 +159,7 @@ pub(super) fn usage(kind: CommandKind) -> Reply {
         _=>"Use /help to see available commands.",
     }.into()}
 }
-pub(in crate::bot) fn launch_reply(command: CommandKind) -> Option<Reply> {
+pub(crate) fn launch_reply(command: CommandKind) -> Option<Reply> {
     Some(Reply{text:match command {
         CommandKind::Start|CommandKind::Market=>"Browse live gift markets, compare venues and filter offers in one place.",
         CommandKind::Help=>"/floor Collection | Model — lowest current model ask. Add | GRAM for a quote currency.\n/portfolio — floor estimate of your Telegram-visible collectibles.\n/status — market synchronization status.\n/market — open the market when a launch URL is configured.",
@@ -196,7 +196,7 @@ pub(super) fn status_reply(status: market_gifts::SyncStatus) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::SkipReason;
+    use market_telegram::SkipReason;
     #[test]
     fn portfolio_reports_precise_totals_skip_reasons_partial_reads_and_freshness() {
         let value = market_gifts::valuation::Valuation {
@@ -222,10 +222,10 @@ mod tests {
             },
         };
         let inventory = VisibleInventory {
-            gifts: vec![crate::bot::ProfileGift {
+            gifts: vec![market_telegram::ProfileGift {
                 id: 1,
-                collection_id: 2,
-                model_document_id: 3,
+                collection_id: market_gifts::TelegramGiftId::new(2).unwrap(),
+                model_document_id: market_gifts::TelegramDocumentId::new(3).unwrap(),
                 relation: GiftRelation::Hosted,
             }],
             regular_gifts: 45,

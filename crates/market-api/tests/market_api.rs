@@ -246,6 +246,28 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
             .configure(configure),
     )
     .await;
+    for (name, status) in [
+        ("".to_owned(), 400),
+        (" \t".to_owned(), 400),
+        ("x".repeat(257), 400),
+        ("💎".repeat(65), 400),
+        ("x".repeat(256), 200),
+        ("💎".repeat(64), 200),
+    ] {
+        let response = test::call_service(&app, test::TestRequest::post()
+            .uri("/portfolio/value")
+            .set_json(serde_json::json!({"positions":[{"model":{"kind":"name","collection":"Gift","model":name},"quantity":1}],"currency_id":"GRAM"}))
+            .to_request()).await;
+        assert_eq!(response.status(), status);
+        if status == 400 {
+            let body: serde_json::Value = test::read_body_json(response).await;
+            assert_eq!(body["error"]["code"], "invalid_query");
+            assert_eq!(
+                body["error"]["message"],
+                "collection and model names must contain 1..256 bytes"
+            );
+        }
+    }
     let response = test::call_service(
         &app,
         test::TestRequest::post()
@@ -730,6 +752,16 @@ async fn headless_server_normalizes_extractors_framework_errors_and_origin_polic
         ("GET", "/books?limit=bad", "", "", 404, "not_found"),
         ("GET", "/catalog/not_a_kind", "", "", 404, "not_found"),
         ("GET", "/collections/%20", "", "", 400, "invalid_query"),
+        ("GET", "/media/models/%20", "", "", 400, "invalid_query"),
+        (
+            "GET",
+            "/media/models/%20/animation",
+            "",
+            "",
+            400,
+            "invalid_query",
+        ),
+        ("GET", "/media/patterns/%20", "", "", 400, "invalid_query"),
         ("GET", "/missing", "", "", 404, "not_found"),
         ("GET", "/", "", "", 404, "not_found"),
         ("GET", "/assets/absent.js", "", "", 404, "not_found"),

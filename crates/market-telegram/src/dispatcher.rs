@@ -1,6 +1,6 @@
 //! Bounded work across peers; saved update progress advances only through completed deliveries.
 use super::{
-    BotError, CommandHandler, CommandRequest, Reply, commands,
+    BotError, LaunchButton, MessageHandler, Reply,
     error::ErrorDisposition,
     transport::{Message, TelegramActions, Transport, UpdateCheckpoint, incoming},
 };
@@ -9,13 +9,13 @@ use futures_util::{
     future::BoxFuture,
     stream::{self, FuturesUnordered},
 };
+use grammers_session::types::PeerId;
 use grammers_session::updates::State;
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{HashSet, VecDeque},
     panic::AssertUnwindSafe,
     time::Duration,
 };
-use url::Url;
 
 #[derive(Clone, Copy)]
 pub(super) struct Limits {
@@ -36,10 +36,10 @@ impl Default for Limits {
         }
     }
 }
-struct Pending {
+struct Pending<R> {
     sequence: u64,
     message: Message,
-    request: CommandRequest,
+    request: R,
 }
 struct Checkpoint {
     sequence: u64,
@@ -48,13 +48,13 @@ struct Checkpoint {
 }
 struct Completed {
     sequence: u64,
-    peer: u64,
+    peer: PeerId,
     result: Result<(), BotError>,
 }
-pub(super) async fn run<T: Transport, H: CommandHandler>(
+pub(super) async fn run<T: Transport, H: MessageHandler>(
     transport: &mut T,
     handler: &H,
-    url: Option<&Url>,
+    url: Option<&LaunchButton>,
     aliases: &[String],
     limits: Limits,
 ) -> Result<(), BotError> {
@@ -76,21 +76,21 @@ pub(super) async fn run<T: Transport, H: CommandHandler>(
         Some((result, transport))
     })
     .boxed();
-    let mut queued = VecDeque::<Pending>::new();
+    let mut queued = VecDeque::<Pending<H::Request>>::new();
     let mut checkpoints = VecDeque::<Checkpoint>::new();
-    let mut active = BTreeSet::new();
+    let mut active = HashSet::new();
     let mut jobs = FuturesUnordered::<BoxFuture<'_, Completed>>::new();
     let mut sequence = 0u64;
     loop {
         while jobs.len() < limits.parallelism {
             let Some(index) = queued
                 .iter()
-                .position(|pending| !active.contains(&pending.request.user_id))
+                .position(|pending| !active.contains(&pending.message.peer.id))
             else {
                 break;
             };
             let pending = queued.remove(index).unwrap();
-            let peer = pending.request.user_id;
+            let peer = pending.message.peer.id;
             active.insert(peer);
             let actions = actions.clone();
             jobs.push(
@@ -128,7 +128,7 @@ pub(super) async fn run<T: Transport, H: CommandHandler>(
             }
             Some(delivery)=deliveries.next(),if checkpoints.len()<limits.pending=>{
                 let delivery=delivery?;
-                let request=delivery.message.as_ref().and_then(|message|commands::parse(incoming(message),aliases));
+                let request=delivery.message.as_ref().and_then(|message|handler.parse(incoming(message),aliases));
                 let done=request.is_none();
                 if let Some(request)=request {
                     queued.push_back(Pending {sequence,message:delivery.message.unwrap(),request});
@@ -139,16 +139,16 @@ pub(super) async fn run<T: Transport, H: CommandHandler>(
         }
     }
 }
-async fn process<A: TelegramActions, H: CommandHandler>(
+async fn process<A: TelegramActions, H: MessageHandler>(
     actions: &A,
     handler: &H,
-    request: CommandRequest,
+    request: H::Request,
     message: Message,
-    url: Option<&Url>,
+    url: Option<&LaunchButton>,
     limits: Limits,
 ) -> Result<(), BotError> {
     let gifts = actions.gift_source(&message);
-    let work = async {
+    let work = async move {
         let mut backoff = 1;
         for attempt in 0..limits.handler_attempts {
             match handler.handle(request.clone(), &gifts).await {

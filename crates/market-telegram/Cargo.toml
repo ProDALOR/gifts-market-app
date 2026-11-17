@@ -5,7 +5,6 @@ edition.workspace = true
 [dependencies]
 market-gifts.workspace = true
 market-media.workspace = true
-market-actors.workspace = true
 anyhow.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
@@ -16,7 +15,6 @@ tokio.workspace = true
 tokio-util.workspace = true
 url.workspace = true
 [dev-dependencies]
-market-replica.workspace = true
 tempfile = "3"
 [lints]
 workspace = true

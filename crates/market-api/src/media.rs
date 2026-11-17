@@ -25,36 +25,30 @@ impl MediaApi {
 pub(crate) async fn model_thumbnail(
     market: web::Data<MarketApi>,
     media: Option<web::Data<MediaApi>>,
-    id: web::Path<String>,
+    id: web::Path<ModelId>,
     request: HttpRequest,
 ) -> Result<HttpResponse> {
-    let target = MediaTarget::Model(
-        ModelId::new(id.into_inner()).map_err(|e| ApiError::invalid(e.to_string()))?,
-    );
+    let target = MediaTarget::Model(id.into_inner());
     catalog_media(market, media, target, request, MediaKind::Thumbnail).await
 }
 #[utoipa::path(get,tag="Media",path="/media/models/{id}/animation",params(("id"=String,Path,description="Catalog model ID")),responses((status=200,description="Gzip-compressed TGS (application/x-tgsticker)"),(status=304,description="Cached animation unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn model_animation(
     market: web::Data<MarketApi>,
     media: Option<web::Data<MediaApi>>,
-    id: web::Path<String>,
+    id: web::Path<ModelId>,
     request: HttpRequest,
 ) -> Result<HttpResponse> {
-    let target = MediaTarget::Model(
-        ModelId::new(id.into_inner()).map_err(|e| ApiError::invalid(e.to_string()))?,
-    );
+    let target = MediaTarget::Model(id.into_inner());
     catalog_media(market, media, target, request, MediaKind::Animation).await
 }
 #[utoipa::path(get,tag="Media",path="/media/patterns/{id}",params(("id"=String,Path,description="Catalog pattern ID")),responses((status=200,description="PNG, JPEG or WebP gift pattern thumbnail"),(status=304,description="Cached pattern unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn pattern_thumbnail(
     market: web::Data<MarketApi>,
     media: Option<web::Data<MediaApi>>,
-    id: web::Path<String>,
+    id: web::Path<PatternId>,
     request: HttpRequest,
 ) -> Result<HttpResponse> {
-    let target = MediaTarget::Pattern(
-        PatternId::new(id.into_inner()).map_err(|e| ApiError::invalid(e.to_string()))?,
-    );
+    let target = MediaTarget::Pattern(id.into_inner());
     catalog_media(market, media, target, request, MediaKind::Thumbnail).await
 }
 async fn catalog_media(
@@ -151,6 +145,7 @@ mod tests {
         let mut snapshot = writer.begin_snapshot().unwrap();
         let entities = [
             ("model", "tg.model", "42"),
+            ("model/💎?", "tg.model", "42"),
             ("uncached", "tg.model", "43"),
             ("backdrop", "tg.backdrop", "42"),
             ("pattern", "tg.pattern", "42"),
@@ -346,6 +341,15 @@ mod tests {
                 status
             );
         }
+        let encoded = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/media/models/model%2F%F0%9F%92%8E%3F")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(encoded.status(), 200);
+        assert_eq!(test::read_body(encoded).await.as_ref(), bytes);
         // Conditional hits do not reread or revalidate their cached bodies.
         let reads = cache.stats().disk_reads;
         for _ in 0..4 {

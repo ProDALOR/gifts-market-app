@@ -1,6 +1,6 @@
-//! Application wiring only; bot transport, commands and MTProto updates live in the Telegram crate.
+//! Assemble Telegram transport; market commands and bot service live in market-telegram-bot.
 use crate::cli::{BotCommand, Cli};
-use market_telegram::bot::{self, BotConfig, BotCredentials, BotWorker};
+use market_telegram::{BotConfig, BotCredentials, TelegramWorker};
 
 fn credentials(args: &Cli) -> anyhow::Result<Option<BotCredentials>> {
     let fields = [
@@ -45,14 +45,14 @@ fn config(args: &Cli) -> anyhow::Result<Option<BotConfig>> {
         data_dir: data_dir(args),
     }))
 }
-pub fn worker(args: &Cli) -> anyhow::Result<Option<BotWorker>> {
-    config(args)?.map(BotWorker::new).transpose()
+pub fn worker(args: &Cli) -> anyhow::Result<Option<TelegramWorker>> {
+    config(args)?.map(TelegramWorker::new).transpose()
 }
 pub async fn manage(args: &Cli, command: &BotCommand) -> anyhow::Result<()> {
     let config = config(args)?.ok_or_else(|| anyhow::anyhow!("Configure TELEGRAM_BOT_TOKEN, TELEGRAM_API_ID and TELEGRAM_API_HASH to use bot commands"))?;
     match command {
         BotCommand::Inspect => {
-            let inspection = bot::inspect(config.credentials, config.data_dir).await?;
+            let inspection = market_telegram::inspect(config.credentials, config.data_dir).await?;
             println!(
                 "@{} (ID {})\nMain Mini App: {}\nMTProto session: {}",
                 inspection.user.username,
@@ -62,7 +62,7 @@ pub async fn manage(args: &Cli, command: &BotCommand) -> anyhow::Result<()> {
             );
         }
         BotCommand::Configure => {
-            let user = bot::configure(config).await?;
+            let user = market_telegram_bot::configure(config).await?;
             println!("Configured bot commands for @{}", user.username);
         }
     }

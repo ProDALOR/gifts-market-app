@@ -8,7 +8,7 @@ use market_api::{ApiConfig, ApiServer};
 pub async fn server(
     args: &Cli,
     data: MarketDataHandle,
-    #[cfg(feature = "bot")] _bot: Option<&mut market_telegram::bot::BotWorker>,
+    #[cfg(feature = "bot")] _bot: Option<&mut market_telegram::TelegramWorker>,
 ) -> anyhow::Result<ApiServer> {
     let server = ApiServer::bind(
         ApiConfig {
@@ -41,7 +41,7 @@ pub async fn server(
 #[cfg(feature = "miniapp")]
 async fn miniapp(
     args: &Cli,
-    #[cfg(feature = "bot")] bot: Option<&mut market_telegram::bot::BotWorker>,
+    #[cfg(feature = "bot")] bot: Option<&mut market_telegram::TelegramWorker>,
 ) -> anyhow::Result<MiniAppApi> {
     #[cfg(feature = "bot")]
     let discover = bot.is_some();

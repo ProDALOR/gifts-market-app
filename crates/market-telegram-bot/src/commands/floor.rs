@@ -1,17 +1,14 @@
 use super::{FloorQuery, Reply, render};
 use market_actors::MarketDataHandle;
-use market_gifts::valuation::{ModelLookup, ModelPosition, ValuationRequest};
+use market_gifts::valuation::{ModelPosition, ValuationRequest};
 pub(super) async fn execute(market: &MarketDataHandle, query: FloorQuery) -> Reply {
     match market
         .value_models(ValuationRequest {
             positions: vec![ModelPosition {
-                model: ModelLookup::Name {
-                    collection: query.collection,
-                    model: query.model,
-                },
+                model: query.model,
                 quantity: 1,
             }],
-            currency_id: query.currency.0,
+            currency_id: query.currency,
         })
         .await
     {

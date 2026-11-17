@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 #[derive(Clone, Default)]
-pub(in crate::bot) struct Cooldown(Arc<Mutex<Option<Instant>>>);
+pub(crate) struct Cooldown(Arc<Mutex<Option<Instant>>>);
 impl Cooldown {
     pub fn remaining(&self) -> Option<u64> {
         self.0
@@ -20,7 +20,7 @@ impl Cooldown {
     }
 }
 #[derive(Clone, Default)]
-pub(in crate::bot) struct RateLimits {
+pub(crate) struct RateLimits {
     pub gifts: Cooldown,
     pub media: Cooldown,
     pub replies: Cooldown,

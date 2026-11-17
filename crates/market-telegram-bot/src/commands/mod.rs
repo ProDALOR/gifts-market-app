@@ -3,36 +3,16 @@ mod floor;
 mod parse;
 mod portfolio;
 mod render;
-use super::{BotError, GiftSource};
 use market_actors::MarketDataHandle;
+use market_telegram::{BotError, GiftSource, IncomingMessage, MenuCommand, MessageHandler, Reply};
 pub use parse::CommandKind;
-pub(super) use parse::{Incoming, parse};
+pub(crate) use parse::parse;
 pub(super) use render::launch_reply;
-use std::future::Future;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuoteCurrency(market_gifts::CurrencyId);
-impl QuoteCurrency {
-    /// Normalize a quote symbol; catalog availability is checked by the market actors.
-    pub fn parse(text: &str) -> Option<Self> {
-        if text.len() > 128 || text.split_whitespace().count() > 1 {
-            return None;
-        }
-        let value = match text.trim().to_ascii_uppercase().as_str() {
-            "" | "TON" => "GRAM".to_owned(),
-            value => value.to_owned(),
-        };
-        market_gifts::CurrencyId::new(value).ok().map(Self)
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FloorQuery {
-    pub collection: String,
-    pub model: String,
-    pub currency: QuoteCurrency,
+    pub model: market_gifts::valuation::ModelLookup,
+    pub currency: market_gifts::CurrencyId,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -41,7 +21,7 @@ pub enum Command {
     Help,
     Status,
     Floor(FloorQuery),
-    Portfolio(QuoteCurrency),
+    Portfolio(market_gifts::CurrencyId),
     Invalid(CommandKind),
 }
 impl Command {
@@ -64,37 +44,6 @@ pub struct CommandRequest {
     pub user_id: u64,
     pub message_id: i32,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reply {
-    pub text: String,
-}
-impl Reply {
-    pub(super) fn bounded(mut self) -> Self {
-        if self.text.trim().is_empty() {
-            self.text = "This command produced no result.".into();
-        }
-        if self.text.encode_utf16().count() > 4096 {
-            let mut units = 0;
-            self.text = self
-                .text
-                .chars()
-                .take_while(|ch| {
-                    units += ch.len_utf16();
-                    units <= 4095
-                })
-                .collect();
-            self.text.push('…');
-        }
-        self
-    }
-}
-pub trait CommandHandler: Send + Sync {
-    fn handle<S: GiftSource>(
-        &self,
-        request: CommandRequest,
-        gifts: &S,
-    ) -> impl Future<Output = Result<Reply, BotError>> + Send;
-}
 pub struct MarketCommands {
     market: MarketDataHandle,
 }
@@ -103,7 +52,17 @@ impl MarketCommands {
         Self { market }
     }
 }
-impl CommandHandler for MarketCommands {
+impl MessageHandler for MarketCommands {
+    type Request = CommandRequest;
+    fn commands(&self) -> Vec<MenuCommand> {
+        menu()
+    }
+    fn launch_label(&self) -> &'static str {
+        "Open market"
+    }
+    fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<CommandRequest> {
+        parse(message, usernames)
+    }
     async fn handle<S: GiftSource>(
         &self,
         request: CommandRequest,
@@ -124,8 +83,18 @@ impl CommandHandler for MarketCommands {
         }
     }
 }
-pub(in crate::bot) struct LaunchCommands;
-impl CommandHandler for LaunchCommands {
+pub(crate) struct LaunchCommands;
+impl MessageHandler for LaunchCommands {
+    type Request = CommandRequest;
+    fn commands(&self) -> Vec<MenuCommand> {
+        menu()
+    }
+    fn launch_label(&self) -> &'static str {
+        "Open market"
+    }
+    fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<CommandRequest> {
+        parse(message, usernames)
+    }
     async fn handle<S: GiftSource>(
         &self,
         request: CommandRequest,
@@ -138,4 +107,14 @@ impl CommandHandler for LaunchCommands {
             "Market data handler is required for this command",
         ))
     }
+}
+
+fn menu() -> Vec<MenuCommand> {
+    CommandKind::ALL
+        .iter()
+        .map(|kind| MenuCommand {
+            name: kind.name(),
+            description: kind.description(),
+        })
+        .collect()
 }

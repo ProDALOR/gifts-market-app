@@ -1,6 +1,6 @@
 //! Resolve fresh documents and download static thumbs or TGS through the existing client.
 use super::{client::rpc, cooldown::Cooldown};
-use crate::bot::BotError;
+use crate::BotError;
 use grammers_client::{
     Client,
     media::{Document, PhotoSize},

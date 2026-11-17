@@ -1,6 +1,7 @@
 //! Telegram profile data. Catalog aliases and valuation belong to command services.
 mod collector;
 pub(super) use collector::{InventoryPage, collect};
+use market_gifts::{TelegramDocumentId, TelegramGiftId};
 use std::{collections::BTreeMap, future::Future};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,8 +13,8 @@ pub enum GiftRelation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileGift {
     pub id: i64,
-    pub collection_id: i64,
-    pub model_document_id: i64,
+    pub collection_id: TelegramGiftId,
+    pub model_document_id: TelegramDocumentId,
     pub relation: GiftRelation,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

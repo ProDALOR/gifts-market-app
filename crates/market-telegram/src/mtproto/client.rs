@@ -4,8 +4,8 @@ use super::{
     requests::{command_request, menu_request, reply_request},
     session_store::DurableSession,
 };
-use crate::bot::{
-    BotCredentials, BotError, commands,
+use crate::{
+    BotCredentials, BotError, LaunchButton, MenuCommand, Reply,
     transport::{BotUser, Delivery, Message, TelegramActions, Transport, UpdateCheckpoint},
 };
 use grammers_client::{
@@ -26,10 +26,9 @@ use grammers_session::{
 };
 use std::{num::NonZeroUsize, sync::Arc};
 use tokio_util::sync::CancellationToken;
-use url::Url;
 
 #[derive(Clone)]
-pub(in crate::bot) struct MtProtoActions {
+pub(crate) struct MtProtoActions {
     client: Client,
     session: Arc<DurableSession>,
     credentials: BotCredentials,
@@ -37,7 +36,7 @@ pub(in crate::bot) struct MtProtoActions {
     limits: RateLimits,
     documents: super::media::Documents,
 }
-pub(in crate::bot) struct MtProtoTransport {
+pub(crate) struct MtProtoTransport {
     actions: MtProtoActions,
     updates: Option<tokio::sync::mpsc::Receiver<grammers_session::updates::UpdatesLike>>,
     stream: Option<UpdateStream>,
@@ -154,16 +153,20 @@ impl TelegramActions for MtProtoActions {
         };
         identity(user, self.credentials.bot_id())
     }
-    async fn configure(&self, url: Option<&Url>) -> Result<(), BotError> {
+    async fn configure(
+        &self,
+        commands: &[MenuCommand],
+        launch: Option<&LaunchButton>,
+    ) -> Result<(), BotError> {
         let _ = self
             .client
-            .invoke(&command_request())
+            .invoke(&command_request(commands))
             .await
             .map_err(|error| self.failure(error))?;
-        if let Some(url) = url {
+        if let Some(launch) = launch {
             let _ = self
                 .client
-                .invoke(&menu_request(url))
+                .invoke(&menu_request(launch))
                 .await
                 .map_err(|error| self.failure(error))?;
         }
@@ -172,8 +175,8 @@ impl TelegramActions for MtProtoActions {
     async fn send(
         &self,
         message: &Message,
-        reply: &commands::Reply,
-        url: Option<&Url>,
+        reply: &Reply,
+        launch: Option<&LaunchButton>,
     ) -> Result<(), BotError> {
         if self.exited.is_cancelled() {
             return Err(BotError::Runner);
@@ -181,7 +184,7 @@ impl TelegramActions for MtProtoActions {
         if let Some(seconds) = self.limits.replies.remaining() {
             return Err(BotError::RetryAfter(seconds));
         }
-        let request = reply_request(self.credentials.bot_id(), message, reply, url);
+        let request = reply_request(self.credentials.bot_id(), message, reply, launch);
         let _ = self.client.invoke(&request).await.map_err(|error| {
             let error = self.failure(error);
             if let BotError::RetryAfter(seconds) = error {
@@ -345,7 +348,7 @@ pub(super) fn rpc(error: InvocationError) -> BotError {
 mod tests {
     use super::super::session_store::SessionStore;
     use super::*;
-    use crate::bot::tests::credentials;
+    use crate::tests::credentials;
     use tokio_util::task::TaskTracker;
 
     #[test]
@@ -372,14 +375,6 @@ mod tests {
             active_usernames(Some("primary_bot"), &aliases),
             ["primary_bot", "active_bot", "second_bot"]
         );
-        let incoming = |text| commands::Incoming {
-            private: true,
-            user_id: Some(7),
-            message_id: 1,
-            text: Some(text),
-        };
-        assert!(commands::parse(incoming("/status@SECOND_BOT"), &names).is_some());
-        assert!(commands::parse(incoming("/status@inactive_bot"), &names).is_none());
     }
 
     #[tokio::test]
