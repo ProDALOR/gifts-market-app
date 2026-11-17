@@ -23,6 +23,11 @@ services:
     ports:
       - "${MARKET_APP_PORT:-8080}:8080"
 
+networks:
+  default:
+    name: ${MARKET_NETWORK:-market}
+    external: true
+
 volumes:
   market-app-data:
   market-bot-data:

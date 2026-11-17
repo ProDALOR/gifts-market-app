@@ -46,7 +46,7 @@ The local database is a rebuildable cache, not the authoritative archive. Stop t
 
 ## Docker
 
-Copy `.env.example` to `.env` and set a reachable `MARKET_HUB_URL` and an issued `MARKET_HUB_TOKEN`. The default deployment uses Compose’s own network and needs no pre-created Docker network. Start with:
+Copy `.env.example` to `.env` and set a reachable `MARKET_HUB_URL` and an issued `MARKET_HUB_TOKEN`. The app joins an existing Docker network named `market`; set `MARKET_NETWORK` in `.env` to use another network. The hub container must join the same network to be reachable by service name. If the hub is remote and you have no existing network, create it once with `docker network create market`. Start with:
 
 ```sh
 docker compose config --quiet
@@ -58,16 +58,14 @@ Compose reads runtime configuration from `.env`; unset options use application d
 
 Compose starts only this application, connects to the configured hub URL, publishes `0.0.0.0:8080` and persists its replica in `market-app-data:/data`. `MARKET_APP_PORT` changes the published port. Separate deployments use separate volumes. Multiple instances can sit behind a load balancer; retained snapshot pagination requires affinity to the instance holding the view. Live page boundaries can move between instances synchronized to the same market.
 
-For a hub running on a shared Docker network, set `MARKET_HUB_URL=http://market-hub:50051` and use the optional override:
+For a hub running on a shared Docker network, configure `.env` with its service name and network:
 
-```sh
-# Use the hub's existing network; create it first only if your hub setup requires it.
-# MARKET_NETWORK defaults to market in this override.
-docker compose -f compose.yaml -f compose.hub.yaml config --quiet
-docker compose -f compose.yaml -f compose.hub.yaml up --build --detach
+```dotenv
+MARKET_HUB_URL=http://market-hub:50051
+MARKET_NETWORK=market
 ```
 
-Existing deployments on the shared `market` network should keep using this override for subsequent Compose commands. Remote-hub deployments use `compose.yaml` alone.
+`MARKET_NETWORK` is used directly by `compose.yaml`; all deployments use the same `docker compose` commands. The network is external: Compose requires it to exist and leaves its lifecycle to the hub or administrator. When migrating from the former network override, use `docker compose up --detach` to recreate the app on the selected network. Existing data volumes are retained.
 
 One Docker image includes the frontend, REST/WebSocket API, Telegram bot and Mini App support. A direct build uses `docker build -t market-app .`. The bot starts automatically when all three Telegram credentials are configured; serving the website and API requires none.
 

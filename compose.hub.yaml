@@ -1,9 +1,0 @@
-# Optional: attach the app to an existing hub's Docker network.
-services:
-  market-app:
-    networks: [market]
-
-networks:
-  market:
-    name: ${MARKET_NETWORK:-market}
-    external: true
