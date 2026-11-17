@@ -11,14 +11,12 @@ use tokio::sync::Semaphore;
 #[derive(Clone)]
 pub(crate) struct MediaApi {
     pub(crate) cache: MediaCache,
-    pub(crate) origin: Option<crate::media_origin::MediaOrigin>,
     slots: Arc<Semaphore>,
 }
 impl MediaApi {
     pub(crate) fn new(cache: MediaCache) -> Self {
         Self {
             cache,
-            origin: None,
             slots: Arc::new(Semaphore::new(64)),
         }
     }
@@ -79,7 +77,6 @@ async fn catalog_media(
         .slots
         .try_acquire()
         .map_err(|_| ApiError::capacity("Media service is busy"))?;
-    let catalog_id = id.to_string();
     let page = market
         .catalog(CatalogQuery {
             kind: CatalogKind::AttributeOption,
@@ -107,31 +104,7 @@ async fn catalog_media(
         MediaKind::Thumbnail => MediaKey::thumbnail(document),
         MediaKind::Animation => MediaKey::animation(document),
     };
-    let result = if let Some(origin) = &media.origin {
-        if request
-            .headers()
-            .contains_key(crate::media_origin::PROXY_HEADER)
-        {
-            media
-                .cache
-                .cached(key)
-                .await
-                .and_then(|asset| asset.ok_or(MediaError::Unavailable))
-        } else {
-            let path = if attribute == "tg.pattern" {
-                format!("/media/patterns/{catalog_id}")
-            } else if kind == MediaKind::Animation {
-                format!("/media/models/{catalog_id}/animation")
-            } else {
-                format!("/media/models/{catalog_id}")
-            };
-            origin.register(key, path);
-            media.cache.get(key).await
-        }
-    } else {
-        media.cache.get(key).await
-    };
-    let image = match result {
+    let image = match media.cache.get(key).await {
         Ok(image) => image,
         Err(error) => {
             let (code, message, retry) = match error {
@@ -419,33 +392,10 @@ mod tests {
             );
         }
         assert_eq!(cache.stats().disk_reads, reads);
-        let mut media = MediaApi::new(cache.clone());
-        media.origin = Some(crate::media_origin::MediaOrigin::new("http://127.0.0.1:1").unwrap());
-        let proxy_app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(MarketApi::new(data.handle.clone())))
-                .app_data(web::Data::new(media))
-                .configure(crate::configure),
-        )
-        .await;
-        for (id, status) in [("model", 200), ("uncached", 503)] {
-            assert_eq!(
-                test::call_service(
-                    &proxy_app,
-                    test::TestRequest::get()
-                        .uri(&format!("/media/models/{id}"))
-                        .insert_header((crate::media_origin::PROXY_HEADER, "1"))
-                        .to_request()
-                )
-                .await
-                .status(),
-                status
-            );
-        }
         assert_eq!(
             cache.stats().downloads,
             0,
-            "Proxy chains must never enqueue downloads"
+            "Cache-only API nodes do not enqueue downloads"
         );
         cache.shutdown().await;
         let stop = tokio_util::sync::CancellationToken::new();

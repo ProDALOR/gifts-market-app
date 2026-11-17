@@ -7,7 +7,6 @@ pub mod error;
 mod frontend;
 mod market;
 mod media;
-mod media_origin;
 #[cfg(feature = "miniapp")]
 pub mod miniapp;
 pub mod models;

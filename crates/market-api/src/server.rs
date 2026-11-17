@@ -23,7 +23,6 @@ pub struct ApiServer {
     data: MarketDataHandle,
     origins: OriginPolicy,
     media: Option<crate::media::MediaApi>,
-    media_downloads: Option<market_media::MediaDownloader>,
     #[cfg(feature = "miniapp")]
     miniapp: Option<MiniAppApi>,
 }
@@ -46,7 +45,6 @@ impl ApiServer {
             data,
             origins,
             media: None,
-            media_downloads: None,
             #[cfg(feature = "miniapp")]
             miniapp: None,
         })
@@ -54,20 +52,6 @@ impl ApiServer {
     pub fn with_media(mut self, cache: market_media::MediaCache) -> Self {
         self.media = Some(crate::media::MediaApi::new(cache));
         self
-    }
-    /// Use a Telegram-enabled market API as the cache-miss provider.
-    pub fn with_media_origin(
-        mut self,
-        origin: &str,
-        downloader: market_media::MediaDownloader,
-    ) -> anyhow::Result<Self> {
-        let media = self
-            .media
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Configure media cache before its origin"))?;
-        media.origin = Some(crate::media_origin::MediaOrigin::new(origin)?);
-        self.media_downloads = Some(downloader);
-        Ok(self)
     }
     #[cfg(feature = "miniapp")]
     pub fn with_miniapp(mut self, miniapp: MiniAppApi) -> Self {
@@ -90,7 +74,6 @@ impl ApiServer {
             data,
             origins,
             media,
-            mut media_downloads,
             #[cfg(feature = "miniapp")]
             miniapp,
         } = self;
@@ -109,15 +92,6 @@ impl ApiServer {
         let root = config.web_dir.map(|path| web::Data::new(WebRoot(path)));
         let json_limit = config.limits.json_bytes;
         let media_cache = media.as_ref().map(|media| media.cache.clone());
-        let media_origin = media.as_ref().and_then(|media| media.origin.clone());
-        let provider = async move {
-            if let (Some(downloads), Some(origin)) = (media_downloads.as_mut(), media_origin) {
-                downloads.run(|key| origin.fetch(key)).await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        };
-        tokio::pin!(provider);
         let server = HttpServer::new(move || {
             let app = App::new()
                 .wrap(origins.cors())
@@ -164,12 +138,6 @@ impl ApiServer {
         tokio::pin!(server);
         let result = tokio::select! {
             result=&mut server=>result,
-            _=&mut provider=>{
-                guard.connections.begin_shutdown();
-                if let Some(cache) = &guard.media { cache.shutdown().await; }
-                let _ = tokio::join!(guard.handle.as_ref().unwrap().stop(true), &mut server);
-                Err(io::Error::other("Media provider stopped unexpectedly"))
-            },
             _=stop.cancelled()=>{
                 guard.connections.begin_shutdown();
                 if let Some(cache) = &guard.media { cache.shutdown().await; }

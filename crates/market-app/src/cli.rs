@@ -16,9 +16,6 @@ pub struct Cli {
     /// Persistent runtime model media cache; defaults to <data-dir>/media.
     #[arg(long, env = "MARKET_MEDIA_DIR")]
     pub media_dir: Option<PathBuf>,
-    /// HTTP origin of a Telegram-enabled market API for cache misses.
-    #[arg(long, env = "MARKET_MEDIA_ORIGIN")]
-    pub media_origin: Option<String>,
     #[cfg(feature = "miniapp")]
     #[arg(long, env = "MARKET_MINIAPP_BOT_ID")]
     pub miniapp_bot_id: Option<u64>,
@@ -166,6 +163,7 @@ mod tests {
             "--max-streams",
             "--telegram-bot-id",
             "--bot-enabled",
+            "--media-origin",
         ] {
             assert!(Cli::try_parse_from(["market-app", legacy, "1"]).is_err());
         }

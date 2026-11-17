@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, process::Command};
 
 #[test]
-fn api_only_build_resolves_no_telegram_or_grammers_dependencies() {
+fn api_only_build_resolves_no_telegram_or_reqwest_dependencies() {
     let output = Command::new(env!("CARGO"))
         .args([
             "tree",
@@ -25,7 +25,7 @@ fn api_only_build_resolves_no_telegram_or_grammers_dependencies() {
         String::from_utf8_lossy(&output.stderr)
     );
     let graph = String::from_utf8(output.stdout).unwrap();
-    for dependency in ["market-telegram", "market-miniapp", "grammers-"] {
+    for dependency in ["market-telegram", "market-miniapp", "grammers-", "reqwest"] {
         assert!(
             !graph.lines().any(|line| line.starts_with(dependency)),
             "API-only graph includes {dependency}"
