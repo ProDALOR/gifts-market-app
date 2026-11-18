@@ -210,13 +210,7 @@ pub fn order(value: w::Order) -> Result<GiftOrder> {
         return Err(invalid("active gift orders cannot have execution lineage"));
     }
     let book = book(required(value.book)?)?;
-    let decimal = rust_decimal::Decimal::from_str_exact(&value.quantity)
-        .map_err(invalid)?
-        .normalize();
-    let quantity: u32 = decimal
-        .to_string()
-        .parse()
-        .map_err(|_| invalid("gift quantity must be a positive integer"))?;
+    let quantity = gift_quantity(&value.quantity)?;
     let market_url = ["url", "listing_url", "market_url", "link"]
         .into_iter()
         .find_map(|key| value.meta.get(key).cloned());
@@ -238,4 +232,32 @@ pub fn order(value: w::Order) -> Result<GiftOrder> {
         market_url,
     };
     order.try_into().map_err(invalid)
+}
+
+fn gift_quantity(value: &str) -> Result<u32> {
+    let decimal = rust_decimal::Decimal::from_str_exact(value)
+        .map_err(invalid)?
+        .normalize();
+    decimal
+        .to_string()
+        .parse::<u32>()
+        .ok()
+        .filter(|quantity| *quantity > 0)
+        .ok_or_else(|| invalid("gift quantity must be a positive integer"))
+}
+/// Gift facts from a listing, without constructing pricing, timestamps or presentation fields.
+/// Expired listings may still establish identity; exhausted ones cannot.
+pub fn concrete_gift(value: w::Order) -> Result<Option<CollectibleGift>> {
+    if is_exhausted(&value)? {
+        return Ok(None);
+    }
+    gift_quantity(&value.quantity)?;
+    let collection = required(value.book)?
+        .item_type_id
+        .try_into()
+        .map_err(invalid)?;
+    Ok(match target(value.item_id, collection, value.attributes) {
+        GiftTarget::Gift { gift } => Some(gift),
+        _ => None,
+    })
 }

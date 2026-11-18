@@ -69,7 +69,7 @@ struct ReadState {
 }
 /// Read-only access to immutable views published by synchronization.
 #[derive(Clone)]
-pub struct ReplicaReader(Arc<ReadState>);
+pub struct ReplicaReader(Arc<ReadState>, tokio_util::sync::CancellationToken);
 /// Exclusive, non-cloneable mutation engine, owned by synchronization.
 /// Cloning a `ReplicaReader` never grants this capability.
 pub struct ReplicaWriter {
@@ -112,12 +112,15 @@ impl ReplicaWriter {
             updated_at,
         });
         let (changed, _) = watch::channel(0);
-        let replica = ReplicaReader(Arc::new(ReadState {
-            published: RwLock::new(published),
-            status,
-            changed,
-            views: Mutex::default(),
-        }));
+        let replica = ReplicaReader(
+            Arc::new(ReadState {
+                published: RwLock::new(published),
+                status,
+                changed,
+                views: Mutex::default(),
+            }),
+            tokio_util::sync::CancellationToken::new(),
+        );
         Ok(Self {
             path,
             source: source.into(),
@@ -130,18 +133,35 @@ impl ReplicaWriter {
 }
 impl ReplicaReader {
     /// Pin one published view for a short, compound read without blocking synchronization.
+    /// Attach request cancellation without changing the live or pinned view.
+    pub fn with_cancellation(&self, cancelled: tokio_util::sync::CancellationToken) -> Self {
+        Self(self.0.clone(), cancelled)
+    }
+    pub(crate) fn cancellation_token(&self) -> &tokio_util::sync::CancellationToken {
+        &self.1
+    }
+    pub fn check_cancelled(&self) -> Result<(), Status> {
+        if self.1.is_cancelled() {
+            Err(Status::cancelled("Market read cancelled"))
+        } else {
+            Ok(())
+        }
+    }
     pub fn snapshot(&self) -> Result<Self, Status> {
         Ok(self.pin(self.view()?))
     }
     fn pin(&self, view: Arc<ReplicaView>) -> Self {
         let (status, _) = watch::channel(self.status());
         let (changed, _) = watch::channel(0);
-        Self(Arc::new(ReadState {
-            published: RwLock::new(Some(view)),
-            status,
-            changed,
-            views: Mutex::default(),
-        }))
+        Self(
+            Arc::new(ReadState {
+                published: RwLock::new(Some(view)),
+                status,
+                changed,
+                views: Mutex::default(),
+            }),
+            self.1.clone(),
+        )
     }
     pub fn status(&self) -> SyncStatus {
         self.0.status.borrow().clone()
@@ -150,6 +170,7 @@ impl ReplicaReader {
         self.0.changed.subscribe()
     }
     fn view(&self) -> Result<Arc<ReplicaView>, Status> {
+        self.check_cancelled()?;
         self.0
             .published
             .read()
@@ -292,5 +313,5 @@ mod tests;
 mod benchmarks;
 
 mod execution;
-pub use execution::{ReadBudget, ReadExecutor};
+pub use execution::{ReadBudget, ReadExecutor, ReadPermit, ReadRuntime};
 pub mod catalog_read;

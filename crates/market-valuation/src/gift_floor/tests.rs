@@ -311,3 +311,36 @@ async fn gift_actor_shutdown_cancels_a_request_waiting_for_the_shared_reader() {
     stop.cancel();
     data.task.run(stop).await.unwrap();
 }
+
+#[tokio::test]
+async fn refresh_deadline_cancels_queued_work_without_retaining_capacity() {
+    let (_dir, writer) = book();
+    let data = MarketDataService::start(writer.reader(), 1, 1)
+        .await
+        .unwrap();
+    let held = hold(&data.reader).await;
+    let error = refresh(
+        data.reader.clone(),
+        Arc::new(Mutex::new(Books::default())),
+        BookScope {
+            collection: "gift".into(),
+            currency: "GRAM".into(),
+        },
+        Duration::from_millis(20),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code(), crate::ValuationErrorCode::TimedOut);
+    drop(held);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        data.reader.prepare(|snapshot| snapshot.revision()),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
+}

@@ -325,3 +325,27 @@ fn execution_projection_enforces_time_and_lineage_and_ignores_unused_history_lin
         }
     }
 }
+
+#[test]
+fn concrete_gift_facts_share_target_and_quantity_rules_without_presentation_fields() {
+    let input = fixture();
+    let GiftTarget::Gift { gift: expected } = order(input.clone()).unwrap().into_data().target
+    else {
+        panic!("concrete fixture");
+    };
+    let mut facts = input.clone();
+    facts.price = "irrelevant".into();
+    facts.observed_at_ms = i64::MAX;
+    assert_eq!(concrete_gift(facts).unwrap().unwrap(), expected);
+    let mut exhausted = input.clone();
+    exhausted.quantity = "0".into();
+    assert!(concrete_gift(exhausted).unwrap().is_none());
+    for quantity in ["-1", "0.5", "bad"] {
+        let mut invalid = input.clone();
+        invalid.quantity = quantity.into();
+        assert!(concrete_gift(invalid).is_err());
+    }
+    let mut criteria = input;
+    criteria.item_id = None;
+    assert!(concrete_gift(criteria).unwrap().is_none());
+}

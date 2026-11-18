@@ -86,7 +86,7 @@ impl MarketApi {
     pub async fn gift_valuation(
         &self,
         query: market_valuation::GiftValuationRequest,
-    ) -> Result<Arc<market_valuation::GiftValuationResult>> {
+    ) -> Result<Arc<market_valuation::GiftFloorMark>> {
         Ok(self.valuation.gift(query).await?)
     }
     pub async fn subscribe(

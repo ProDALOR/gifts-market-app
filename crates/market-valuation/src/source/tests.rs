@@ -17,7 +17,7 @@ async fn dependency_checks_use_revisions_then_a_bounded_worker_and_memoize_succe
         .reader
         .snapshot()
         .unwrap()
-        .dependencies([], &CurrencyId::from("GRAM"), CatalogTrait::Model, &[])
+        .dependencies([], &CurrencyId::from("GRAM"), &[CatalogTrait::Model], &[])
         .unwrap();
     let held = data.reader.executor.budget().wait().await.unwrap();
     assert!(
@@ -147,6 +147,45 @@ async fn valuation_and_data_actor_queries_share_one_admission_budget() {
     assert!(data.handle.status().await.unwrap().ready);
     drop(held);
     assert_eq!(work.await.unwrap().unwrap(), "c0");
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn exact_collection_lookup_ignores_a_directory_larger_than_the_catalog_response_budget() {
+    use market_gifts::ModelLookup;
+    let (_dir, mut writer) = fixture();
+    writer
+        .apply(w::Batch {
+            cursor: "large-directory".into(),
+            changes: (0..50_001)
+                .map(|i| {
+                    entity(w::entity::Entity::ItemType(w::ItemType {
+                        id: format!("unrelated.{i}"),
+                        name: "Unrelated".into(),
+                        quantity_step: "1".into(),
+                        ..Default::default()
+                    }))
+                })
+                .collect(),
+        })
+        .unwrap();
+    let data = MarketDataService::start(writer.reader(), 1, 1)
+        .await
+        .unwrap();
+    let resolved = data
+        .reader
+        .prepare(|snapshot| {
+            snapshot.resolve_models(vec![ModelLookup::Collection {
+                collection: "gift".into(),
+            }])
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved[0].collection.as_ref().unwrap().as_str(), "gift");
+    assert!(resolved[0].unresolved.is_none());
     let stop = CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();

@@ -1,7 +1,7 @@
 import type { components } from "./gen/api";
 export type GiftValuationRequest =
   components["schemas"]["GiftValuationRequest"];
-export type GiftValuation = components["schemas"]["GiftValuationResponse"];
+export type GiftValuationResponse = components["schemas"]["GiftValuationResponse"];
 export type ValuationErrorDetails =
   components["schemas"]["ValuationErrorDetails"];
 export type Order = components["schemas"]["OrderResponse"];
@@ -70,7 +70,7 @@ export async function request<T>(
 export const valuation = (
   query: GiftValuationRequest,
   signal?: AbortSignal,
-): Promise<GiftValuation> => request("/valuations/gift", query, signal);
+): Promise<GiftValuationResponse> => request("/valuations/gift", query, signal);
 export const catalog = (
   signal: AbortSignal,
   revision?: (value: string) => void,

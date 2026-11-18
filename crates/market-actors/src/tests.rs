@@ -102,9 +102,7 @@ async fn public_actor_contract_serves_typed_queries_results_and_subscription_err
             }))],
         })
         .unwrap();
-    let service = MarketDataService::start(writer.reader(), 2, 1)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let query = m::GiftOrdersQuery::new(m::GiftFilters::new("gift".into(), "GRAM".into()));
     let page = service.handle.orders(query.clone()).await.unwrap();
     assert_eq!(page.cursor, "c1");
@@ -171,9 +169,7 @@ async fn next_page(
 #[tokio::test]
 async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription_actors() {
     let (_directory, mut writer) = fixture();
-    let service = MarketDataService::start(writer.reader(), 2, 1)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let api = service.handle.clone();
     let bot = service.handle.clone();
     assert_eq!(api.orders_raw(query()).await.unwrap().page.cursor, "c0");
@@ -210,27 +206,24 @@ async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription
 #[derive(Message)]
 #[rtype(result = "Result<ReadResult,Status>")]
 struct SlowRead {
-    permit: tokio::sync::OwnedSemaphorePermit,
+    permit: market_replica::ReadPermit,
     started: tokio::sync::oneshot::Sender<()>,
     release: std::sync::mpsc::Receiver<()>,
 }
 impl Handler<SlowRead> for OrderbooksActor {
     type Result = ResponseFuture<Result<ReadResult, Status>>;
     fn handle(&mut self, message: SlowRead, _: &mut Self::Context) -> Self::Result {
-        self.environment
-            .blocking(self.reader.clone(), message.permit, move |reader| {
-                let _ = message.started.send(());
-                message.release.recv().unwrap();
-                reader.read(query())
-            })
+        self.environment.blocking(message.permit, move |reader| {
+            let _ = message.started.send(());
+            message.release.recv().unwrap();
+            reader.read(query())
+        })
     }
 }
 #[tokio::test]
 async fn cancelled_api_request_retains_read_capacity_while_actor_still_answers_bot_status() {
     let (_directory, writer) = fixture();
-    let service = MarketDataService::start(writer.reader(), 1, 1)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 1, 1).await.unwrap();
     let permit = service.handle.orderbooks.budget.try_query().unwrap();
     let address = service.handle.orderbooks.address.clone();
     let (started, running) = tokio::sync::oneshot::channel();
@@ -314,9 +307,7 @@ impl Handler<Panic> for UserSubscriptionsActor {
 async fn every_actor_failure_is_supervised_without_owning_or_stopping_storage_itself() {
     for role in 0..3 {
         let (_directory, mut writer) = fixture();
-        let service = MarketDataService::start(writer.reader(), 1, 1)
-            .await
-            .unwrap();
+        let service = TestData::start(writer.reader(), 1, 1).await.unwrap();
         let monitor = tokio::spawn(service.task.run(CancellationToken::new()));
         let closed = match role {
             0 => service.handle.orderbooks.address.send(Panic).await,
@@ -346,9 +337,7 @@ async fn every_actor_failure_is_supervised_without_owning_or_stopping_storage_it
 #[tokio::test]
 async fn subscriptions_waiting_for_capacity_are_terminated_during_shutdown() {
     let (_directory, writer) = fixture();
-    let service = MarketDataService::start(writer.reader(), 1, 1)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 1, 1).await.unwrap();
     let permit = service.handle.orderbooks.budget.try_query().unwrap();
     let (_feed, updates) = service.handle.subscribe_raw(query()).await.unwrap();
     let stop = CancellationToken::new();
@@ -379,9 +368,7 @@ fn catalog_query() -> w::ReadRequest {
 async fn catalog_and_orderbooks_enforce_their_projection_and_preserve_snapshot_boundaries() {
     use crate::{catalog::messages::ReadCatalog, orderbooks::messages::ReadOrders};
     let (_directory, mut writer) = fixture();
-    let service = MarketDataService::start(writer.reader(), 2, 2)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
     let handle = &service.handle;
     assert_eq!(
         handle
@@ -489,9 +476,7 @@ async fn terminal(updates: &mut watch::Receiver<DataUpdate>) {
 #[tokio::test]
 async fn user_subscription_leases_cancel_independently_and_last_release_stops_the_feed() {
     let (_directory, mut writer) = fixture();
-    let service = MarketDataService::start(writer.reader(), 2, 1)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let (api_lease, mut api_updates) = service.handle.subscribe_raw(query()).await.unwrap();
     let (bot_lease, mut bot_updates) = service.handle.subscribe_raw(query()).await.unwrap();
     assert!(
@@ -573,9 +558,7 @@ async fn gift_snapshot_pages_survive_requests_and_catalog_replacement() {
             ],
         })
         .unwrap();
-    let service = MarketDataService::start(writer.reader(), 2, 2)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
     let mut query = GiftOrdersQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
     query.limit = 1;
     let first = service.handle.orders(query.clone()).await.unwrap();
@@ -621,9 +604,7 @@ async fn gift_snapshot_pages_survive_requests_and_catalog_replacement() {
 #[tokio::test]
 async fn saturated_snapshot_capacity_leaves_normal_reads_available() {
     let (_dir, writer) = fixture();
-    let service = MarketDataService::start(writer.reader(), 4, 1)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 4, 1).await.unwrap();
     let (busy, busy_task) = hold_read(service.reads.clone()).await;
     let reader = service.reads.clone();
     let mut work =
@@ -646,9 +627,7 @@ async fn saturated_snapshot_capacity_leaves_normal_reads_available() {
 #[tokio::test]
 async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_isolated() {
     let (_directory, writer) = fixture();
-    let service = MarketDataService::start(writer.reader(), 2, 1)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let handle = service.handle.clone();
     let (_lease, mut updates) = handle.subscribe_raw(query()).await.unwrap();
     let original = next_page(&mut updates, "c0").await;
@@ -750,9 +729,7 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
         })
         .unwrap();
     assert!(writer.reader().read(query()).unwrap().page.entities.iter().any(|entity| matches!(&entity.entity,Some(w::entity::Entity::Order(o)) if o.quantity == "0" || o.quantity == "0.00")));
-    let service = MarketDataService::start(writer.reader(), 2, 2)
-        .await
-        .unwrap();
+    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
     for side in [GiftSide::Ask, GiftSide::Bid] {
         for consistency in [ReadConsistency::Snapshot, ReadConsistency::Live] {
             for sort in [
@@ -846,4 +823,39 @@ async fn hold_read(
     });
     started.await.unwrap();
     (release, task)
+}
+
+struct TestData {
+    handle: MarketDataHandle,
+    task: TestTask,
+    reads: market_replica::ReadExecutor,
+}
+struct TestTask {
+    data: MarketDataTask,
+    reads: market_replica::ReadRuntime,
+}
+impl TestData {
+    async fn start(
+        reader: market_replica::ReplicaReader,
+        queries: usize,
+        subscriptions: usize,
+    ) -> Result<Self, Status> {
+        let reads = market_replica::ReadRuntime::new(reader, queries, CancellationToken::new())?;
+        let data = MarketDataService::start(reads.handle(), subscriptions).await?;
+        Ok(Self {
+            handle: data.handle,
+            reads: reads.handle(),
+            task: TestTask {
+                data: data.task,
+                reads,
+            },
+        })
+    }
+}
+impl TestTask {
+    async fn run(self, stop: CancellationToken) -> Result<(), Status> {
+        let result = self.data.run(stop).await;
+        self.reads.shutdown().await;
+        result
+    }
 }

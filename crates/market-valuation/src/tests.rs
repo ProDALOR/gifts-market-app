@@ -244,3 +244,15 @@ async fn cancelled_queued_request_never_executes_or_retains_capacity() {
     assert_eq!(entered.load(Ordering::SeqCst), 2);
     service.task.shutdown().await.unwrap();
 }
+
+#[actix::test]
+async fn strategy_panic_remains_a_failure_after_supervisor_cancellation() {
+    let (service, _, _) = start(Config::default());
+    assert_eq!(service.handle.evaluate(254).await, Err(Error::Stopped));
+    let stop = CancellationToken::new();
+    stop.cancel();
+    assert_eq!(service.task.run(stop).await, Err(ServiceError));
+    let (service, _, _) = start(Config::default());
+    assert_eq!(service.handle.evaluate(254).await, Err(Error::Stopped));
+    assert_eq!(service.task.shutdown().await, Err(ServiceError));
+}

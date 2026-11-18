@@ -78,7 +78,7 @@ pub(crate) fn portfolio(
             currency: input.currency_id.clone(),
         }),
         &input.currency_id,
-        CatalogTrait::Model,
+        &[CatalogTrait::Model],
         &lookups,
     )?;
     let mut missing: BTreeMap<CollectionId, BTreeSet<ModelId>> = BTreeMap::new();
@@ -180,7 +180,7 @@ fn scan(
 ) -> Result<Floors> {
     let mut models = BTreeMap::new();
     let mut broad = BTreeMap::new();
-    let mut budget = 2560;
+    let mut budget = market_replica::catalog_read::ScanBudget::default();
     for (collection, mut remaining) in missing {
         let scope = BookScope {
             collection: collection.clone(),
@@ -188,10 +188,7 @@ fn scan(
         };
         let mut token = String::new();
         'pages: loop {
-            if budget == 0 {
-                return Err(ValuationError::capacity("floor scan limit exceeded"));
-            }
-            budget -= 1;
+            budget.page()?;
             let page = read(&scope, token)?;
             for quote in page.data {
                 match kind {

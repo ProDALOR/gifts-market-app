@@ -1,9 +1,9 @@
 //! Explicit gift valuation requests, measurements and portfolio estimates.
-mod report;
+mod metric;
 use market_gifts::{
     Amount, CurrencyId, InvalidValue, ModelIdentity, ModelLookup, SyncStatus, VenueId,
 };
-pub use report::*;
+pub use metric::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

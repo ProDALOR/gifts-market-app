@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 /// Process owner. Never construct this inside the HTTP-worker factory.
 pub struct MarketRuntime {
     handle: MarketDataHandle,
+    reads: market_replica::ReadRuntime,
     valuation: market_valuation::ValuationHandle,
     supervisor: Arc<TaskSupervisor>,
     replication: Mutex<Option<market_replica::ReplicationWorker>>,
@@ -24,15 +25,15 @@ impl MarketRuntime {
         let market = market_replica::ReplicaRuntime::open(directory, source).await?;
         let supervisor = Arc::new(TaskSupervisor::new());
         let stop = supervisor.token();
+        let reads = market_replica::ReadRuntime::new(market.reader, query_limit, stop.clone())?;
         let data = market_actors::MarketDataService::start_with_shutdown(
-            market.reader,
-            query_limit,
+            reads.handle(),
             subscription_limit,
             stop.clone(),
         )
         .await?;
         let (registry, valuation_task) =
-            market_valuation::ValuationHandle::start(&data.arbiter(), data.reads.clone()).await?;
+            market_valuation::ValuationHandle::start(&data.arbiter(), reads.handle()).await?;
         let valuation_stop = supervisor.token();
         supervisor.spawn_critical(
             TaskKind::Valuation(market_valuation::GIFT_STRATEGY),
@@ -51,6 +52,7 @@ impl MarketRuntime {
         })?;
         Ok(Self {
             handle: data.handle,
+            reads,
             valuation: registry,
             supervisor,
             replication: Mutex::new(Some(market.replication)),
@@ -133,7 +135,9 @@ impl MarketRuntime {
         self.supervisor.cancelled().await;
     }
     pub async fn shutdown(&self) -> Result<()> {
-        self.supervisor.shutdown().await
+        let result = self.supervisor.shutdown().await;
+        self.reads.shutdown().await;
+        result
     }
     pub fn begin_shutdown(&self) -> Result<()> {
         self.supervisor.begin_shutdown()
@@ -162,6 +166,41 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+    #[tokio::test]
+    async fn app_shutdown_drains_shared_read_workers_after_actor_services_stop() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = MarketRuntime::open(directory.path(), "test", 1, 1)
+            .await
+            .unwrap();
+        let reads = runtime.reads.handle();
+        let permit = reads.budget().try_query().unwrap();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, proceed) = std::sync::mpsc::channel();
+        let work = tokio::spawn(async move {
+            reads
+                .admitted(permit, move |reader| {
+                    entered.send(()).unwrap();
+                    let _ = proceed.recv();
+                    reader.check_cancelled().is_err()
+                })
+                .await
+                .unwrap()
+        });
+        started.await.unwrap();
+        let mut shutdown = Box::pin(runtime.shutdown());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut shutdown)
+                .await
+                .is_err()
+        );
+        assert!(runtime.handle().status().await.is_err());
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(work.await.unwrap());
     }
     #[cfg(feature = "bot")]
     #[tokio::test]

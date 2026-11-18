@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { amount, valuation } from "../market";
-import type { GiftValuation, Order } from "../market";
+import type { GiftValuationResponse, Order } from "../market";
 import { Quote } from "../ui/market-controls";
 const issueLabel = (id: string) =>
   id.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
-type Metric = GiftValuation["collection_floor"];
+type Metric = GiftValuationResponse["collection_floor"];
 const metrics = [
   ["collection_floor", "Collection floor"],
   ["model_floor", "Model floor"],
@@ -70,7 +70,7 @@ export function GiftValuations({ order }: { order: Order }) {
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<{
     key: string;
-    value?: GiftValuation;
+    value?: GiftValuationResponse;
     error?: string;
   }>({ key: "" });
   useEffect(() => {

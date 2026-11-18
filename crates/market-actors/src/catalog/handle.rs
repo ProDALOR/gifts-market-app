@@ -21,6 +21,7 @@ impl CatalogHandle {
     pub async fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         selection::catalog(&request)?;
         let permit = self.budget.try_query()?;
+        let _cancel = permit.cancel_on_drop();
         self.address
             .send(ReadCatalog { request, permit })
             .await
@@ -38,6 +39,7 @@ impl CatalogHandle {
             .try_acquire_owned()
             .map_err(|_| Status::resource_exhausted("Catalog capacity reached"))?;
         let permit = self.budget.try_query()?;
+        let _cancel = permit.cancel_on_drop();
         self.address
             .send(super::messages::GiftCatalog { permit, projection })
             .await
@@ -53,6 +55,7 @@ impl CatalogHandle {
             .try_acquire_owned()
             .map_err(|_| Status::resource_exhausted("Catalog capacity reached"))?;
         let permit = self.budget.try_query()?;
+        let _cancel = permit.cancel_on_drop();
         self.address
             .send(super::messages::GiftCollection {
                 id,
@@ -71,6 +74,7 @@ impl CatalogHandle {
             result = self.projections.clone().acquire_owned() => result.map_err(|_| Status::unavailable("Catalog stopped"))?,
         };
         let permit = self.budget.wait().await?;
+        let _cancel = permit.cancel_on_drop();
         self.address
             .send(super::messages::Versions {
                 ids,
@@ -85,6 +89,7 @@ impl CatalogHandle {
         target: market_gifts::MediaTarget,
     ) -> Result<market_gifts::TelegramDocumentId, Status> {
         let permit = self.budget.try_query()?;
+        let _cancel = permit.cancel_on_drop();
         self.address
             .send(super::messages::MediaDocument { target, permit })
             .await
@@ -100,6 +105,7 @@ impl CatalogHandle {
             ));
         }
         let permit = self.budget.try_query()?;
+        let _cancel = permit.cancel_on_drop();
         self.address
             .send(super::messages::ModelDocuments { limit, permit })
             .await

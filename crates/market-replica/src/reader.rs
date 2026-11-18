@@ -121,7 +121,17 @@ impl ReplicaReader {
                     Boundary::Current(None)
                 }
             });
-        let (entities, next) = scan(&view, &filter, position, limit, include)?;
+        let (entities, next) = scan(
+            &view,
+            &filter,
+            position,
+            limit,
+            &|entity| {
+                self.check_cancelled()?;
+                include(entity)
+            },
+            &|| self.check_cancelled(),
+        )?;
         let id = if live {
             None
         } else {
@@ -182,6 +192,7 @@ fn scan(
     mut boundary: Boundary,
     limit: usize,
     include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
+    check: &dyn Fn() -> Result<(), Status>,
 ) -> Result<(Vec<w::Entity>, Option<Boundary>), Status> {
     if filter.history() {
         if filter.sort != Sort::Identity {
@@ -267,6 +278,9 @@ fn scan(
         _ => return Err(Status::invalid_argument("invalid page boundary")),
     };
     for (count, ScanRow { rank, key, entity }) in rows.enumerate() {
+        if count % 64 == 0 {
+            check()?;
+        }
         if count == 10_000 {
             return Ok((data, Some(boundary)));
         }

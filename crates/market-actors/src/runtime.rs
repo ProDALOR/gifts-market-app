@@ -1,16 +1,17 @@
 //! Shared lifecycle, bounded read workers and admission across actor responsibilities.
 use actix::prelude::*;
-use market_replica::ReplicaReader;
+use market_replica::{ReadExecutor, ReadPermit, ReplicaReader};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use tokio::{runtime::Handle, sync::OwnedSemaphorePermit};
+use tokio::runtime::Handle;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tonic::Status;
 #[derive(Clone)]
 pub(crate) struct ActorEnvironment {
     pub jobs: TaskTracker,
+    pub reads: ReadExecutor,
     pub runtime: Handle,
     pub stop: CancellationToken,
     pub panicked: Arc<AtomicBool>,
@@ -35,21 +36,11 @@ impl ActorEnvironment {
     }
     pub fn blocking<T: Send + 'static>(
         &self,
-        reader: ReplicaReader,
-        permit: OwnedSemaphorePermit,
+        permit: ReadPermit,
         work: impl FnOnce(ReplicaReader) -> Result<T, Status> + Send + 'static,
     ) -> ResponseFuture<Result<T, Status>> {
-        let job = self.jobs.spawn_blocking_on(
-            move || {
-                let _permit = permit;
-                work(reader)
-            },
-            &self.runtime,
-        );
-        Box::pin(async move {
-            job.await
-                .map_err(|_| Status::unavailable("Market read worker stopped"))?
-        })
+        let reads = self.reads.clone();
+        Box::pin(async move { reads.admitted(permit, work).await? })
     }
 }
 pub(crate) use market_replica::ReadBudget as QueryBudget;

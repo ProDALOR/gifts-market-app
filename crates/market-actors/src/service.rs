@@ -7,7 +7,7 @@ use crate::{
     subscriptions::UserSubscriptionsActor,
 };
 use actix::Actor;
-use market_replica::{ReadExecutor, ReplicaReader};
+use market_replica::ReadExecutor;
 use std::{
     sync::{
         Arc,
@@ -22,7 +22,6 @@ use tonic::Status;
 pub struct MarketDataService {
     pub handle: MarketDataHandle,
     pub task: MarketDataTask,
-    pub reads: ReadExecutor,
     arbiter: actix::ArbiterHandle,
 }
 pub struct MarketDataTask {
@@ -37,36 +36,27 @@ impl MarketDataService {
     pub fn arbiter(&self) -> actix::ArbiterHandle {
         self.arbiter.clone()
     }
-    pub async fn start(
-        reader: ReplicaReader,
-        query_limit: usize,
-        subscription_limit: usize,
-    ) -> Result<Self, Status> {
-        Self::start_with_shutdown(
-            reader,
-            query_limit,
-            subscription_limit,
-            CancellationToken::new(),
-        )
-        .await
+    pub async fn start(reads: ReadExecutor, subscription_limit: usize) -> Result<Self, Status> {
+        Self::start_with_shutdown(reads, subscription_limit, CancellationToken::new()).await
     }
     pub async fn start_with_shutdown(
-        reader: ReplicaReader,
-        query_limit: usize,
+        reads: ReadExecutor,
         subscription_limit: usize,
         stop: CancellationToken,
     ) -> Result<Self, Status> {
-        if query_limit == 0 || subscription_limit == 0 {
+        if subscription_limit == 0 {
             return Err(Status::invalid_argument("Market limits must be positive"));
         }
         let exited = CancellationToken::new();
         let panicked = Arc::new(AtomicBool::new(false));
-        let reads = ReadExecutor::new(reader.clone(), query_limit, stop.clone())?;
-        let jobs = reads.tasks();
+        let reader = reads.reader();
+        let query_limit = reads.budget().limit();
+        let jobs = TaskTracker::new();
         let runtime = Handle::current();
         let environment = ActorEnvironment {
             jobs: jobs.clone(),
             runtime,
+            reads: reads.clone(),
             stop: stop.clone(),
             panicked: panicked.clone(),
         };
@@ -90,7 +80,6 @@ impl MarketDataService {
                     };
                     let catalog = CatalogActor {
                         cache: Default::default(),
-                        reader: reader.clone(),
                         environment: environment.clone(),
                     }
                     .start();
@@ -131,7 +120,6 @@ impl MarketDataService {
                 handle,
                 task,
                 arbiter,
-                reads,
             }),
             Err(_) => {
                 task.stop.cancel();

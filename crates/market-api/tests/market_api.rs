@@ -149,6 +149,7 @@ fn page(price: &str) -> w::Page {
     }
 }
 struct TestMarket {
+    reads: market_replica::ReadRuntime,
     data: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
     stop: CancellationToken,
@@ -161,11 +162,13 @@ impl TestMarket {
             .await
             .unwrap();
         let stop = CancellationToken::new();
-        let data = MarketDataService::start_with_shutdown(replica.reader, 8, 8, stop.child_token())
+        let reads =
+            market_replica::ReadRuntime::new(replica.reader, 8, stop.child_token()).unwrap();
+        let data = MarketDataService::start_with_shutdown(reads.handle(), 8, stop.child_token())
             .await
             .unwrap();
         let (registry, valuation_task) =
-            market_valuation::ValuationHandle::start(&data.arbiter(), data.reads.clone())
+            market_valuation::ValuationHandle::start(&data.arbiter(), reads.handle())
                 .await
                 .unwrap();
         let valuation_stop = stop.child_token();
@@ -181,6 +184,7 @@ impl TestMarket {
         ];
         Self {
             data: data.handle,
+            reads,
             valuation: registry,
             stop: stop.clone(),
             jobs,
@@ -192,6 +196,7 @@ impl TestMarket {
         for job in self.jobs {
             job.await.unwrap()?;
         }
+        self.reads.shutdown().await;
         Ok(())
     }
 }
@@ -985,11 +990,11 @@ async fn live_rest_continuations_do_not_consume_retained_snapshot_capacity() {
     writer
         .install_snapshot(snapshot.finish("scroll-cursor").unwrap())
         .unwrap();
-    let service = MarketDataService::start(writer.reader(), 2, 2)
-        .await
-        .unwrap();
+    let reads =
+        market_replica::ReadRuntime::new(writer.reader(), 2, CancellationToken::new()).unwrap();
+    let service = MarketDataService::start(reads.handle(), 2).await.unwrap();
     let (valuation, valuation_task) =
-        market_valuation::ValuationHandle::start(&service.arbiter(), service.reads.clone())
+        market_valuation::ValuationHandle::start(&service.arbiter(), reads.handle())
             .await
             .unwrap();
     let app = test::init_service(
@@ -1062,6 +1067,7 @@ async fn live_rest_continuations_do_not_consume_retained_snapshot_capacity() {
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
+    reads.shutdown().await;
 }
 
 #[actix_web::test]
@@ -1490,7 +1496,7 @@ fn slug_page(samples: usize) -> w::Page {
     }
     page
 }
-async fn wait_slug(state: &MarketApi) -> std::sync::Arc<market_valuation::GiftValuationResult> {
+async fn wait_slug(state: &MarketApi) -> std::sync::Arc<market_valuation::GiftFloorMark> {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if let Ok(value) = state

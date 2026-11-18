@@ -60,7 +60,7 @@ impl ValuationSnapshot {
         &self,
         scopes: impl IntoIterator<Item = BookScope>,
         currency: &CurrencyId,
-        kind: CatalogTrait,
+        kinds: &[CatalogTrait],
         lookups: &[ModelLookup],
     ) -> Result<ReadDependencies> {
         self.check_cancelled()?;
@@ -88,14 +88,20 @@ impl ValuationSnapshot {
             {
                 let rules = market_gifts_hub::CollectionChoices::new(&item)
                     .map_err(|e| Status::unavailable(e.to_string()))?;
-                if let Some(ids) = rules.trait_option_ids(kind.attribute()) {
-                    keys.extend(ids.into_iter().map(|id| w::Key {
-                        kind: w::EntityKind::AttributeOption as i32,
-                        id,
-                        ..Default::default()
-                    }));
-                } else {
-                    attributes.push(kind.attribute().into());
+                for attribute in kinds
+                    .iter()
+                    .map(|kind| kind.attribute())
+                    .collect::<BTreeSet<_>>()
+                {
+                    if let Some(ids) = rules.trait_option_ids(attribute) {
+                        keys.extend(ids.into_iter().map(|id| w::Key {
+                            kind: w::EntityKind::AttributeOption as i32,
+                            id,
+                            ..Default::default()
+                        }));
+                    } else {
+                        attributes.push(attribute.into());
+                    }
                 }
             }
             if keys.len() > 50_000 {

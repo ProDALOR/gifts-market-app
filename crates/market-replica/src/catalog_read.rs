@@ -2,17 +2,35 @@
 use crate::ReplicaReader;
 use market_hub_protocol::wire as w;
 use tonic::Status;
+pub const MAX_CATALOG_ROWS: usize = 50_000;
+/// A traversal may inspect unrelated rows; returned-row limits alone do not bound that work.
+pub struct ScanBudget {
+    pages: usize,
+}
+impl Default for ScanBudget {
+    fn default() -> Self {
+        Self::new(2560)
+    }
+}
+impl ScanBudget {
+    pub fn new(pages: usize) -> Self {
+        Self { pages }
+    }
+    pub fn page(&mut self) -> Result<(), Status> {
+        self.pages = self
+            .pages
+            .checked_sub(1)
+            .ok_or_else(|| Status::resource_exhausted("read scan budget exceeded"))?;
+        Ok(())
+    }
+}
+
 pub fn entities(
     reader: &ReplicaReader,
     kind: w::EntityKind,
     ids: Option<&[String]>,
 ) -> Result<Vec<w::entity::Entity>, Status> {
-    entities_cancellable(
-        reader,
-        kind,
-        ids,
-        &tokio_util::sync::CancellationToken::new(),
-    )
+    entities_cancellable(reader, kind, ids, reader.cancellation_token())
 }
 pub fn check(cancelled: &tokio_util::sync::CancellationToken) -> Result<(), Status> {
     if cancelled.is_cancelled() {
@@ -27,16 +45,31 @@ pub fn entities_cancellable(
     ids: Option<&[String]>,
     cancelled: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<w::entity::Entity>, Status> {
+    entities_with_budget(reader, kind, ids, cancelled, &mut ScanBudget::default())
+}
+fn entities_with_budget(
+    reader: &ReplicaReader,
+    kind: w::EntityKind,
+    ids: Option<&[String]>,
+    cancelled: &tokio_util::sync::CancellationToken,
+    budget: &mut ScanBudget,
+) -> Result<Vec<w::entity::Entity>, Status> {
     check(cancelled)?;
     if let Some(ids) = ids.filter(|ids| ids.len() > 500) {
-        if ids.len() > 50_000 {
+        if ids.len() > MAX_CATALOG_ROWS {
             return Err(Status::resource_exhausted(
                 "catalog exceeds response budget",
             ));
         }
         let mut rows = Vec::new();
         for chunk in ids.chunks(500) {
-            rows.extend(entities_cancellable(reader, kind, Some(chunk), cancelled)?);
+            rows.extend(entities_with_budget(
+                reader,
+                kind,
+                Some(chunk),
+                cancelled,
+                budget,
+            )?);
         }
         return Ok(rows);
     }
@@ -64,6 +97,7 @@ pub fn entities_cancellable(
     let mut rows = Vec::new();
     loop {
         check(cancelled)?;
+        budget.page()?;
         let result = reader.read(request.clone())?;
         rows.extend(
             result
@@ -72,7 +106,7 @@ pub fn entities_cancellable(
                 .into_iter()
                 .filter_map(|row| row.entity),
         );
-        if rows.len() > 50_000 {
+        if rows.len() > MAX_CATALOG_ROWS {
             return Err(Status::resource_exhausted(
                 "catalog exceeds response budget",
             ));
@@ -91,12 +125,28 @@ pub fn trait_options(
     ids: Option<&[String]>,
     cancelled: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<w::AttributeOption>, Status> {
+    trait_options_with_budget(
+        reader,
+        attribute,
+        ids,
+        cancelled,
+        &mut ScanBudget::default(),
+    )
+}
+fn trait_options_with_budget(
+    reader: &ReplicaReader,
+    attribute: &str,
+    ids: Option<&[String]>,
+    cancelled: &tokio_util::sync::CancellationToken,
+    budget: &mut ScanBudget,
+) -> Result<Vec<w::AttributeOption>, Status> {
     if let Some(ids) = ids {
-        return Ok(entities_cancellable(
+        return Ok(entities_with_budget(
             reader,
             w::EntityKind::AttributeOption,
             Some(ids),
             cancelled,
+            budget,
         )?
         .into_iter()
         .filter_map(|entity| match entity {
@@ -119,6 +169,7 @@ pub fn trait_options(
     let mut options = Vec::new();
     loop {
         check(cancelled)?;
+        budget.page()?;
         let page = reader.read(query.clone())?.page;
         for entity in page.entities {
             if let Some(w::entity::Entity::AttributeOption(option)) = entity.entity
@@ -127,7 +178,7 @@ pub fn trait_options(
                 options.push(option);
             }
         }
-        if options.len() > 50_000 {
+        if options.len() > MAX_CATALOG_ROWS {
             return Err(Status::resource_exhausted(
                 "trait catalog exceeds response budget",
             ));
@@ -136,5 +187,67 @@ pub fn trait_options(
             return Ok(options);
         }
         query.page_token = page.next_page_token;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ReplicaWriter,
+        test_support::{catalog, entity, upsert},
+    };
+    #[test]
+    fn scans_count_unmatched_pages_and_share_the_budget_between_key_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = ReplicaWriter::open(dir.path(), "catalog-budget").unwrap();
+        let mut snapshot = writer.begin_snapshot().unwrap();
+        snapshot.append(&catalog()).unwrap();
+        let ids = (0..1001)
+            .map(|i| format!("option.{i:04}"))
+            .collect::<Vec<_>>();
+        let options = ids
+            .iter()
+            .map(|id| {
+                upsert(entity(w::entity::Entity::AttributeOption(
+                    w::AttributeOption {
+                        id: id.clone(),
+                        attribute_id: "unrelated".into(),
+                        name: id.clone(),
+                        ..Default::default()
+                    },
+                )))
+            })
+            .collect::<Vec<_>>();
+        snapshot.append(&options).unwrap();
+        writer
+            .install_snapshot(snapshot.finish("catalog").unwrap())
+            .unwrap();
+        let reader = writer.reader().snapshot().unwrap();
+        let cancelled = tokio_util::sync::CancellationToken::new();
+        let error =
+            trait_options_with_budget(&reader, "target", None, &cancelled, &mut ScanBudget::new(1))
+                .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::ResourceExhausted);
+        assert!(
+            trait_options(&reader, "target", None, &cancelled)
+                .unwrap()
+                .is_empty()
+        );
+        let error = entities_with_budget(
+            &reader,
+            w::EntityKind::AttributeOption,
+            Some(&ids),
+            &cancelled,
+            &mut ScanBudget::new(1),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(
+            entities(&reader, w::EntityKind::AttributeOption, Some(&ids))
+                .unwrap()
+                .len(),
+            ids.len()
+        );
     }
 }

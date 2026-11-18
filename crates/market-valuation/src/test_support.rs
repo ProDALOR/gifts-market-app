@@ -5,7 +5,7 @@ use tonic::Status;
 pub struct MarketDataService {
     pub reader: ValuationSource,
     pub handle: market_actors::MarketDataHandle,
-    pub task: market_actors::MarketDataTask,
+    pub task: TestTask,
     arbiter: actix::ArbiterHandle,
 }
 impl MarketDataService {
@@ -14,15 +14,35 @@ impl MarketDataService {
         queries: usize,
         subscriptions: usize,
     ) -> Result<Self, Status> {
-        let data = market_actors::MarketDataService::start(reader, queries, subscriptions).await?;
+        let reads = market_replica::ReadRuntime::new(
+            reader,
+            queries,
+            tokio_util::sync::CancellationToken::new(),
+        )?;
+        let data = market_actors::MarketDataService::start(reads.handle(), subscriptions).await?;
         Ok(Self {
             arbiter: data.arbiter(),
-            reader: ValuationSource::new(data.reads),
+            reader: ValuationSource::new(reads.handle()),
             handle: data.handle,
-            task: data.task,
+            task: TestTask {
+                data: data.task,
+                reads,
+            },
         })
     }
     pub fn arbiter(&self) -> actix::ArbiterHandle {
         self.arbiter.clone()
+    }
+}
+
+pub struct TestTask {
+    data: market_actors::MarketDataTask,
+    reads: market_replica::ReadRuntime,
+}
+impl TestTask {
+    pub async fn run(self, stop: tokio_util::sync::CancellationToken) -> Result<(), Status> {
+        let result = self.data.run(stop).await;
+        self.reads.shutdown().await;
+        result
     }
 }

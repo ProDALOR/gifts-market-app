@@ -1,4 +1,5 @@
 //! One pass builds all price evidence. Rounding happens only at the report boundary.
+use super::{GiftFloorEvidence, GiftFloorValuation, MINIMUM_MULTIPLIER_SAMPLES};
 use crate::ValuationError;
 use crate::source::{BookScope, CatalogTrait, ReadDependencies, ValuationSnapshot};
 use crate::types::*;
@@ -53,15 +54,14 @@ pub(crate) struct Statistics {
     models: BTreeMap<ModelId, Floor>,
     backdrops: BTreeMap<BackdropId, Floor>,
     pairs: BTreeMap<(ModelId, BackdropId), Floor>,
-    dependencies: [ReadDependencies; 2],
+    dependencies: ReadDependencies,
     created: Instant,
     expires_at_ms: i64,
 }
 impl Statistics {
     pub fn current(&self, snapshot: &ValuationSnapshot) -> Result<bool, ValuationError> {
         Ok(self.created.elapsed() < REFRESH
-            && snapshot.dependencies_current(&self.dependencies[0])?
-            && snapshot.dependencies_current(&self.dependencies[1])?
+            && snapshot.dependencies_current(&self.dependencies)?
             && self.created.elapsed() < REFRESH
             && jiff::Timestamp::now().as_millisecond() < self.expires_at_ms)
     }
@@ -74,20 +74,12 @@ impl Statistics {
             models: BTreeMap::new(),
             backdrops: BTreeMap::new(),
             pairs: BTreeMap::new(),
-            dependencies: [
-                snapshot.dependencies(
-                    [scope.clone()],
-                    &scope.currency,
-                    CatalogTrait::Model,
-                    &[],
-                )?,
-                snapshot.dependencies(
-                    [scope.clone()],
-                    &scope.currency,
-                    CatalogTrait::Backdrop,
-                    &[],
-                )?,
-            ],
+            dependencies: snapshot.dependencies(
+                [scope.clone()],
+                &scope.currency,
+                &[CatalogTrait::Model, CatalogTrait::Backdrop],
+                &[],
+            )?,
             created: Instant::now(),
             expires_at_ms: i64::MAX,
         };
@@ -98,7 +90,9 @@ impl Statistics {
             ));
         }
         let mut token = String::new();
-        for _ in 0..2560 {
+        let mut budget = market_replica::catalog_read::ScanBudget::default();
+        loop {
+            budget.page()?;
             let page = snapshot.asks(scope, now, token)?;
             for quote in page.data {
                 stats.collection.observe(&quote.price);
@@ -143,9 +137,6 @@ impl Statistics {
             }
             token = page.next_page_token;
         }
-        Err(ValuationError::capacity(
-            "Gift valuation scan budget exceeded",
-        ))
     }
     pub fn report(
         &self,
@@ -153,7 +144,7 @@ impl Statistics {
         lookup: GiftLookup,
         currency: CurrencyId,
         sync: SyncStatus,
-    ) -> GiftValuation {
+    ) -> GiftFloorValuation {
         let empty = Floor::default();
         let model = gift
             .traits
@@ -183,7 +174,7 @@ impl Statistics {
             &model_ratio,
             &backdrop_ratio,
         );
-        GiftValuation {
+        GiftFloorValuation {
             slug: match lookup {
                 GiftLookup::Slug(slug) => Some(slug),
                 GiftLookup::Catalog { .. } => None,
@@ -196,7 +187,7 @@ impl Statistics {
             model_multiplier: rounded_metric(model_ratio),
             backdrop_multiplier: rounded_metric(backdrop_ratio),
             final_mark,
-            evidence: GiftValuationEvidence {
+            evidence: GiftFloorEvidence {
                 collection_samples: self.collection.samples,
                 model_samples: model_floor.samples,
                 backdrop_samples: backdrop_floor.samples,

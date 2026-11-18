@@ -17,6 +17,7 @@ actix.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 jiff.workspace = true
+tracing.workspace = true
 [dev-dependencies]
 market-actors.workspace = true
 serde_json.workspace = true

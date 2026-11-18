@@ -24,7 +24,7 @@ pub(super) fn request(scope: &BookScope) -> w::ReadRequest {
     }
 }
 impl ValuationSnapshot {
-    pub(super) fn orders(&self, query: GiftOrdersQuery) -> Result<Page<GiftOrder>> {
+    pub(super) fn gifts(&self, query: GiftOrdersQuery) -> Result<Page<CollectibleGift>> {
         self.check_cancelled()?;
         let request = market_gifts_hub::query::orders(query, w::ReadMode::Live)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -53,11 +53,11 @@ impl ValuationSnapshot {
             data: page
                 .entities
                 .into_iter()
-                .map(|entity| match entity.entity {
-                    Some(w::entity::Entity::Order(order)) => {
-                        market_gifts_hub::order(order).map_err(|e| Status::data_loss(e.to_string()))
-                    }
-                    _ => Err(Status::data_loss("expected a gift order")),
+                .filter_map(|entity| match entity.entity {
+                    Some(w::entity::Entity::Order(order)) => market_gifts_hub::concrete_gift(order)
+                        .map_err(|e| Status::data_loss(e.to_string()))
+                        .transpose(),
+                    _ => Some(Err(Status::data_loss("expected a gift order"))),
                 })
                 .collect::<Result<_>>()?,
         })

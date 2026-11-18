@@ -976,7 +976,9 @@ async fn real_market_actors_supply_exact_model_floor_values() {
     writer
         .install_snapshot(seed.finish("portfolio-view").unwrap())
         .unwrap();
-    let market = market_actors::MarketDataService::start(writer.reader(), 2, 2)
+    let reads =
+        market_replica::ReadRuntime::new(writer.reader(), 2, CancellationToken::new()).unwrap();
+    let market = market_actors::MarketDataService::start(reads.handle(), 2)
         .await
         .unwrap();
     let source = Source::default();
@@ -984,7 +986,7 @@ async fn real_market_actors_supply_exact_model_floor_values() {
         &market.arbiter(),
         "model_floor",
         {
-            let source = market_valuation::ValuationSource::new(market.reads.clone());
+            let source = market_valuation::ValuationSource::new(reads.handle());
             move |life| market_valuation::FloorActor::model(source, life)
         },
         Default::default(),
@@ -1023,6 +1025,7 @@ async fn real_market_actors_supply_exact_model_floor_values() {
     let stop = CancellationToken::new();
     stop.cancel();
     market.task.run(stop).await.unwrap();
+    reads.shutdown().await;
 }
 
 #[tokio::test]

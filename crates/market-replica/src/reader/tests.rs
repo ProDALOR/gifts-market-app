@@ -38,9 +38,25 @@ fn borrowed_ranked_scan_can_resume_after_an_empty_scan_budget_page() {
         max: None,
     });
     let filter = Filter::compile(&view.state, &request).unwrap();
-    let (first, next) = scan(&view, &filter, Boundary::Ranked(None), 200, &|_| Ok(true)).unwrap();
+    let (first, next) = scan(
+        &view,
+        &filter,
+        Boundary::Ranked(None),
+        200,
+        &|_| Ok(true),
+        &|| Ok(()),
+    )
+    .unwrap();
     assert!(first.is_empty());
-    let (second, next) = scan(&view, &filter, next.unwrap(), 200, &|_| Ok(true)).unwrap();
+    let (second, next) = scan(
+        &view,
+        &filter,
+        next.unwrap(),
+        200,
+        &|_| Ok(true),
+        &|| Ok(()),
+    )
+    .unwrap();
     assert_eq!(
         second
             .iter()
@@ -72,9 +88,17 @@ fn borrowed_rows_preserve_page_byte_limits_and_oversized_record_errors() {
             1 | 2 => Boundary::Price(None),
             _ => Boundary::Ranked(None),
         };
-        let (first, next) = scan(&view, &filter, boundary, 200, &|_| Ok(true)).unwrap();
+        let (first, next) = scan(&view, &filter, boundary, 200, &|_| Ok(true), &|| Ok(())).unwrap();
         assert_eq!(first.len(), 1);
-        let (second, next) = scan(&view, &filter, next.unwrap(), 200, &|_| Ok(true)).unwrap();
+        let (second, next) = scan(
+            &view,
+            &filter,
+            next.unwrap(),
+            200,
+            &|_| Ok(true),
+            &|| Ok(()),
+        )
+        .unwrap();
         assert_eq!(second.len(), 1);
         assert_ne!(
             state::order(&first[0]).unwrap().id,
@@ -86,9 +110,16 @@ fn borrowed_rows_preserve_page_byte_limits_and_oversized_record_errors() {
     huge.meta.insert("large".into(), "x".repeat(513 * 1024));
     view.state.upsert(entity(E::Order(huge))).unwrap();
     let filter = Filter::compile(&view.state, &read(1, false)).unwrap();
-    let error = scan(&view, &filter, Boundary::Price(None), 200, &|_| Ok(true))
-        .err()
-        .unwrap();
+    let error = scan(
+        &view,
+        &filter,
+        Boundary::Price(None),
+        200,
+        &|_| Ok(true),
+        &|| Ok(()),
+    )
+    .err()
+    .unwrap();
     assert_eq!(error.code(), tonic::Code::ResourceExhausted);
 }
 
@@ -111,16 +142,29 @@ fn row_policy_advances_filtered_boundaries_and_precedes_byte_accounting() {
     let filter = Filter::compile(&view.state, &request).unwrap();
     let include =
         |entity: &w::Entity| Ok(state::order(entity).unwrap().id.as_str() >= "order10000");
-    let (first, next) = scan(&view, &filter, Boundary::Current(None), 1, &include).unwrap();
+    let (first, next) = scan(
+        &view,
+        &filter,
+        Boundary::Current(None),
+        1,
+        &include,
+        &|| Ok(()),
+    )
+    .unwrap();
     assert!(first.is_empty());
-    let (second, next) = scan(&view, &filter, next.unwrap(), 1, &include).unwrap();
+    let (second, next) = scan(&view, &filter, next.unwrap(), 1, &include, &|| Ok(())).unwrap();
     assert_eq!(state::order(&second[0]).unwrap().id, "order10000");
-    let (third, next) = scan(&view, &filter, next.unwrap(), 1, &include).unwrap();
+    let (third, next) = scan(&view, &filter, next.unwrap(), 1, &include, &|| Ok(())).unwrap();
     assert_eq!(state::order(&third[0]).unwrap().id, "order10001");
     assert!(next.is_none());
-    let error = scan(&view, &filter, Boundary::Current(None), 1, &|_| {
-        Err(Status::cancelled("cancelled"))
-    })
+    let error = scan(
+        &view,
+        &filter,
+        Boundary::Current(None),
+        1,
+        &|_| Err(Status::cancelled("cancelled")),
+        &|| Ok(()),
+    )
     .err()
     .unwrap();
     assert_eq!(error.code(), tonic::Code::Cancelled);

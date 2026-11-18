@@ -21,6 +21,7 @@ impl OrderbooksHandle {
     pub async fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         selection::orders(&request)?;
         let permit = self.budget.try_query()?;
+        let _cancel = permit.cancel_on_drop();
         self.address
             .send(ReadOrders { request, permit })
             .await
@@ -29,6 +30,7 @@ impl OrderbooksHandle {
     pub async fn read_wait(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         selection::orders(&request)?;
         let permit = self.budget.wait().await?;
+        let _cancel = permit.cancel_on_drop();
         self.address
             .send(ReadOrders { request, permit })
             .await
@@ -37,6 +39,7 @@ impl OrderbooksHandle {
     #[cfg(test)]
     pub async fn books(&self, request: w::BooksRequest) -> Result<w::BooksPage, Status> {
         let permit = self.budget.try_query()?;
+        let _cancel = permit.cancel_on_drop();
         self.address
             .send(ListBooks { request, permit })
             .await

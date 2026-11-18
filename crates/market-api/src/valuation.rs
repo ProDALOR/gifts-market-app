@@ -8,10 +8,10 @@ pub struct GiftValuationResponse<'a> {
     #[schema(value_type = String, format = DateTime)]
     pub evaluated_at: jiff::Timestamp,
     #[serde(flatten)]
-    pub data: &'a market_valuation::GiftValuation,
+    pub data: &'a market_valuation::GiftFloorValuation,
 }
-impl<'a> From<&'a market_valuation::GiftValuationResult> for GiftValuationResponse<'a> {
-    fn from(value: &'a market_valuation::GiftValuationResult) -> Self {
+impl<'a> From<&'a market_valuation::GiftFloorMark> for GiftValuationResponse<'a> {
+    fn from(value: &'a market_valuation::GiftFloorMark) -> Self {
         Self {
             strategy: value.strategy,
             revision: &value.revision,

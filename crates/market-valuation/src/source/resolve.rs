@@ -3,7 +3,7 @@ use market_gifts::ModelLookupError;
 use market_gifts::{ModelIdentity, ModelLookup};
 use market_hub_protocol::wire as w;
 use market_replica::ReplicaReader;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tonic::Status;
 
 use market_gifts_hub::{CollectionChoices, find_collection, find_model, model_identity};
@@ -20,10 +20,39 @@ pub(crate) fn resolve(
     lookups: Vec<ModelLookup>,
     cancelled: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<ResolvedModel>, Status> {
+    if lookups.is_empty() {
+        return Ok(vec![]);
+    }
+    let needs_directory = lookups.iter().any(|lookup| {
+        matches!(
+            lookup,
+            ModelLookup::Name { .. } | ModelLookup::Telegram { .. }
+        )
+    });
+    let ids = lookups
+        .iter()
+        .filter_map(|lookup| match lookup {
+            ModelLookup::Catalog { collection, .. } | ModelLookup::Collection { collection } => {
+                Some(collection.to_string())
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut requested_models: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for lookup in &lookups {
+        if let ModelLookup::Catalog { collection, model } = lookup {
+            requested_models
+                .entry(collection.to_string())
+                .or_default()
+                .insert(model.to_string());
+        }
+    }
     let items = market_replica::catalog_read::entities_cancellable(
         reader,
         w::EntityKind::ItemType,
-        None,
+        (!needs_directory).then_some(ids.as_slice()),
         cancelled,
     )?;
     let mut options = BTreeMap::new();
@@ -79,7 +108,20 @@ pub(crate) fn resolve(
         if !options.contains_key(&item.id) {
             let rules =
                 CollectionChoices::new(item).map_err(|e| Status::data_loss(e.to_string()))?;
-            let ids = rules.model_option_ids();
+            let ids = if needs_directory {
+                rules.model_option_ids()
+            } else {
+                let allowed = rules.model_option_ids();
+                Some(
+                    requested_models
+                        .get(&item.id)
+                        .into_iter()
+                        .flatten()
+                        .filter(|id| allowed.as_ref().is_none_or(|ids| ids.contains(id)))
+                        .cloned()
+                        .collect(),
+                )
+            };
             let values = market_replica::catalog_read::trait_options(
                 reader,
                 market_gifts_hub::MODEL,

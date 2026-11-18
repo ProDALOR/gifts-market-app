@@ -32,29 +32,27 @@ impl Handler<ReadOrders> for OrderbooksActor {
             return Box::pin(async move { Err(error) });
         }
         let stop = self.environment.stop.clone();
-        self.environment
-            .blocking(self.reader.clone(), message.permit, move |reader| {
-                reader.read_checked(
-                    message.request,
-                    crate::catalog::validate_order_collection,
-                    |entity| {
-                        if stop.is_cancelled() {
-                            return Err(Status::unavailable("Market read cancelled"));
-                        }
-                        crate::protocol::include_order(entity)
-                    },
-                )
-            })
+        self.environment.blocking(message.permit, move |reader| {
+            reader.read_checked(
+                message.request,
+                crate::catalog::validate_order_collection,
+                |entity| {
+                    if stop.is_cancelled() {
+                        return Err(Status::unavailable("Market read cancelled"));
+                    }
+                    crate::protocol::include_order(entity)
+                },
+            )
+        })
     }
 }
 #[cfg(test)]
 impl Handler<ListBooks> for OrderbooksActor {
     type Result = ResponseFuture<Result<w::BooksPage, Status>>;
     fn handle(&mut self, message: ListBooks, _: &mut Self::Context) -> Self::Result {
-        self.environment
-            .blocking(self.reader.clone(), message.permit, move |reader| {
-                reader.books(message.request.after, message.request.limit as usize)
-            })
+        self.environment.blocking(message.permit, move |reader| {
+            reader.books(message.request.after, message.request.limit as usize)
+        })
     }
 }
 impl Handler<GetStatus> for OrderbooksActor {

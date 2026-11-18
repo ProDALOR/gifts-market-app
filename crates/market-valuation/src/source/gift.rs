@@ -71,6 +71,7 @@ impl ValuationSnapshot {
             &self.cancelled,
         )?;
         let mut found: Option<CollectibleGift> = None;
+        let mut budget = market_replica::catalog_read::ScanBudget::default();
         for currency in currencies {
             let w::entity::Entity::Currency(currency) = currency else {
                 continue;
@@ -89,11 +90,9 @@ impl ValuationSnapshot {
             query.limit = 200;
             loop {
                 self.check_cancelled()?;
-                let page = self.orders(query.clone())?;
-                for projected in page.data {
-                    let GiftTarget::Gift { gift } = projected.into_data().target else {
-                        continue;
-                    };
+                budget.page()?;
+                let page = self.gifts(query.clone())?;
+                for gift in page.data {
                     if gift.number != Some(number) {
                         continue;
                     }

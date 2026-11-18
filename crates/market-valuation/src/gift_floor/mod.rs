@@ -1,11 +1,14 @@
 //! One supervised gift strategy. Cached collection statistics are checked against each pinned view.
-use crate::gift_calculation::{REFRESH, Statistics};
+mod calculation;
+mod result;
 use crate::source::{BookScope, ValuationSnapshot, ValuationSource};
 use crate::*;
 use crate::{
     Evaluate, Handle, Lifecycle, Mark, Prepared, Service, ServiceError, Task, ValuationError,
 };
 use actix::{Actor, ActorFutureExt, AsyncContext, Context, Handler, ResponseActFuture, WrapFuture};
+use calculation::{REFRESH, Statistics};
+pub use result::*;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -13,9 +16,10 @@ use std::{
 };
 use tokio::time::Instant;
 
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub const GIFT_STRATEGY: &str = "gift_floor";
-pub type GiftValuationResult = Mark<GiftValuation>;
-type NativeHandle = Handle<GiftValuationRequest, GiftValuation, ValuationError>;
+pub type GiftFloorMark = Mark<GiftFloorValuation>;
+type NativeHandle = Handle<GiftValuationRequest, GiftFloorValuation, ValuationError>;
 #[derive(Clone)]
 pub struct ValuationHandle(NativeHandle);
 impl From<NativeHandle> for ValuationHandle {
@@ -27,7 +31,7 @@ impl ValuationHandle {
     pub async fn gift(
         &self,
         request: GiftValuationRequest,
-    ) -> Result<Arc<GiftValuationResult>, ValuationError> {
+    ) -> Result<Arc<GiftFloorMark>, ValuationError> {
         let currency = request.currency_id.clone();
         crate::client::invoke(
             &self.0,
@@ -44,7 +48,7 @@ impl ValuationHandle {
         let service = Service::start_on(
             arbiter,
             GIFT_STRATEGY,
-            move |life| GiftValuationActor::new(ValuationSource::new(reads), life),
+            move |life| GiftFloorActor::new(ValuationSource::new(reads), life),
             crate::Config {
                 max_requests: 32,
                 ..Default::default()
@@ -97,7 +101,7 @@ impl Books {
         Ok(stats)
     }
 }
-pub struct GiftValuationActor {
+pub struct GiftFloorActor {
     life: Lifecycle,
     source: ValuationSource,
     // Only tracked read workers access this cache. The Arbiter never takes its lock.
@@ -105,7 +109,7 @@ pub struct GiftValuationActor {
     active: Option<(BookScope, Instant)>,
     refreshing: bool,
 }
-impl GiftValuationActor {
+impl GiftFloorActor {
     pub fn new(source: ValuationSource, life: Lifecycle) -> Self {
         Self {
             life,
@@ -116,7 +120,7 @@ impl GiftValuationActor {
         }
     }
 }
-impl Actor for GiftValuationActor {
+impl Actor for GiftFloorActor {
     type Context = Context<Self>;
     fn started(&mut self, ctx: &mut Self::Context) {
         self.life.started(ctx);
@@ -132,29 +136,23 @@ impl Actor for GiftValuationActor {
             let books = actor.books.clone();
             let scope = scope.clone();
             ctx.spawn(
-                async move {
-                    source
-                        .prepare(move |snapshot| {
-                            books
-                                .lock()
-                                .map_err(|_| {
-                                    ValuationError::unavailable("Valuation cache is unavailable")
-                                })?
-                                .get(&snapshot, &scope)
-                        })
-                        .await
-                }
+                refresh(source, books, scope, READ_TIMEOUT)
                 .into_actor(actor)
-                .map(|_, actor, _| actor.refreshing = false),
+                .map(|result, actor, _| {
+                    actor.refreshing = false;
+                    if let Err(error) = result { tracing::warn!(strategy=GIFT_STRATEGY, code=?error.code(), message=error.message(), "Valuation refresh failed"); }
+                }),
             );
         });
     }
 }
-impl Handler<Evaluate<GiftValuationRequest, GiftValuation, ValuationError>> for GiftValuationActor {
-    type Result = ResponseActFuture<Self, Result<Arc<GiftValuationResult>, ValuationError>>;
+impl Handler<Evaluate<GiftValuationRequest, GiftFloorValuation, ValuationError>>
+    for GiftFloorActor
+{
+    type Result = ResponseActFuture<Self, Result<Arc<GiftFloorMark>, ValuationError>>;
     fn handle(
         &mut self,
-        message: Evaluate<GiftValuationRequest, GiftValuation, ValuationError>,
+        message: Evaluate<GiftValuationRequest, GiftFloorValuation, ValuationError>,
         _: &mut Self::Context,
     ) -> Self::Result {
         let (input, request) = message.into_parts();
@@ -176,7 +174,7 @@ impl Handler<Evaluate<GiftValuationRequest, GiftValuation, ValuationError>> for 
             tokio::select! {biased;
                 _=stop.cancelled()=>Err(ValuationError::unavailable("Valuation actor is stopping")),
                 _=cancelled.cancelled()=>Err(ValuationError::unavailable("Valuation request cancelled")),
-                result=tokio::time::timeout(Duration::from_secs(30),work)=> {
+                result=tokio::time::timeout(READ_TIMEOUT,work)=> {
                     result.map_err(|_|ValuationError::timed_out("Gift valuation timed out"))??
                 }
             }
@@ -188,5 +186,25 @@ impl Handler<Evaluate<GiftValuationRequest, GiftValuation, ValuationError>> for 
 }
 
 #[cfg(test)]
-#[path = "gift_tests.rs"]
 mod tests;
+
+async fn refresh(
+    source: ValuationSource,
+    books: Arc<Mutex<Books>>,
+    scope: BookScope,
+    timeout: Duration,
+) -> Result<(), ValuationError> {
+    tokio::time::timeout(
+        timeout,
+        source.prepare(move |snapshot| {
+            books
+                .lock()
+                .map_err(|_| ValuationError::unavailable("Valuation cache is unavailable"))?
+                .get(&snapshot, &scope)
+                .map(|_| ())
+        }),
+    )
+    .await
+    .map_err(|_| ValuationError::timed_out("Gift valuation refresh timed out"))???;
+    Ok(())
+}

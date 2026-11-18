@@ -2,7 +2,15 @@
 use actix::{
     Actor, ActorContext, ActorFutureExt, AsyncContext, Context, Handler, Message, Recipient,
 };
-use std::{marker::PhantomData, ops::Deref, sync::Arc, time::Duration};
+use std::{
+    marker::PhantomData,
+    ops::Deref,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -93,6 +101,7 @@ impl<I, V: 'static, E: 'static> Message for Evaluate<I, V, E> {
 }
 
 pub struct Lifecycle {
+    panicked: Arc<AtomicBool>,
     strategy: &'static str,
     stop: CancellationToken,
     closed: CancellationToken,
@@ -114,6 +123,9 @@ impl Lifecycle {
 }
 impl Drop for Lifecycle {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.panicked.store(true, Ordering::Release);
+        }
         self.closed.cancel();
     }
 }
@@ -186,6 +198,7 @@ pub struct Service<I: Send + 'static, V: Send + Sync + 'static, E: Send + 'stati
     pub task: Task,
 }
 pub struct Task {
+    panicked: Arc<AtomicBool>,
     stop: CancellationToken,
     closed: CancellationToken,
 }
@@ -229,7 +242,9 @@ impl<I: Send + 'static, V: Send + Sync + 'static, E: Send + 'static> Service<I, 
         }
         let stop = CancellationToken::new();
         let closed = CancellationToken::new();
+        let panicked = Arc::new(AtomicBool::new(false));
         let actor = build(Lifecycle {
+            panicked: panicked.clone(),
             strategy,
             stop: stop.clone(),
             closed: closed.clone(),
@@ -246,7 +261,11 @@ impl<I: Send + 'static, V: Send + Sync + 'static, E: Send + 'static> Service<I, 
                 closed: closed.clone(),
                 timeout: config.request_timeout,
             },
-            task: Task { stop, closed },
+            task: Task {
+                stop,
+                closed,
+                panicked,
+            },
         })
     }
 }
@@ -254,7 +273,11 @@ impl Task {
     pub async fn shutdown(self) -> Result<(), ServiceError> {
         self.stop.cancel();
         self.closed.cancelled().await;
-        Ok(())
+        if self.panicked.load(Ordering::Acquire) {
+            Err(ServiceError)
+        } else {
+            Ok(())
+        }
     }
     pub async fn run(self, stop: CancellationToken) -> Result<(), ServiceError> {
         let expected = tokio::select! {
@@ -263,7 +286,11 @@ impl Task {
             _ = self.closed.cancelled() => false,
         };
         self.closed.cancelled().await;
-        if expected { Ok(()) } else { Err(ServiceError) }
+        if expected && !self.panicked.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(ServiceError)
+        }
     }
 }
 impl Drop for Task {

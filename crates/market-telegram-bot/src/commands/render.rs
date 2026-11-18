@@ -1,13 +1,13 @@
 use super::{CommandKind, Reply};
 use market_gifts::SyncState;
-use market_valuation::GiftValuationResult;
+use market_valuation::GiftFloorMark;
 use market_valuation::ValuationMetric;
 pub(super) fn error_reply(error: impl std::fmt::Display) -> Reply {
     Reply {
         text: error.to_string().chars().take(300).collect(),
     }
 }
-pub(super) fn valuation(value: &GiftValuationResult) -> Reply {
+pub(super) fn valuation(value: &GiftFloorMark) -> Reply {
     let label = value
         .slug
         .as_ref()
@@ -103,7 +103,7 @@ mod tests {
         let metric = |value| ValuationMetric::Value {
             value: Amount::new(value).unwrap(),
         };
-        let report = GiftValuation {
+        let report = GiftFloorValuation {
             slug: Some(GiftSlug::new("Gift-123").unwrap()),
             gift: CollectibleGift {
                 id: "gift".into(),
@@ -119,7 +119,7 @@ mod tests {
             model_multiplier: metric("1.2"),
             backdrop_multiplier: metric("3.67"),
             final_mark: metric("36.67"),
-            evidence: GiftValuationEvidence {
+            evidence: GiftFloorEvidence {
                 collection_samples: 12,
                 model_samples: 6,
                 backdrop_samples: 6,

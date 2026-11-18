@@ -179,11 +179,17 @@ mod tests {
         writer
             .install_snapshot(snapshot.finish("test-cursor").unwrap())
             .unwrap();
-        let data = market_actors::MarketDataService::start(writer.reader(), 2, 2)
+        let read_runtime = market_replica::ReadRuntime::new(
+            writer.reader(),
+            2,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        let data = market_actors::MarketDataService::start(read_runtime.handle(), 2)
             .await
             .unwrap();
         let (valuation, valuation_task) =
-            market_valuation::ValuationHandle::start(&data.arbiter(), data.reads.clone())
+            market_valuation::ValuationHandle::start(&data.arbiter(), read_runtime.handle())
                 .await
                 .unwrap();
         let media_path = directory.path().join("media");
@@ -385,5 +391,6 @@ mod tests {
         let stop = tokio_util::sync::CancellationToken::new();
         stop.cancel();
         data.task.run(stop).await.unwrap();
+        read_runtime.shutdown().await;
     }
 }
