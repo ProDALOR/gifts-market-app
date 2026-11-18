@@ -11,7 +11,8 @@
     "test:previews": "node scripts/preview-browser.mjs",
     "test:orderbook": "node scripts/orderbook-browser.mjs",
     "test:grid": "node scripts/grid-browser.mjs",
-    "test:traits": "node scripts/trait-preview-browser.mjs"
+    "test:traits": "node scripts/trait-preview-browser.mjs",
+    "test:listings": "node scripts/listing-browser.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

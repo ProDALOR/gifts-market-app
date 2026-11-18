@@ -2,7 +2,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { Order } from "../market";
 import type { ComponentProps } from "react";
 import { GiftCard } from "./gift-card";
-const key = (order: Order) => JSON.stringify([order.book.venue_id, order.id]);
+import { orderKey } from "./order-activity";
 /** Window rows, not individual cards, so columns and scroll geometry stay stable. */
 export function GiftGrid({
   orders,
@@ -61,13 +61,13 @@ export function GiftGrid({
     const index = first * columns;
     anchor.current =
       top < 0 && orders[index]
-        ? { key: key(orders[index]), offset: top + first * stride }
+        ? { key: orderKey(orders[index]), offset: top + first * stride }
         : undefined;
   }, [orders, visible]);
   useLayoutEffect(() => {
     const saved = anchor.current;
     if (saved && host.current) {
-      const index = orders.findIndex((order) => key(order) === saved.key);
+      const index = orders.findIndex((order) => orderKey(order) === saved.key);
       if (index >= 0) {
         const { columns, stride } = geometry.current;
         const offset =
@@ -107,7 +107,7 @@ export function GiftGrid({
     >
       {orders.slice(range.start, range.end).map((order, index) => (
         <GiftCard
-          key={key(order)}
+          key={orderKey(order)}
           order={order}
           {...card(order)}
           position={range.start + index + 1}

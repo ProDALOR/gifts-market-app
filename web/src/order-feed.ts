@@ -1,7 +1,11 @@
+import { OrderActivityTracker, orderKey } from "./orderbook/order-activity.ts";
+import type { OrderActivity } from "./orderbook/order-activity.ts";
 import { liveSocket } from "./live-socket.ts";
 import { ApiFailure, request } from "./market.ts";
 import type { Order, Page, FeedQuery } from "./market.ts";
 export type FeedState = {
+  displayOrders: Order[];
+  activity: ReadonlyMap<string, OrderActivity>;
   page: Page<Order>;
   status: string;
   error: string;
@@ -9,6 +13,8 @@ export type FeedState = {
   hasMore: boolean;
 };
 export const emptyFeed = (): FeedState => ({
+  displayOrders: [],
+  activity: new Map(),
   page: {
     data: [],
     next_page_token: "",
@@ -47,6 +53,8 @@ export function mergePages(
  * data. Offscreen pages retain scroll history and refresh when they enter view. */
 export class OrderFeed {
   private stop = new AbortController();
+  private activity = new OrderActivityTracker();
+  private expiry?: ReturnType<typeof setTimeout>;
   private unsubscribe?: () => void;
   private head?: Page<Order>;
   private revision?: string;
@@ -88,6 +96,7 @@ export class OrderFeed {
     } else this.connect();
   }
   close() {
+    clearTimeout(this.expiry);
     this.stop.abort();
     this.pending?.abort();
     this.unsubscribe?.();
@@ -99,8 +108,10 @@ export class OrderFeed {
     this.reconcile();
   }
   setVisibleRange(start: number, end: number) {
-    if (this.visible.start === start && this.visible.end === end) return;
-    this.visible = { start, end };
+    const range = this.activity.liveRange(start, end);
+    if (this.visible.start === range.start && this.visible.end === range.end)
+      return;
+    this.visible = range;
     if (this.stalePages().size) this.reconcile();
   }
   private stalePages() {
@@ -144,7 +155,11 @@ export class OrderFeed {
         else if (frame.type === "error")
           this.fail(new Error(frame.error.message));
       },
-      (status) => this.emit({ status }),
+      (status) => {
+        if (status === "Connecting" || status === "Reconnecting")
+          this.activity.rebase();
+        this.emit({ status });
+      },
     );
   }
   private read(token: string, signal = this.stop.signal): Promise<Page<Order>> {
@@ -178,6 +193,8 @@ export class OrderFeed {
     this.head = head;
     this.revision = revision;
     if (same) {
+      if (this.pages.length && this.activity.needsBaseline)
+        this.publish(new Set());
       if (this.pages.length)
         this.pages[0] = { ...this.pages[0], sync: head.sync };
       this.emit({
@@ -199,7 +216,7 @@ export class OrderFeed {
     if (this.pages.length) {
       this.pages[0] = head;
       this.versions[0] = this.epoch;
-      this.publish();
+      this.publish(new Set([0]));
     }
     this.reconcile();
   }
@@ -212,26 +229,32 @@ export class OrderFeed {
           ? "Live"
           : "Stale";
   }
-  private publish() {
+  private publish(refreshed: Set<number>) {
     if (!this.head || !this.pages.length) return;
     this.ends = [];
     const merged = mergePages(this.pages, (count) => this.ends.push(count));
     // Retain identities so memoized cards do not re-render for unchanged orders.
     const previous = new Map(
-      this.state.page.data.map((order) => [
-        JSON.stringify([order.book.venue_id, order.id]),
-        order,
-      ]),
+      this.state.page.data.map((order) => [orderKey(order), order]),
     );
     merged.data = merged.data.map((order) => {
-      const old = previous.get(JSON.stringify([order.book.venue_id, order.id]));
+      const old = previous.get(orderKey(order));
       return old &&
         (old === order || JSON.stringify(old) === JSON.stringify(order))
         ? old
         : order;
     });
     merged.sync = this.head.sync;
+    if (
+      this.paused ||
+      this.selection?.kind !== "orders" ||
+      this.head.sync.state !== "live"
+    )
+      this.activity.rebase();
+    const transitions = this.activity.update(this.pages, merged.data, refreshed);
+    this.scheduleExpiry();
     this.emit({
+      ...transitions,
       page: merged,
       hasMore: !!merged.next_page_token,
       error: "",
@@ -250,6 +273,19 @@ export class OrderFeed {
         this.emit({ loadingMore: false });
       });
   }
+  private scheduleExpiry() {
+    clearTimeout(this.expiry);
+    const at = this.activity.nextExpiry;
+    if (!Number.isFinite(at)) return;
+    this.expiry = setTimeout(
+      () => {
+        this.activity.expire(Date.now());
+        this.emit(this.activity.view(this.state.page.data));
+        this.scheduleExpiry();
+      },
+      Math.max(0, at - Date.now()),
+    );
+  }
   private async run() {
     let restarted = false;
     while (this.dirty && !this.stop.signal.aborted && this.head) {
@@ -265,6 +301,7 @@ export class OrderFeed {
       versions[0] = epoch;
       const tokens = new Set<string>();
       const stale = this.stalePages();
+      const refreshed = new Set<number>([0]);
       try {
         // Refresh only pages intersecting the viewport. A keyset boundary remains
         // valid when its order disappears, preserving the user's scroll position.
@@ -284,6 +321,7 @@ export class OrderFeed {
           tokens.add(token);
           if (pages[index] && !stale.has(index)) continue;
           pages[index] = await this.read(token, signal);
+          refreshed.add(index);
           versions[index] = epoch;
         }
       } catch (error) {
@@ -297,6 +335,7 @@ export class OrderFeed {
           !restarted
         ) {
           restarted = true;
+          this.activity.rebase();
           this.head = await this.read("");
           this.pages = [];
           this.versions = [];
@@ -312,7 +351,7 @@ export class OrderFeed {
       this.pages = pages;
       this.versions = versions;
       this.renderedHead = head;
-      this.publish();
+      this.publish(refreshed);
     }
   }
 }

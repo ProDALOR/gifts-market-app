@@ -22,6 +22,8 @@ export function useOrderFeed(
             ? {
                 ...next,
                 page: previous.page,
+                displayOrders: previous.displayOrders,
+                activity: previous.activity,
                 hasMore: previous.hasMore,
                 loadingMore: true,
               }

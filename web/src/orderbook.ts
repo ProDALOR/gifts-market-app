@@ -45,24 +45,8 @@ export function listingLink(order: Order): string | undefined {
   } catch {}
 }
 
-/** User-facing facts; internal source identifiers and redundant listing fields stay out of the UI. */
-export function orderDetails(
-  order: Order,
-  names: ReadonlyMap<string, string>,
-): [string, string][] {
-  const rows = describeTarget(order, names);
-  rows.push(["Venue", names.get(order.book.venue_id) || order.book.venue_id]);
-  if (order.target.kind === "criteria" && order.quantity > 1)
-    rows.push(["Quantity", String(order.quantity)]);
-  if (order.kind === "executed" && order.executed_at)
-    rows.push(["Executed", new Date(order.executed_at).toLocaleString()]);
-  else
-    rows.push(["Last observed", new Date(order.observed_at).toLocaleString()]);
-  if (order.kind !== "executed" && order.expires_at)
-    rows.push(["Expires", new Date(order.expires_at).toLocaleString()]);
-  return rows;
-}
-function describeTarget(
+/** Core gift appearance and bid constraints, without redundant listing metadata. */
+export function giftDetails(
   order: Order,
   names: ReadonlyMap<string, string>,
 ): [string, string][] {
@@ -80,10 +64,7 @@ function describeTarget(
           patterns: target.gift.traits.pattern
             ? [target.gift.traits.pattern]
             : [],
-          number:
-            target.gift.number == null
-              ? null
-              : { min: target.gift.number, max: target.gift.number },
+          number: null,
         };
   const rows: [string, string][] = (
     [
@@ -91,14 +72,16 @@ function describeTarget(
       ["Backdrop", criteria.backdrops],
       ["Symbol", criteria.patterns],
     ] as const
-  ).map(([label, ids]) => [
-    label,
-    ids.length
-      ? ids.map((id) => names.get(id) || id).join(" / ")
-      : target.kind === "criteria"
-        ? "Any"
-        : "Unknown",
-  ]);
+  )
+    .filter(([, ids]) => target.kind === "criteria" || ids.length > 0)
+    .map(([label, ids]) => [
+      label,
+      ids.length
+        ? ids.map((id) => names.get(id) || "Unavailable").join(" / ")
+        : target.kind === "criteria"
+          ? "Any"
+          : "Unknown",
+    ]);
   if (
     target.kind === "criteria" &&
     criteria.number &&
@@ -110,5 +93,7 @@ function describeTarget(
         ? String(criteria.number.min)
         : `${criteria.number.min ?? "Any"} – ${criteria.number.max ?? "Any"}`,
     ]);
+  if (target.kind === "criteria" && order.quantity > 1)
+    rows.push(["Quantity", String(order.quantity)]);
   return rows;
 }

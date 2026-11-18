@@ -9,6 +9,7 @@ import { TraitPickers } from "./collections/trait-pickers";
 import { TraitPreview } from "./previews/trait-preview";
 import { VenueIcon } from "./ui/icons";
 import { OrderDetails } from "./orderbook/order-details";
+import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
 import { CurrencyPicker } from "./ui/pickers";
 import { SortPicker } from "./ui/pickers";
@@ -29,8 +30,19 @@ type Choice = {
   until: string;
   filters: TraitFilters;
 };
+const defaultSort = {
+  ask: "price_asc",
+  bid: "price_desc",
+  executed: "time_desc",
+} as const;
 function saved(context: TelegramContext): Choice {
   const p = launchSelection(context, location.search);
+  const mode =
+    p.get("mode") === "bid"
+      ? "bid"
+      : p.get("mode") === "executed"
+        ? "executed"
+        : "ask";
   let filters: TraitFilters = {};
   try {
     const parsed = JSON.parse(p.get("filters") || "{}");
@@ -50,12 +62,7 @@ function saved(context: TelegramContext): Choice {
     collection: p.get("collection") || "",
     currency: p.get("currency") || "",
     venue: p.get("venue") || "",
-    mode:
-      p.get("mode") === "bid"
-        ? "bid"
-        : p.get("mode") === "executed"
-          ? "executed"
-          : "ask",
+    mode,
     sort:
       (
         [
@@ -66,7 +73,7 @@ function saved(context: TelegramContext): Choice {
           "number_asc",
           "number_desc",
         ] as const
-      ).find((sort) => sort === p.get("sort")) || "time_desc",
+      ).find((sort) => sort === p.get("sort")) || defaultSort[mode],
     filters,
     min: p.get("min") || "",
     max: p.get("max") || "",
@@ -176,6 +183,8 @@ function App({ context }: { context: TelegramContext }) {
           };
   const {
     page,
+    displayOrders,
+    activity,
     status,
     error,
     loadingMore,
@@ -187,14 +196,14 @@ function App({ context }: { context: TelegramContext }) {
     () =>
       setSelected((current) =>
         current
-          ? page.data.find(
+          ? displayOrders.find(
               (order) =>
                 order.id === current.id &&
                 order.book.venue_id === current.book.venue_id,
-            )
+            ) || current
           : undefined,
       ),
-    [page.data],
+    [displayOrders],
   );
   useTelegramBack(context, accountOpen || !!selected || !!openTrait, () => {
     if (accountOpen) setAccountOpen(false);
@@ -316,13 +325,15 @@ function App({ context }: { context: TelegramContext }) {
                 key={mode}
                 aria-pressed={choice.mode === mode}
                 className={choice.mode === mode ? "active" : ""}
-                onClick={() =>
-                  set({
-                    ...choice,
-                    mode,
-                    filters: mode === "bid" ? {} : choice.filters,
-                  })
-                }
+                onClick={() => {
+                  if (mode !== choice.mode)
+                    set({
+                      ...choice,
+                      mode,
+                      sort: defaultSort[mode],
+                      filters: mode === "bid" ? {} : choice.filters,
+                    });
+                }}
               >
                 {mode === "ask" ? "Asks" : mode === "bid" ? "Bids" : "History"}
               </button>
@@ -434,11 +445,12 @@ function App({ context }: { context: TelegramContext }) {
           </div>
 
           <GiftGrid
-            orders={page.data}
+            orders={displayOrders}
             busy={status === "Loading" || status === "Connecting"}
             visible={setVisibleRange}
             card={(order) => ({
               options,
+              activity: activity.get(orderKey(order)),
               collectionName:
                 item?.name ||
                 names.get(order.book.collection_id) ||
@@ -450,7 +462,7 @@ function App({ context }: { context: TelegramContext }) {
               open: setSelected,
             })}
           />
-          {!page.data.length && (
+          {!displayOrders.length && (
             <div className="empty" role="status">
               <span>◇</span>
               <strong>
@@ -490,6 +502,10 @@ function App({ context }: { context: TelegramContext }) {
           options={options}
           names={names}
           collectionName={item?.name || ""}
+          collectionSlug={item?.slug || undefined}
+          removed={
+            !page.data.some((order) => orderKey(order) === orderKey(selected))
+          }
           close={() => setSelected(undefined)}
         />
       )}

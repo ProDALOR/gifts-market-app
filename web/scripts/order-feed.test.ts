@@ -414,3 +414,73 @@ test("tail updates coalesce without starving in-flight reads and moved head anch
     ["a", "current"],
   );
 });
+
+test("live view activity keeps removed cards separate from canonical pages and never marks paginated rows new", async (t) => {
+  const Socket = sockets(t);
+  let state: FeedState | undefined;
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json(page([order("b"), order("c")])),
+  );
+  const feed = new OrderFeed({ kind: "orders", query }, false, (value) => {
+    state = value;
+  });
+  t.after(() => feed.close());
+  feed.start();
+  Socket.opened[0].deliver(page([order("a"), order("b")], "tail"));
+  await until(() => !!state && !state.loadingMore);
+  assert.equal(state!.activity.size, 0);
+  feed.loadMore();
+  await until(() => state!.page.data.length === 3 && !state!.loadingMore);
+  assert.equal(state!.activity.size, 0);
+  Socket.opened[0].deliver(page([order("x"), order("a")], "shifted"));
+  await until(() => state!.displayOrders[0]?.id === "x" && !state!.loadingMore);
+  assert.equal(
+    state!.activity.get(JSON.stringify(["test", "x"]))?.state,
+    "new",
+  );
+  assert.ok(!state!.activity.has(JSON.stringify(["test", "b"])));
+  Socket.opened[0].deliver(page([order("x"), order("b")], "shifted-again"));
+  await until(
+    () =>
+      state!.activity.get(JSON.stringify(["test", "a"]))?.state === "removed" &&
+      !state!.loadingMore,
+  );
+  assert.ok(!state!.page.data.some((row) => row.id === "a"));
+  assert.ok(state!.displayOrders.some((row) => row.id === "a"));
+  assert.ok(!state!.error);
+});
+test("live head arrivals appear immediately while continuation refresh is slow", async (t) => {
+  const Socket = sockets(t);
+  let state: FeedState | undefined;
+  let finish: ((response: Response) => void) | undefined;
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    if (++calls === 1) return Response.json(page([order("c")]));
+    return new Promise<Response>((resolve) => (finish = resolve));
+  });
+  const feed = new OrderFeed(
+    { kind: "orders", query },
+    false,
+    (value) => (state = value),
+    2,
+  );
+  t.after(() => feed.close());
+  feed.start();
+  Socket.opened[0].deliver(page([order("a"), order("b")], "tail"));
+  await until(() => state?.displayOrders.length === 3 && !state.loadingMore);
+  Socket.opened[0].deliver(page([order("x"), order("a")], "shifted"));
+  await until(() => !!finish);
+  assert.equal(state!.displayOrders[0].id, "x");
+  assert.equal(state!.loadingMore, true);
+  assert.equal(
+    state!.activity.get(JSON.stringify(["test", "x"]))?.state,
+    "new",
+  );
+  finish!(Response.json(page([order("b"), order("c")])));
+  await until(() => !state!.loadingMore);
+  assert.deepEqual(
+    state!.displayOrders.map((order) => order.id),
+    ["x", "a", "b", "c"],
+  );
+  assert.equal(state!.activity.size, 1);
+});

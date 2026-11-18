@@ -60,8 +60,8 @@ test("market buttons require a public HTTP(S) source link", () => {
   );
 });
 
-test("order details hide technical fields and show meaningful quantities and timestamps", async () => {
-  const { orderDetails } = await import("../src/orderbook.ts");
+test("gift details show traits and bid constraints without listing metadata", async () => {
+  const { giftDetails } = await import("../src/orderbook.ts");
   const base: Order = {
     id: "private-source-listing",
     book: { venue_id: "venue", collection_id: "gift", currency_id: "GRAM" },
@@ -86,10 +86,10 @@ test("order details hide technical fields and show meaningful quantities and tim
     ["venue", "Market"],
     ["model", "Gold"],
   ]);
-  const rows = orderDetails(base, names),
+  const rows = giftDetails(base, names),
     labels = rows.map(([label]) => label);
-  assert.ok(labels.includes("Last observed"));
-  assert.ok(labels.includes("Expires"));
+  assert.ok(!labels.includes("Last observed"));
+  assert.ok(!labels.includes("Expires"));
   assert.ok(!labels.includes("Quantity"));
   for (const label of [
     "Mode",
@@ -105,10 +105,7 @@ test("order details hide technical fields and show meaningful quantities and tim
     rows.find(([label]) => label === "Model"),
     ["Model", "Gold"],
   );
-  assert.deepEqual(
-    rows.find(([label]) => label === "Backdrop"),
-    ["Backdrop", "Unknown"],
-  );
+  assert.ok(!labels.includes("Backdrop"));
 
   const bid: Order = {
     ...base,
@@ -124,7 +121,7 @@ test("order details hide technical fields and show meaningful quantities and tim
       },
     },
   };
-  const bidRows = orderDetails(bid, names);
+  const bidRows = giftDetails(bid, names);
   assert.deepEqual(
     bidRows.find(([label]) => label === "Quantity"),
     ["Quantity", "5"],
@@ -137,11 +134,11 @@ test("order details hide technical fields and show meaningful quantities and tim
     bidRows.find(([label]) => label === "Gift #"),
     ["Gift #", "1 – 10"],
   );
-  const executedRows = orderDetails(
+  const executedRows = giftDetails(
     { ...base, kind: "executed", executed_at: "2026-11-18T13:00:00Z" },
     names,
   );
-  assert.ok(executedRows.some(([label]) => label === "Executed"));
+  assert.ok(!executedRows.some(([label]) => label === "Executed"));
   assert.ok(
     !executedRows.some(
       ([label]) => label === "Expires" || label === "Last observed",
@@ -150,7 +147,7 @@ test("order details hide technical fields and show meaningful quantities and tim
 });
 
 test("unsupported conditions remain distinct from unrestricted criteria in cards and details", async () => {
-  const { orderDetails } = await import("../src/orderbook.ts");
+  const { giftDetails } = await import("../src/orderbook.ts");
   const order = {
     book: { venue_id: "venue" },
     kind: "bid",
@@ -166,7 +163,7 @@ test("unsupported conditions remain distinct from unrestricted criteria in cards
   } as Order;
   assert.equal(serial(order), undefined);
   assert.equal(modelName(order, new Map(), "Any"), "Unsupported conditions");
-  const rows = orderDetails(order, new Map());
+  const rows = giftDetails(order, new Map());
   assert.deepEqual(rows[0], [
     "Conditions",
     order.target.kind === "unsupported" && order.target.reason.message,

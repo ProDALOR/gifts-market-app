@@ -63,6 +63,7 @@ const patterns = [
 const collections = ["Jelly Bunny", "Plush Pepe"].map((name, index) => ({
   id: index ? "pepe" : "bunny",
   name,
+  slug: index ? "PlushPepe" : "JellyBunny",
   preview: models[0].media,
   model_ids: models.map((o) => o.id),
   backdrop_ids: backdrops.map((o) => o.id),
@@ -295,6 +296,78 @@ try {
   const notifyCatalog = () => {
     for (const peer of catalogPeers) sendCatalog(peer);
   };
+  await page.route("**/valuations/gift", (route) => {
+    const body = route.request().postDataJSON(),
+      number = Number(body.gift.split("-").at(-1));
+    const collection = body.gift.startsWith("PlushPepe") ? "pepe" : "bunny";
+    const mark = {
+      revision: "valuation",
+      evaluated_at: "2026-11-18T12:00:00Z",
+    };
+    return route.fulfill({
+      json: {
+        slug: body.gift,
+        gift: {
+          id: `gift-${3000 - number}`,
+          collection_id: collection,
+          number,
+          traits: { model: "barbie", backdrop: "raspberry", pattern: "stars" },
+        },
+        currency_id: body.currency_id,
+        gift_revision: "view",
+        strategies: [
+          {
+            strategy: "model_floor",
+            ...mark,
+            data: {
+              rows: [],
+              total: "10.000000001",
+              priced: 1,
+              unpriced: 0,
+              currency_id: body.currency_id,
+              sync,
+            },
+          },
+          {
+            strategy: "collection_floor",
+            ...mark,
+            data: {
+              rows: [],
+              total: "8",
+              priced: 1,
+              unpriced: 0,
+              currency_id: body.currency_id,
+              sync,
+            },
+          },
+          {
+            strategy: "model_multiplier",
+            ...mark,
+            data: {
+              factor: "1.25",
+              currency_id: body.currency_id,
+              collection_id: collection,
+              model_id: "barbie",
+              sync,
+              evidence: {
+                minimum_samples: 3,
+                collection: { floor: "8", samples: 5 },
+                selected_trait: { floor: "10", samples: 3 },
+              },
+            },
+          },
+          {
+            strategy: "backdrop_multiplier",
+            error: {
+              code: "not_enough_data",
+              message: "More backdrop listings are needed.",
+              details: { required_samples: 3, available_samples: 1 },
+            },
+          },
+        ],
+      },
+    });
+  });
   await page.routeWebSocket("**/ws", (socket) => {
     socketCount++;
     openSockets.add(socket);
@@ -332,7 +405,7 @@ try {
     });
   });
   const base = `http://127.0.0.1:${server.httpServer.address().port}`;
-  await page.goto(`${base}/?collection=bunny&currency=GRAM&sort=price_asc`);
+  await page.goto(`${base}/?collection=bunny&currency=GRAM`);
   const button = (name) => page.getByRole("button", { name, exact: true });
   const cards = (n) =>
     page
@@ -387,6 +460,9 @@ try {
     name: "Sort by",
     exact: true,
   });
+  assert.equal(new URL(page.url()).searchParams.get("sort"), "price_asc");
+  assert.equal(await sortTrigger.innerText(), "Price");
+  assert.equal(await button("Reverse sort direction").innerText(), "↑");
   await sortTrigger.focus();
   await page.keyboard.press("ArrowDown");
   await page
@@ -703,6 +779,10 @@ try {
   await price("0.250000001");
   await button("Bids").click();
   await cards(4);
+  await price("13");
+  assert.equal(new URL(page.url()).searchParams.get("sort"), "price_desc");
+  assert.equal(await sortTrigger.innerText(), "Price");
+  assert.equal(await button("Reverse sort direction").innerText(), "↓");
   assert.equal(
     await page
       .locator(".app-footer")
@@ -723,12 +803,12 @@ try {
   assert.equal(
     await page
       .locator(".gift-card")
-      .first()
+      .filter({ has: page.locator('[data-order-id="order-0"]') })
       .getByText("Unsupported conditions", { exact: true })
       .count(),
     1,
   );
-  await page.locator(".card-open").first().click();
+  await page.locator('[data-order-id="order-0"]').click();
   await page
     .locator(".detail")
     .getByText("This listing has conditions that cannot be displayed yet.", {
@@ -744,7 +824,7 @@ try {
     0,
   );
   await page.keyboard.press("Escape");
-  await page.locator(".card-open").nth(1).click();
+  await page.locator('[data-order-id="order-1"]').click();
   await page
     .locator(".detail dt")
     .getByText("Quantity", { exact: true })
@@ -756,12 +836,18 @@ try {
   await page.keyboard.press("Escape");
   await button("History").click();
   await cards(50);
+  assert.equal(new URL(page.url()).searchParams.get("sort"), "time_desc");
+  assert.equal(await sortTrigger.innerText(), "Time");
+  assert.equal(await button("Reverse sort direction").innerText(), "↓");
+  await page.waitForFunction(
+    () => document.querySelector(".gift-card .serial")?.textContent === "#1926",
+  );
   await page.getByText("Snapshot", { exact: true }).waitFor();
   await scrollMore(75);
   await page.locator(".card-open").first().click();
   await page
     .locator(".detail dt")
-    .getByText("Executed", { exact: true })
+    .getByText("Model", { exact: true })
     .waitFor();
   assert.equal(
     await page
@@ -773,12 +859,14 @@ try {
   await page.keyboard.press("Escape");
   await button("Asks").click();
   await cards(50);
+  await price("0.250000001");
+  assert.equal(new URL(page.url()).searchParams.get("sort"), "price_asc");
   const opener = page.locator(".card-open").first();
   await opener.click();
   await page.getByRole("dialog", { name: "Order details" }).waitFor();
   await page
     .locator(".detail dt")
-    .getByText("Last observed", { exact: true })
+    .getByText("Model", { exact: true })
     .waitFor();
   const labels = await page.locator(".detail dt").allTextContents();
   for (const hidden of [
@@ -788,9 +876,27 @@ try {
     "Mode",
     "Quantity",
     "Gift #",
+    "Last observed",
+    "Executed",
+    "Expires",
+    "Venue",
   ])
     assert.ok(!labels.includes(hidden), hidden);
   assert.equal(await page.locator(".source-details").count(), 0);
+  await page
+    .locator('[data-strategy="model_floor"] .valuation-value')
+    .waitFor();
+  assert.equal(await page.locator(".gift-valuations li").count(), 4);
+  assert.equal(
+    await page
+      .locator('[data-strategy="model_multiplier"] .valuation-value')
+      .textContent(),
+    "1.25×",
+  );
+  await page
+    .locator(".gift-valuations")
+    .getByText("Not enough data", { exact: true })
+    .waitFor();
   assert.equal(
     await button("Close details").evaluate(
       (el) => el === document.activeElement,
@@ -959,6 +1065,21 @@ try {
     await page.evaluate(() => window.catalogDocument),
     "same-document",
   );
+  // Direct links without a sort use the selected view's default. A linked
+  // custom sort and clicking the already-active tab preserve the user's choice.
+  for (const [search, count, expectedSort, label, direction] of [
+    ["mode=bid", 4, "price_desc", "Price", "↓"],
+    ["mode=executed", 50, "time_desc", "Time", "↓"],
+    ["mode=bid&sort=time_asc", 4, "time_asc", "Time", "↑"],
+  ]) {
+    await page.goto(`${base}/?collection=bunny&currency=GRAM&${search}`);
+    await cards(count);
+    assert.equal(new URL(page.url()).searchParams.get("sort"), expectedSort);
+    assert.equal(await sortTrigger.innerText(), label);
+    assert.equal(await button("Reverse sort direction").innerText(), direction);
+  }
+  await button("Bids").click();
+  assert.equal(new URL(page.url()).searchParams.get("sort"), "time_asc");
   assert.deepEqual(errors, []);
   console.log(
     "Orderbook browser passed: unlimited trait previews, infinite scroll, Time/Gift #/Price sorting, currencies, URL restore, modes, accessible details and automatic Mini App catalog updates.",

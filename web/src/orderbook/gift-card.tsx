@@ -1,13 +1,17 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import type { Order } from "../market";
 import type { CatalogOption } from "../orderbook";
 import { serial, modelName } from "../orderbook";
 import { GiftPreview } from "../previews/gift-preview";
+import type { OrderActivity } from "./order-activity";
+import { FRESHNESS_MS } from "./order-activity";
+import { usePreviewEnvironment } from "../previews/preview-environment";
 import { VenueIcon } from "../ui/icons";
 import { Quote } from "../ui/market-controls";
 export const GiftCard = memo(function GiftCard({
   order,
   options,
+  activity,
   collectionName,
   venueName,
   selected,
@@ -18,17 +22,27 @@ export const GiftCard = memo(function GiftCard({
   position?: number;
   total?: number;
   order: Order;
+  activity?: OrderActivity;
   options: ReadonlyMap<string, CatalogOption>;
   collectionName: string;
   venueName: string;
   selected: boolean;
   open: (order: Order) => void;
 }) {
+  const { pageVisible, reducedMotion } = usePreviewEnvironment();
+  const clockStyle = useMemo(
+    () => ({
+      animationDuration: `${FRESHNESS_MS}ms`,
+      animationDelay: `-${Math.max(0, Date.now() - (activity?.since ?? Date.now()))}ms`,
+    }),
+    [activity?.since, pageVisible, reducedMotion],
+  );
   const number = serial(order),
     unsupported = order.target.kind === "unsupported";
   return (
     <li
-      className={`gift-card${selected ? " selected" : ""}`}
+      className={`gift-card${selected ? " selected" : ""}${activity ? ` is-${activity.state}` : ""}`}
+      data-activity={activity?.state}
       aria-posinset={position}
       aria-setsize={total}
     >
@@ -37,7 +51,30 @@ export const GiftCard = memo(function GiftCard({
         options={options}
         fallback={collectionName[0] || "◇"}
         className="card-preview"
+        playback={activity?.state === "removed" ? "static" : "interaction"}
       >
+        {activity && (
+          <>
+            <span
+              className="activity-ribbon"
+              title={
+                activity.state === "removed"
+                  ? "Left the refreshed results; this does not confirm a sale"
+                  : "New in this live view"
+              }
+            >
+              {activity.state === "removed" ? "Gone" : "New"}
+            </span>
+            {pageVisible && !reducedMotion && (
+              <span
+                aria-hidden="true"
+                className="card-clock"
+                key={`${activity.state}:${activity.since}`}
+                style={clockStyle}
+              />
+            )}
+          </>
+        )}
         <div className="card-head">
           <span
             className="serial"
@@ -67,7 +104,7 @@ export const GiftCard = memo(function GiftCard({
         </div>
         <button
           className="card-open"
-          aria-label={`View ${collectionName}${number ? ` #${number}` : ""} on ${venueName}`}
+          aria-label={`View ${collectionName}${number ? ` #${number}` : ""} on ${venueName}${activity ? (activity.state === "removed" ? ", left refreshed results" : ", new") : ""}`}
           data-order-id={order.id}
           data-venue-id={order.book.venue_id}
           onClick={() => open(order)}

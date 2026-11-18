@@ -1,24 +1,30 @@
 import type { Order } from "../market";
 import type { CatalogOption } from "../orderbook";
-import { listingLink, serial, orderDetails } from "../orderbook";
+import { listingLink, serial, giftDetails } from "../orderbook";
 import { GiftPreview } from "../previews/gift-preview";
 import { DetailSheet } from "../ui/detail-sheet";
+import { GiftValuations } from "./gift-valuations";
 import { Quote } from "../ui/market-controls";
 export function OrderDetails({
   selected,
   options,
   names,
   collectionName,
+  collectionSlug,
+  removed = false,
   close,
 }: {
   selected: Order;
   options: ReadonlyMap<string, CatalogOption>;
   names: Map<string, string>;
   collectionName: string;
+  collectionSlug?: string;
+  removed?: boolean;
   close: () => void;
 }) {
   const selectedSerial = serial(selected),
-    marketLink = listingLink(selected);
+    marketLink = listingLink(selected),
+    details = giftDetails(selected, names);
   return (
     <DetailSheet close={close}>
       <div className="detail-art">
@@ -47,15 +53,24 @@ export function OrderDetails({
         <div className="detail-price">
           <Quote price={selected.price} currency={selected.book.currency_id} />
         </div>
-        <dl>
-          {orderDetails(selected, names).map(([label, value]) => (
-            <div key={label}>
-              <dt>{label}</dt>
-              <dd>{value}</dd>
-            </div>
-          ))}
-        </dl>
-        {marketLink && (
+        {details.length > 0 && (
+          <dl>
+            {details.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {removed && (
+          <p className="listing-gone" role="status">
+            This listing left the refreshed results. A disappearance does not
+            confirm a sale.
+          </p>
+        )}
+        <GiftValuations order={selected} collectionSlug={collectionSlug} />
+        {marketLink && !removed && (
           <a
             className="detail-market"
             href={marketLink}
