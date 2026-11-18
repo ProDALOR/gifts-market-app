@@ -29,6 +29,13 @@ pub struct ApiError {
 }
 pub type Result<T> = std::result::Result<T, ApiError>;
 impl ApiError {
+    pub(crate) fn timed_out(message: impl Into<String>) -> Self {
+        Self {
+            code: ErrorCode::TimedOut,
+            message: message.into(),
+            details: None,
+        }
+    }
     pub fn invalid(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::InvalidQuery,

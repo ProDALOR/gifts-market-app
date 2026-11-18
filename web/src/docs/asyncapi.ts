@@ -51,9 +51,19 @@ function type(value: Json): string {
     ? schema.type.map(String).join(" | ")
     : text(schema.type) || "object";
 }
-function fields(value: Json) {
-  const schema = object(value),
-    properties = object(schema.properties);
+function fields(value: Json, spec: Json, depth = 0): HTMLElement {
+  if (depth > 12) return node("p", type(value));
+  const resolved = reference(spec, value);
+  if (resolved !== value) return fields(resolved, spec, depth + 1);
+  const schema = object(value);
+  const variants = schema.allOf || schema.oneOf || schema.anyOf;
+  if (variants) {
+    const group = node("div");
+    for (const variant of array(variants))
+      group.append(fields(variant, spec, depth + 1));
+    return group;
+  }
+  const properties = object(schema.properties);
   if (!Object.keys(properties).length) return node("p", type(value));
   const table = node("table"),
     head = node("thead"),
@@ -158,7 +168,7 @@ export async function mountReference(
       node("p", text(message.summary)),
     );
     const payload = reference(spec, message.payload || {});
-    article.append(fields(payload));
+    article.append(fields(payload, spec));
     for (const example of array(message.examples))
       article.append(source(object(example).payload || {}, "JSON example"));
     fragment.append(article);
@@ -169,7 +179,7 @@ export async function mountReference(
     details.id = `ws-schema-${encodeURIComponent(name)}`;
     details.append(
       node("summary", name),
-      fields(schema),
+      fields(schema, spec),
       source(schema, "JSON Schema"),
     );
     fragment.append(details);

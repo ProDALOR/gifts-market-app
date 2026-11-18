@@ -18,6 +18,24 @@ pub(crate) struct OrderbooksHandle {
     pub budget: QueryBudget,
 }
 impl OrderbooksHandle {
+    pub async fn window_wait(
+        &self,
+        request: w::ReadRequest,
+        window: market_replica::WindowRequest,
+    ) -> Result<market_replica::WindowReadResult, Status> {
+        selection::orders(&request)?;
+        let permit = self.budget.wait().await?;
+        let _cancel = permit.cancel_on_drop();
+        self.address
+            .send(super::messages::ReadWindow {
+                request,
+                window,
+                permit,
+            })
+            .await
+            .map_err(closed)?
+    }
+
     pub async fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         selection::orders(&request)?;
         let permit = self.budget.try_query()?;
@@ -27,12 +45,10 @@ impl OrderbooksHandle {
             .await
             .map_err(closed)?
     }
-    pub async fn read_wait(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
-        selection::orders(&request)?;
-        let permit = self.budget.wait().await?;
-        let _cancel = permit.cancel_on_drop();
+    pub async fn release_snapshot(&self, snapshot: String) -> Result<(), Status> {
+        self.budget.check()?;
         self.address
-            .send(ReadOrders { request, permit })
+            .send(super::messages::ReleaseSnapshot { snapshot })
             .await
             .map_err(closed)?
     }

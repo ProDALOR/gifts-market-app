@@ -9,7 +9,7 @@ use crate::{
     selection,
 };
 use actix::prelude::*;
-use messages::{Release, Subscribe, SubscribeCatalog};
+use messages::{Release, SubscribeCatalog, SubscribeWindow};
 use prost::Message;
 use std::{
     collections::{HashMap, HashSet},
@@ -21,12 +21,12 @@ use std::{
 use tokio::sync::{Semaphore, watch};
 use tonic::Status;
 pub use types::{DataSubscription, DataUpdate};
-use types::{QueryFeed, QueryKey, SubscriberId};
+use types::{FeedSpec, QueryFeed, QueryKey, SubscriberId};
 struct FeedEntry {
     feed: Arc<QueryFeed>,
     subscribers: HashSet<SubscriberId>,
 }
-pub(crate) struct UserSubscriptionsActor {
+pub(crate) struct MarketSubscriptionsActor {
     environment: ActorEnvironment,
     orders: OrderbooksHandle,
     catalog: CatalogHandle,
@@ -36,7 +36,7 @@ pub(crate) struct UserSubscriptionsActor {
     subscribers: HashMap<SubscriberId, QueryKey>,
     next_id: u64,
 }
-impl UserSubscriptionsActor {
+impl MarketSubscriptionsActor {
     pub fn new(
         environment: ActorEnvironment,
         orders: OrderbooksHandle,
@@ -56,46 +56,56 @@ impl UserSubscriptionsActor {
         }
     }
 }
-impl Actor for UserSubscriptionsActor {
+impl Actor for MarketSubscriptionsActor {
     type Context = Context<Self>;
     fn started(&mut self, ctx: &mut Self::Context) {
         self.environment.started(ctx);
     }
 }
-impl Drop for UserSubscriptionsActor {
+impl Drop for MarketSubscriptionsActor {
     fn drop(&mut self) {
         self.environment.stopped();
     }
 }
-impl Handler<Subscribe> for UserSubscriptionsActor {
+impl Handler<SubscribeWindow> for MarketSubscriptionsActor {
     type Result = Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status>;
-    fn handle(&mut self, message: Subscribe, ctx: &mut Self::Context) -> Self::Result {
-        selection::orders(&message.0)?;
+    fn handle(&mut self, message: SubscribeWindow, ctx: &mut Self::Context) -> Self::Result {
+        selection::orders(&message.request)?;
         self.register(
-            QueryKey::Orders(message.0.encode_to_vec()),
-            Some(message.0),
+            FeedSpec::Window {
+                request: Box::new(message.request),
+                window: message.window,
+            },
             ctx,
         )
     }
 }
-impl Handler<SubscribeCatalog> for UserSubscriptionsActor {
+impl Handler<SubscribeCatalog> for MarketSubscriptionsActor {
     type Result = Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status>;
     fn handle(&mut self, message: SubscribeCatalog, ctx: &mut Self::Context) -> Self::Result {
         if message.0.len() > 8 {
             return Err(Status::invalid_argument("Watch at most eight collections"));
         }
-        self.register(QueryKey::Catalog(message.0), None, ctx)
+        self.register(FeedSpec::Catalog(message.0), ctx)
     }
 }
-impl UserSubscriptionsActor {
+impl MarketSubscriptionsActor {
     fn register(
         &mut self,
-        key: QueryKey,
-        request: Option<market_hub_protocol::wire::ReadRequest>,
+        spec: FeedSpec,
         ctx: &mut Context<Self>,
     ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status> {
         let next = self.next_id.checked_add(1).ok_or_else(capacity)?;
         let id = SubscriberId(next);
+        let key = match &spec {
+            FeedSpec::Catalog(ids) => QueryKey::Catalog(ids.clone()),
+            FeedSpec::Window { request, window } if window.anchor.is_none() => QueryKey::Head {
+                request: request.encode_to_vec(),
+                before: window.before,
+                after: window.after,
+            },
+            FeedSpec::Window { .. } => QueryKey::View(id),
+        };
         let running = self
             .feeds
             .get(&key)
@@ -114,20 +124,21 @@ impl UserSubscriptionsActor {
             });
             // Register the receiver before starting the producer so it cannot observe a closed channel.
             let updates = feed.sender.subscribe();
-            match &key {
-                QueryKey::Orders(_) => producer::start(
+            match spec {
+                FeedSpec::Window { request, window } => producer::start_window(
                     &self.environment,
                     &feed,
                     self.orders.clone(),
-                    request.expect("order request"),
+                    *request,
+                    window,
                     self.reader.clone(),
                     permit,
                 ),
-                QueryKey::Catalog(ids) => producer::start_catalog(
+                FeedSpec::Catalog(ids) => producer::start_catalog(
                     &self.environment,
                     &feed,
                     self.catalog.clone(),
-                    ids.clone(),
+                    ids,
                     self.reader.clone(),
                     permit,
                 ),
@@ -163,7 +174,7 @@ impl UserSubscriptionsActor {
         ))
     }
 }
-impl Handler<Release> for UserSubscriptionsActor {
+impl Handler<Release> for MarketSubscriptionsActor {
     type Result = ();
     fn handle(&mut self, message: Release, _: &mut Self::Context) {
         let Some(key) = self.subscribers.remove(&message.0) else {

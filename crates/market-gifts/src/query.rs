@@ -181,3 +181,53 @@ impl GiftHistoryQuery {
         }
     }
 }
+
+/// A bounded live window. Anchor tokens belong to these filters, side and sort.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct GiftOrderWindowQuery {
+    pub filters: GiftFilters,
+    #[serde(default)]
+    pub side: GiftSide,
+    #[serde(default)]
+    pub sort: GiftSort,
+    pub anchor: Option<String>,
+    #[cfg_attr(feature = "schema", schema(maximum = 199))]
+    pub before: u32,
+    #[cfg_attr(feature = "schema", schema(maximum = 199))]
+    pub after: u32,
+}
+impl GiftOrderWindowQuery {
+    pub fn validate(&self) -> Result<(), InvalidValue> {
+        self.filters.validate()?;
+        if self.before.checked_add(self.after).is_none_or(|n| n >= 200) {
+            return Err(InvalidValue("window must contain 1..200 orders"));
+        }
+        if self
+            .anchor
+            .as_ref()
+            .is_some_and(|p| p.is_empty() || p.len() > 8192)
+        {
+            return Err(InvalidValue("invalid window anchor"));
+        }
+        Ok(())
+    }
+}
+
+/// Read or navigate one frozen order window around a portable anchor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SnapshotWindowQuery {
+    pub query: GiftOrderWindowQuery,
+    #[cfg_attr(feature = "schema", schema(max_length = 128))]
+    pub snapshot: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct ReleaseWindowSnapshot {
+    #[cfg_attr(feature = "schema", schema(max_length = 128))]
+    pub snapshot: String,
+}

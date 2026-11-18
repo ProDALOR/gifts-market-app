@@ -11,6 +11,9 @@ struct Scenario {
     stop: CancellationToken,
     started: Arc<Notify>,
     cancelled: Arc<Notify>,
+    block_writes: bool,
+    write_started: Arc<Notify>,
+    allow_write: Arc<Notify>,
 }
 async fn connect(
     request: HttpRequest,
@@ -21,9 +24,11 @@ async fn connect(
     let scenario = state.get_ref().clone();
     let limits = WebSocketLimits {
         frame_bytes: 1023,
+        requests: 1,
         ..Default::default()
     };
-    actix_web::rt::spawn(drive(
+    let writer_scenario = scenario.clone();
+    actix_web::rt::spawn(drive_with_writer(
         session,
         messages.aggregate_continuations(),
         limits,
@@ -31,16 +36,33 @@ async fn connect(
         move |key, query, tx, cancel, _| {
             let scenario = scenario.clone();
             async move {
-            let subscription::Query::Orders(query) = query else { return End::Failed; };
-            if query.limit==1 {
+            let query = match query {
+                operations::Operation::Window(query) => query,
+                operations::Operation::Request(_) => {
+                    scenario.started.notify_one();cancel.cancelled().await;scenario.cancelled.notify_one();return End::Cancelled;
+                },
+                _ => return End::Failed,
+            };
+            if (query.after+1)==1 {
                 scenario.started.notify_one();cancel.cancelled().await;scenario.cancelled.notify_one();return End::Cancelled;
             }
-            if query.limit==4 {return End::SlowConsumer;}
-            let label=if query.limit==3 {"😀".repeat(20_000)} else {"ready".into()};
-            let page=serde_json::json!({"data":[],"cursor":label,"next_page_token":"","sync":{"ready":true,"state":"live","updated_at":null}}).to_string();
-            if tx.send(Scope::Subscription(key),queue::Payload::test_page(Arc::from(page)),false,&cancel).await.is_err() {return End::SlowConsumer;}
-            cancel.cancelled().await;End::Cancelled
+            if (query.after+1)==4 {return End::SlowConsumer;}
+            let label=if (query.after+1)==3 {"😀".repeat(20_000)} else {"ready".into()};
+            let window=serde_json::json!({"data":[],"cursor":label,"anchor":null,"has_before":false,"has_after":false}).to_string();
+            if tx.send(Scope::Operation(key),queue::Payload::test_window(Arc::from(window)),false,&cancel).await.is_err() {return End::SlowConsumer;}
+            cancel.cancelled().await;scenario.cancelled.notify_one();End::Cancelled
         }.boxed_local()
+        },
+        move |session, frame, limits| {
+            let scenario = writer_scenario.clone();
+            async move {
+                if scenario.block_writes {
+                    scenario.write_started.notify_one();
+                    scenario.allow_write.notified().await;
+                }
+                write_frame(session, frame, limits).await
+            }
+            .boxed_local()
         },
     ));
     Ok(response)
@@ -51,10 +73,23 @@ async fn server() -> (
     actix_web::dev::ServerHandle,
     actix_web::rt::task::JoinHandle<std::io::Result<()>>,
 ) {
+    server_with_writer(false).await
+}
+async fn server_with_writer(
+    block_writes: bool,
+) -> (
+    Scenario,
+    Socket,
+    actix_web::dev::ServerHandle,
+    actix_web::rt::task::JoinHandle<std::io::Result<()>>,
+) {
     let scenario = Scenario {
         stop: CancellationToken::new(),
         started: Arc::default(),
         cancelled: Arc::default(),
+        block_writes,
+        write_started: Arc::default(),
+        allow_write: Arc::default(),
     };
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -78,7 +113,7 @@ async fn server() -> (
 async fn subscribe(socket: &mut Socket, limit: u32) {
     socket
         .send(Message::Text(
-            serde_json::json!({"type":"subscribe","id":"offers","query":{"filters":{"collection_id":"gift","currency_id":"GRAM"},"limit":limit}})
+            serde_json::json!({"type":"subscribe_window","id":"offers","query":{"filters":{"collection_id":"gift","currency_id":"GRAM"},"before":0,"after":limit-1}})
                 .to_string()
                 .into(),
         ))
@@ -98,7 +133,7 @@ async fn next(socket: &mut Socket) -> Message {
     .unwrap()
 }
 #[actix_web::test]
-async fn pending_setup_does_not_block_ping_unsubscribe_replacement_or_shutdown() {
+async fn pending_setup_does_not_block_ping_cancel_replacement_or_shutdown() {
     let (scenario, mut socket, server, job) = server().await;
     subscribe(&mut socket, 1).await;
     tokio::time::timeout(
@@ -114,7 +149,7 @@ async fn pending_setup_does_not_block_ping_unsubscribe_replacement_or_shutdown()
     assert!(matches!(next(&mut socket).await,Message::Pong(value) if value.as_ref()==b"control"));
     socket
         .send(Message::Text(
-            "{\"type\":\"unsubscribe\",\"id\":\"offers\"}".into(),
+            "{\"type\":\"cancel\",\"id\":\"offers\"}".into(),
         ))
         .await
         .unwrap();
@@ -123,7 +158,7 @@ async fn pending_setup_does_not_block_ping_unsubscribe_replacement_or_shutdown()
         panic!("missing replacement page")
     };
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&text).unwrap()["page"]["cursor"],
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()["window"]["cursor"],
         "ready"
     );
     tokio::time::timeout(
@@ -148,7 +183,7 @@ async fn fragmented_large_unicode_pages_preserve_one_json_message() {
     };
     let page: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(
-        page["page"]["cursor"].as_str().unwrap().chars().count(),
+        page["window"]["cursor"].as_str().unwrap().chars().count(),
         20_000
     );
     socket.close(None).await.unwrap();
@@ -163,6 +198,172 @@ async fn slow_consumers_get_a_reconnect_close_instead_of_a_silent_subscription_s
     assert!(
         matches!(next(&mut socket).await,Message::Close(Some(frame)) if u16::from(frame.code)==1013)
     );
+    scenario.stop.cancel();
+    server.stop(true).await;
+    job.await.unwrap().unwrap();
+}
+
+#[actix_web::test]
+async fn request_capacity_and_cancel_do_not_interrupt_a_healthy_subscription() {
+    let (scenario, mut socket, server, job) = server().await;
+    subscribe(&mut socket, 2).await;
+    assert!(matches!(next(&mut socket).await, Message::Text(_)));
+    let request = |id: &str| {
+        Message::Text(serde_json::json!({"type":"request","id":id,"method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}}).to_string().into())
+    };
+    socket.send(request("first")).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        scenario.started.notified(),
+    )
+    .await
+    .unwrap();
+    socket.send(request("second")).await.unwrap();
+    let Message::Text(text) = next(&mut socket).await else {
+        panic!("error expected")
+    };
+    let error: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(error["id"], "second");
+    assert_eq!(error["error"]["code"], "capacity_exceeded");
+    socket
+        .send(Message::Text(
+            "{\"type\":\"cancel\",\"id\":\"first\"}".into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        scenario.cancelled.notified(),
+    )
+    .await
+    .unwrap();
+    socket
+        .send(Message::Ping(b"still-live".to_vec().into()))
+        .await
+        .unwrap();
+    assert!(matches!(next(&mut socket).await, Message::Pong(_)));
+    socket.send(request("third")).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        scenario.started.notified(),
+    )
+    .await
+    .unwrap();
+    scenario.stop.cancel();
+    assert!(matches!(next(&mut socket).await, Message::Close(_)));
+    server.stop(true).await;
+    job.await.unwrap().unwrap();
+}
+
+#[actix_web::test]
+async fn malformed_commands_fail_validation_without_interrupting_existing_work() {
+    let (scenario, mut socket, server, job) = server().await;
+    subscribe(&mut socket, 2).await;
+    assert!(matches!(next(&mut socket).await, Message::Text(_)));
+    for invalid in [
+        serde_json::json!({"type":"request","id":"bad id","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}}),
+        serde_json::json!({"type":"request","id":"x","method":"unknown","params":{}}),
+        serde_json::json!({"type":"request","id":"x","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM","unexpected":true}}),
+        serde_json::json!({"type":"cancel","id":"x","unexpected":true}),
+    ] {
+        socket
+            .send(Message::Text(invalid.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Text(text) = next(&mut socket).await else {
+            panic!("error expected")
+        };
+        let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(frame["type"], "error");
+        assert_eq!(frame["id"], "");
+        assert_eq!(frame["error"]["code"], "invalid_query");
+    }
+    socket
+        .send(Message::Text(
+            "{\"type\":\"cancel\",\"id\":\"unknown\"}".into(),
+        ))
+        .await
+        .unwrap();
+    socket
+        .send(Message::Ping(b"healthy".to_vec().into()))
+        .await
+        .unwrap();
+    assert!(matches!(next(&mut socket).await, Message::Pong(_)));
+    scenario.stop.cancel();
+    assert!(matches!(next(&mut socket).await, Message::Close(_)));
+    server.stop(true).await;
+    job.await.unwrap().unwrap();
+}
+
+#[actix_web::test]
+async fn cancellation_and_pings_progress_while_a_data_write_is_blocked() {
+    let (scenario, mut socket, server, job) = server_with_writer(true).await;
+    subscribe(&mut socket, 2).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        scenario.write_started.notified(),
+    )
+    .await
+    .unwrap();
+    socket
+        .send(Message::Text(
+            "{\"type\":\"cancel\",\"id\":\"offers\"}".into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        scenario.cancelled.notified(),
+    )
+    .await
+    .expect("Cancellation must not await the write deadline");
+    socket
+        .send(Message::Ping(b"responsive".to_vec().into()))
+        .await
+        .unwrap();
+    assert!(matches!(next(&mut socket).await, Message::Pong(_)));
+    scenario.allow_write.notify_one();
+    assert!(matches!(next(&mut socket).await, Message::Text(_)));
+    scenario.stop.cancel();
+    server.stop(true).await;
+    job.await.unwrap().unwrap();
+}
+#[actix_web::test]
+async fn a_duplicate_request_is_a_command_rejection_and_leaves_the_original_running() {
+    let (scenario, mut socket, server, job) = server().await;
+    let request=Message::Text(serde_json::json!({"type":"request","id":"r","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}}).to_string().into());
+    socket.send(request.clone()).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        scenario.started.notified(),
+    )
+    .await
+    .unwrap();
+    socket.send(request).await.unwrap();
+    let Message::Text(text) = next(&mut socket).await else {
+        panic!("command rejection expected")
+    };
+    let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(frame["type"], "command_error");
+    assert_eq!(frame["id"], "r");
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            scenario.cancelled.notified()
+        )
+        .await
+        .is_err()
+    );
+    socket
+        .send(Message::Text("{\"type\":\"cancel\",\"id\":\"r\"}".into()))
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        scenario.cancelled.notified(),
+    )
+    .await
+    .unwrap();
     scenario.stop.cancel();
     server.stop(true).await;
     job.await.unwrap().unwrap();

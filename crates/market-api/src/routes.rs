@@ -79,6 +79,27 @@ pub(crate) async fn gift_valuation(
         .json(GiftValuationResponse::from(result.as_ref())))
 }
 
+#[utoipa::path(post,path="/orders/window",tag="Orders",summary="Open or navigate a frozen order window",request_body=market_gifts::SnapshotWindowQuery,responses((status=200,body=crate::orders::SnapshotWindowResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse)))]
+pub(crate) async fn snapshot_window(
+    state: web::Data<MarketApi>,
+    query: web::Json<market_gifts::SnapshotWindowQuery>,
+) -> Result<HttpResponse> {
+    let result = state.snapshot_window(query.into_inner()).await?;
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CACHE_CONTROL, "no-store"))
+        .json(crate::orders::SnapshotWindowResponse::from(&result)))
+}
+#[utoipa::path(delete,path="/orders/window",tag="Orders",summary="Release a frozen window",request_body=market_gifts::ReleaseWindowSnapshot,responses((status=204,description="Released or already expired"),(status=400,body=ErrorResponse)))]
+pub(crate) async fn release_window(
+    state: web::Data<MarketApi>,
+    query: web::Json<market_gifts::ReleaseWindowSnapshot>,
+) -> Result<HttpResponse> {
+    state
+        .release_window_snapshot(query.into_inner().snapshot)
+        .await?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     configure_with_limit(cfg, crate::config::ApiLimits::default().json_bytes);
 }
@@ -98,6 +119,11 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
     .route("/catalog", web::get().to(catalog))
     .route("/collections/{id}", web::get().to(collection))
     .route("/orders/query", web::post().to(orders))
+    .service(
+        web::resource("/orders/window")
+            .route(web::post().to(snapshot_window))
+            .route(web::delete().to(release_window)),
+    )
     .route("/history/query", web::post().to(executions))
     .route("/valuations/gift", web::post().to(gift_valuation))
     .route(

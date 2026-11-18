@@ -1,4 +1,4 @@
-//! Thin HTTP-facing adapter over gift-domain actor capabilities.
+//! Shared HTTP/WebSocket adapter over gift-domain actor capabilities.
 use super::{error::Result, models::*};
 use market_actors::{DataSubscription, DataUpdate, MarketDataHandle};
 use market_gifts::{GiftOrder, MediaTarget, Page, TelegramDocumentId};
@@ -8,17 +8,17 @@ use tokio::sync::watch;
 pub struct MarketApi {
     data: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
-    encoder: Arc<crate::encoding::PageEncoder>,
+    encoder: Arc<crate::encoding::WindowEncoder>,
 }
 impl MarketApi {
     pub fn new(data: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
-        Self::with_page_limit(
+        Self::with_window_limit(
             data,
             valuation,
-            crate::config::WebSocketLimits::default().page_bytes,
+            crate::config::WebSocketLimits::default().window_bytes,
         )
     }
-    pub(crate) fn with_page_limit(
+    pub(crate) fn with_window_limit(
         data: MarketDataHandle,
         valuation: market_valuation::ValuationHandle,
         limit: usize,
@@ -26,11 +26,20 @@ impl MarketApi {
         Self {
             data,
             valuation,
-            encoder: Arc::new(crate::encoding::PageEncoder::new(limit)),
+            encoder: Arc::new(crate::encoding::WindowEncoder::new(limit)),
         }
     }
-    pub(crate) async fn encode_page(&self, page: Arc<Page<GiftOrder>>) -> Result<Arc<str>> {
-        self.encoder.encode(page).await
+    pub(crate) async fn encode_window(
+        &self,
+        window: Arc<market_gifts::OrderWindow>,
+    ) -> Result<Arc<str>> {
+        self.encoder.encode_window(window).await
+    }
+    pub async fn subscribe_window(
+        &self,
+        query: market_gifts::GiftOrderWindowQuery,
+    ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
+        Ok(self.data.subscribe_window(query).await?)
     }
     pub(crate) async fn shutdown(&self) {
         self.encoder.shutdown().await;
@@ -77,6 +86,15 @@ impl MarketApi {
     pub(crate) async fn media_document(&self, target: MediaTarget) -> Result<TelegramDocumentId> {
         Ok(self.data.media_document(target).await?)
     }
+    pub async fn snapshot_window(
+        &self,
+        query: market_gifts::SnapshotWindowQuery,
+    ) -> Result<market_gifts::SnapshotWindow> {
+        Ok(self.data.snapshot_window(query).await?)
+    }
+    pub async fn release_window_snapshot(&self, snapshot: String) -> Result<()> {
+        Ok(self.data.release_window_snapshot(snapshot).await?)
+    }
     pub async fn orders(&self, query: GiftOrdersQuery) -> Result<Page<GiftOrder>> {
         Ok(self.data.orders(query).await?)
     }
@@ -88,11 +106,5 @@ impl MarketApi {
         query: market_valuation::GiftValuationRequest,
     ) -> Result<Arc<market_valuation::GiftFloorMark>> {
         Ok(self.valuation.gift(query).await?)
-    }
-    pub async fn subscribe(
-        &self,
-        query: GiftOrdersQuery,
-    ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
-        Ok(self.data.subscribe(query).await?)
     }
 }

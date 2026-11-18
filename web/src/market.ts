@@ -1,3 +1,6 @@
+import { ApiFailure } from "./api-error.ts";
+export { ApiFailure } from "./api-error.ts";
+import { liveSocket } from "./live-socket.ts";
 import type { components } from "./gen/api";
 export type ValuationStrategy = components["schemas"]["StrategyResponse"];
 export const valuationStrategies = (
@@ -21,12 +24,20 @@ export type ValuationView = Pick<
 >;
 export type ValuationErrorDetails =
   components["schemas"]["ValuationErrorDetails"];
+export type SyncStatus = components["schemas"]["SyncStatus"];
 export type Order = components["schemas"]["OrderResponse"];
 export type Book = components["schemas"]["GiftBook"];
 export type Query = components["schemas"]["GiftOrdersQuery"];
 export type HistoryQuery = components["schemas"]["GiftHistoryQuery"];
 export type FeedQuery =
-  { kind: "orders"; query: Query } | { kind: "history"; query: HistoryQuery };
+  | {
+      kind: "orders";
+      query: Pick<
+        components["schemas"]["GiftOrderWindowQuery"],
+        "filters" | "side" | "sort"
+      >;
+    }
+  | { kind: "history"; query: HistoryQuery };
 export type GiftMedia = components["schemas"]["GiftMedia"];
 export type CatalogVersions = components["schemas"]["CatalogVersions"];
 export type Catalog = components["schemas"]["GiftCatalog"];
@@ -48,15 +59,6 @@ export type CatalogOption =
   | (Model & { kind: "model" })
   | (Backdrop & { kind: "backdrop" })
   | (Pattern & { kind: "pattern" });
-export class ApiFailure extends Error {
-  constructor(
-    public code: string,
-    message: string,
-    public details?: ValuationErrorDetails,
-  ) {
-    super(message);
-  }
-}
 export async function request<T>(
   path: string,
   body?: unknown,
@@ -87,7 +89,8 @@ export async function request<T>(
 export const valuation = (
   query: GiftValuationRequest,
   signal?: AbortSignal,
-): Promise<GiftValuationResponse> => request("/valuations/gift", query, signal);
+): Promise<GiftValuationResponse> =>
+  liveSocket.request({ method: "valuation.evaluate", params: query }, signal);
 export const catalog = (
   signal: AbortSignal,
   revision?: (value: string) => void,

@@ -160,8 +160,6 @@ function App({ context }: { context: TelegramContext }) {
           : null,
     },
     sort: choice.sort,
-    limit: 50,
-    page_token: "",
   };
   const query: FeedQuery | null =
     !choice.collection || !choice.currency
@@ -171,6 +169,7 @@ function App({ context }: { context: TelegramContext }) {
             kind: "history",
             query: {
               ...base,
+              limit: 50,
               period:
                 choice.from || choice.until
                   ? { from: choice.from || null, until: choice.until || null }
@@ -179,10 +178,11 @@ function App({ context }: { context: TelegramContext }) {
           }
         : {
             kind: "orders",
-            query: { ...base, side: choice.mode, consistency: "live" },
+            query: { ...base, side: choice.mode },
           };
   const {
-    page,
+    orders,
+    sync,
     displayOrders,
     activity,
     status,
@@ -418,15 +418,15 @@ function App({ context }: { context: TelegramContext }) {
               role="status"
               className={`status${status === "Live" ? " live" : ""}`}
               title={
-                page.sync?.updated_at
-                  ? `Last synchronized ${new Date(page.sync.updated_at).toLocaleString()}`
+                sync?.updated_at
+                  ? `Last synchronized ${new Date(sync.updated_at).toLocaleString()}`
                   : undefined
               }
             >
               <i />
               {status}
             </span>
-            <span>{page.data.length} loaded</span>
+            <span>{orders.length} loaded</span>
             <div className="feed-actions">
               {choice.mode !== "executed" && (
                 <button onClick={() => setPaused((value) => !value)}>
@@ -502,9 +502,7 @@ function App({ context }: { context: TelegramContext }) {
           options={options}
           names={names}
           collectionName={item?.name || ""}
-          removed={
-            !page.data.some((order) => orderKey(order) === orderKey(selected))
-          }
+          removed={activity.get(orderKey(selected))?.state === "removed"}
           close={() => setSelected(undefined)}
         />
       )}

@@ -13,7 +13,7 @@ export function GiftGrid({
   orders: Order[];
   card: (order: Order) => Omit<ComponentProps<typeof GiftCard>, "order">;
   busy: boolean;
-  visible: (start: number, end: number) => void;
+  visible: (start: number, end: number, anchor?: number) => void;
 }) {
   const host = useRef<HTMLUListElement>(null);
   const anchor = useRef<{ key: string; offset: number } | undefined>(undefined);
@@ -57,17 +57,36 @@ export function GiftGrid({
         ? old
         : next,
     );
-    visible(start, end);
+    visible(start, end, Math.min(orders.length - 1, first * columns));
     const index = first * columns;
+    // A scrolled viewer can still see the grid below the header. Preserve that
+    // first row when a preceding window arrives; keep the unscrolled head free.
     anchor.current =
-      top < 0 && orders[index]
+      (top < 0 || window.scrollY > 0) && orders[index]
         ? { key: orderKey(orders[index]), offset: top + first * stride }
         : undefined;
   }, [orders, visible]);
+  const previous = useRef(orders);
   useLayoutEffect(() => {
     const saved = anchor.current;
     if (saved && host.current) {
-      const index = orders.findIndex((order) => orderKey(order) === saved.key);
+      let index = orders.findIndex((order) => orderKey(order) === saved.key);
+      if (index < 0 && orders.length) {
+        const keys = new Map(
+          orders.map((order, index) => [orderKey(order), index]),
+        );
+        const old = previous.current.findIndex(
+          (order) => orderKey(order) === saved.key,
+        );
+        const nearby = [
+          ...previous.current.slice(Math.max(0, old)),
+          ...previous.current.slice(0, Math.max(0, old)).reverse(),
+        ];
+        index =
+          nearby
+            .map((order) => keys.get(orderKey(order)))
+            .find((index) => index !== undefined) ?? 0;
+      }
       if (index >= 0) {
         const { columns, stride } = geometry.current;
         const offset =
@@ -76,6 +95,7 @@ export function GiftGrid({
         window.scrollBy({ top: offset - saved.offset, behavior: "instant" });
       }
     }
+    previous.current = orders;
     measure();
     let frame = 0;
     const schedule = () => {

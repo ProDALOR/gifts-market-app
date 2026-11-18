@@ -29,7 +29,7 @@ useEffect(()=>{select(old=>old ? feed.displayOrders.find(row=>orderKey(row)===or
 return React.createElement('main',{className:'workspace'},React.createElement('div',{className:'orderbook'},
 React.createElement('h2',{style:{margin:'14px 0'}},'Live gift market'),
 React.createElement(GiftGrid,{orders:feed.displayOrders,busy:feed.loadingMore,visible:feed.setVisibleRange,card:order=>({options,collectionName:'Gift',venueName:'MRKT',selected:selected?.id===order.id,open:select,activity:feed.activity.get(orderKey(order))})})),
-selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Gift',removed:!feed.page.data.some(row=>orderKey(row)===orderKey(selected)),close:()=>select(undefined)}));}
+selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Gift',removed:feed.activity.get(orderKey(selected))?.state==='removed',close:()=>select(undefined)}));}
 const app=createRoot(document.getElementById('fixture'));app.render(React.createElement(App));window.unmount=()=>app.unmount();
 window.renderListing=(order,activity)=>app.render(React.createElement('ul',{className:'gift-grid'},React.createElement(GiftCard,{order,activity,options,collectionName:'Gift',venueName:'MRKT',selected:false,open:()=>{}})));
 window.renderMotionModal=()=>app.render(React.createElement(Modal,{label:'Motion test',heading:'Motion test',className:'valuation-popup',closeLabel:'Close motion test',close:()=>{window.modalCloseCalls=(window.modalCloseCalls||0)+1;app.render(null);}},React.createElement('p',null,'Motion fixture')));
@@ -92,12 +92,19 @@ const sync = { ready: true, state: "live", updated_at: null };
 const a = order("a", 1),
   b = order("b", 2),
   x = order("x", 3);
+let orderWire;
 const frame = (rows) => ({
-  type: "page",
-  id: "offers",
+  type: "window",
+  id: orderWire,
   revision: JSON.stringify(rows.map((row) => row.id)),
   sync,
-  page: { data: rows, next_page_token: "", cursor: "view", sync },
+  window: {
+    data: rows.map((row) => ({ ...row, position: row.id })),
+    anchor: rows[0]?.id ?? null,
+    has_before: false,
+    has_after: false,
+    cursor: "view",
+  },
 });
 function report(body) {
   const number = body.gift.number;
@@ -305,48 +312,63 @@ try {
     }
   });
   let socket;
-  await page.routeWebSocket("**/ws", (peer) => {
-    socket = peer;
-    peer.onMessage((message) => {
-      if (JSON.parse(String(message)).type === "subscribe")
-        peer.send(JSON.stringify(frame([a, b])));
-    });
-  });
   let reportKind = "partial";
   let mode = "ok",
     release,
     requests = [];
-  await page.route("**/valuations/gift", async (route) => {
-    const body = route.request().postDataJSON();
-    requests.push(body);
-    if (mode === "hold")
-      await new Promise((resolve) => {
-        release = resolve;
-      });
-    const response = report(body);
-    if (reportKind === "identity") response.gift.number++;
-    if (reportKind !== "partial") {
-      response.display.fields.find((field) => field.primary).value = {
-        kind: "currency",
-        amount: "25.00",
-        currency_id: reportKind === "currency" ? "XTR" : body.currency_id,
-      };
-      if (reportKind === "stale") response.sync = { ...sync, state: "stale" };
-    }
-    try {
-      await route.fulfill(
-        mode === "error"
-          ? {
-              status: 503,
-              json: {
+  const cancelled = new Set();
+  await page.route("**/valuations/gift", () =>
+    assert.fail("GUI valuation must use WebSocket"),
+  );
+  await page.routeWebSocket("**/ws", (peer) => {
+    socket = peer;
+    peer.onMessage(async (message) => {
+      const command = JSON.parse(String(message));
+      if (command.type === "cancel") {
+        cancelled.add(command.id);
+        return;
+      }
+      if (command.type === "subscribe_window") {
+        orderWire = command.id;
+        peer.send(JSON.stringify(frame([a, b])));
+        return;
+      }
+      if (command.type !== "request") return;
+      assert.equal(command.method, "valuation.evaluate");
+      const body = command.params;
+      requests.push(body);
+      if (mode === "hold")
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+      const response = report(body);
+      if (reportKind === "identity") response.gift.number++;
+      if (reportKind !== "partial") {
+        response.display.fields.find((field) => field.primary).value = {
+          kind: "currency",
+          amount: "25.00",
+          currency_id: reportKind === "currency" ? "XTR" : body.currency_id,
+        };
+        if (reportKind === "stale") response.sync = { ...sync, state: "stale" };
+      }
+      // Deliberately deliver late results too: canceled IDs must be ignored by the client.
+      peer.send(
+        JSON.stringify(
+          mode === "error"
+            ? {
+                type: "error",
+                id: command.id,
                 error: { code: "unavailable", message: "Please try again" },
+              }
+            : {
+                type: "result",
+                id: command.id,
+                method: command.method,
+                data: response,
               },
-            }
-          : { json: response },
+        ),
       );
-    } catch {
-      /* Request may have been cancelled when the detail sheet closed. */
-    }
+    });
   });
   await page.goto(
     `http://127.0.0.1:${server.httpServer.address().port}/__listing_test`,
@@ -680,6 +702,7 @@ try {
   // Refreshes keep the breakdown, metadata and already-rendered guide alive.
   const metadataBeforeRefresh = metadataRequests;
   const guidesBeforeRefresh = guideRequests;
+  assert.ok(cancelled.size > 0, "Closing details cancels the wire request");
   const requestsBeforeRefresh = requests.length;
   await content.evaluate((node) => {
     window.__guideBeforeRefresh = node.querySelector("math");

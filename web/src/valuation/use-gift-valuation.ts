@@ -52,10 +52,6 @@ export function useGiftValuation(order: Order) {
           throw new Error(
             "Gift details changed. Refresh this market and try again.",
           );
-        if (!report.display || !Array.isArray(report.display.fields))
-          throw new Error(
-            "This server did not provide a strategy display. Refresh the app and try again.",
-          );
         setState({ key, report, pending: false });
       })
       .catch((error) => {

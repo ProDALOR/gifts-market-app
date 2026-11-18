@@ -97,8 +97,8 @@ try {
     .getByText(/1\.000000001/)
     .first()
     .waitFor({ state: "attached" });
-  await page.getByRole("button", { name: "Unsubscribe", exact: true }).click();
-  assert.match(await page.locator("#command").inputValue(), /unsubscribe/);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.match(await page.locator("#command").inputValue(), /cancel/);
   await page.getByText("Custom JSON command", { exact: true }).click();
   assert.ok(
     await page
@@ -118,6 +118,23 @@ try {
     .getByText(/invalid_query/)
     .first()
     .waitFor({ state: "attached" });
+  await page.locator("#command").fill(
+    JSON.stringify({
+      type: "request",
+      id: "typed-value",
+      method: "valuation.evaluate",
+      params: {
+        gift: { collection_id: "unknown", number: 1 },
+        currency_id: "GRAM",
+      },
+    }),
+  );
+  await page.getByRole("button", { name: "Send JSON", exact: true }).click();
+  await page
+    .locator("#messages pre")
+    .filter({ hasText: '"code": "not_found"' })
+    .filter({ hasText: '"id": "typed-value"' })
+    .waitFor({ state: "attached" });
   await page.getByRole("button", { name: "Disconnect", exact: true }).click();
   await page.getByText("Disconnected", { exact: true }).waitFor();
   await page.locator("#protocol-reference summary").click();
@@ -128,20 +145,20 @@ try {
     .waitFor();
   await page
     .locator("#asyncapi-reference")
-    .getByText(/Start a live order-page subscription/)
+    .getByText(/Subscribe to one atomic live order window/)
     .first()
     .waitFor();
   await page
-    .locator("#ws-message-subscribe td code")
+    .locator("#ws-message-subscribe_window td code")
     .filter({ hasText: /^query$/ })
     .waitFor();
   await page
-    .locator("#ws-message-subscribe a[data-schema]")
-    .filter({ hasText: "GiftOrdersQuery" })
+    .locator("#ws-message-subscribe_window a[data-schema]")
+    .filter({ hasText: "GiftOrderWindowQuery" })
     .click();
   assert.equal(
     await page
-      .locator("#ws-schema-GiftOrdersQuery")
+      .locator("#ws-schema-GiftOrderWindowQuery")
       .evaluate((node) => node.open),
     true,
   );
@@ -152,6 +169,22 @@ try {
   await page
     .locator("#ws-message-catalog td code")
     .filter({ hasText: /^versions$/ })
+    .waitFor();
+  for (const [message, field] of [
+    ["request", "params"],
+    ["result", "data"],
+    ["cancel", "id"],
+    ["subscribe_window", "query"],
+    ["window", "window"],
+  ]) {
+    await page
+      .locator(`#ws-message-${message} td code`)
+      .filter({ hasText: new RegExp(`^${field}$`) })
+      .waitFor();
+  }
+  await page
+    .locator("#ws-message-request td code")
+    .filter({ hasText: '"valuation.evaluate"' })
     .waitFor();
   await mkdir(new URL("../test-artifacts", import.meta.url), {
     recursive: true,

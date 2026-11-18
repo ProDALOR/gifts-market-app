@@ -1,13 +1,13 @@
-import type { Order, Page } from "../market.ts";
+import type { Order } from "../market.ts";
 export const FRESHNESS_MS = 60_000;
 const MAX_REMOVED = 50;
 export const orderKey = (order: Order) =>
   JSON.stringify([order.book.venue_id, order.id]);
 export type OrderActivity = { state: "new" | "removed"; since: number };
 type Removed = { order: Order; index: number };
-/** Local view transitions; leaving a limited page's tail is not evidence of removal. */
+/** Local view transitions; leaving a window's edges is not evidence of removal. */
 export class OrderActivityTracker {
-  private previous: Page<Order>[] = [];
+  private previous: Order[] = [];
   private transitions = new Map<string, OrderActivity>();
   private removed = new Map<string, Removed>();
   private removedPositions: number[] = [];
@@ -15,52 +15,50 @@ export class OrderActivityTracker {
   rebase() {
     this.baseline = true;
   }
-  get needsBaseline() {
-    return this.baseline;
-  }
   update(
-    pages: Page<Order>[],
     orders: Order[],
-    refreshed: ReadonlySet<number>,
+    edges: { before: boolean; after: boolean },
     now = Date.now(),
   ) {
     this.expire(now);
     const present = new Set(orders.map(orderKey));
-    const before = this.previous.flatMap((page) => page.data);
+    const before = this.previous;
     const known = new Set(before.map(orderKey));
     if (this.baseline) {
       this.transitions.clear();
       this.removed.clear();
     } else {
-      // Pagination never marks its newly downloaded tail as new. Only live head arrivals do.
-      for (const order of pages[0]?.data || []) {
+      // Only the overlap is confirmed coverage; crossing either window edge
+      // never proves that a listing arrived or disappeared.
+      const first = edges.before
+        ? orders.findIndex((row) => known.has(orderKey(row)))
+        : 0;
+      const last = edges.after
+        ? orders.reduce(
+            (last, row, index) => (known.has(orderKey(row)) ? index : last),
+            -1,
+          )
+        : orders.length - 1;
+      for (const order of first < 0 ? [] : orders.slice(first, last + 1)) {
         const key = orderKey(order);
         if (!known.has(key) || this.transitions.get(key)?.state === "removed")
           this.transitions.set(key, { state: "new", since: now });
       }
-      const candidates = new Set<string>();
-      for (const index of refreshed) {
-        const start = this.previous
-          .slice(0, index)
-          .reduce((count, page) => count + page.data.length, 0);
-        const current = pages[index];
-        if (!current) continue;
-        const currentKeys = new Set(current.data.map(orderKey));
-        // A surviving anchor confirms coverage. Rows pushed beyond it can still be active.
-        let anchor = -1;
-        for (let i = before.length - 1; i >= 0; i--) {
-          if (currentKeys.has(orderKey(before[i]))) {
-            anchor = i;
-            break;
-          }
-        }
-        const end = current.next_page_token ? anchor : before.length - 1;
-        for (const order of before.slice(start, end + 1))
-          candidates.add(orderKey(order));
-        // A complete head covers the whole loaded query, including pruned continuation pages.
-        if (index === 0 && !current.next_page_token)
-          for (const order of before) candidates.add(orderKey(order));
-      }
+      const firstCovered = edges.before
+        ? before.findIndex((row) => present.has(orderKey(row)))
+        : 0;
+      const lastCovered = edges.after
+        ? before.reduce(
+            (last, row, index) => (present.has(orderKey(row)) ? index : last),
+            -1,
+          )
+        : before.length - 1;
+      const candidates = new Set(
+        (firstCovered < 0
+          ? []
+          : before.slice(firstCovered, lastCovered + 1)
+        ).map(orderKey),
+      );
       before.forEach((order, index) => {
         const key = orderKey(order);
         if (
@@ -87,7 +85,7 @@ export class OrderActivityTracker {
       if (!present.has(key) && !this.removed.has(key))
         this.transitions.delete(key);
     }
-    this.previous = pages.slice();
+    this.previous = orders.slice();
     this.baseline = false;
     return this.view(orders);
   }
@@ -119,7 +117,7 @@ export class OrderActivityTracker {
     }
     return { displayOrders, activity: new Map(this.transitions) };
   }
-  /** Retained grey cards occupy display rows, but not live pagination offsets. */
+  /** Retained grey cards occupy display rows, but not live window offsets. */
   liveRange(start: number, end: number) {
     let liveStart = start,
       liveEnd = end;

@@ -1,8 +1,8 @@
-//! WebSocket handshake, with session state and subscription work kept separate.
+//! WebSocket handshake, with session state and API work kept separate.
+mod operations;
 mod queue;
 mod registry;
 mod session;
-mod subscription;
 use crate::{
     MarketApi, config::WebSocketLimits, connections::ConnectionSupervisor, error::ApiError,
     origin::OriginPolicy,
@@ -15,7 +15,7 @@ pub(crate) struct WebSocketService {
     pub origins: OriginPolicy,
     pub limits: WebSocketLimits,
 }
-#[utoipa::path(get,path="/ws",tag="WebSocket",summary="Open a live order stream",description="Interactive documentation and a subscription console are available at /docs/ws. The AsyncAPI specification is at /asyncapi.json.",responses((status=101,description="WebSocket upgraded; Command and ServerFrame define the message protocol"),(status=400,body=crate::error::ErrorResponse),(status=403,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
+#[utoipa::path(get,path="/ws",tag="WebSocket",summary="Open the typed WebSocket API",description="Typed requests, order subscriptions and catalog watches share one connection. Interactive documentation and a console are available at /docs/ws. The AsyncAPI specification is at /asyncapi.json.",responses((status=101,description="WebSocket upgraded; Command and ServerFrame define the message protocol"),(status=400,body=crate::error::ErrorResponse),(status=403,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn connect(
     req: HttpRequest,
     payload: web::Payload,

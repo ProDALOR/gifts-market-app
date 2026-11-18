@@ -19,13 +19,13 @@
         <p class="eyebrow">LIVE MARKET DATA</p>
         <h1>WebSocket API</h1>
         <p>
-          Subscribe to asks and bids on this server. Explore the message
-          reference or try a live subscription below.
+          Subscribe to asks and bids or request gift valuations on one
+          connection. Explore the typed message reference or try the API below.
         </p>
       </div>
       <section class="console panel" aria-labelledby="console-heading">
         <div class="section-title">
-          <h2 id="console-heading">Try a subscription</h2>
+          <h2 id="console-heading">Try the WebSocket API</h2>
           <span id="connection-state" role="status" data-state="closed"
             >Disconnected</span
           >
@@ -69,8 +69,8 @@
           </div>
           <div class="actions">
             <button id="subscribe" disabled>Subscribe</button
-            ><button id="unsubscribe" class="secondary" type="button" disabled>
-              Unsubscribe</button
+            ><button id="cancel" class="secondary" type="button" disabled>
+              Cancel</button
             ><button id="retry-catalog" class="secondary" type="button" hidden>
               Reload collections
             </button>
@@ -78,7 +78,8 @@
         </form>
         <details class="editor">
           <summary>Custom JSON command</summary>
-          <label for="command">Edit filters, sort or page boundary</label
+          <label for="command"
+            >Edit a subscription, request or cancellation command</label
           ><textarea
             id="command"
             rows="12"
@@ -101,23 +102,35 @@
         <h2 id="protocol-heading">How the stream works</h2>
         <ul>
           <li>
-            <code>subscribe</code> starts a live page using an ID. Unsubscribe
-            before reusing an ID. <code>unsubscribe</code> releases it without
-            an acknowledgement.
+            <code>subscribe_window</code> starts an atomic live window. Use a
+            fresh operation ID for each subscription, replacement or request.
+            <code>cancel</code>
+            stops requests and subscriptions without an acknowledgement. Ignore
+            frames for canceled IDs.
           </li>
           <li>
-            <code>page</code> replaces the requested page. Use the frame-level
-            <code>sync</code> for current freshness.
+            <code>request</code> with method
+            <code>valuation.evaluate</code> accepts the same parameters as HTTP
+            <code>/valuations/gift</code>. One <code>result</code> or
+            <code>error</code> completes the request. The server permits eight
+            concurrent requests with a 30-second deadline. Requests fail on
+            disconnect and are never replayed automatically. Copy request and
+            cancellation examples from the message reference below.
           </li>
           <li>
-            <code>sync</code> leaves orders unchanged. A changed
-            <code>revision</code> can invalidate continuation pages even when
-            the head stays the same.
+            <code>window</code> replaces all rows together from one replica
+            view. Use the frame-level <code>sync</code> for current freshness.
           </li>
           <li>
-            Use HTTP <code>/orders/query</code> with the same query and
-            <code>consistency: live</code> to load more. Execution history uses
-            <code>/history/query</code>.
+            <code>sync</code> leaves orders unchanged. The server checks the
+            whole window before sending <code>sync</code>.
+          </li>
+          <li>
+            Move a live window using a row’s opaque <code>position</code> as the
+            next <code>anchor</code>. Cancel the old subscription, use a fresh
+            ID and replace rows atomically while preserving the scroll anchor.
+            History uses HTTP snapshot pagination. Paused asks/bids use frozen
+            anchored windows via <code>POST /orders/window</code>.
           </li>
           <li>
             Browsers answer WebSocket pings automatically. After a disconnect,
@@ -126,8 +139,7 @@
           </li>
           <li>
             Slow consumers close with code <code>1013</code>. Error frames
-            include a subscription ID, or an empty ID for connection-level
-            errors.
+            include an operation ID, or an empty ID for connection-level errors.
           </li>
           <li>
             <code>watch_catalog</code> watches catalog revisions for up to eight

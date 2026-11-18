@@ -1,5 +1,6 @@
 // Full UI workflow with an isolated local catalog/feed; no Telegram or hub login.
 import assert from "node:assert/strict";
+import { orderWindow } from "./window-fixture.mjs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
@@ -284,7 +285,7 @@ try {
     peer.socket.send(
       JSON.stringify({
         type: "catalog",
-        id: "catalog",
+        id: peer.id,
         versions: {
           directory: "directory.0",
           collections: Object.fromEntries(
@@ -309,110 +310,130 @@ try {
       ],
     }),
   );
-  await page.route("**/valuations/gift", (route) => {
-    const body = route.request().postDataJSON(),
-      number = body.gift.number;
+  const valuationReport = (body) => {
+    const number = body.gift.number;
     const collection = body.gift.collection_id;
+    return {
+      strategy: "gift_floor",
+      revision: "view",
+      evaluated_at: "2026-11-18T12:00:00Z",
+      slug: null,
+      gift: {
+        id: `gift-${3000 - number}`,
+        collection_id: collection,
+        number,
+        traits: { model: "barbie", backdrop: "raspberry", pattern: "stars" },
+      },
+      currency_id: body.currency_id,
+      sync,
+      collection_floor: { value: "8" },
+      model_floor: { value: "10.000000001" },
+      backdrop_floor: { value: "9" },
+      model_backdrop_floor: { value: "12.5" },
+      model_multiplier: { value: "1.25" },
+      backdrop_multiplier: { value: "1.13" },
+      final_mark: { value: "11.25" },
+      display: {
+        fields: [
+          {
+            id: "final_mark",
+            label: "Final mark",
+            primary: true,
+            value: {
+              kind: "currency",
+              amount: "11.25",
+              currency_id: body.currency_id,
+            },
+          },
+          {
+            id: "collection_floor",
+            label: "Collection floor",
+            primary: false,
+            value: {
+              kind: "currency",
+              amount: "8",
+              currency_id: body.currency_id,
+            },
+          },
+          {
+            id: "model_floor",
+            attribute: "model",
+            label: "Model floor",
+            primary: false,
+            value: {
+              kind: "currency",
+              amount: "10.000000001",
+              currency_id: body.currency_id,
+            },
+          },
+          {
+            id: "backdrop_floor",
+            attribute: "backdrop",
+            label: "Backdrop floor",
+            primary: false,
+            value: {
+              kind: "currency",
+              amount: "9",
+              currency_id: body.currency_id,
+            },
+          },
+          {
+            id: "model_backdrop_floor",
+            label: "Model × backdrop floor",
+            primary: false,
+            value: {
+              kind: "currency",
+              amount: "12.5",
+              currency_id: body.currency_id,
+            },
+          },
+          {
+            id: "model_multiplier",
+            attribute: "model",
+            label: "Model multiplier",
+            primary: false,
+            value: { kind: "number", amount: "1.25", suffix: "×" },
+          },
+          {
+            id: "backdrop_multiplier",
+            attribute: "backdrop",
+            label: "Backdrop multiplier",
+            primary: false,
+            value: { kind: "number", amount: "1.13", suffix: "×" },
+          },
+        ],
+        summary: "5 collection listings",
+        note: "Current asks, before fees.",
+      },
+      evidence: {
+        collection_samples: 5,
+        model_samples: 3,
+        backdrop_samples: 3,
+        model_backdrop_samples: 1,
+        minimum_multiplier_samples: 3,
+      },
+    };
+  };
+  await page.route("**/valuations/gift", () =>
+    assert.fail("GUI valuation must use WebSocket"),
+  );
+  const snapshots = new Map();
+  let snapshotSequence = 0;
+  await page.route("**/orders/window", (route) => {
+    const body = route.request().postDataJSON();
+    if (route.request().method() === "DELETE") {
+      snapshots.delete(body.snapshot);
+      return route.fulfill({ status: 204 });
+    }
+    const id = body.snapshot ?? `snapshot.${++snapshotSequence}`;
+    if (!snapshots.has(id))
+      snapshots.set(id, result({ ...body.query, limit: 10000 }).data);
     return route.fulfill({
       json: {
-        strategy: "gift_floor",
-        revision: "view",
-        evaluated_at: "2026-11-18T12:00:00Z",
-        slug: null,
-        gift: {
-          id: `gift-${3000 - number}`,
-          collection_id: collection,
-          number,
-          traits: { model: "barbie", backdrop: "raspberry", pattern: "stars" },
-        },
-        currency_id: body.currency_id,
+        window: orderWindow(body.query, snapshots.get(id)),
+        snapshot: id,
         sync,
-        collection_floor: { value: "8" },
-        model_floor: { value: "10.000000001" },
-        backdrop_floor: { value: "9" },
-        model_backdrop_floor: { value: "12.5" },
-        model_multiplier: { value: "1.25" },
-        backdrop_multiplier: { value: "1.13" },
-        final_mark: { value: "11.25" },
-        display: {
-          fields: [
-            {
-              id: "final_mark",
-              label: "Final mark",
-              primary: true,
-              value: {
-                kind: "currency",
-                amount: "11.25",
-                currency_id: body.currency_id,
-              },
-            },
-            {
-              id: "collection_floor",
-              label: "Collection floor",
-              primary: false,
-              value: {
-                kind: "currency",
-                amount: "8",
-                currency_id: body.currency_id,
-              },
-            },
-            {
-              id: "model_floor",
-              attribute: "model",
-              label: "Model floor",
-              primary: false,
-              value: {
-                kind: "currency",
-                amount: "10.000000001",
-                currency_id: body.currency_id,
-              },
-            },
-            {
-              id: "backdrop_floor",
-              attribute: "backdrop",
-              label: "Backdrop floor",
-              primary: false,
-              value: {
-                kind: "currency",
-                amount: "9",
-                currency_id: body.currency_id,
-              },
-            },
-            {
-              id: "model_backdrop_floor",
-              label: "Model × backdrop floor",
-              primary: false,
-              value: {
-                kind: "currency",
-                amount: "12.5",
-                currency_id: body.currency_id,
-              },
-            },
-            {
-              id: "model_multiplier",
-              attribute: "model",
-              label: "Model multiplier",
-              primary: false,
-              value: { kind: "number", amount: "1.25", suffix: "×" },
-            },
-            {
-              id: "backdrop_multiplier",
-              attribute: "backdrop",
-              label: "Backdrop multiplier",
-              primary: false,
-              value: { kind: "number", amount: "1.13", suffix: "×" },
-            },
-          ],
-          summary: "5 collection listings",
-          note: "Current asks, before fees.",
-        },
-        evidence: {
-          collection_samples: 5,
-          model_samples: 3,
-          backdrop_samples: 3,
-          model_backdrop_samples: 1,
-          minimum_multiplier_samples: 3,
-        },
+        revision: String(revision),
       },
     });
   });
@@ -422,26 +443,41 @@ try {
     let connection, catalogPeer;
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
-      if (frame.type === "unsubscribe") {
-        if (frame.id === "offers") connections.delete(connection);
-        if (frame.id === "catalog") catalogPeers.delete(catalogPeer);
+      if (frame.type === "cancel" || frame.type === "unsubscribe") {
+        if (frame.id === connection?.id) connections.delete(connection);
+        if (frame.id === catalogPeer?.id) catalogPeers.delete(catalogPeer);
+      }
+      if (frame.type === "request") {
+        socket.send(
+          JSON.stringify({
+            type: "result",
+            id: frame.id,
+            method: frame.method,
+            data: valuationReport(frame.params),
+          }),
+        );
       }
       if (frame.type === "watch_catalog") {
         catalogPeers.delete(catalogPeer);
-        catalogPeer = { socket, ids: frame.collection_ids };
+        catalogPeer = { socket, id: frame.id, ids: frame.collection_ids };
         catalogPeers.add(catalogPeer);
         sendCatalog(catalogPeer);
       }
-      if (frame.type === "subscribe") {
+      if (frame.type === "subscribe_window") {
         orderSubscriptions++;
         connections.delete(connection);
-        connection = { socket, query: frame.query };
+        connection = { socket, id: frame.id, query: frame.query };
         connections.add(connection);
         socket.send(
           JSON.stringify({
-            type: "page",
+            type: "window",
             id: frame.id,
-            page: result(frame.query),
+            window: orderWindow(
+              frame.query,
+              result({ ...frame.query, limit: 10000 }).data,
+            ),
+            sync,
+            revision: String(revision),
           }),
         );
       }
@@ -495,7 +531,7 @@ try {
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await cards(count);
   };
-  await cards(50);
+  await cards(125);
   await price("0.500000001");
   await page
     .getByRole("alert")
@@ -639,7 +675,7 @@ try {
     );
   await page.emulateMedia({ reducedMotion: "reduce" });
   await button("Jelly Bunny").click();
-  await cards(50);
+  await cards(125);
   await price("0.500000001");
   await scrollMore(100);
   await scrollMore(125);
@@ -675,7 +711,7 @@ try {
   assert.equal(await page.locator(".collection-tile").count(), 1);
   await page.getByLabel("Filter collections").press("Enter");
   await page.waitForURL(/collection=pepe/);
-  await cards(50);
+  await cards(125);
   assert.equal(
     await page.locator(".collection-rail").evaluate((rail) => {
       const search = rail.querySelector(".search-tile").getBoundingClientRect();
@@ -708,7 +744,7 @@ try {
   await button("Search collections").click();
   await page.getByLabel("Filter collections").fill("bunny");
   await page.getByLabel("Filter collections").press("Enter");
-  await cards(50);
+  await cards(125);
   assert.equal(
     optionRequests,
     3,
@@ -746,9 +782,9 @@ try {
   await button("Symbol").click();
   for (const pattern of patterns) await button(pattern.name).click();
   await page.keyboard.press("Escape");
-  await cards(50);
+  await cards(125);
   await button("Reset traits").click();
-  await cards(50);
+  await cards(125);
   await button("Model").click();
   await button("Barbie").click();
   await cards(25);
@@ -757,11 +793,11 @@ try {
   await cards(25);
   assert.ok(page.url().includes("filters="));
   await button("Reset traits").click();
-  await cards(50);
+  await cards(125);
   await button("Telegram").click();
   await cards(42);
   await button("All venues").click();
-  await cards(50);
+  await cards(125);
   await button("Reverse sort direction").click();
   await price("10,000,000,000,000,000.000000001");
   for (const width of [320, 390, 480, 1440]) {
@@ -807,7 +843,7 @@ try {
   );
   await cards(3);
   await currency("XTR");
-  await cards(50);
+  await cards(125);
   assert.equal(
     new URL(page.url()).searchParams.has("max"),
     false,
@@ -818,9 +854,15 @@ try {
   await button("Ⅱ Pause").click();
   await page.getByText("Paused", { exact: true }).waitFor();
   revision = 1;
-  for (const { socket, query } of connections)
+  for (const { socket, query, id } of connections)
     socket.send(
-      JSON.stringify({ type: "page", id: "offers", page: result(query) }),
+      JSON.stringify({
+        type: "page",
+        id,
+        page: result(query),
+        sync,
+        revision: String(revision),
+      }),
     );
   await price("0.500000001");
   await button("▶ Resume").click();
@@ -906,7 +948,7 @@ try {
   );
   await page.keyboard.press("Escape");
   await button("Asks").click();
-  await cards(50);
+  await cards(125);
   await price("0.250000001");
   assert.equal(new URL(page.url()).searchParams.get("sort"), "price_asc");
   const opener = page.locator(".card-open").first();
@@ -999,7 +1041,7 @@ try {
     window.catalogDocument = "same-document";
   });
   await page.reload();
-  await cards(50);
+  await cards(125);
   await page.waitForFunction(() =>
     document.documentElement.classList.contains("telegram"),
   );
@@ -1007,7 +1049,7 @@ try {
     await button("Search collections").click();
     await page.getByLabel("Filter collections").fill(name);
     await page.getByLabel("Filter collections").press("Enter");
-    await cards(50);
+    await cards(125);
   };
   await choose("pepe");
   await choose("bunny");
@@ -1070,7 +1112,7 @@ try {
     "same-document",
   );
   await button("Asks").click();
-  await cards(50);
+  await cards(125);
   const healthyOrders = orderSubscriptions,
     healthySockets = socketCount;
   const beforeRecovery = optionRequests;
@@ -1078,7 +1120,7 @@ try {
   peer.socket.send(
     JSON.stringify({
       type: "error",
-      id: "catalog",
+      id: peer.id,
       error: { code: "capacity_exceeded", message: "Catalog busy" },
     }),
   );
@@ -1104,7 +1146,7 @@ try {
   peer.socket.send(
     JSON.stringify({
       type: "error",
-      id: "catalog",
+      id: peer.id,
       error: { code: "invalid_query", message: "Catalog needs retry" },
     }),
   );

@@ -1,13 +1,14 @@
-//! One cancellable setup-and-forward future per subscription generation.
+//! Cancellable typed requests and subscription forwarding, independent of session I/O.
 use super::{
     queue::{Payload, QueueError, Scope, Sender},
     registry::Key,
 };
-use crate::{MarketApi, config::WebSocketLimits, error::ApiError, models::GiftOrdersQuery};
+use crate::{MarketApi, config::WebSocketLimits, error::ApiError};
 use market_actors::DataUpdate;
 use tokio_util::sync::CancellationToken;
-pub(super) enum Query {
-    Orders(Box<GiftOrdersQuery>),
+pub(super) enum Operation {
+    Request(crate::models::ApiRequest),
+    Window(Box<market_gifts::GiftOrderWindowQuery>),
     Catalog(Vec<market_gifts::CollectionId>),
 }
 #[derive(Debug)]
@@ -27,16 +28,32 @@ fn end(result: Result<(), QueueError>) -> End {
 pub(super) async fn run(
     market: MarketApi,
     key: Key,
-    query: Query,
+    query: Operation,
     tx: Sender,
     cancel: CancellationToken,
     limits: WebSocketLimits,
 ) -> End {
     let _cancel_on_exit = cancel.clone().drop_guard();
+    if let Operation::Request(request) = query {
+        let work = async {
+            match request {
+                crate::models::ApiRequest::Valuation { params, .. } => {
+                    market.gift_valuation(*params).await.map(Payload::Result)
+                }
+            }
+        };
+        let result = tokio::select! {biased;
+            _=cancel.cancelled()=>return End::Cancelled,
+            result=tokio::time::timeout(limits.request_timeout,work)=>result.unwrap_or_else(|_|Err(ApiError::timed_out("Request timed out"))),
+        };
+        let payload = result.unwrap_or_else(Payload::Error);
+        return end(tx.send(Scope::Operation(key), payload, true, &cancel).await);
+    }
     let setup = async {
         match query {
-            Query::Orders(query) => market.subscribe(*query).await,
-            Query::Catalog(ids) => market.subscribe_catalog(ids).await,
+            Operation::Request(_) => unreachable!("requests handled above"),
+            Operation::Window(query) => market.subscribe_window(*query).await,
+            Operation::Catalog(ids) => market.subscribe_catalog(ids).await,
         }
     };
     let result = tokio::select! {biased;
@@ -47,39 +64,34 @@ pub(super) async fn run(
         Ok(subscription) => subscription,
         Err(error) => {
             return end(tx
-                .send(
-                    Scope::Subscription(key),
-                    Payload::Error(error),
-                    true,
-                    &cancel,
-                )
+                .send(Scope::Operation(key), Payload::Error(error), true, &cancel)
                 .await);
         }
     };
-    let mut previous = None;
+    let mut previous_window = None;
     loop {
         let update = updates.borrow_and_update().clone();
         let (payload, terminal) = match update {
             DataUpdate::Connecting => (Payload::Connecting, false),
             DataUpdate::Catalog(versions) => (Payload::Catalog(versions), false),
             DataUpdate::Error(error) => (Payload::Error(error.into()), true),
-            DataUpdate::View {
-                page,
+            DataUpdate::Window {
+                window,
                 sync,
                 revision,
             } => {
-                if previous
+                if previous_window
                     .as_ref()
-                    .is_some_and(|old| std::sync::Arc::ptr_eq(old, &page))
+                    .is_some_and(|old| std::sync::Arc::ptr_eq(old, &window))
                 {
                     (Payload::Sync { sync, revision }, false)
                 } else {
-                    previous = Some(page.clone());
-                    let result = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=market.encode_page(page)=>result};
+                    previous_window = Some(window.clone());
+                    let result = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=market.encode_window(window)=>result};
                     match result {
-                        Ok(page) => (
-                            Payload::Page {
-                                page,
+                        Ok(window) => (
+                            Payload::Window {
+                                window,
                                 sync,
                                 revision,
                             },
@@ -91,7 +103,7 @@ pub(super) async fn run(
             }
         };
         let delivered = tx
-            .send(Scope::Subscription(key.clone()), payload, terminal, &cancel)
+            .send(Scope::Operation(key.clone()), payload, terminal, &cancel)
             .await;
         if delivered.is_err() || terminal {
             return end(delivered);
@@ -100,7 +112,7 @@ pub(super) async fn run(
         if changed.is_err() {
             return end(tx
                 .send(
-                    Scope::Subscription(key),
+                    Scope::Operation(key),
                     Payload::Error(ApiError::unavailable("Subscription feed closed")),
                     true,
                     &cancel,

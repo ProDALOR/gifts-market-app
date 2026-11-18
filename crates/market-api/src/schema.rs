@@ -13,6 +13,8 @@ use utoipa::OpenApi;
         crate::valuation::documentation,
         crate::valuation::strategies,
         crate::routes::orders,
+        crate::routes::snapshot_window,
+        crate::routes::release_window,
         crate::routes::executions,
         crate::media::model_thumbnail,
         crate::media::pattern_thumbnail,

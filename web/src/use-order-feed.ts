@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { emptyFeed, OrderFeed } from "./order-feed";
+import { emptyFeed, createOrderFeed } from "./order-feed";
+import type { FeedController, Bookmark } from "./order-feed";
 import type { FeedQuery } from "./market";
 export function useOrderFeed(
   query: FeedQuery | null,
@@ -8,41 +9,50 @@ export function useOrderFeed(
 ) {
   const signature = JSON.stringify(query);
   const [state, setState] = useState(emptyFeed);
-  const feed = useRef<OrderFeed | undefined>(undefined);
-  const window = useRef({ signature: "", depth: 1 });
+  const feed = useRef<FeedController | undefined>(undefined);
+  const saved = useRef<{ signature: string; bookmark?: Bookmark }>({
+    signature: "",
+  });
+  const frozen = query?.kind === "orders" && paused;
   useEffect(() => {
-    const same = window.current.signature === signature;
+    const same = saved.current.signature === signature;
     if (!same) setState(emptyFeed());
-    const current: OrderFeed = new OrderFeed(
+    if (!query) {
+      setState({ ...emptyFeed(), status: "Choose a collection" });
+      return;
+    }
+    const current = createOrderFeed(
       query,
-      paused,
+      frozen,
       (next) => {
         setState((previous) =>
           same && !current.ready
             ? {
                 ...next,
-                page: previous.page,
+                orders: previous.orders,
+                sync: previous.sync,
+                cursor: previous.cursor,
                 displayOrders: previous.displayOrders,
                 activity: previous.activity,
                 hasMore: previous.hasMore,
-                loadingMore: true,
               }
             : next,
         );
       },
-      same ? window.current.depth : 1,
+      same ? saved.current.bookmark : undefined,
     );
     feed.current = current;
     current.start();
     return () => {
-      window.current = { signature, depth: current.windowPages };
+      saved.current = { signature, bookmark: current.bookmark };
       current.close();
       if (feed.current === current) feed.current = undefined;
     };
-  }, [signature, paused, refresh]);
+  }, [signature, frozen, refresh]);
   const loadMore = useCallback(() => feed.current?.loadMore(), []);
   const setVisibleRange = useCallback(
-    (start: number, end: number) => feed.current?.setVisibleRange(start, end),
+    (start: number, end: number, anchor?: number) =>
+      feed.current?.setVisibleRange(start, end, anchor),
     [],
   );
   return { ...state, loadMore, setVisibleRange };

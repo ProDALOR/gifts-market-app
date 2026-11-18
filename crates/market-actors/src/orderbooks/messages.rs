@@ -18,3 +18,17 @@ pub(crate) struct ListBooks {
 #[derive(Message)]
 #[rtype(result = "Result<SyncStatus,Status>")]
 pub(crate) struct GetStatus;
+
+#[derive(Message)]
+#[rtype(result = "Result<market_replica::WindowReadResult,Status>")]
+pub(crate) struct ReadWindow {
+    pub request: w::ReadRequest,
+    pub window: market_replica::WindowRequest,
+    pub permit: market_replica::ReadPermit,
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(),Status>")]
+pub(crate) struct ReleaseSnapshot {
+    pub snapshot: String,
+}

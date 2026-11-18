@@ -36,12 +36,38 @@ pub(crate) fn orders(result: market_replica::ReadResult) -> Result<Page<GiftOrde
             .page
             .entities
             .into_iter()
-            .map(|entity| match required(entity.entity)? {
-                w::entity::Entity::Order(value) => order(value).map_err(invalid),
-                _ => Err(invalid("expected a gift order")),
-            })
+            .map(order_entity)
             .collect::<Result<_>>()?,
     })
+}
+
+fn order_entity(entity: w::Entity) -> Result<GiftOrder> {
+    match required(entity.entity)? {
+        w::entity::Entity::Order(value) => order(value).map_err(invalid),
+        _ => Err(invalid("expected a gift order")),
+    }
+}
+pub(crate) fn window(
+    result: market_replica::WindowReadResult,
+) -> Result<(OrderWindow, SyncStatus)> {
+    let sync = sync(result.sync)?;
+    let window = OrderWindow {
+        data: result
+            .entries
+            .into_iter()
+            .map(|entry| {
+                Ok(WindowEntry {
+                    order: order_entity(entry.entity)?,
+                    position: entry.position,
+                })
+            })
+            .collect::<Result<_>>()?,
+        anchor: result.anchor,
+        has_before: result.has_before,
+        has_after: result.has_after,
+        cursor: result.cursor,
+    };
+    Ok((window, sync))
 }
 
 /// Gift-specific eligibility belongs outside the generic replica's bounded scan.

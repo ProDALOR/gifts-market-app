@@ -230,7 +230,7 @@ impl BookIndex {
     pub fn range(
         &self,
         bounds: (Bound<Key>, Bound<Key>),
-    ) -> impl Iterator<Item = (&Key, &Arc<w::Entity>)> {
+    ) -> impl DoubleEndedIterator<Item = (&Key, &Arc<w::Entity>)> {
         self.locations.range(bounds).map(|(key, partition)| {
             (
                 key,

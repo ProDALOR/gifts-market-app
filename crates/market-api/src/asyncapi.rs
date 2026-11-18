@@ -1,6 +1,5 @@
 //! AsyncAPI wraps the same serde/utoipa message types used by the socket handler.
 use crate::{models::*, schema::ApiDoc};
-use market_gifts::{GiftOrder, Page};
 use serde_json::{Map, Value, json};
 #[cfg(test)]
 use std::collections::BTreeSet;
@@ -39,15 +38,13 @@ pub fn document() -> serde_json::Result<Value> {
             .iter()
             .enumerate()
         {
-            let name = schema["properties"]["type"]["enum"][0]
-                .as_str()
-                .expect("serde message tag");
+            let name = message_tag(schema).expect("serde message tag");
             messages.insert(name.into(), json!({
                 "name":name,
                 "title":name,
                 "summary": summary(name),
                 "contentType":"application/json",
-                "correlationId":{"location":"$message.payload#/id", "description":"Subscription ID. Empty on connection-level errors."},
+                "correlationId":{"location":"$message.payload#/id", "description":"Unique operation ID. Empty on connection-level errors."},
                 "payload":{"$ref":format!("#/components/schemas/{root}/oneOf/{index}")},
                 "examples": examples(name)?
             }));
@@ -75,6 +72,11 @@ pub fn document() -> serde_json::Result<Value> {
         "components":{"schemas":schemas,"messages":messages}
     }))
 }
+fn message_tag(schema: &Value) -> Option<&str> {
+    schema["properties"]["type"]["enum"][0]
+        .as_str()
+        .or_else(|| schema["allOf"].as_array()?.iter().find_map(message_tag))
+}
 fn references(value: &Value, pending: &mut Vec<String>) {
     match value {
         Value::Object(fields) => {
@@ -99,21 +101,24 @@ fn references(value: &Value, pending: &mut Vec<String>) {
 }
 fn summary(name: &str) -> &'static str {
     match name {
-        "subscribe" => "Start a live order-page subscription with this ID.",
+        "request" => "Run one typed API request. One result or error completes the operation.",
+        "command_error" => "Rejected command; the existing operation continues unchanged.",
+        "result" => "Typed request result; valuation uses the same response as HTTP.",
+        "cancel" => "Cancel a pending request or subscription. No acknowledgement is sent.",
+        "subscribe_window" => "Subscribe to one atomic live order window around an opaque anchor.",
+        "window" => "Replace the whole live window atomically; preserve the scroll anchor.",
         "watch_catalog" => {
             "Watch catalog content revisions for up to eight collections, without polling."
         }
         "catalog" => {
             "Current catalog content revisions. Compare with HTTP ETags to revalidate changed entries."
         }
-        "unsubscribe" => "Release this subscription. No acknowledgement is sent.",
         "status" => "The subscription is connecting.",
-        "page" => "Replace the requested order page. Frame-level sync is authoritative.",
         "sync" => {
-            "Update freshness and revision without replacing orders. A changed revision invalidates relevant continuation pages."
+            "Update freshness and revision without replacing orders. The server has checked the entire subscribed window."
         }
         "error" => {
-            "A command, subscription or connection-level error. Inspect code and subscription ID."
+            "A request, subscription or connection-level error. Inspect code and operation ID."
         }
         _ => "Protocol message.",
     }
@@ -125,15 +130,62 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         updated_at: None,
     };
     let value = match name {
-        "subscribe" => {
-            let mut query =
-                GiftOrdersQuery::new(GiftFilters::new("tg.gift.123".into(), "GRAM".into()));
-            query.consistency = ReadConsistency::Live;
-            serde_json::to_value(Command::Subscribe {
-                id: "offers".into(),
-                query: Box::new(query),
-            })?
+        "request" => serde_json::to_value(Command::Request(ApiRequest::Valuation {
+            id: "request-1".into(),
+            params: Box::new(serde_json::from_value(
+                json!({"gift":"Gift-123","currency_id":"GRAM"}),
+            )?),
+        }))?,
+        "cancel" => serde_json::to_value(Command::Cancel {
+            id: "request-1".into(),
+        })?,
+        "result" => {
+            let mut data = json!({
+                "slug":null,"gift":{"id":"gift-123","collection_id":"tg.gift.123","number":123,"traits":{"model":"model","backdrop":"backdrop","pattern":null}},
+                "currency_id":"GRAM","sync":sync,
+                "evidence":{"collection_samples":3,"model_samples":3,"backdrop_samples":3,"model_backdrop_samples":1,"minimum_multiplier_samples":3}
+            });
+            for field in [
+                "collection_floor",
+                "model_floor",
+                "backdrop_floor",
+                "model_backdrop_floor",
+                "model_multiplier",
+                "backdrop_multiplier",
+                "final_mark",
+            ] {
+                data[field] = json!({"value":"1"});
+            }
+            let data: market_valuation::GiftFloorValuation = serde_json::from_value(data)?;
+            serde_json::to_value(ServerFrame::Result(ApiResult::Valuation {
+                id: "request-1".into(),
+                data: GiftValuationResponse {
+                    strategy: "gift_floor",
+                    revision: "opaque-revision",
+                    evaluated_at: "2026-11-18T12:00:00Z".parse().expect("example timestamp"),
+                    display: data.display(),
+                    data: &data,
+                },
+            }))?
         }
+        "subscribe_window" => serde_json::to_value(Command::SubscribeWindow {
+            id: "window.1".into(),
+            query: Box::new(serde_json::from_value(
+                json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"side":"ask","sort":"price_asc","anchor":null,"before":50,"after":99}),
+            )?),
+        })?,
+        "window" => serde_json::to_value(ServerFrame::Window {
+            id: "window.1".into(),
+            window: OrderWindowResponse {
+                data: vec![],
+                anchor: None,
+                has_before: false,
+                has_after: false,
+                cursor: "checkpoint",
+            },
+            sync,
+            revision: "opaque-revision".into(),
+        })?,
         "watch_catalog" => serde_json::to_value(Command::WatchCatalog {
             id: "catalog".into(),
             collection_ids: vec!["tg.gift.123".into()],
@@ -149,31 +201,18 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
                 .into(),
             },
         })?,
-        "unsubscribe" => serde_json::to_value(Command::Unsubscribe {
-            id: "offers".into(),
-        })?,
         "status" => serde_json::to_value(ServerFrame::Status {
             id: "offers".into(),
             state: SubscriptionStatus::Connecting,
         })?,
-        "page" => {
-            let page = Page::<GiftOrder> {
-                data: vec![],
-                next_page_token: String::new(),
-                cursor: "checkpoint".into(),
-                sync: sync.clone(),
-            };
-            serde_json::to_value(ServerFrame::Page {
-                id: "offers".into(),
-                page: OrderPageResponse::from(&page),
-                sync,
-                revision: "opaque-book-revision".into(),
-            })?
-        }
         "sync" => serde_json::to_value(ServerFrame::Sync {
             id: "offers".into(),
             sync,
             revision: "opaque-book-revision".into(),
+        })?,
+        "command_error" => serde_json::to_value(ServerFrame::CommandError {
+            id: "offers".into(),
+            error: crate::error::ApiError::invalid("duplicate operation ID"),
         })?,
         "error" => serde_json::to_value(ServerFrame::Error {
             id: "offers".into(),
@@ -205,7 +244,7 @@ mod tests {
         assert!(refs.iter().all(|name| names.contains(name)));
         assert!(!names.contains("GiftCatalog"));
         assert!(!names.contains("Session"));
-        for command in ["subscribe", "watch_catalog", "unsubscribe"] {
+        for command in ["watch_catalog", "subscribe_window", "request", "cancel"] {
             serde_json::from_value::<Command>(
                 spec["components"]["messages"][command]["examples"][0]["payload"].clone(),
             )
@@ -216,14 +255,14 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            3
+            4
         );
         assert_eq!(
             spec["operations"]["sendUpdates"]["messages"]
                 .as_array()
                 .unwrap()
                 .len(),
-            5
+            7
         );
     }
 }

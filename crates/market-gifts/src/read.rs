@@ -38,3 +38,25 @@ pub struct SyncStatus {
     #[cfg_attr(feature = "schema", schema(value_type = Option<String>, format = DateTime))]
     pub updated_at: Option<Timestamp>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowEntry<T> {
+    pub order: T,
+    pub position: String,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderWindow {
+    pub data: Vec<WindowEntry<crate::GiftOrder>>,
+    pub anchor: Option<String>,
+    pub has_before: bool,
+    pub has_after: bool,
+    pub cursor: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotWindow {
+    pub window: OrderWindow,
+    pub snapshot: String,
+    pub sync: SyncStatus,
+    pub revision: String,
+}

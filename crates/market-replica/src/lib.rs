@@ -3,6 +3,10 @@ mod book_index;
 mod query;
 mod ranking;
 mod reader;
+mod window;
+#[cfg(test)]
+mod window_tests;
+pub use window::{WindowEntity, WindowReadResult, WindowRequest};
 mod revisions;
 pub use revisions::{DirectoryRevision, MetadataDependencies, MetadataRevision, ReadRevision};
 mod replication;

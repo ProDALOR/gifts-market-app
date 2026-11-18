@@ -10,7 +10,7 @@ const get = <T extends HTMLElement>(id: string) =>
 const connect = get<HTMLButtonElement>("connect"),
   disconnect = get<HTMLButtonElement>("disconnect");
 const subscribe = get<HTMLButtonElement>("subscribe"),
-  unsubscribe = get<HTMLButtonElement>("unsubscribe");
+  cancel = get<HTMLButtonElement>("cancel");
 const send = get<HTMLButtonElement>("send"),
   editor = get<HTMLTextAreaElement>("command");
 const collection = get<HTMLSelectElement>("collection"),
@@ -25,7 +25,7 @@ const retry = get<HTMLButtonElement>("retry-catalog"),
 const stop = new AbortController();
 const log = new ConsoleLog();
 let state: ConnectionState = "closed";
-let template: Extract<Command, { type: "subscribe" }> | undefined;
+let template: Extract<Command, { type: "subscribe_window" }> | undefined;
 let loading: AbortController | undefined;
 const url = new URL("/ws", location.href);
 url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -38,7 +38,7 @@ function controls() {
   connect.disabled = state !== "closed";
   disconnect.disabled = state === "closed";
   send.disabled = state !== "open";
-  unsubscribe.disabled = state !== "open";
+  cancel.disabled = state !== "open";
   subscribe.disabled =
     state !== "open" || !template || !collection.value || !currency.value;
 }
@@ -145,11 +145,11 @@ form.addEventListener(
   },
   { signal: stop.signal },
 );
-unsubscribe.addEventListener(
+cancel.addEventListener(
   "click",
   () => {
     if (!id.reportValidity()) return;
-    const message: Command = { type: "unsubscribe", id: id.value };
+    const message: Command = { type: "cancel", id: id.value };
     editor.value = JSON.stringify(message, null, 2);
     transmit(editor.value);
   },
@@ -182,7 +182,7 @@ async function loadCatalog() {
       throw new Error("The WebSocket specification is unavailable.");
     const spec = await response.json();
     signal.throwIfAborted();
-    template = spec.components.messages.subscribe.examples[0].payload;
+    template = spec.components.messages.subscribe_window.examples[0].payload;
     const fill = (
       select: HTMLSelectElement,
       rows: { id: string; name: string }[],

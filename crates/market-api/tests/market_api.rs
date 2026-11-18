@@ -426,7 +426,7 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     runtime.shutdown().await.unwrap();
 }
 #[actix_web::test]
-async fn public_websocket_queries_share_local_pages_and_one_replication_stream() {
+async fn public_websocket_queries_share_local_windows_and_one_replication_stream() {
     let (_state, runtime, peer, stop) = setup().await;
     let web_dir = peer._directory.path().join("web");
     std::fs::create_dir_all(&web_dir).unwrap();
@@ -441,7 +441,7 @@ async fn public_websocket_queries_share_local_pages_and_one_replication_stream()
     for socket in [&mut a, &mut b] {
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
-                serde_json::json!({"type":"subscribe","id":"offers","query":query()})
+                serde_json::json!({"type":"subscribe_window","id":"offers","query":window_query()})
                     .to_string()
                     .into(),
             ))
@@ -459,9 +459,9 @@ async fn public_websocket_queries_share_local_pages_and_one_replication_stream()
                 let frame = socket.next().await.unwrap().unwrap();
                 if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
                     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-                    if value["type"] == "page" && value["page"]["data"][0]["price"] == price {
+                    if value["type"] == "window" && value["window"]["data"][0]["price"] == price {
                         assert_eq!(
-                            value["page"]["data"][0]["target"]["gift"]["id"],
+                            value["window"]["data"][0]["target"]["gift"]["id"],
                             "9007199254740993"
                         );
                         break;
@@ -525,9 +525,12 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|variant| variant["properties"]["type"]["enum"][0] == "page")
+        .find(|variant| variant["properties"]["type"]["enum"][0] == "window")
         .unwrap();
-    assert_eq!(frame["properties"]["page"], page_ref);
+    assert_eq!(
+        frame["properties"]["window"],
+        serde_json::json!({"$ref":"#/components/schemas/OrderWindowResponse"})
+    );
 
     for name in [
         "BookKey",
@@ -890,7 +893,7 @@ async fn headless_server_normalizes_extractors_framework_errors_and_origin_polic
     runtime.shutdown().await.unwrap();
 }
 #[actix_web::test]
-async fn oversized_subscription_pages_report_terminal_errors_and_release_the_id() {
+async fn oversized_subscription_windows_report_terminal_errors_and_release_the_id() {
     let (_, runtime, _, stop) = setup().await;
     let server = ApiServer::bind(
         ApiConfig {
@@ -898,7 +901,7 @@ async fn oversized_subscription_pages_report_terminal_errors_and_release_the_id(
             workers: 1,
             limits: market_api::ApiLimits {
                 websocket: market_api::WebSocketLimits {
-                    page_bytes: 64,
+                    window_bytes: 64,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -918,7 +921,7 @@ async fn oversized_subscription_pages_report_terminal_errors_and_release_the_id(
     for _ in 0..2 {
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
-                serde_json::json!({"type":"subscribe","id":"offers","query":query()})
+                serde_json::json!({"type":"subscribe_window","id":"offers","query":window_query()})
                     .to_string()
                     .into(),
             ))
@@ -1573,6 +1576,65 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
     assert!(body["evaluated_at"].is_string());
     assert!(body.get("strategies").is_none());
     assert!(body.get("data").is_none());
+    // Both transports share the actor and public presentation, including partial metric errors.
+    let web_dir = peer._directory.path().join("web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "fixture").unwrap();
+    let server = api_server(&runtime, web_dir);
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(server.run(api_stop.child_token()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({"type":"request","id":"value-1","method":"valuation.evaluate","params":request}).to_string().into())).await.unwrap();
+    let frame = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                socket.next().await
+            {
+                break serde_json::from_str::<serde_json::Value>(&text).unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(frame["type"], "result");
+    assert_eq!(frame["id"], "value-1");
+    assert_eq!(frame["method"], "valuation.evaluate");
+    let mut received = frame["data"].clone();
+    let mut expected = body.clone();
+    received.as_object_mut().unwrap().remove("evaluated_at");
+    expected.as_object_mut().unwrap().remove("evaluated_at");
+    assert_eq!(received, expected);
+    let missing =
+        serde_json::json!({"gift":{"collection_id":"unknown","number":123},"currency_id":"GRAM"});
+    let http_error: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/gift")
+            .set_json(&missing)
+            .to_request(),
+    )
+    .await;
+    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({"type":"request","id":"value-2","method":"valuation.evaluate","params":missing}).to_string().into())).await.unwrap();
+    let error_frame = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                socket.next().await
+            {
+                break serde_json::from_str::<serde_json::Value>(&text).unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(error_frame["id"], "value-2");
+    assert_eq!(error_frame["type"], "error");
+    assert_eq!(error_frame["error"], http_error["error"]);
+    socket.close(None).await.unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
     for route in ["/portfolio/value", "/valuations/query"] {
         assert_eq!(
             test::call_service(
@@ -2141,7 +2203,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
         .unwrap();
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
-            serde_json::json!({"type":"subscribe","id":"orders","query":query()})
+            serde_json::json!({"type":"subscribe_window","id":"orders","query":window_query()})
                 .to_string()
                 .into(),
         ))
@@ -2154,15 +2216,19 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
             {
                 let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
                 assert_ne!(frame["type"], "error", "{frame}");
-                if frame["type"] == "page" {
-                    break frame["page"].clone();
+                if frame["type"] == "window" {
+                    break frame["window"].clone();
                 }
             }
         }
     })
     .await
     .unwrap();
-    assert_eq!(socket_page["data"], rest["data"]);
+    let mut socket_data = socket_page["data"].clone();
+    for row in socket_data.as_array_mut().unwrap() {
+        row.as_object_mut().unwrap().remove("position");
+    }
+    assert_eq!(socket_data, rest["data"]);
     let schema: serde_json::Value =
         serde_json::from_str(&market_api::schema_json().unwrap()).unwrap();
     let schemas = &schema["components"]["schemas"];
@@ -2184,6 +2250,152 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     socket.close(None).await.unwrap();
     api_stop.cancel();
     job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+async fn atomic_order_windows_share_public_presentation_and_updates_without_http_continuations() {
+    let (_state, runtime, peer, stop) = setup().await;
+    let web_dir = peer._directory.path().join("window-web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "fixture").unwrap();
+    let server = api_server(&runtime, web_dir);
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(server.run(api_stop.child_token()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    let command = serde_json::json!({"type":"subscribe_window","id":"window.1","query":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"side":"ask","sort":"price_asc","before":20,"after":29}});
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            command.to_string().into(),
+        ))
+        .await
+        .unwrap();
+    async fn receive(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        price: &str,
+    ) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                    socket.next().await
+                {
+                    let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if frame["type"] == "window" && frame["window"]["data"][0]["price"] == price {
+                        break frame;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+    let first = receive(&mut socket, "1.000000001").await;
+    assert_eq!(first["id"], "window.1");
+    assert_eq!(first["window"]["has_before"], false);
+    assert_eq!(first["window"]["has_after"], false);
+    assert!(first["window"]["data"][0]["position"].is_string());
+    assert_eq!(first["window"]["data"][0]["kind"], "ask");
+    assert!(first["window"]["data"][0].get("parent_order_id").is_none());
+    assert!(first["revision"].is_string());
+    peer.page.send_replace(page("2.000000002"));
+    let next = receive(&mut socket, "2.000000002").await;
+    assert_ne!(first["revision"], next["revision"]);
+    assert_eq!(peer.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(peer.watches.load(Ordering::SeqCst), 1);
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            "{\"type\":\"cancel\",\"id\":\"window.1\"}".into(),
+        ))
+        .await
+        .unwrap();
+    socket.close(None).await.unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+fn window_query() -> serde_json::Value {
+    let query = query();
+    serde_json::json!({"filters":query["filters"],"side":query.get("side").cloned().unwrap_or("ask".into()),"sort":query.get("sort").cloned().unwrap_or("price_asc".into()),"before":0,"after":49})
+}
+
+#[actix_web::test]
+async fn paused_window_is_anchored_frozen_and_explicitly_released() {
+    let (state, runtime, peer, stop) = setup().await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(market_api::configure),
+    )
+    .await;
+    let body = serde_json::json!({"query":window_query(),"snapshot":null});
+    let first: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/orders/window")
+            .set_json(body.clone())
+            .to_request(),
+    )
+    .await;
+    assert_eq!(first["window"]["data"][0]["price"], "1.000000001");
+    assert!(first["snapshot"].is_string());
+    peer.page.send_replace(page("2.000000002"));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if state
+                .orders(serde_json::from_value(query()).unwrap())
+                .await
+                .unwrap()
+                .data[0]
+                .price
+                .as_str()
+                == "2.000000002"
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut next = body;
+    next["snapshot"] = first["snapshot"].clone();
+    next["query"]["anchor"] = first["window"]["data"][0]["position"].clone();
+    let frozen: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/orders/window")
+            .set_json(next.clone())
+            .to_request(),
+    )
+    .await;
+    assert_eq!(frozen["window"], first["window"]);
+    assert_eq!(frozen["revision"], first["revision"]);
+    let release = test::call_service(
+        &app,
+        test::TestRequest::delete()
+            .uri("/orders/window")
+            .set_json(serde_json::json!({"snapshot":first["snapshot"]}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(release.status(), 204);
+    let expired = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/orders/window")
+            .set_json(next)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(expired.status(), 409);
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }

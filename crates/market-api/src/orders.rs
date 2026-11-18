@@ -104,6 +104,57 @@ impl<'a> From<&'a Page<GiftOrder>> for OrderPageResponse<'a> {
         }
     }
 }
+/// One order and its opaque, query-bound scroll position.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WindowOrderResponse<'a> {
+    #[serde(flatten)]
+    pub order: OrderResponse<'a>,
+    /// Opaque, query-bound live scroll anchor; never an HTTP page token.
+    pub position: &'a str,
+}
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OrderWindowResponse<'a> {
+    pub data: Vec<WindowOrderResponse<'a>>,
+    pub anchor: Option<&'a str>,
+    pub has_before: bool,
+    pub has_after: bool,
+    pub cursor: &'a str,
+}
+impl<'a> From<&'a market_gifts::OrderWindow> for OrderWindowResponse<'a> {
+    fn from(window: &'a market_gifts::OrderWindow) -> Self {
+        Self {
+            data: window
+                .data
+                .iter()
+                .map(|entry| WindowOrderResponse {
+                    order: (&entry.order).into(),
+                    position: &entry.position,
+                })
+                .collect(),
+            anchor: window.anchor.as_deref(),
+            has_before: window.has_before,
+            has_after: window.has_after,
+            cursor: &window.cursor,
+        }
+    }
+}
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SnapshotWindowResponse<'a> {
+    pub window: OrderWindowResponse<'a>,
+    pub snapshot: &'a str,
+    pub sync: &'a SyncStatus,
+    pub revision: &'a str,
+}
+impl<'a> From<&'a market_gifts::SnapshotWindow> for SnapshotWindowResponse<'a> {
+    fn from(value: &'a market_gifts::SnapshotWindow) -> Self {
+        Self {
+            window: (&value.window).into(),
+            snapshot: &value.snapshot,
+            sync: &value.sync,
+            revision: &value.revision,
+        }
+    }
+}
 fn market_link(value: &str) -> Option<String> {
     if value.chars().any(char::is_control) {
         return None;

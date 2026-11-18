@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { orderWindow } from "./window-fixture.mjs";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 const root = new URL("..", import.meta.url).pathname;
@@ -24,10 +25,10 @@ import {useOrderFeed} from '/src/use-order-feed.ts';
 import {GiftGrid} from '/src/orderbook/gift-grid.tsx';
 import {ScrollLoader} from '/src/orderbook/scroll-loader.tsx';
 import '/src/style.css';
-const query={kind:'orders',query:{filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},side:'ask',sort:'price_asc',consistency:'live',limit:50,page_token:''}};
+const query={kind:'orders',query:{filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},side:'ask',sort:'price_asc'}};
 const options=new Map(),open=()=>{};
 const card=()=>({options,collectionName:'Gift',venueName:'Venue',selected:false,open});
-function App(){const feed=useOrderFeed(query,false,0);window.feedView=()=>feed;
+function App(){const [paused,setPaused]=React.useState(false);window.setPaused=setPaused;const feed=useOrderFeed(query,paused,0);window.feedView=()=>feed;
 return React.createElement('main',{className:'workspace'},React.createElement('div',{className:'orderbook'},
 React.createElement('header',{style:{height:72}},'Market'),
 React.createElement('section',{className:'orders'},
@@ -120,70 +121,210 @@ try {
   await page.evaluate(() => window.unmount());
   assert.equal(await page.locator(".gift-card").count(), 0);
   assert.equal(await page.evaluate(() => window.scrollListeners.size), 0);
-  // A bottom scroll should append one page without dragging the viewport along
-  // with the loading sentinel and draining every continuation automatically.
-  let requests = 0;
+  // A live window slides atomically in both directions without any HTTP pages.
+  let requests = 0,
+    subscriptions = 0;
   const sync = { ready: true, state: "live", updated_at: null };
-  const makePage = (offset) => ({
-    data: Array.from({ length: 50 }, (_, i) => ({
-      id: String(offset + i),
-      book: { venue_id: "v", collection_id: "gift", currency_id: "GRAM" },
-      kind: "ask",
-      price: String(offset + i + 1),
-      quantity: 1,
-      target: {
-        kind: "criteria",
-        criteria: { models: [], backdrops: [], patterns: [], number: null },
-      },
-    })),
-    next_page_token: offset < 950 ? String(offset + 50) : "",
-    cursor: "view",
-    sync,
-  });
+  const rows = Array.from({ length: 1000 }, (_, i) => ({
+    id: String(i),
+    book: { venue_id: "v", collection_id: "gift", currency_id: "GRAM" },
+    kind: "ask",
+    price: String(i + 1),
+    quantity: 1,
+    observed_at: "2026-11-18T12:00:00Z",
+    target: {
+      kind: "criteria",
+      criteria: { models: [], backdrops: [], patterns: [], number: null },
+    },
+  }));
+  const anchorErrors = [],
+    checks = [];
+  let anchorChecks = 0,
+    nearTopChecks = 0;
   await page.routeWebSocket("**/ws", (socket) => {
+    let current;
     socket.onMessage((message) => {
-      if (JSON.parse(String(message)).type === "subscribe")
+      const incoming = JSON.parse(String(message));
+      if (incoming.type === "cancel") {
+        if (current === incoming.id) current = undefined;
+        return;
+      }
+      if (incoming.type === "subscribe_window") current = incoming.id;
+      const work = (async () => {
+        const command = incoming;
+        if (command.type !== "subscribe_window") return;
+        subscriptions++;
+        const marker = await page.locator(".card-open").evaluateAll((cards) => {
+          const row = cards.find((el) => {
+            const r = el.getBoundingClientRect();
+            return r.bottom > 0 && r.top < innerHeight;
+          });
+          return row
+            ? { id: row.dataset.orderId, top: row.getBoundingClientRect().top }
+            : null;
+        });
+        if (current !== command.id) return;
+        const window = orderWindow(command.query, rows);
         socket.send(
-          JSON.stringify({ type: "page", id: "offers", page: makePage(0) }),
+          JSON.stringify({
+            type: "window",
+            id: command.id,
+            window,
+            sync,
+            revision: "view",
+          }),
         );
+        if (marker && window.data.some((row) => row.id === marker.id)) {
+          await page.waitForFunction(
+            (first) =>
+              window.feedView?.().orders[0]?.id === first &&
+              !window.feedView().loadingMore,
+            window.data[0].id,
+          );
+          await page.evaluate(() => new Promise(requestAnimationFrame));
+          if (current !== command.id) return;
+          const actual = await page.evaluate((id) => {
+            const row = document.querySelector(`[data-order-id="${id}"]`);
+            return {
+              top: row?.getBoundingClientRect().top,
+              first: window.feedView().orders[0]?.id,
+              loading: window.feedView().loadingMore,
+              scroll: scrollY,
+              rendered: [...document.querySelectorAll(".card-open")]
+                .slice(0, 4)
+                .map((el) => el.dataset.orderId),
+            };
+          }, marker.id);
+          assert.notEqual(
+            actual.top,
+            undefined,
+            `Missing active anchor: ${JSON.stringify({ marker, actual, query: command.query })}`,
+          );
+          const top = actual.top;
+          anchorChecks++;
+          if (marker.top >= 0) nearTopChecks++;
+          assert.ok(
+            Math.abs(top - marker.top) < 2,
+            `Window replacement moved anchor ${marker.id} by ${top - marker.top}px`,
+          );
+        }
+      })().catch((error) => anchorErrors.push(error.message));
+      checks.push(work);
     });
   });
-  await page.route("**/orders/query", async (route) => {
+  await page.route("**/orders/query", () => {
     requests++;
-    await route.fulfill({
-      json: makePage(Number(route.request().postDataJSON().page_token)),
+    assert.fail("Live windows must not fetch HTTP pages");
+  });
+  const frozen = new Map();
+  let nextSnapshot = 0;
+  const released = [];
+  const frozenRequests = [];
+  await page.route("**/orders/window", (route) => {
+    const body = route.request().postDataJSON();
+    if (route.request().method() === "DELETE") {
+      released.push(body.snapshot);
+      frozen.delete(body.snapshot);
+      return route.fulfill({ status: 204 });
+    }
+    frozenRequests.push(body);
+    const snapshot = body.snapshot ?? `snapshot.${++nextSnapshot}`;
+    if (!frozen.has(snapshot)) frozen.set(snapshot, rows.slice());
+    return route.fulfill({
+      json: {
+        window: orderWindow(body.query, frozen.get(snapshot)),
+        snapshot,
+        sync,
+        revision: "frozen",
+      },
     });
   });
   await page.goto(
     `http://127.0.0.1:${server.httpServer.address().port}/__scroll_test`,
   );
-  await page.waitForFunction(
-    () => window.feedView?.().displayOrders.length === 50,
-  );
+  await page.waitForFunction(() => window.feedView?.().orders.length === 150);
   assert.equal(requests, 0);
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  const scrollTop = await page.evaluate(() => window.scrollY);
+  assert.equal(subscriptions, 1);
+  const anchor = async () =>
+    page.locator(".card-open").evaluateAll((cards) => {
+      const row = cards.find((el) => {
+        const r = el.getBoundingClientRect();
+        return r.top >= 0 && r.bottom < innerHeight;
+      });
+      return row
+        ? { id: row.dataset.orderId, top: row.getBoundingClientRect().top }
+        : null;
+    });
+  await page.evaluate(() =>
+    window.scrollTo(0, document.body.scrollHeight - 600),
+  );
   await page.waitForFunction(
-    () => window.feedView?.().displayOrders.length >= 100,
+    () => Number(window.feedView?.().orders[0]?.id) > 0,
   );
-  // Give observer/layout notifications enough time to expose a request loop.
-  await page.waitForTimeout(500);
-  assert.equal(requests, 1, "A single scroll must not load every continuation");
-  assert.ok(
-    Math.abs((await page.evaluate(() => window.scrollY)) - scrollTop) < 2,
-    "Appending a page must preserve the viewport, rather than follow the footer",
-  );
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForFunction(
-    () => window.feedView?.().displayOrders.length >= 150,
-  );
+  await page.waitForTimeout(200);
+  const count = subscriptions;
   await page.waitForTimeout(500);
   assert.equal(
-    requests,
-    2,
-    "Scrolling to the new bottom should load the next page",
+    subscriptions,
+    count,
+    "One scroll must settle without draining the book",
   );
+  await Promise.all(checks);
+  const liveAnchor = await anchor();
+  assert.ok(liveAnchor);
+  assert.equal(await page.evaluate(() => window.feedView().orders.length), 150);
   assert.ok((await page.locator(".gift-card").count()) < 60);
+  assert.equal(requests, 0);
+  const anchorBeforePause = await anchor();
+  const liveSubscriptions = subscriptions;
+  await page.evaluate(() => window.setPaused(true));
+  await page.waitForFunction(() => window.feedView().status === "Paused");
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  const pausedTop = await page
+    .locator(`[data-order-id="${anchorBeforePause.id}"]`)
+    .evaluate((el) => el.getBoundingClientRect().top);
+  assert.ok(
+    Math.abs(pausedTop - anchorBeforePause.top) < 2,
+    "Pausing preserves the visible anchor instead of restarting at the head",
+  );
+  assert.ok(
+    Number(await page.evaluate(() => window.feedView().orders[0].id)) > 0,
+  );
+  assert.equal(
+    subscriptions,
+    liveSubscriptions,
+    "Paused navigation uses a frozen HTTP view",
+  );
+  assert.equal(frozenRequests.length, 1);
+  await page.evaluate(() => window.setPaused(false));
+  await page.waitForFunction(() => window.feedView().status === "Live");
+  await page.waitForTimeout(100);
+  assert.equal(
+    released.length,
+    1,
+    "Resuming releases the frozen snapshot lease",
+  );
+  // Scrolling back toward the first buffered row asks for preceding orders.
+  const previousStart = await page.evaluate(() =>
+    Number(window.feedView().orders[0].id),
+  );
+  await page.evaluate(() => window.scrollTo(0, 80));
+  await page.waitForFunction(
+    (start) => Number(window.feedView().orders[0].id) < start,
+    previousStart,
+  );
+  await page.waitForTimeout(400);
+  assert.equal(requests, 0);
+  await Promise.all(checks);
+  assert.deepEqual(anchorErrors, []);
+  assert.ok(
+    anchorChecks > 0,
+    "At least one real anchor must be checked across window replacements",
+  );
+  assert.ok(
+    nearTopChecks > 0,
+    "Preserve a visible anchor below the header when loading preceding rows",
+  );
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(

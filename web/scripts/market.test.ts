@@ -68,7 +68,7 @@ test("concrete previews use supplied media, never guessed paths or hypothetical 
   );
 });
 
-test("gift valuation preserves every strategy outcome and only throws for HTTP failures", async (t) => {
+test("gift valuation preserves every strategy outcome and uses typed requests and preserves structured failures", async (t) => {
   const { valuation, ApiFailure } = await import("../src/market.ts");
   const query = { gift: "https://t.me/nft/Gift-123", currency_id: "GRAM" };
   const metric = { value: "6" };
@@ -124,18 +124,11 @@ test("gift valuation preserves every strategy outcome and only throws for HTTP f
     },
   };
   let fail = false;
-  t.mock.method(globalThis, "fetch", async (url, init) => {
-    assert.equal(url, "/valuations/gift");
-    assert.equal(init.method, "POST");
-    assert.deepEqual(JSON.parse(init.body), query);
-    return fail
-      ? Response.json(
-          {
-            error: { code: "not_found", message: "Gift is not in market data" },
-          },
-          { status: 404 },
-        )
-      : Response.json(report);
+  const { liveSocket } = await import("../src/live-socket.ts");
+  t.mock.method(liveSocket, "request", async (call) => {
+    assert.deepEqual(call, { method: "valuation.evaluate", params: query });
+    if (fail) throw new ApiFailure("not_found", "Gift is not in market data");
+    return report;
   });
   assert.deepEqual(await valuation(query), report);
   fail = true;

@@ -1,4 +1,4 @@
-use super::registry::{Key, Registry, SubscriptionId};
+use super::registry::{Key, OperationId, Registry};
 use crate::{
     config::WebSocketLimits,
     error::ApiError,
@@ -9,9 +9,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(super) enum Payload {
+    Result(Arc<market_valuation::GiftFloorMark>),
     Connecting,
-    Page {
-        page: Arc<str>,
+    Window {
+        window: Arc<str>,
         sync: market_gifts::SyncStatus,
         revision: String,
     },
@@ -21,12 +22,13 @@ pub(super) enum Payload {
     },
     Catalog(market_gifts::CatalogVersions),
     Error(ApiError),
+    CommandError(ApiError),
 }
 impl Payload {
     #[cfg(test)]
-    pub fn test_page(page: Arc<str>) -> Self {
-        Self::Page {
-            page,
+    pub fn test_window(window: Arc<str>) -> Self {
+        Self::Window {
+            window,
             sync: market_gifts::SyncStatus {
                 ready: false,
                 state: market_gifts::SyncState::Starting,
@@ -38,18 +40,25 @@ impl Payload {
 
     pub fn text(&self, id: &str) -> String {
         match self {
-            // IDs here have already passed SubscriptionId validation. Page bytes are
+            Self::Result(mark) => {
+                serde_json::to_string(&ServerFrame::Result(crate::models::ApiResult::Valuation {
+                    id: id.into(),
+                    data: crate::valuation::GiftValuationResponse::from(&**mark),
+                }))
+                .expect("valuation result serializes")
+            }
+            // IDs here have already passed OperationId validation. Page bytes are
             // bounded JSON produced by serde, shared independently of the frame ID.
-            Self::Page {
-                page,
+            Self::Window {
+                window,
                 sync,
                 revision,
             } => {
-                let id = serde_json::to_string(id).expect("string serializes");
+                let id = serde_json::to_string(id).expect("ID serializes");
                 let sync = serde_json::to_string(sync).expect("sync serializes");
                 let revision = serde_json::to_string(revision).expect("revision serializes");
                 format!(
-                    "{{\"type\":\"page\",\"id\":{id},\"page\":{page},\"sync\":{sync},\"revision\":{revision}}}"
+                    "{{\"type\":\"window\",\"id\":{id},\"window\":{window},\"sync\":{sync},\"revision\":{revision}}}"
                 )
             }
             Self::Sync { sync, revision } => serde_json::to_string(&ServerFrame::Sync {
@@ -68,6 +77,11 @@ impl Payload {
                 versions: crate::catalog::versions(versions.clone()),
             })
             .expect("catalog frame serializes"),
+            Self::CommandError(error) => serde_json::to_string(&ServerFrame::CommandError {
+                id: id.into(),
+                error: error.clone(),
+            })
+            .expect("command error serializes"),
             Self::Error(error) => serde_json::to_string(&ServerFrame::Error {
                 id: id.into(),
                 error: error.clone(),
@@ -77,19 +91,19 @@ impl Payload {
     }
     fn bytes(&self, id: &str) -> usize {
         match self {
-            Self::Page {
-                page,
+            Self::Window {
+                window,
                 sync,
                 revision,
             } => {
-                // Serialize only the small envelope when reserving the byte budget.
-                let overhead = Self::Sync {
+                Self::Sync {
                     sync: sync.clone(),
                     revision: revision.clone(),
                 }
                 .text(id)
-                .len();
-                overhead + page.len() + 8 // page field and page/sync tag length difference
+                .len()
+                    + window.len()
+                    + 12
             }
             _ => self.text(id).len(),
         }
@@ -97,21 +111,21 @@ impl Payload {
 }
 #[derive(Clone)]
 pub(super) enum Scope {
-    Subscription(Key),
-    Absent(SubscriptionId),
+    Operation(Key),
+    Absent(OperationId),
     Global,
 }
 impl Scope {
     pub fn id(&self) -> &str {
         match self {
-            Self::Subscription(key) => key.id.as_str(),
+            Self::Operation(key) => key.id.as_str(),
             Self::Absent(id) => id.as_str(),
             Self::Global => "",
         }
     }
     pub fn current(&self, registry: &Registry) -> bool {
         match self {
-            Self::Subscription(key) => registry.current(key),
+            Self::Operation(key) => registry.current(key),
             Self::Absent(id) => registry.key(id).is_none(),
             Self::Global => true,
         }
@@ -177,7 +191,12 @@ impl Sender {
         tokio::select! {biased;_=cancel.cancelled()=>Err(QueueError::Cancelled),result=tokio::time::timeout(self.limits.write_timeout,work)=>result.unwrap_or(Err(QueueError::SlowConsumer))}
     }
     pub fn error(&self, scope: Scope, error: ApiError) -> Result<(), QueueError> {
-        let payload = Payload::Error(error);
+        self.try_payload(scope, Payload::Error(error))
+    }
+    pub fn reject(&self, scope: Scope, error: ApiError) -> Result<(), QueueError> {
+        self.try_payload(scope, Payload::CommandError(error))
+    }
+    fn try_payload(&self, scope: Scope, payload: Payload) -> Result<(), QueueError> {
         let size = payload.bytes(scope.id());
         let permit = self
             .bytes
@@ -207,11 +226,11 @@ mod tests {
         };
         let (tx, mut rx) = channel(&limits);
         let stop = CancellationToken::new();
-        let id = SubscriptionId::parse("offers".into()).unwrap();
-        let mut registry = Registry::new(1);
+        let id = OperationId::parse("offers".into()).unwrap();
+        let mut registry = Registry::new(1, 1);
         let (old, _) = registry.reserve(id.clone(), &stop).unwrap();
-        let payload = Payload::test_page(Arc::from(" ".repeat(80)));
-        tx.send(Scope::Subscription(old), payload.clone(), false, &stop)
+        let payload = Payload::test_window(Arc::from(" ".repeat(80)));
+        tx.send(Scope::Operation(old), payload.clone(), false, &stop)
             .await
             .unwrap();
         let inflight = rx.recv().await.unwrap();
@@ -226,13 +245,13 @@ mod tests {
         tx.send(Scope::Global, payload, false, &stop).await.unwrap();
     }
     #[test]
-    fn shared_page_envelopes_preserve_json_and_do_not_escape_subscription_ids_incorrectly() {
-        let id = SubscriptionId::parse("offers._-1".into()).unwrap();
-        assert!(SubscriptionId::parse("bad\"id".into()).is_err());
-        let text = Payload::test_page(Arc::from("{\"data\":[]}")).text(id.as_str());
+    fn shared_window_envelopes_preserve_json_and_do_not_escape_subscription_ids_incorrectly() {
+        let id = OperationId::parse("offers._-1".into()).unwrap();
+        assert!(OperationId::parse("bad\"id".into()).is_err());
+        let text = Payload::test_window(Arc::from("{\"data\":[]}")).text(id.as_str());
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&text).unwrap(),
-            serde_json::json!({"type":"page","id":"offers._-1","page":{"data":[]},"sync":{"ready":false,"state":"starting","updated_at":null},"revision":"1"})
+            serde_json::json!({"type":"window","id":"offers._-1","window":{"data":[]},"sync":{"ready":false,"state":"starting","updated_at":null},"revision":"1"})
         );
     }
 }

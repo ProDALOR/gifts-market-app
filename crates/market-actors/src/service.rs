@@ -4,7 +4,7 @@ use crate::{
     catalog::{CatalogActor, handle::CatalogHandle},
     orderbooks::{OrderbooksActor, handle::OrderbooksHandle},
     runtime::ActorEnvironment,
-    subscriptions::UserSubscriptionsActor,
+    subscriptions::MarketSubscriptionsActor,
 };
 use actix::Actor;
 use market_replica::ReadExecutor;
@@ -88,7 +88,7 @@ impl MarketDataService {
                         address: catalog,
                         budget,
                     };
-                    let subscriptions = UserSubscriptionsActor::new(
+                    let subscriptions = MarketSubscriptionsActor::new(
                         environment,
                         orderbooks.clone(),
                         catalog.clone(),

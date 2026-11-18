@@ -5,8 +5,7 @@ use crate::{
     orderbooks::handle::OrderbooksHandle,
     protocol,
     runtime::closed,
-    selection,
-    subscriptions::{DataSubscription, DataUpdate, UserSubscriptionsActor, messages::Subscribe},
+    subscriptions::{DataSubscription, DataUpdate, MarketSubscriptionsActor},
 };
 use actix::Addr;
 use market_gifts::*;
@@ -19,7 +18,7 @@ use tonic::Status;
 pub struct MarketDataHandle {
     pub(crate) orderbooks: OrderbooksHandle,
     pub(crate) catalog: CatalogHandle,
-    pub(crate) subscriptions: Addr<UserSubscriptionsActor>,
+    pub(crate) subscriptions: Addr<MarketSubscriptionsActor>,
 }
 impl MarketDataHandle {
     pub(crate) async fn orders_raw(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
@@ -36,21 +35,73 @@ impl MarketDataHandle {
     async fn status_raw(&self) -> Result<ReplicaStatus, Status> {
         self.orderbooks.status().await
     }
-    pub(crate) async fn subscribe_raw(
-        &self,
-        mut request: w::ReadRequest,
-    ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status> {
-        self.orderbooks.budget.check()?;
-        selection::orders(&request)?;
-        request.mode = w::ReadMode::Live as i32;
-        self.subscriptions
-            .send(Subscribe(request))
-            .await
-            .map_err(closed)?
-    }
 }
 
 impl MarketDataHandle {
+    pub async fn subscribe_window(
+        &self,
+        query: market_gifts::GiftOrderWindowQuery,
+    ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
+        self.orderbooks.budget.check()?;
+        query
+            .validate()
+            .map_err(|e| error::DataError::invalid(e.to_string()))?;
+        let window = market_replica::WindowRequest {
+            anchor: query.anchor,
+            before: query.before,
+            after: query.after,
+            snapshot: None,
+        };
+        let mut orders = market_gifts::GiftOrdersQuery::new(query.filters);
+        orders.side = query.side;
+        orders.sort = query.sort;
+        orders.limit = 200;
+        let request = crate::query::orders(orders, w::ReadMode::Live)?;
+        self.subscriptions
+            .send(crate::subscriptions::messages::SubscribeWindow { request, window })
+            .await
+            .map_err(closed)?
+            .map_err(Into::into)
+    }
+
+    pub async fn snapshot_window(
+        &self,
+        query: SnapshotWindowQuery,
+    ) -> error::Result<SnapshotWindow> {
+        query
+            .query
+            .validate()
+            .map_err(|e| error::DataError::invalid(e.to_string()))?;
+        let window = market_replica::WindowRequest {
+            anchor: query.query.anchor,
+            before: query.query.before,
+            after: query.query.after,
+            snapshot: query.snapshot,
+        };
+        let mut orders = GiftOrdersQuery::new(query.query.filters);
+        orders.side = query.query.side;
+        orders.sort = query.query.sort;
+        orders.limit = 200;
+        let result = self
+            .orderbooks
+            .window_wait(crate::query::orders(orders, w::ReadMode::Snapshot)?, window)
+            .await?;
+        let snapshot = result
+            .snapshot
+            .clone()
+            .ok_or_else(|| error::DataError::unavailable("Missing snapshot lease"))?;
+        let revision = result.revision.token();
+        let (window, sync) = protocol::window(result)?;
+        Ok(SnapshotWindow {
+            window,
+            snapshot,
+            sync,
+            revision,
+        })
+    }
+    pub async fn release_window_snapshot(&self, snapshot: String) -> error::Result<()> {
+        Ok(self.orderbooks.release_snapshot(snapshot).await?)
+    }
     pub async fn orders(&self, query: GiftOrdersQuery) -> error::Result<Page<GiftOrder>> {
         let mode = match query.consistency {
             ReadConsistency::Snapshot => w::ReadMode::Snapshot,
@@ -101,13 +152,5 @@ impl MarketDataHandle {
     }
     pub async fn status(&self) -> error::Result<SyncStatus> {
         protocol::sync(self.status_raw().await?)
-    }
-    pub async fn subscribe(
-        &self,
-        query: GiftOrdersQuery,
-    ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
-        Ok(self
-            .subscribe_raw(crate::query::orders(query, w::ReadMode::Live)?)
-            .await?)
     }
 }

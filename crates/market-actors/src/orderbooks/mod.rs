@@ -61,3 +61,31 @@ impl Handler<GetStatus> for OrderbooksActor {
         Ok(self.reader.status())
     }
 }
+
+impl Handler<messages::ReadWindow> for OrderbooksActor {
+    type Result = ResponseFuture<Result<market_replica::WindowReadResult, Status>>;
+    fn handle(&mut self, message: messages::ReadWindow, _: &mut Self::Context) -> Self::Result {
+        if let Err(error) = selection::orders(&message.request) {
+            return Box::pin(async move { Err(error) });
+        }
+        self.environment.blocking(message.permit, move |reader| {
+            reader.read_window_checked(
+                message.request,
+                message.window,
+                crate::catalog::validate_order_collection,
+                crate::protocol::include_order,
+            )
+        })
+    }
+}
+
+impl Handler<messages::ReleaseSnapshot> for OrderbooksActor {
+    type Result = Result<(), Status>;
+    fn handle(
+        &mut self,
+        message: messages::ReleaseSnapshot,
+        _: &mut Self::Context,
+    ) -> Self::Result {
+        self.reader.release_window_snapshot(&message.snapshot)
+    }
+}

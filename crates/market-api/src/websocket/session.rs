@@ -1,7 +1,7 @@
 use super::{
+    operations::{self, End},
     queue::{self, Scope},
-    registry::{Key, Phase, Registry, SubscriptionId},
-    subscription::{self, End},
+    registry::{Key, OperationId, Registry},
 };
 use crate::{MarketApi, config::WebSocketLimits, error::ApiError, models::Command};
 use actix_ws::{AggregatedMessage, CloseCode, CloseReason};
@@ -10,6 +10,15 @@ use futures_util::{
 };
 use std::{panic::AssertUnwindSafe, time::Instant};
 use tokio_util::sync::CancellationToken;
+type Start = dyn Fn(
+    Key,
+    operations::Operation,
+    queue::Sender,
+    CancellationToken,
+    WebSocketLimits,
+) -> LocalBoxFuture<'static, End>;
+type Job = LocalBoxFuture<'static, (Key, End)>;
+type Write = LocalBoxFuture<'static, (queue::Frame, bool)>;
 
 pub(super) async fn run(
     session: actix_ws::Session,
@@ -24,27 +33,47 @@ pub(super) async fn run(
         limits,
         stop,
         move |key, query, tx, cancel, limits| {
-            subscription::run(market.clone(), key, query, tx, cancel, limits).boxed_local()
+            operations::run(market.clone(), key, query, tx, cancel, limits).boxed_local()
         },
     )
     .await;
 }
 async fn drive(
-    mut session: actix_ws::Session,
+    session: actix_ws::Session,
+    messages: impl Stream<Item = Result<AggregatedMessage, actix_ws::ProtocolError>> + Unpin,
+    limits: WebSocketLimits,
+    stop: CancellationToken,
+    start: impl Fn(
+        Key,
+        operations::Operation,
+        queue::Sender,
+        CancellationToken,
+        WebSocketLimits,
+    ) -> LocalBoxFuture<'static, End>
+    + 'static,
+) {
+    drive_with_writer(session, messages, limits, stop, start, write_frame).await;
+}
+async fn drive_with_writer(
+    session: actix_ws::Session,
     mut messages: impl Stream<Item = Result<AggregatedMessage, actix_ws::ProtocolError>> + Unpin,
     limits: WebSocketLimits,
     stop: CancellationToken,
     start: impl Fn(
         Key,
-        subscription::Query,
+        operations::Operation,
         queue::Sender,
         CancellationToken,
         WebSocketLimits,
-    ) -> LocalBoxFuture<'static, End>,
+    ) -> LocalBoxFuture<'static, End>
+    + 'static,
+    writer: impl Fn(actix_ws::Session, queue::Frame, WebSocketLimits) -> Write,
 ) {
-    let mut jobs = FuturesUnordered::<LocalBoxFuture<'static, (Key, End)>>::new();
-    let mut registry = Registry::new(limits.subscriptions);
+    let mut jobs = FuturesUnordered::<Job>::new();
+    let mut registry = Registry::new(limits.subscriptions, limits.requests);
     let (tx, mut rx) = queue::channel(&limits);
+    let mut write: Option<Write> = None;
+    let mut controls = FuturesUnordered::<LocalBoxFuture<'static, bool>>::new();
     let mut heartbeat = tokio::time::interval(limits.heartbeat);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut seen = Instant::now();
@@ -54,58 +83,44 @@ async fn drive(
             Some((key,end))=jobs.next(),if !jobs.is_empty()=>{
                 if registry.current(&key) {
                     match end {
-                        End::TerminalQueued=>registry.phase(&key,Phase::Finishing),
+                        End::TerminalQueued=>{},
                         End::Cancelled=>registry.finish(&key),
                         End::SlowConsumer=>break CloseCode::Again,
                         End::Failed=>break CloseCode::Error,
                     }
                 }
             }
-            frame=rx.recv()=>{
+            result=async {write.as_mut().expect("guarded writer").await},if write.is_some()=>{
+                write=None;
+                let (frame,ok)=result;
+                if !ok {break CloseCode::Again;}
+                if frame.terminal && let Scope::Operation(key)=&frame.scope {registry.finish(key);}
+            }
+            Some(ok)=controls.next(),if !controls.is_empty()=>{if !ok {break CloseCode::Again;}}
+            frame=rx.recv(),if write.is_none()=>{
                 let Some(frame)=frame else {break CloseCode::Error;};
                 if !frame.scope.current(&registry) {continue;}
-                let text=frame.payload.text(frame.scope.id());
-                if !matches!(tokio::time::timeout(limits.write_timeout,write_text(&mut session,text,limits.frame_bytes)).await,Ok(Ok(()))) {break CloseCode::Again;}
-                if let Scope::Subscription(key)=&frame.scope {
-                    if frame.terminal {registry.finish(key);} else if !matches!(&frame.payload,queue::Payload::Error(_)) {registry.phase(key,Phase::Active);}
-                }
+                write=Some(writer(session.clone(),frame,limits.clone()));
             }
             _=heartbeat.tick()=>{
                 if seen.elapsed()>limits.idle_timeout {break CloseCode::Away;}
-                if !matches!(tokio::time::timeout(limits.write_timeout,session.ping(b"market")).await,Ok(Ok(()))) {break CloseCode::Again;}
+                if controls.len()>=4 {break CloseCode::Again;}
+                controls.push(control(session.clone(),None,limits.write_timeout));
             }
             message=messages.next()=>match message {
                 Some(Ok(AggregatedMessage::Ping(value)))=>{
                     seen=Instant::now();
-                    if !matches!(tokio::time::timeout(limits.write_timeout,session.pong(&value)).await,Ok(Ok(()))) {break CloseCode::Again;}
+                    if controls.len()>=4 {break CloseCode::Again;}
+                    controls.push(control(session.clone(),Some(value),limits.write_timeout));
                 }
                 Some(Ok(AggregatedMessage::Pong(_)))=>seen=Instant::now(),
                 Some(Ok(AggregatedMessage::Text(text)))=>{
                     seen=Instant::now();
                     let command=match serde_json::from_str::<Command>(&text) {
                         Ok(command)=>command,
-                        Err(_)=>{if tx.error(Scope::Global,ApiError::invalid("invalid subscription message")).is_err() {break CloseCode::Again;}continue;}
+                        Err(_)=>{if tx.error(Scope::Global,ApiError::invalid("invalid API message")).is_err(){break CloseCode::Again;}continue;}
                     };
-                    let (id,query)=match command {Command::Subscribe{id,query}=>(id,Some(subscription::Query::Orders(query))),Command::WatchCatalog{id,collection_ids}=>(id,Some(subscription::Query::Catalog(collection_ids))),Command::Unsubscribe{id}=>(id,None)};
-                    let id=match SubscriptionId::parse(id) {
-                        Ok(id)=>id,
-                        Err(error)=>{if tx.error(Scope::Global,error).is_err() {break CloseCode::Again;}continue;}
-                    };
-                    let Some(query)=query else {registry.remove(&id);continue;};
-                    let reserved=if jobs.len()>=limits.subscriptions.saturating_mul(2) {Err(ApiError::capacity("subscription setup capacity reached"))}
-                        else {registry.reserve(id.clone(),&stop)};
-                    let (key,cancel)=match reserved {
-                        Ok(reserved)=>reserved,
-                        Err(error)=>{
-                            let scope=registry.key(&id).map(Scope::Subscription).unwrap_or(Scope::Absent(id));
-                            if tx.error(scope,error).is_err() {break CloseCode::Again;}continue;
-                        }
-                    };
-                    let work=start(key.clone(),query,tx.clone(),cancel,limits.clone());
-                    jobs.push(async move {
-                        let result=AssertUnwindSafe(work).catch_unwind().await;
-                        (key,result.unwrap_or_else(|_| {tracing::warn!("WebSocket subscription task panicked");End::Failed}))
-                    }.boxed_local());
+                    if schedule(command,&mut registry,&mut jobs,&tx,&limits,&stop,&start).is_err(){break CloseCode::Again;}
                 }
                 Some(Ok(AggregatedMessage::Close(_)))|None=>break CloseCode::Normal,
                 _=>break CloseCode::Protocol,
@@ -114,17 +129,123 @@ async fn drive(
     };
     stop.cancel();
     drop(jobs);
+    drop(write);
+    drop(controls);
     drop(registry);
     drop(rx);
     let reason = CloseReason {
         code: close,
         description: match close {
             CloseCode::Again => Some("Connection cannot keep up; reconnect to resubscribe".into()),
-            CloseCode::Error => Some("Subscription service failed".into()),
+            CloseCode::Error => Some("API operation failed".into()),
             _ => None,
         },
     };
     let _ = tokio::time::timeout(limits.write_timeout, session.close(Some(reason))).await;
+}
+fn write_frame(
+    mut session: actix_ws::Session,
+    frame: queue::Frame,
+    limits: WebSocketLimits,
+) -> Write {
+    async move {
+        let text = frame.payload.text(frame.scope.id());
+        let ok = matches!(
+            tokio::time::timeout(
+                limits.write_timeout,
+                write_text(&mut session, text, limits.frame_bytes)
+            )
+            .await,
+            Ok(Ok(()))
+        );
+        (frame, ok)
+    }
+    .boxed_local()
+}
+fn control(
+    mut session: actix_ws::Session,
+    pong: Option<actix_web::web::Bytes>,
+    deadline: std::time::Duration,
+) -> LocalBoxFuture<'static, bool> {
+    async move {
+        matches!(
+            tokio::time::timeout(deadline, async {
+                match pong {
+                    Some(value) => session.pong(&value).await,
+                    None => session.ping(b"market").await,
+                }
+            })
+            .await,
+            Ok(Ok(()))
+        )
+    }
+    .boxed_local()
+}
+fn schedule(
+    command: Command,
+    registry: &mut Registry,
+    jobs: &mut FuturesUnordered<Job>,
+    tx: &queue::Sender,
+    limits: &WebSocketLimits,
+    stop: &CancellationToken,
+    start: &Start,
+) -> Result<(), queue::QueueError> {
+    let (id, query) = match command {
+        Command::SubscribeWindow { id, query } => (id, Some(operations::Operation::Window(query))),
+        Command::WatchCatalog { id, collection_ids } => {
+            (id, Some(operations::Operation::Catalog(collection_ids)))
+        }
+        Command::Cancel { id } => (id, None),
+        Command::Request(request) => (
+            request.id().to_owned(),
+            Some(operations::Operation::Request(request)),
+        ),
+    };
+    let id = match OperationId::parse(id) {
+        Ok(id) => id,
+        Err(error) => return tx.error(Scope::Global, error),
+    };
+    let Some(query) = query else {
+        registry.remove(&id);
+        return Ok(());
+    };
+    if let Some(key) = registry.key(&id) {
+        return tx.reject(
+            Scope::Operation(key),
+            ApiError::invalid("duplicate operation ID"),
+        );
+    }
+    let reserved = if jobs.len()
+        >= limits
+            .subscriptions
+            .saturating_add(limits.requests)
+            .saturating_mul(2)
+    {
+        Err(ApiError::capacity("operation setup capacity reached"))
+    } else if matches!(&query, operations::Operation::Request(_)) {
+        registry.request(id.clone(), stop)
+    } else {
+        registry.reserve(id.clone(), stop)
+    };
+    let (key, cancel) = match reserved {
+        Ok(value) => value,
+        Err(error) => return tx.error(Scope::Absent(id), error),
+    };
+    let work = start(key.clone(), query, tx.clone(), cancel, limits.clone());
+    jobs.push(
+        async move {
+            let result = AssertUnwindSafe(work).catch_unwind().await;
+            (
+                key,
+                result.unwrap_or_else(|_| {
+                    tracing::warn!("WebSocket operation task panicked");
+                    End::Failed
+                }),
+            )
+        }
+        .boxed_local(),
+    );
+    Ok(())
 }
 
 /// Fragment large messages so Actix's internal message queue cannot retain 32
