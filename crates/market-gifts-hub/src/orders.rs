@@ -68,22 +68,6 @@ fn number_range(value: w::AttributePredicate) -> Result<GiftNumberRange> {
     Ok(range)
 }
 
-/// Allocation-free model hint for scans. Eligibility still requires `floor_quote`.
-pub fn concrete_model(value: &w::Order) -> Option<&str> {
-    let values = option_values(value.attributes.get(MODEL)?).ok()?;
-    let model = required_option(values.first()?).ok()?;
-    values
-        .iter()
-        .all(|value| required_option(value).ok() == Some(model))
-        .then_some(model)
-}
-
-#[derive(Debug)]
-pub struct FloorQuote {
-    pub model_id: ModelId,
-    pub price: Amount,
-    pub venue_id: VenueId,
-}
 /// Apply the same quantity and trait rules as order projection to an active ask.
 fn active_floor_order(value: w::Order, now_ms: i64) -> Result<Option<GiftOrder>> {
     if value.mode != w::OrderMode::Ask as i32
@@ -107,27 +91,30 @@ fn active_floor_order(value: w::Order, now_ms: i64) -> Result<Option<GiftOrder>>
     Ok(Some(order))
 }
 
-/// Lowest eligible ask independent of model identity.
-pub fn collection_floor_quote(value: w::Order, now_ms: i64) -> Result<Option<(Amount, VenueId)>> {
-    Ok(active_floor_order(value, now_ms)?.map(|order| (order.price, order.book.venue_id)))
-}
-pub fn floor_quote(value: w::Order, now_ms: i64) -> Result<Option<FloorQuote>> {
+pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
     let Some(order) = active_floor_order(value, now_ms)? else {
         return Ok(None);
     };
-    let model_id = match order.target {
-        GiftTarget::Gift { gift } => gift.traits.model,
-        GiftTarget::Criteria { mut criteria } if criteria.models.len() == 1 => {
-            criteria.models.pop()
-        }
-        _ => None,
+    let (model_id, backdrop_id) = match order.target {
+        GiftTarget::Gift { gift } => (gift.traits.model, gift.traits.backdrop),
+        GiftTarget::Criteria { mut criteria } => (
+            (criteria.models.len() == 1)
+                .then(|| criteria.models.pop())
+                .flatten(),
+            (criteria.backdrops.len() == 1)
+                .then(|| criteria.backdrops.pop())
+                .flatten(),
+        ),
+        GiftTarget::Unsupported { .. } => return Ok(None),
     };
-    Ok(model_id.map(|model_id| FloorQuote {
-        model_id,
-        price: order.price,
+    Ok(Some(AskQuote {
         venue_id: order.book.venue_id,
+        price: order.price,
+        model_id,
+        backdrop_id,
     }))
 }
+
 fn criteria(attributes: BTreeMap<String, w::AttributePredicate>) -> Result<GiftCriteria> {
     let mut result = GiftCriteria::default();
     for (key, value) in attributes {

@@ -34,6 +34,7 @@ name = "miniapp_api"
 required-features = ["miniapp"]
 
 [dev-dependencies]
+actix.workspace = true
 flate2.workspace = true
 market-hub-protocol.workspace = true
 tonic.workspace = true

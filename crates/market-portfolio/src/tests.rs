@@ -133,7 +133,6 @@ impl ValuationProvider for Quotes {
             priced: count,
             unpriced: 0,
             currency_id: request.currency_id,
-            cursor: format!("quote-{}", calls.len()),
             sync: SyncStatus {
                 ready: true,
                 state: SyncState::Live,
@@ -142,13 +141,10 @@ impl ValuationProvider for Quotes {
         };
         Ok(Arc::new(market_valuation::Mark::evaluated(
             "model_floor",
-            market_valuation::Evaluation {
-                revision: value.cursor.clone(),
-                coverage: market_valuation::Coverage {
-                    priced: value.priced,
-                    unpriced: value.unpriced,
-                },
-                value,
+            market_valuation::Prepared {
+                prepared_at: jiff::Timestamp::now(),
+                revision: format!("quote-{}", calls.len()),
+                data: value,
             },
         )))
     }
@@ -175,7 +171,7 @@ fn page(ids: &[&str], next: Option<&str>, total: usize) -> InventoryPage {
 }
 fn request(id: u64, currency: &str, priority: Priority) -> PortfolioRequest {
     PortfolioRequest {
-        strategy: Default::default(),
+        strategy: market_gifts::valuation::StrategyId::model_floor(),
         user: user(id),
         currency_id: currency.to_owned().try_into().unwrap(),
         priority,
@@ -286,7 +282,7 @@ async fn coalesces_pages_and_currencies_deduplicates_gifts_and_revalues_cached_i
         .await
         .unwrap();
     assert_eq!(source.count(), 2);
-    assert_ne!(fresh.valuation.cursor, a.valuation.cursor);
+    assert_ne!(fresh.valuation.revision, a.valuation.revision);
     assert!(Arc::ptr_eq(&fresh.inventory, &a.inventory));
     shutdown(stop, closed).await;
 }
@@ -883,7 +879,7 @@ async fn coalesces_same_currency_valuation_and_keeps_hanging_reads_bounded() {
     backend.release.notify_one();
     let a = a.await.unwrap().unwrap();
     let b = b.await.unwrap().unwrap();
-    assert_eq!(a.valuation.cursor, b.valuation.cursor);
+    assert_eq!(a.valuation.revision, b.valuation.revision);
     assert!(Arc::ptr_eq(&a.valuation, &b.valuation));
     assert!(Arc::ptr_eq(&a.inventory, &b.inventory));
     let stalled = ask(&handle, 1, "GRAM", Priority::Normal);
@@ -986,14 +982,17 @@ async fn real_market_actors_supply_exact_model_floor_values() {
         .await
         .unwrap();
     let source = Source::default();
-    let valuation = market_valuation::Service::start(
-        market_actors::valuation::ModelFloorStrategy::new(market.handle.clone()),
+    let valuation = market_valuation::Service::start_on(
+        &market,
+        "model_floor",
+        market_valuation::FloorActor::model,
         Default::default(),
     )
+    .await
     .unwrap();
     let portfolio = PortfolioService::start(
         source.clone(),
-        market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+        market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
         PortfolioConfig::default(),
         invocations.handle(),
     )
@@ -1014,10 +1013,10 @@ async fn real_market_actors_supply_exact_model_floor_values() {
         value.valuation.rows[0].floor.as_ref().unwrap().as_str(),
         "2.000000000000000001"
     );
-    assert_eq!(value.valuation.cursor, "portfolio-view");
+    assert_eq!(value.valuation.revision, "portfolio-view");
     assert_eq!(value.inventory.gifts.len(), 2);
     assert_eq!(value.valuation.revision, "portfolio-view");
-    assert_eq!(value.valuation.coverage.priced, 2);
+    assert_eq!(value.valuation.priced, 2);
     portfolio.task.shutdown().await.unwrap();
     valuation.task.shutdown().await.unwrap();
     let stop = CancellationToken::new();
@@ -1229,5 +1228,26 @@ async fn strategies_share_inventory_but_never_coalesce_valuation_jobs() {
         .map(|r| r.strategy.clone())
         .collect();
     assert_eq!(strategies.len(), 2);
+    shutdown(stop, closed).await;
+}
+
+#[actix::test]
+async fn multiplier_selection_is_rejected_before_inventory_is_requested() {
+    let source = Source::default();
+    let quotes = Quotes::default();
+    let (handle, stop, closed, _invocations) =
+        setup(source.clone(), quotes.clone(), Default::default());
+    let mut request = request(1, "GRAM", Priority::Normal);
+    request.strategy = market_gifts::valuation::StrategyId::model_multiplier();
+    let error = handle.request(request).await.unwrap_err();
+    let PortfolioError::Valuation(error) = error else {
+        panic!("strategy error required");
+    };
+    assert_eq!(
+        error.code(),
+        market_actors::error::DataErrorCode::UnsupportedStrategy
+    );
+    assert_eq!(source.count(), 0);
+    assert!(quotes.calls.lock().unwrap().is_empty());
     shutdown(stop, closed).await;
 }

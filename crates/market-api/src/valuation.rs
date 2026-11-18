@@ -1,40 +1,60 @@
-//! Borrowed HTTP presentation of a shared valuation mark; scheduling stays in market-valuation.
-use market_gifts::valuation::Valuation;
+//! Borrowed HTTP marks; typed data and evidence remain owned by each strategy.
+use market_gifts::valuation::{BackdropMultiplier, ModelMultiplier, Valuation};
 use market_valuation::Mark;
 use serde::Serialize;
 use utoipa::ToSchema;
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct ValuationCoverage {
-    /// Collectibles with a quote from the selected strategy in the requested currency.
-    pub priced: u32,
-    /// Collectibles excluded from the estimate because the selected strategy had no eligible quote.
-    pub unpriced: u32,
-}
-#[derive(Debug, Serialize, ToSchema)]
 pub struct ValuationMark<'a> {
-    #[schema(value_type=market_gifts::valuation::StrategyId)]
+    #[schema(value_type = market_gifts::valuation::StrategyId)]
     pub strategy: &'a str,
-    /// Exact valuation, quote currency, model rows and source synchronization status.
-    pub value: &'a Valuation,
-    /// Source snapshot revision used by every row in this mark.
+    pub data: &'a Valuation,
     pub revision: &'a str,
-    /// UTC evaluation time; cache hits retain the original timestamp.
     #[schema(value_type = String, format = DateTime)]
     pub evaluated_at: jiff::Timestamp,
-    pub coverage: ValuationCoverage,
 }
 impl<'a> From<&'a Mark<Valuation>> for ValuationMark<'a> {
     fn from(mark: &'a Mark<Valuation>) -> Self {
         Self {
             strategy: mark.strategy,
-            value: &mark.value,
+            data: &mark.data,
             revision: &mark.revision,
             evaluated_at: mark.evaluated_at,
-            coverage: ValuationCoverage {
-                priced: mark.coverage.priced,
-                unpriced: mark.coverage.unpriced,
-            },
+        }
+    }
+}
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MarkData<'a, T> {
+    pub data: &'a T,
+    pub revision: &'a str,
+    #[schema(value_type = String, format = DateTime)]
+    pub evaluated_at: jiff::Timestamp,
+}
+impl<'a, T> From<&'a Mark<T>> for MarkData<'a, T> {
+    fn from(mark: &'a Mark<T>) -> Self {
+        Self {
+            data: &mark.data,
+            revision: &mark.revision,
+            evaluated_at: mark.evaluated_at,
+        }
+    }
+}
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(tag = "strategy", rename_all = "snake_case")]
+pub enum StrategyMark<'a> {
+    ModelFloor(MarkData<'a, Valuation>),
+    CollectionFloor(MarkData<'a, Valuation>),
+    ModelMultiplier(MarkData<'a, ModelMultiplier>),
+    BackdropMultiplier(MarkData<'a, BackdropMultiplier>),
+}
+impl<'a> From<&'a market_valuation::ValuationResult> for StrategyMark<'a> {
+    fn from(result: &'a market_valuation::ValuationResult) -> Self {
+        use market_valuation::ValuationResult as R;
+        match result {
+            R::ModelFloor(m) => Self::ModelFloor(m.as_ref().into()),
+            R::CollectionFloor(m) => Self::CollectionFloor(m.as_ref().into()),
+            R::ModelMultiplier(m) => Self::ModelMultiplier(m.as_ref().into()),
+            R::BackdropMultiplier(m) => Self::BackdropMultiplier(m.as_ref().into()),
         }
     }
 }

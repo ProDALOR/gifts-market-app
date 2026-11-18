@@ -6,6 +6,15 @@ use crate::{
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+/// Eligible ask with concrete trait hints, suitable for read-only market calculations.
+#[derive(Debug, Clone)]
+pub struct AskQuote {
+    pub venue_id: VenueId,
+    pub price: Amount,
+    pub model_id: Option<ModelId>,
+    pub backdrop_id: Option<BackdropId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

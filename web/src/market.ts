@@ -1,4 +1,10 @@
 import type { components } from "./gen/api";
+export type ValuationQuery = components["schemas"]["ValuationQuery"];
+export type StrategyMark = components["schemas"]["StrategyMark"];
+export type ModelMultiplier = components["schemas"]["ModelMultiplier"];
+export type BackdropMultiplier = components["schemas"]["BackdropMultiplier"];
+export type ValuationErrorDetails =
+  components["schemas"]["ValuationErrorDetails"];
 export type Order = components["schemas"]["GiftOrder"];
 export type Book = components["schemas"]["GiftBook"];
 export type Query = components["schemas"]["GiftOrdersQuery"];
@@ -27,6 +33,7 @@ export class ApiFailure extends Error {
   constructor(
     public code: string,
     message: string,
+    public details?: ValuationErrorDetails,
   ) {
     super(message);
   }
@@ -52,11 +59,16 @@ export async function request<T>(
     throw new ApiFailure(
       value.error?.code || "unavailable",
       value.error?.message || "Market data is unavailable",
+      value.error?.details,
     );
   const etag = response.headers.get("etag");
   if (etag) revision?.(etag.replace(/^W\//, "").replace(/^"|"$/g, ""));
   return value;
 }
+export const valuation = (
+  query: ValuationQuery,
+  signal?: AbortSignal,
+): Promise<StrategyMark> => request("/valuations/query", query, signal);
 export const catalog = (
   signal: AbortSignal,
   revision?: (value: string) => void,

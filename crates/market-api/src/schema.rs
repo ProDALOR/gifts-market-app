@@ -10,6 +10,7 @@ use utoipa::OpenApi;
         crate::routes::catalog,
         crate::routes::collection,
         crate::routes::portfolio,
+        crate::routes::valuation_query,
         crate::routes::orders,
         crate::routes::executions,
         crate::media::model_thumbnail,
@@ -21,12 +22,13 @@ use utoipa::OpenApi;
         (name="Catalog",description="Discover gift collections and their traits."),
         (name="Orders",description="Current asks and bids with exact prices and keyset pagination."),
         (name="History",description="Confirmed executions. Disappearing listings do not imply sales."),
-        (name="Portfolio",description="Shared model-floor valuation marks with source revision, evaluation time and coverage."),
+        (name="Portfolio",description="Explicit portfolio estimators with source revision, evaluation time and coverage."),
+        (name="Valuations",description="Typed floor and trait multiplier measurements with explicit strategy selection and evidence."),
         (name="Media",description="Cached Telegram gift thumbnails, animations and patterns."),
         (name="Health",description="Process health, replica readiness and freshness."),
         (name="WebSocket",description="See /docs/ws for live-message documentation and a test console.")
     ),
-    components(schemas(Command, ServerFrame)),
+    components(schemas(Command, ServerFrame, market_gifts::valuation::ModelMultiplier, market_gifts::valuation::BackdropMultiplier)),
     info(title = "Market App", description = "Read-only gift markets served from a synchronized local replica. Start with /catalog for collection and currency IDs, then use /collections/{id} for model, backdrop and pattern choices. Prices are exact decimal strings; paged reads include synchronization status. Live message documentation and an interactive subscription console are available at /docs/ws. Public market reads need no hub credentials or Telegram login.")
 )]
 struct MarketDoc;

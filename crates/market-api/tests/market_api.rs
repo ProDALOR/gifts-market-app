@@ -1,5 +1,5 @@
 use actix_web::{App, test, web};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use market_actors::{MarketDataHandle, MarketDataService};
 #[cfg(feature = "miniapp")]
 use market_api::miniapp::MiniAppApi;
@@ -150,7 +150,7 @@ fn page(price: &str) -> w::Page {
 }
 struct TestMarket {
     data: MarketDataHandle,
-    valuation: market_actors::valuation::ValuationHandle,
+    valuation: market_valuation::ValuationHandle,
     stop: CancellationToken,
     jobs: Vec<tokio::task::JoinHandle<Result<(), Status>>>,
     _cancel_on_drop: tokio_util::sync::DropGuard,
@@ -164,19 +164,43 @@ impl TestMarket {
         let data = MarketDataService::start_with_shutdown(replica.reader, 8, 8, stop.child_token())
             .await
             .unwrap();
-        let valuation = market_valuation::Service::start(
-            market_actors::valuation::ModelFloorStrategy::new(data.handle.clone()),
+        let valuation = market_valuation::Service::start_on(
+            &data,
+            "model_floor",
+            market_valuation::FloorActor::model,
             Default::default(),
         )
+        .await
         .unwrap();
-        let collection = market_valuation::Service::start(
-            market_actors::valuation::CollectionFloorStrategy::new(data.handle.clone()),
+        let collection = market_valuation::Service::start_on(
+            &data,
+            "collection_floor",
+            market_valuation::FloorActor::collection,
             Default::default(),
         )
+        .await
         .unwrap();
-        let registry = market_actors::valuation::ValuationHandle::new([
-            valuation.handle.clone(),
-            collection.handle.clone(),
+        let model_ratio = market_valuation::Service::start_on(
+            &data,
+            "model_multiplier",
+            market_valuation::ModelMultiplierActor::new,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let backdrop_ratio = market_valuation::Service::start_on(
+            &data,
+            "backdrop_multiplier",
+            market_valuation::BackdropMultiplierActor::new,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let registry = market_valuation::ValuationHandle::new([
+            market_valuation::RegisteredStrategy::from(valuation.handle.clone()),
+            market_valuation::RegisteredStrategy::from(collection.handle.clone()),
+            market_valuation::RegisteredStrategy::from(model_ratio.handle.clone()),
+            market_valuation::RegisteredStrategy::from(backdrop_ratio.handle.clone()),
         ])
         .unwrap();
         let collection_stop = stop.child_token();
@@ -197,6 +221,18 @@ impl TestMarket {
                     .await
                     .map_err(|error| Status::unavailable(error.to_string()))
             }),
+            tokio::spawn(
+                model_ratio
+                    .task
+                    .run(stop.child_token())
+                    .map(|r| r.map_err(|e| Status::unavailable(e.to_string()))),
+            ),
+            tokio::spawn(
+                backdrop_ratio
+                    .task
+                    .run(stop.child_token())
+                    .map(|r| r.map_err(|e| Status::unavailable(e.to_string()))),
+            ),
             tokio::spawn(replica.replication.run(hub, stop.child_token())),
         ];
         Self {
@@ -290,7 +326,7 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     ] {
         let response = test::call_service(&app, test::TestRequest::post()
             .uri("/portfolio/value")
-            .set_json(serde_json::json!({"positions":[{"model":{"kind":"name","collection":"Gift","model":name},"quantity":1}],"currency_id":"GRAM"}))
+            .set_json(serde_json::json!({"strategy":"model_floor","positions":[{"model":{"kind":"name","collection":"Gift","model":name},"quantity":1}],"currency_id":"GRAM"}))
             .to_request()).await;
         assert_eq!(response.status(), status);
         if status == 400 {
@@ -1007,16 +1043,19 @@ async fn live_rest_continuations_do_not_consume_retained_snapshot_capacity() {
     let service = MarketDataService::start(writer.reader(), 2, 2)
         .await
         .unwrap();
-    let valuation = market_valuation::Service::start(
-        market_actors::valuation::ModelFloorStrategy::new(service.handle.clone()),
+    let valuation = market_valuation::Service::start_on(
+        &service,
+        "model_floor",
+        market_valuation::FloorActor::model,
         Default::default(),
     )
+    .await
     .unwrap();
     let app = test::init_service(
         App::new()
             .app_data(web::Data::new(MarketApi::new(
                 service.handle,
-                market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+                market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
             )))
             .configure(configure),
     )
@@ -1395,7 +1434,7 @@ async fn valuation_http_returns_the_shared_mark_and_refreshes_after_market_chang
     let price = "1.000000000000000001";
     peer.page.send_replace(valuation_page(price));
     let request = ValuationRequest {
-        strategy: Default::default(),
+        strategy: market_gifts::valuation::StrategyId::model_floor(),
         positions: vec![ModelPosition {
             model: ModelLookup::Catalog {
                 collection: "tg.gift.123".into(),
@@ -1450,15 +1489,15 @@ async fn valuation_http_returns_the_shared_mark_and_refreshes_after_market_chang
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
     let json: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(json.as_object().unwrap().len(), 5);
-    assert_eq!(json["value"]["total"], "3.000000000000000003");
+    assert_eq!(json.as_object().unwrap().len(), 4);
+    assert_eq!(json["data"]["total"], "3.000000000000000003");
     assert!(json.get("total").is_none());
     assert_eq!(json["revision"], original.revision);
-    assert_eq!(json["value"]["cursor"], json["revision"]);
-    assert_eq!(json["coverage"]["priced"], 3);
-    assert_eq!(json["coverage"]["unpriced"], 0);
-    assert_eq!(json["value"]["currency_id"], "GRAM");
-    assert_eq!(json["value"]["rows"].as_array().unwrap().len(), 1);
+    assert!(json["data"].get("cursor").is_none());
+    assert_eq!(json["data"]["priced"], 3);
+    assert_eq!(json["data"]["unpriced"], 0);
+    assert_eq!(json["data"]["currency_id"], "GRAM");
+    assert_eq!(json["data"]["rows"].as_array().unwrap().len(), 1);
     assert_eq!(
         json["evaluated_at"]
             .as_str()
@@ -1489,8 +1528,8 @@ async fn valuation_http_returns_the_shared_mark_and_refreshes_after_market_chang
     })
     .await
     .unwrap();
-    assert_eq!(refreshed["value"]["total"], "6.000000000000000003");
-    assert_eq!(refreshed["value"]["cursor"], refreshed["revision"]);
+    assert_eq!(refreshed["data"]["total"], "6.000000000000000003");
+    assert!(refreshed["data"].get("cursor").is_none());
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
@@ -1506,7 +1545,7 @@ async fn valuation_schema_describes_mark_metadata_and_http_errors() {
         assert!(response[code].is_object());
     }
     let mark = &schema["components"]["schemas"]["ValuationMark"];
-    for field in ["strategy", "value", "revision", "evaluated_at", "coverage"] {
+    for field in ["strategy", "data", "revision", "evaluated_at"] {
         assert!(
             mark["required"]
                 .as_array()
@@ -1518,12 +1557,12 @@ async fn valuation_schema_describes_mark_metadata_and_http_errors() {
     assert_eq!(mark["properties"]["evaluated_at"]["format"], "date-time");
     assert_eq!(mark["properties"]["evaluated_at"]["type"], "string");
     assert_eq!(
-        mark["properties"]["value"]["$ref"],
+        mark["properties"]["data"]["$ref"],
         "#/components/schemas/Valuation"
     );
     assert!(schema["components"]["schemas"]["ApiError"]["properties"]["details"].is_object());
     assert!(
-        schema["components"]["schemas"]["ValuationErrorDetails"]["properties"]["unpriced"]
+        schema["components"]["schemas"]["ValuationErrorDetails"]["properties"]["context"]
             .is_object()
     );
     assert!(
@@ -1531,47 +1570,75 @@ async fn valuation_schema_describes_mark_metadata_and_http_errors() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|v| v != "strategy")
+            .any(|v| v == "strategy")
     );
-    let coverage = &schema["components"]["schemas"]["ValuationCoverage"];
-    assert_eq!(coverage["required"].as_array().unwrap().len(), 2);
+    assert!(
+        schema["components"]["schemas"]
+            .get("ValuationCoverage")
+            .is_none()
+    );
 }
 #[actix_web::test]
 async fn valuation_admission_timeout_and_shutdown_are_http_errors_without_affecting_other_reads() {
-    use market_gifts::valuation::{Valuation, ValuationRequest};
+    use actix::{ActorFutureExt, WrapFuture};
+    use market_gifts::valuation::{PortfolioPositions, Valuation};
     struct Blocked {
-        changes: tokio::sync::watch::Receiver<u64>,
+        life: market_valuation::Lifecycle,
         started: Arc<AtomicUsize>,
     }
-    impl market_valuation::Strategy for Blocked {
-        const ID: &'static str = "model_floor";
-        type Key = ValuationRequest;
-        type Value = Valuation;
-        type Error = market_actors::error::DataError;
-        fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
-            self.changes.clone()
+    impl actix::Actor for Blocked {
+        type Context = actix::Context<Self>;
+        fn started(&mut self, ctx: &mut Self::Context) {
+            self.life.started(ctx);
         }
-        async fn evaluate(
-            &self,
-            _: ValuationRequest,
-        ) -> Result<market_valuation::Evaluation<Valuation>, Self::Error> {
+    }
+    impl
+        actix::Handler<
+            market_valuation::Evaluate<
+                PortfolioPositions,
+                Valuation,
+                market_actors::error::DataError,
+            >,
+        > for Blocked
+    {
+        type Result = actix::AtomicResponse<
+            Self,
+            Result<Arc<market_valuation::Mark<Valuation>>, market_actors::error::DataError>,
+        >;
+        fn handle(
+            &mut self,
+            message: market_valuation::Evaluate<
+                PortfolioPositions,
+                Valuation,
+                market_actors::error::DataError,
+            >,
+            _: &mut Self::Context,
+        ) -> Self::Result {
+            let (_, request) = message.into_parts();
+            let stop = self.life.stop_token();
             self.started.fetch_add(1, Ordering::SeqCst);
-            std::future::pending().await
+            actix::AtomicResponse::new(Box::pin(
+                async move {
+                    let _request = request;
+                    tokio::select! {_=stop.cancelled()=>{},_=_request.cancelled.cancelled()=>{}}
+                    Err(market_actors::error::DataError::unavailable("Cancelled"))
+                }
+                .into_actor(self)
+                .map(|result, _, _| result),
+            ))
         }
     }
     let (_, runtime, _, stop) = setup().await;
-    let (_sender, changes) = tokio::sync::watch::channel(0);
     let started = Arc::new(AtomicUsize::new(0));
     let valuation = market_valuation::Service::start(
-        Blocked {
-            changes,
-            started: started.clone(),
-        },
+        "model_floor",
         market_valuation::Config {
             max_requests: 1,
-            attempt_timeout: Duration::from_millis(150),
-            request_timeout: Duration::from_secs(1),
-            ..Default::default()
+            request_timeout: Duration::from_millis(150),
+        },
+        |life| Blocked {
+            life,
+            started: started.clone(),
         },
     )
     .unwrap();
@@ -1579,12 +1646,12 @@ async fn valuation_admission_timeout_and_shutdown_are_http_errors_without_affect
         App::new()
             .app_data(web::Data::new(MarketApi::new(
                 runtime.data.clone(),
-                market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+                market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
             )))
             .configure(configure),
     )
     .await;
-    let body = serde_json::json!({"positions":[],"currency_id":"GRAM"});
+    let body = serde_json::json!({"strategy":"model_floor","positions":[],"currency_id":"GRAM"});
     let (timed_out, busy) = tokio::join!(
         test::call_service(
             &app,
@@ -1672,7 +1739,7 @@ async fn named_strategies_keep_independent_marks_and_explain_missing_data() {
     .await
     .unwrap();
     let request = ValuationRequest {
-        strategy: Default::default(),
+        strategy: market_gifts::valuation::StrategyId::model_floor(),
         currency_id: "GRAM".into(),
         positions: vec![ModelPosition {
             model: ModelLookup::named("Gift", "Model").unwrap(),
@@ -1729,7 +1796,10 @@ async fn named_strategies_keep_independent_marks_and_explain_missing_data() {
     assert_eq!(detail["revision"], "strategies");
     assert_eq!(detail["required_samples"], 1);
     assert_eq!(detail["available_samples"], 0);
-    assert_eq!(detail["unpriced"][0]["unpriced"], "unknown_model");
+    assert_eq!(
+        detail["context"]["unpriced"][0]["unpriced"],
+        "unknown_model"
+    );
     no_data.strategy = collection.strategy.clone();
     assert_eq!(
         runtime
@@ -1755,10 +1825,8 @@ async fn named_strategies_keep_independent_marks_and_explain_missing_data() {
     assert_eq!(response.status(), 200);
     let body: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(body["strategy"], "model_floor");
-    assert_eq!(
-        body["coverage"],
-        serde_json::json!({"priced":2,"unpriced":1})
-    );
+    assert_eq!(body["data"]["priced"], 2);
+    assert_eq!(body["data"]["unpriced"], 1);
     for (strategy, status, code) in [
         ("unknown", 400, "unsupported_strategy"),
         ("Invalid!", 400, "invalid_query"),
@@ -1784,6 +1852,185 @@ async fn named_strategies_keep_independent_marks_and_explain_missing_data() {
         runtime.valuation.mark(empty).await.unwrap().total.as_str(),
         "0"
     );
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+fn multiplier_page(traits: usize) -> w::Page {
+    let mut data = valuation_page("6");
+    data.cursor = format!("multiplier-{traits}");
+    // Rebuild the order population so all evidence counts are deterministic.
+    data.entities
+        .retain(|e| !matches!(e.entity, Some(w::entity::Entity::Order(_))));
+    for (id, attribute) in [
+        ("other", "tg.model"),
+        ("b", "tg.backdrop"),
+        ("base", "tg.backdrop"),
+    ] {
+        data.entities.push(w::Entity {
+            entity: Some(w::entity::Entity::AttributeOption(w::AttributeOption {
+                id: id.into(),
+                attribute_id: attribute.into(),
+                name: id.into(),
+                ..Default::default()
+            })),
+        });
+    }
+    for e in &mut data.entities {
+        if let Some(w::entity::Entity::ItemType(item)) = &mut e.entity {
+            for (attr, ids) in [
+                ("tg.model", vec!["model", "other"]),
+                ("tg.backdrop", vec!["b", "base"]),
+            ] {
+                item.attributes.insert(
+                    attr.into(),
+                    w::AttributeRule {
+                        required: true,
+                        allowed_values: Some(w::AllowedAttributeValues {
+                            ids: ids.into_iter().map(str::to_owned).collect(),
+                        }),
+                    },
+                );
+            }
+        }
+    }
+    for (prefix, count, price, model, backdrop) in [
+        ("base", 3, 2, "other", "base"),
+        ("trait", traits, 6, "model", "b"),
+    ] {
+        for index in 0..count {
+            let mut order = w::Order {
+                id: if prefix == "base" && index == 0 {
+                    "order".into()
+                } else {
+                    format!("{prefix}-{index}")
+                },
+                book: Some(book()),
+                mode: w::OrderMode::Ask as i32,
+                price: (price + index).to_string(),
+                quantity: "1".into(),
+                ..Default::default()
+            };
+            for (attr, id) in [("tg.model", model), ("tg.backdrop", backdrop)] {
+                order.attributes.insert(
+                    attr.into(),
+                    w::AttributePredicate {
+                        predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                            value: Some(w::attribute_value::Value::OptionId(id.into())),
+                        })),
+                    },
+                );
+            }
+            data.entities.push(w::Entity {
+                entity: Some(w::entity::Entity::Order(order)),
+            });
+        }
+    }
+    data
+}
+#[actix_web::test]
+async fn valuation_queries_use_explicit_typed_contracts_and_strategy_specific_errors() {
+    let (state, runtime, peer, stop) = setup().await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    for endpoint in ["/portfolio/value", "/valuations/query"] {
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(endpoint)
+                .set_json(serde_json::json!({"positions":[],"currency_id":"GRAM"}))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), 400);
+    }
+    for count in [1, 3] {
+        peer.page.send_replace(multiplier_page(count));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let page = runtime
+                    .data
+                    .orders(market_gifts::GiftOrdersQuery::new(
+                        market_gifts::GiftFilters::new("tg.gift.123".into(), "GRAM".into()),
+                    ))
+                    .await
+                    .unwrap();
+                if page.cursor == format!("multiplier-{count}") {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        for (strategy, field, id) in [
+            ("model_multiplier", "model_id", "model"),
+            ("backdrop_multiplier", "backdrop_id", "b"),
+        ] {
+            let query = serde_json::json!({"strategy":strategy,"collection_id":"tg.gift.123",field:id,"currency_id":"GRAM"});
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri("/valuations/query")
+                    .set_json(&query)
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), if count == 1 { 422 } else { 200 });
+            let body: serde_json::Value = test::read_body_json(response).await;
+            if count == 1 {
+                assert_eq!(body["error"]["code"], "not_enough_data");
+                let d = &body["error"]["details"];
+                assert_eq!(d["strategy"], strategy);
+                assert_eq!(d["available_samples"], 1);
+                assert_eq!(d["required_samples"], 3);
+                assert_eq!(d["context"]["kind"], "multiplier");
+                assert_eq!(d["context"]["trait_samples"], 1);
+                assert!(d["context"].get("unpriced").is_none());
+            } else {
+                assert_eq!(body["strategy"], strategy);
+                assert_eq!(body["data"][field], id);
+                assert_eq!(body["data"]["factor"], "3");
+                assert_eq!(body["data"]["evidence"]["collection"]["samples"], 6);
+                assert_eq!(body["data"]["evidence"]["selected_trait"]["samples"], 3);
+                assert!(body.get("coverage").is_none());
+                assert!(body["data"].get("total").is_none());
+                let again = test::call_service(
+                    &app,
+                    test::TestRequest::post()
+                        .uri("/valuations/query")
+                        .set_json(query)
+                        .to_request(),
+                )
+                .await;
+                let again: serde_json::Value = test::read_body_json(again).await;
+                assert_eq!(body["evaluated_at"], again["evaluated_at"]);
+            }
+        }
+    }
+    let schema = serde_json::to_value(ApiDoc::openapi()).unwrap();
+    let variants = schema["components"]["schemas"]["StrategyMark"]["oneOf"]
+        .as_array()
+        .unwrap();
+    assert_eq!(variants.len(), 4);
+    for (variant, name) in variants.iter().zip([
+        "model_floor",
+        "collection_floor",
+        "model_multiplier",
+        "backdrop_multiplier",
+    ]) {
+        let tag = variant["allOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|part| part["properties"].get("strategy"))
+            .unwrap();
+        assert_eq!(tag["enum"][0], name);
+    }
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }

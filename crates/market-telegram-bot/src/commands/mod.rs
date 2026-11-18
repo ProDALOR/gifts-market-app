@@ -22,6 +22,7 @@ pub enum Command {
     Help,
     Status,
     Floor(FloorQuery),
+    Multiplier(market_gifts::valuation::ValuationQuery),
     Portfolio {
         currency: market_gifts::CurrencyId,
         strategy: market_gifts::valuation::StrategyId,
@@ -36,6 +37,7 @@ impl Command {
             Self::Help => CommandKind::Help,
             Self::Status => CommandKind::Status,
             Self::Floor(_) => CommandKind::Floor,
+            Self::Multiplier(_) => CommandKind::Multiplier,
             Self::Portfolio { .. } => CommandKind::Portfolio,
             Self::Invalid(kind) => *kind,
         }
@@ -51,13 +53,13 @@ pub struct CommandRequest {
 pub struct MarketCommands {
     market: MarketDataHandle,
     portfolio: market_portfolio::PortfolioHandle,
-    valuation: market_actors::valuation::ValuationHandle,
+    valuation: market_valuation::ValuationHandle,
 }
 impl MarketCommands {
     pub fn new(
         market: MarketDataHandle,
         portfolio: market_portfolio::PortfolioHandle,
-        valuation: market_actors::valuation::ValuationHandle,
+        valuation: market_valuation::ValuationHandle,
     ) -> Self {
         Self {
             market,
@@ -84,6 +86,10 @@ impl MessageHandler for MarketCommands {
                 Err(error) => render::error_reply(error),
             }),
             Command::Floor(query) => Ok(floor::execute(&self.valuation, query).await),
+            Command::Multiplier(query) => Ok(match self.valuation.query(query).await {
+                Ok(result) => render::multiplier(&result),
+                Err(error) => render::error_reply(error),
+            }),
             Command::Portfolio { currency, strategy } => {
                 portfolio::execute(&self.portfolio, request.user_id, currency, strategy).await
             }

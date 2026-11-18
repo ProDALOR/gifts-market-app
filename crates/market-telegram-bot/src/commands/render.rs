@@ -19,28 +19,23 @@ pub(super) fn error_reply(error: DataError) -> Reply {
                         d.strategy,
                         d.available_samples.unwrap_or(0),
                         d.required_samples.unwrap_or(1),
-                        d.unpriced
-                            .first()
-                            .map(|row| format!(
-                                "{} · {}: {}",
-                                label(&row.collection),
-                                label(&row.model),
-                                match row.unpriced {
-                                    Some(UnpricedReason::UnknownCollection) =>
-                                        "collection not found",
-                                    Some(UnpricedReason::AmbiguousCollection) =>
-                                        "collection is ambiguous",
-                                    Some(UnpricedReason::UnknownModel) => "model not found",
-                                    Some(UnpricedReason::AmbiguousModel) => "model is ambiguous",
-                                    _ => "no eligible asks in this currency",
-                                }
-                            ))
-                            .unwrap_or_default()
+                        match &d.context {
+                            Some(market_gifts::valuation::ValuationErrorContext::Portfolio { unpriced })=>unpriced.first().map(|row|format!("{} · {}: {}",label(&row.collection),label(&row.model),match row.unpriced {
+                                Some(UnpricedReason::UnknownCollection)=>"collection not found",
+                                Some(UnpricedReason::AmbiguousCollection)=>"collection is ambiguous",
+                                Some(UnpricedReason::UnknownModel)=>"model not found",
+                                Some(UnpricedReason::AmbiguousModel)=>"model is ambiguous",
+                                _=>"no eligible asks in this currency",
+                            })).unwrap_or_default(),
+                            Some(market_gifts::valuation::ValuationErrorContext::Multiplier { collection_samples,trait_samples,.. })=>format!("Collection listings: {collection_samples}; selected trait listings: {trait_samples}."),
+                            None=>String::new(),
+                        }
                     )
                 })
                 .unwrap_or_default();
             format!("Not enough market data to value these gifts. {detail}")
         }
+        DataErrorCode::InvalidBaseline => "A valid multiplier baseline is unavailable.".into(),
         DataErrorCode::UnsupportedStrategy => error.message().to_owned(),
         DataErrorCode::TimedOut => "Valuation timed out. Please try again shortly.".into(),
         DataErrorCode::InvalidQuery => error.message().to_owned(),
@@ -68,7 +63,7 @@ fn label(value: &str) -> String {
     }
 }
 pub(super) fn floor(mark: &market_valuation::Mark<Valuation>) -> Reply {
-    let value = &mark.value;
+    let value = &mark.data;
     let row = &value.rows[0];
     let text = if let Some(price) = &row.floor {
         format!(
@@ -115,7 +110,7 @@ pub(super) fn portfolio(
     mark: &market_valuation::Mark<Valuation>,
     inventory: &InventorySnapshot,
 ) -> Reply {
-    let value = &mark.value;
+    let value = &mark.data;
     let regular = inventory.regular_gifts;
     let unsupported = inventory.skipped_count();
     let mut text = format!(
@@ -203,15 +198,16 @@ pub(super) fn portfolio(
 
 pub(super) fn usage(kind: CommandKind) -> Reply {
     Reply{text:match kind {
-        CommandKind::Floor=>"Use /floor Collection | Model\nExample: /floor Bunny Muffin | Red Alert\nOptional: /floor Collection | Model | GRAM | collection_floor",
-        CommandKind::Portfolio=>"Use /portfolio or /portfolio GRAM | collection_floor to value your Telegram-visible collectibles.",
+        CommandKind::Floor=>"Use /floor model_floor | Collection | Model | GRAM\nOr select collection_floor explicitly.",
+        CommandKind::Portfolio=>"Use /portfolio model_floor | GRAM\nOr /portfolio collection_floor | GRAM.",
+        CommandKind::Multiplier=>"Use /multiplier model_multiplier | collection_id | model_id | GRAM\nOr /multiplier backdrop_multiplier | collection_id | backdrop_id | GRAM. IDs are from the catalog.",
         _=>"Use /help to see available commands.",
     }.into()}
 }
 pub(crate) fn launch_reply(command: CommandKind) -> Option<Reply> {
     Some(Reply{text:match command {
         CommandKind::Start|CommandKind::Market=>"Browse live gift markets, compare venues and filter offers in one place.",
-        CommandKind::Help=>"/floor Collection | Model — lowest current model ask. Add | GRAM for a quote currency.\n/portfolio — floor estimate of your Telegram-visible collectibles. Add | collection_floor after the currency for collection floors.\n/status — market synchronization status.\n/market — open the market when a launch URL is configured.",
+        CommandKind::Help=>"/floor model_floor | Collection | Model | GRAM — model floor.\n/portfolio model_floor | GRAM — your visible gift estimate. Choose collection_floor for collection floors.\n/multiplier model_multiplier | collection_id | model_id | GRAM — model ask-floor ratio. Choose backdrop_multiplier with a backdrop ID.\n/status — synchronization status.\n/market — open the market.",
         _=>return None,
     }.into()})
 }
@@ -250,6 +246,48 @@ fn strategy_label(strategy: &str) -> &str {
     }
 }
 
+pub(super) fn multiplier(result: &market_valuation::ValuationResult) -> Reply {
+    use market_valuation::ValuationResult as R;
+    let (strategy, time, currency, factor, evidence, sync) = match result {
+        R::ModelMultiplier(m) => (
+            m.strategy,
+            m.evaluated_at,
+            &m.currency_id,
+            &m.factor,
+            &m.evidence,
+            &m.sync,
+        ),
+        R::BackdropMultiplier(m) => (
+            m.strategy,
+            m.evaluated_at,
+            &m.currency_id,
+            &m.factor,
+            &m.evidence,
+            &m.sync,
+        ),
+        _ => {
+            return Reply {
+                text: "Select a multiplier strategy.".into(),
+            };
+        }
+    };
+    Reply {
+        text: format!(
+            "Strategy: {strategy}\nMultiplier: {factor}×\nTrait floor: {} {currency} ({} listings)\nCollection floor: {} {currency} ({} listings)\nAsk-floor ratio; listing counts do not represent independent sellers.\nValued at: {}{}",
+            evidence.selected_trait.floor,
+            evidence.selected_trait.samples,
+            evidence.collection.floor,
+            evidence.collection.samples,
+            time.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            if sync.state == SyncState::Live {
+                ""
+            } else {
+                "\nMarket data is not live; using the last synchronized listings."
+            }
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,7 +309,6 @@ mod tests {
             priced: 2,
             unpriced: 1,
             currency_id: "GRAM".into(),
-            cursor: "c".into(),
             sync: market_gifts::SyncStatus {
                 ready: true,
                 state: market_gifts::SyncState::Stale,
@@ -297,13 +334,10 @@ mod tests {
         };
         let mark = market_valuation::Mark::evaluated(
             "model_floor",
-            market_valuation::Evaluation {
-                revision: value.cursor.clone(),
-                coverage: market_valuation::Coverage {
-                    priced: value.priced,
-                    unpriced: value.unpriced,
-                },
-                value,
+            market_valuation::Prepared {
+                prepared_at: jiff::Timestamp::now(),
+                revision: "fixture".into(),
+                data: value,
             },
         );
         let reply = portfolio(&mark, &inventory);

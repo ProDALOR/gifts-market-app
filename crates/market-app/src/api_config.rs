@@ -8,7 +8,7 @@ use market_api::{ApiConfig, ApiServer};
 pub async fn server(
     args: &Cli,
     data: MarketDataHandle,
-    valuation: market_actors::valuation::ValuationHandle,
+    valuation: market_valuation::ValuationHandle,
     #[cfg(feature = "bot")] _bot: Option<&mut market_telegram::TelegramWorker>,
 ) -> anyhow::Result<ApiServer> {
     let server = ApiServer::bind(

@@ -17,30 +17,11 @@ use tokio::sync::watch;
 use tonic::Status;
 #[derive(Clone)]
 pub struct MarketDataHandle {
-    pub(crate) changes: watch::Receiver<u64>,
     pub(crate) orderbooks: OrderbooksHandle,
     pub(crate) catalog: CatalogHandle,
     pub(crate) subscriptions: Addr<UserSubscriptionsActor>,
 }
 impl MarketDataHandle {
-    pub fn changes(&self) -> watch::Receiver<u64> {
-        self.changes.clone()
-    }
-
-    pub async fn value_models(
-        &self,
-        request: market_gifts::valuation::ValuationRequest,
-    ) -> error::Result<market_gifts::valuation::Valuation> {
-        crate::query::valuation(&request)?;
-        Ok(self.orderbooks.value_models(request).await?)
-    }
-    pub(crate) async fn valuation_wait(
-        &self,
-        request: market_gifts::valuation::ValuationRequest,
-    ) -> error::Result<market_gifts::valuation::Valuation> {
-        crate::query::valuation(&request)?;
-        Ok(self.orderbooks.valuation(request, true).await?)
-    }
     pub(crate) async fn orders_raw(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         self.orderbooks.read(request).await
     }

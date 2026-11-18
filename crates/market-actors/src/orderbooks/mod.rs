@@ -1,7 +1,6 @@
 //! Current orderbooks, execution history, book directory and market freshness.
 pub(crate) mod handle;
 pub(crate) mod messages;
-mod valuation;
 use crate::{runtime::ActorEnvironment, selection};
 use actix::prelude::*;
 #[cfg(test)]
@@ -52,15 +51,5 @@ impl Handler<GetStatus> for OrderbooksActor {
     type Result = Result<SyncStatus, Status>;
     fn handle(&mut self, _: GetStatus, _: &mut Self::Context) -> Self::Result {
         Ok(self.reader.status())
-    }
-}
-impl Handler<messages::ValueModels> for OrderbooksActor {
-    type Result = ResponseFuture<Result<market_gifts::valuation::Valuation, Status>>;
-    fn handle(&mut self, message: messages::ValueModels, _: &mut Self::Context) -> Self::Result {
-        self.environment
-            .blocking(self.reader.clone(), message.permit, move |reader| {
-                let _heavy = message.heavy;
-                valuation::value(reader, message.request)
-            })
     }
 }

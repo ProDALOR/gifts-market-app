@@ -59,3 +59,51 @@ test("concrete previews use supplied media, never guessed paths or hypothetical 
     undefined,
   );
 });
+
+test("valuation requests preserve strategy data and structured failure evidence", async (t) => {
+  const { valuation, ApiFailure } = await import("../src/market.ts");
+  const query = {
+    strategy: "model_multiplier" as const,
+    collection_id: "gift",
+    model_id: "model",
+    currency_id: "GRAM",
+  };
+  const mark = {
+    strategy: "model_multiplier",
+    data: { factor: "3.333333333333" },
+    revision: "r1",
+    evaluated_at: "2026-11-18T12:00:00Z",
+  };
+  const details = {
+    strategy: "model_multiplier",
+    required_samples: 3,
+    available_samples: 1,
+    context: { kind: "multiplier", trait_samples: 1 },
+  };
+  let fail = false;
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    assert.equal(url, "/valuations/query");
+    assert.equal(init.method, "POST");
+    assert.deepEqual(JSON.parse(init.body), query);
+    return fail
+      ? Response.json(
+          {
+            error: {
+              code: "not_enough_data",
+              message: "Missing evidence",
+              details,
+            },
+          },
+          { status: 422 },
+        )
+      : Response.json(mark);
+  });
+  assert.deepEqual(await valuation(query), mark);
+  fail = true;
+  await assert.rejects(valuation(query), (error: unknown) => {
+    assert.ok(error instanceof ApiFailure);
+    assert.equal(error.code, "not_enough_data");
+    assert.deepEqual(error.details, details);
+    return true;
+  });
+});

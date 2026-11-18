@@ -1,14 +1,18 @@
-//! Resolve model lookups within the caller's pinned valuation view.
-use market_gifts::valuation::{ModelLookup, ModelPosition, ModelValue};
+//! Resolve model lookups within the caller's pinned market view.
+use market_gifts::valuation::{ModelIdentity, ModelLookup, ModelPosition, UnpricedReason};
 use market_hub_protocol::wire as w;
 use market_replica::ReplicaReader;
 use std::collections::BTreeMap;
 use tonic::Status;
 
 use market_gifts_hub::{CollectionChoices, find_collection, find_model, model_identity};
-pub(crate) struct ResolvedModel {
-    pub row: ModelValue,
+pub struct ResolvedModel {
+    pub identity: Option<ModelIdentity>,
     pub collection: Option<market_gifts::CollectionId>,
+    pub collection_label: String,
+    pub model_label: String,
+    pub quantity: u32,
+    pub unresolved: Option<UnpricedReason>,
 }
 
 pub(crate) fn resolve(
@@ -29,15 +33,13 @@ pub(crate) fn resolve(
                 document_id,
             } => (gift_id.get().to_string(), document_id.get().to_string()),
         };
-        let mut row = ModelValue {
+        let mut row = ResolvedModel {
             identity: None,
-            collection,
-            model,
+            collection: None,
+            collection_label: collection,
+            model_label: model,
             quantity: position.quantity,
-            floor: None,
-            value: None,
-            venue_id: None,
-            unpriced: None,
+            unresolved: None,
         };
         let item = match find_collection(
             &position.model,
@@ -48,15 +50,12 @@ pub(crate) fn resolve(
         ) {
             Ok(item) => item,
             Err(reason) => {
-                row.unpriced = Some(reason);
-                result.push(ResolvedModel {
-                    row,
-                    collection: None,
-                });
+                row.unresolved = Some(reason);
+                result.push(row);
                 continue;
             }
         };
-        row.collection = item.name.clone();
+        row.collection_label = item.name.clone();
         if !options.contains_key(&item.id) {
             let rules =
                 CollectionChoices::new(item).map_err(|e| Status::data_loss(e.to_string()))?;
@@ -80,31 +79,27 @@ pub(crate) fn resolve(
         let option = match find_model(&position.model, options[&item.id].iter()) {
             Ok(option) => option,
             Err(reason) => {
-                row.unpriced = Some(reason);
-                result.push(ResolvedModel {
-                    row,
-                    collection: Some(
-                        item.id
-                            .clone()
-                            .try_into()
-                            .map_err(|e| Status::data_loss(format!("{e}")))?,
-                    ),
-                });
+                row.unresolved = Some(reason);
+                row.collection = Some(
+                    item.id
+                        .clone()
+                        .try_into()
+                        .map_err(|e| Status::data_loss(format!("{e}")))?,
+                );
+                result.push(row);
                 continue;
             }
         };
-        row.model = option.name.clone();
+        row.model_label = option.name.clone();
         row.identity =
             Some(model_identity(item, option).map_err(|e| Status::data_loss(e.to_string()))?);
-        result.push(ResolvedModel {
-            row,
-            collection: Some(
-                item.id
-                    .clone()
-                    .try_into()
-                    .map_err(|e| Status::data_loss(format!("{e}")))?,
-            ),
-        });
+        row.collection = Some(
+            item.id
+                .clone()
+                .try_into()
+                .map_err(|e| Status::data_loss(format!("{e}")))?,
+        );
+        result.push(row);
     }
     Ok(result)
 }

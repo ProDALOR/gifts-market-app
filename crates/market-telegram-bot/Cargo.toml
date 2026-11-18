@@ -13,6 +13,7 @@ market-actors.workspace = true
 anyhow.workspace = true
 tokio-util.workspace = true
 [dev-dependencies]
+actix.workspace = true
 jiff.workspace = true
 market-replica.workspace = true
 tokio.workspace = true

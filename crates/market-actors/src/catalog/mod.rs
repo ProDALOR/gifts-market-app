@@ -2,7 +2,7 @@
 pub(crate) mod cache;
 pub(crate) mod handle;
 pub(crate) mod messages;
-mod projection;
+pub(crate) mod projection;
 mod resolve;
 mod version;
 use crate::runtime::ActorEnvironment;
@@ -14,7 +14,8 @@ use market_replica::ReadResult;
 use market_replica::ReplicaReader;
 #[cfg(test)]
 use messages::ReadCatalog;
-pub(crate) use resolve::{ResolvedModel, resolve as resolve_models};
+pub use resolve::ResolvedModel;
+pub(crate) use resolve::resolve as resolve_models;
 use tonic::Status;
 pub use version::CatalogSnapshot;
 pub(crate) struct CatalogActor {

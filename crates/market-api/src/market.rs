@@ -6,14 +6,11 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub struct MarketApi {
     data: MarketDataHandle,
-    valuation: market_actors::valuation::ValuationHandle,
+    valuation: market_valuation::ValuationHandle,
     encoder: Arc<crate::encoding::PageEncoder>,
 }
 impl MarketApi {
-    pub fn new(
-        data: MarketDataHandle,
-        valuation: market_actors::valuation::ValuationHandle,
-    ) -> Self {
+    pub fn new(data: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
         Self::with_page_limit(
             data,
             valuation,
@@ -22,7 +19,7 @@ impl MarketApi {
     }
     pub(crate) fn with_page_limit(
         data: MarketDataHandle,
-        valuation: market_actors::valuation::ValuationHandle,
+        valuation: market_valuation::ValuationHandle,
         limit: usize,
     ) -> Self {
         Self {
@@ -90,6 +87,12 @@ impl MarketApi {
         query: market_gifts::valuation::ValuationRequest,
     ) -> Result<Arc<market_valuation::Mark<market_gifts::valuation::Valuation>>> {
         Ok(self.valuation.mark(query).await?)
+    }
+    pub async fn valuation_query(
+        &self,
+        query: market_gifts::valuation::ValuationQuery,
+    ) -> Result<market_valuation::ValuationResult> {
+        Ok(self.valuation.query(query).await?)
     }
     pub async fn subscribe(
         &self,

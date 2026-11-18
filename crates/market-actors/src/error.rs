@@ -7,6 +7,7 @@ pub enum DataErrorCode {
     Unavailable,
     NotFound,
     NotEnoughData,
+    InvalidBaseline,
     UnsupportedStrategy,
     TimedOut,
 }

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 /// Process owner. Never construct this inside the HTTP-worker factory.
 pub struct MarketRuntime {
     handle: MarketDataHandle,
-    valuation: market_actors::valuation::ValuationHandle,
+    valuation: market_valuation::ValuationHandle,
     supervisor: Arc<TaskSupervisor>,
     replication: Mutex<Option<market_replica::ReplicationWorker>>,
 }
@@ -31,30 +31,39 @@ impl MarketRuntime {
             stop.clone(),
         )
         .await?;
-        let valuation = market_valuation::Service::start(
-            market_actors::valuation::ModelFloorStrategy::new(data.handle.clone()),
-            Default::default(),
-        )?;
-        let valuation_stop = supervisor.token();
-        let collection = market_valuation::Service::start(
-            market_actors::valuation::CollectionFloorStrategy::new(data.handle.clone()),
-            Default::default(),
-        )?;
-        let registry = market_actors::valuation::ValuationHandle::new([
-            valuation.handle.clone(),
-            collection.handle.clone(),
+        use market_valuation::*;
+        let registry = ValuationHandle::new([
+            RegisteredStrategy::from(
+                start_valuation(&supervisor, &data, "model_floor", FloorActor::model).await?,
+            ),
+            RegisteredStrategy::from(
+                start_valuation(
+                    &supervisor,
+                    &data,
+                    "collection_floor",
+                    FloorActor::collection,
+                )
+                .await?,
+            ),
+            RegisteredStrategy::from(
+                start_valuation(
+                    &supervisor,
+                    &data,
+                    "model_multiplier",
+                    ModelMultiplierActor::new,
+                )
+                .await?,
+            ),
+            RegisteredStrategy::from(
+                start_valuation(
+                    &supervisor,
+                    &data,
+                    "backdrop_multiplier",
+                    BackdropMultiplierActor::new,
+                )
+                .await?,
+            ),
         ])?;
-        let collection_stop = supervisor.token();
-        supervisor.spawn_critical(TaskKind::CollectionValuation, async move {
-            collection.task.run(collection_stop).await.map_err(|error| {
-                tracing::error!(%error,"collection valuation actor stopped");
-            })
-        })?;
-        supervisor.spawn_critical(TaskKind::ModelValuation, async move {
-            valuation.task.run(valuation_stop).await.map_err(|error| {
-                tracing::error!(%error,"valuation actor stopped");
-            })
-        })?;
         supervisor.spawn_critical(TaskKind::MarketData, async move {
             if let Err(error) = data.task.run(stop).await {
                 tracing::error!(code=?error.code(),"market data actor stopped");
@@ -72,7 +81,7 @@ impl MarketRuntime {
     pub fn handle(&self) -> MarketDataHandle {
         self.handle.clone()
     }
-    pub fn valuation(&self) -> market_actors::valuation::ValuationHandle {
+    pub fn valuation(&self) -> market_valuation::ValuationHandle {
         self.valuation.clone()
     }
     pub fn start_replication(&self, hub: market_hub_client::HubClient) -> Result<()> {
@@ -183,6 +192,30 @@ impl Drop for MarketRuntime {
     fn drop(&mut self) {
         let _ = self.supervisor.begin_shutdown();
     }
+}
+
+async fn start_valuation<A, F, I, V, E>(
+    supervisor: &TaskSupervisor,
+    data: &market_actors::MarketDataService,
+    id: &'static str,
+    build: F,
+) -> Result<market_valuation::Handle<I, V, E>>
+where
+    A: actix::Actor<Context = actix::Context<A>>
+        + actix::Handler<market_valuation::Evaluate<I, V, E>>,
+    I: Send + 'static,
+    V: Send + Sync + 'static,
+    E: Send + 'static,
+    F: FnOnce(market_actors::OrderbookReader, market_valuation::Lifecycle) -> A + Send + 'static,
+{
+    let service = market_valuation::Service::start_on(data, id, build, Default::default()).await?;
+    let stop = supervisor.token();
+    supervisor.spawn_critical(TaskKind::Valuation(id), async move {
+        service.task.run(stop).await.map_err(|error| {
+            tracing::error!(strategy=id,%error,"valuation actor stopped");
+        })
+    })?;
+    Ok(service.handle)
 }
 
 #[cfg(test)]

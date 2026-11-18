@@ -3,10 +3,19 @@ name = "market-valuation"
 version.workspace = true
 edition.workspace = true
 [dependencies]
+market-actors.workspace = true
+market-gifts.workspace = true
+rust_decimal.workspace = true
+actix.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 jiff.workspace = true
 [dev-dependencies]
+market-replica.workspace = true
+market-hub-protocol.workspace = true
+market-gifts-hub.workspace = true
+tempfile = "3"
+tonic.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 [lints]
 workspace = true

@@ -29,6 +29,12 @@ pub struct ReadRevision {
     catalog: u64,
     data: u64,
 }
+impl ReadRevision {
+    /// Compare only dataset and selected data; callers must track metadata dependencies separately.
+    pub fn same_data(&self, other: &Self) -> bool {
+        self.instance == other.instance && self.dataset == other.dataset && self.data == other.data
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MetadataRevision {
     instance: uuid::Uuid,

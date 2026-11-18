@@ -21,7 +21,7 @@ pub struct ApiServer {
     config: ApiConfig,
     listener: TcpListener,
     data: MarketDataHandle,
-    valuation: market_actors::valuation::ValuationHandle,
+    valuation: market_valuation::ValuationHandle,
     origins: OriginPolicy,
     media: Option<crate::media::MediaApi>,
     #[cfg(feature = "miniapp")]
@@ -31,7 +31,7 @@ impl ApiServer {
     pub fn bind(
         config: ApiConfig,
         data: MarketDataHandle,
-        valuation: market_actors::valuation::ValuationHandle,
+        valuation: market_valuation::ValuationHandle,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(config.workers > 0, "API worker count must be positive");
         config.limits.validate()?;

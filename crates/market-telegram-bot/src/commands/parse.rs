@@ -13,15 +13,17 @@ pub enum CommandKind {
     Status,
     Floor,
     Portfolio,
+    Multiplier,
 }
 impl CommandKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Start,
         Self::Market,
         Self::Help,
         Self::Status,
         Self::Floor,
         Self::Portfolio,
+        Self::Multiplier,
     ];
     pub const fn name(self) -> &'static str {
         match self {
@@ -31,6 +33,7 @@ impl CommandKind {
             Self::Status => "status",
             Self::Floor => "floor",
             Self::Portfolio => "portfolio",
+            Self::Multiplier => "multiplier",
         }
     }
     pub const fn description(self) -> &'static str {
@@ -39,8 +42,9 @@ impl CommandKind {
             Self::Market => "Browse markets",
             Self::Help => "How to use the app",
             Self::Status => "Check market data status",
-            Self::Floor => "Model floor: collection | model",
-            Self::Portfolio => "Value your visible gifts at model floors",
+            Self::Floor => "Gift floor with an explicit strategy",
+            Self::Portfolio => "Value your visible gifts with an explicit strategy",
+            Self::Multiplier => "Measure a model or backdrop ask-floor ratio",
         }
     }
 }
@@ -74,6 +78,9 @@ pub(crate) fn parse<S: AsRef<str>>(
         CommandKind::Help => Command::Help,
         CommandKind::Status => Command::Status,
         CommandKind::Portfolio => portfolio(arguments).unwrap_or(Command::Invalid(kind)),
+        CommandKind::Multiplier => multiplier(arguments)
+            .map(Command::Multiplier)
+            .unwrap_or(Command::Invalid(kind)),
         CommandKind::Floor => floor(arguments)
             .map(Command::Floor)
             .unwrap_or(Command::Invalid(kind)),
@@ -102,9 +109,12 @@ fn floor(arguments: &str) -> Option<FloorQuery> {
         return None;
     }
     let mut parts = arguments.split('|').map(str::trim);
+    let strategy = StrategyId::new(parts.next()?).ok()?;
+    if !strategy.is_portfolio_strategy() {
+        return None;
+    }
     let model = ModelLookup::named(parts.next()?, parts.next()?).ok()?;
     let currency = quote_currency(parts.next().unwrap_or(""))?;
-    let strategy = StrategyId::new(parts.next().unwrap_or("model_floor")).ok()?;
     if parts.next().is_some() {
         return None;
     }
@@ -120,10 +130,43 @@ fn portfolio(arguments: &str) -> Option<Command> {
         return None;
     }
     let mut parts = arguments.split('|').map(str::trim);
+    let strategy = StrategyId::new(parts.next()?).ok()?;
+    if !strategy.is_portfolio_strategy() {
+        return None;
+    }
     let currency = quote_currency(parts.next().unwrap_or(""))?;
-    let strategy = StrategyId::new(parts.next().unwrap_or("model_floor")).ok()?;
     if parts.next().is_some() {
         return None;
     }
     Some(Command::Portfolio { currency, strategy })
+}
+
+fn multiplier(arguments: &str) -> Option<market_gifts::valuation::ValuationQuery> {
+    use market_gifts::valuation::*;
+    if arguments.len() > 512 {
+        return None;
+    }
+    let mut parts = arguments.split('|').map(str::trim);
+    let strategy = parts.next()?;
+    let collection_id = market_gifts::CollectionId::new(parts.next()?).ok()?;
+    let trait_id = parts.next()?;
+    let currency_id = quote_currency(parts.next().unwrap_or(""))?;
+    if parts.next().is_some() {
+        return None;
+    }
+    match strategy {
+        "model_multiplier" => Some(ValuationQuery::ModelMultiplier(ModelMultiplierRequest {
+            collection_id,
+            model_id: market_gifts::ModelId::new(trait_id).ok()?,
+            currency_id,
+        })),
+        "backdrop_multiplier" => Some(ValuationQuery::BackdropMultiplier(
+            BackdropMultiplierRequest {
+                collection_id,
+                backdrop_id: market_gifts::BackdropId::new(trait_id).ok()?,
+                currency_id,
+            },
+        )),
+        _ => None,
+    }
 }

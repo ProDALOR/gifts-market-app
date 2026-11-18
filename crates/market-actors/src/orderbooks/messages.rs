@@ -19,10 +19,3 @@ pub(crate) struct ListBooks {
 #[derive(Message)]
 #[rtype(result = "Result<SyncStatus,Status>")]
 pub(crate) struct GetStatus;
-#[derive(Message)]
-#[rtype(result = "Result<market_gifts::valuation::Valuation,Status>")]
-pub(crate) struct ValueModels {
-    pub heavy: OwnedSemaphorePermit,
-    pub request: market_gifts::valuation::ValuationRequest,
-    pub permit: OwnedSemaphorePermit,
-}

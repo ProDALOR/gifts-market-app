@@ -22,6 +22,8 @@ use tonic::Status;
 pub struct MarketDataService {
     pub handle: MarketDataHandle,
     pub task: MarketDataTask,
+    pub orderbooks: crate::OrderbookReader,
+    arbiter: actix::ArbiterHandle,
 }
 pub struct MarketDataTask {
     stop: CancellationToken,
@@ -31,6 +33,24 @@ pub struct MarketDataTask {
     jobs: TaskTracker,
 }
 impl MarketDataService {
+    /// Run a service factory on the shared data Arbiter with read-only market access.
+    pub async fn start_actor<T: Send + 'static>(
+        &self,
+        build: impl FnOnce(crate::OrderbookReader) -> T + Send + 'static,
+    ) -> Result<T, crate::error::DataError> {
+        let source = self.orderbooks.clone();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        if !self.arbiter.spawn_fn(move || {
+            let _ = reply.send(build(source));
+        }) {
+            return Err(crate::error::DataError::unavailable(
+                "Market data Arbiter stopped",
+            ));
+        }
+        response
+            .await
+            .map_err(|_| crate::error::DataError::unavailable("Market data Arbiter stopped"))
+    }
     pub async fn start(
         reader: ReplicaReader,
         query_limit: usize,
@@ -68,6 +88,8 @@ impl MarketDataService {
             slots: query_slots,
             stop: stop.clone(),
         };
+        let orderbook_reader =
+            crate::OrderbookReader::new(reader.clone(), environment.clone(), budget.clone());
         let exit_guard = exited.clone().drop_guard();
         let (ready, started) = tokio::sync::oneshot::channel();
         let thread = std::thread::Builder::new()
@@ -82,7 +104,6 @@ impl MarketDataService {
                     }
                     .start();
                     let orderbooks = OrderbooksHandle {
-                        valuations: Arc::new(Semaphore::new(1)),
                         address: orders,
                         budget: budget.clone(),
                     };
@@ -106,13 +127,12 @@ impl MarketDataService {
                     )
                     .start();
                     MarketDataHandle {
-                        changes: reader.changes(),
                         orderbooks,
                         catalog,
                         subscriptions,
                     }
                 });
-                if ready.send(actors).is_err() {
+                if ready.send((actors, actix::Arbiter::current())).is_err() {
                     return;
                 }
                 let _ = system.run();
@@ -126,7 +146,12 @@ impl MarketDataService {
             jobs,
         };
         match started.await {
-            Ok(handle) => Ok(Self { handle, task }),
+            Ok((handle, arbiter)) => Ok(Self {
+                handle,
+                task,
+                arbiter,
+                orderbooks: orderbook_reader,
+            }),
             Err(_) => {
                 task.stop.cancel();
                 task.join().await?;

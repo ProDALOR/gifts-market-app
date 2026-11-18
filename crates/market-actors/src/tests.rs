@@ -547,254 +547,6 @@ async fn user_subscription_leases_cancel_independently_and_last_release_stops_th
 }
 
 #[tokio::test]
-async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_separately() {
-    use market_gifts::valuation::{ModelLookup, ModelPosition, UnpricedReason, ValuationRequest};
-    let (_directory, mut writer) = fixture();
-    let option = "gift.model.10";
-    let ask = |id: &str,
-               venue: &str,
-               currency: &str,
-               mode: w::OrderMode,
-               price: &str,
-               quantity: &str,
-               expires_at_ms| {
-        entity(w::entity::Entity::Order(w::Order {
-            id: id.into(),
-            book: Some(w::BookKey {
-                venue_id: venue.into(),
-                item_type_id: "gift".into(),
-                currency_id: currency.into(),
-            }),
-            mode: mode as i32,
-            price: price.into(),
-            quantity: quantity.into(),
-            expires_at_ms,
-            executed_at_ms: (mode == w::OrderMode::Executed).then_some(1),
-            attributes: [(
-                "tg.model".into(),
-                w::AttributePredicate {
-                    predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
-                        value: Some(w::attribute_value::Value::OptionId(option.into())),
-                    })),
-                },
-            )]
-            .into(),
-            ..Default::default()
-        }))
-    };
-    writer
-        .apply(w::Batch {
-            cursor: "c1".into(),
-            changes: vec![
-                entity(w::entity::Entity::Attribute(w::Attribute {
-                    id: "tg.model".into(),
-                    name: "Model".into(),
-                    value_type: w::AttributeType::Enum as i32,
-                    ..Default::default()
-                })),
-                entity(w::entity::Entity::AttributeOption(w::AttributeOption {
-                    id: option.into(),
-                    name: "Rare Model".into(),
-                    attribute_id: "tg.model".into(),
-                    aliases: vec![w::ExternalId {
-                        namespace: "tg".into(),
-                        id: "10".into(),
-                    }],
-                    ..Default::default()
-                })),
-                entity(w::entity::Entity::AttributeOption(w::AttributeOption {
-                    id: "gift.model.20".into(),
-                    name: "Unlisted Model".into(),
-                    attribute_id: "tg.model".into(),
-                    aliases: vec![w::ExternalId {
-                        namespace: "tg".into(),
-                        id: "20".into(),
-                    }],
-                    ..Default::default()
-                })),
-                entity(w::entity::Entity::ItemType(w::ItemType {
-                    id: "gift".into(),
-                    name: "Gift".into(),
-                    quantity_step: "1".into(),
-                    aliases: vec![w::ExternalId {
-                        namespace: "tg".into(),
-                        id: "99".into(),
-                    }],
-                    attributes: [(
-                        "tg.model".into(),
-                        w::AttributeRule {
-                            required: true,
-                            allowed_values: Some(w::AllowedAttributeValues {
-                                ids: vec![option.into(), "gift.model.20".into()],
-                            }),
-                        },
-                    )]
-                    .into(),
-                })),
-                entity(w::entity::Entity::Currency(w::Currency {
-                    id: "XTR".into(),
-                    name: "Stars".into(),
-                    decimals: 0,
-                })),
-                entity(w::entity::Entity::Venue(w::Venue {
-                    id: "another".into(),
-                    name: "Another venue".into(),
-                })),
-                ask("order", "venue", "GRAM", w::OrderMode::Ask, "3", "1", None),
-                ask(
-                    "cheapest",
-                    "another",
-                    "GRAM",
-                    w::OrderMode::Ask,
-                    "2.000000000000000001",
-                    "1",
-                    None,
-                ),
-                ask(
-                    "expired",
-                    "venue",
-                    "GRAM",
-                    w::OrderMode::Ask,
-                    "0.1",
-                    "1",
-                    Some(1),
-                ),
-                ask(
-                    "empty",
-                    "venue",
-                    "GRAM",
-                    w::OrderMode::Ask,
-                    "0.001",
-                    "0",
-                    None,
-                ),
-                ask("bid", "venue", "GRAM", w::OrderMode::Bid, "0.01", "1", None),
-                ask(
-                    "executed",
-                    "venue",
-                    "GRAM",
-                    w::OrderMode::Executed,
-                    "0.02",
-                    "1",
-                    None,
-                ),
-                ask(
-                    "stars",
-                    "venue",
-                    "XTR",
-                    w::OrderMode::Ask,
-                    "0.0001",
-                    "1",
-                    None,
-                ),
-            ],
-        })
-        .unwrap();
-    let pinned = writer.reader().snapshot().unwrap();
-    writer
-        .apply(w::Batch {
-            cursor: "c2".into(),
-            changes: vec![entity(w::entity::Entity::Venue(w::Venue {
-                id: "venue".into(),
-                name: "Updated venue".into(),
-            }))],
-        })
-        .unwrap();
-    assert_eq!(pinned.read(query()).unwrap().page.cursor, "c1");
-    assert_eq!(writer.reader().read(query()).unwrap().page.cursor, "c2");
-    let service = MarketDataService::start(writer.reader(), 2, 2)
-        .await
-        .unwrap();
-    let lookup = ModelLookup::Name {
-        collection: "gift".into(),
-        model: "rare model".into(),
-    };
-    let value = service
-        .handle
-        .value_models(ValuationRequest {
-            strategy: Default::default(),
-            positions: vec![
-                ModelPosition {
-                    model: lookup.clone(),
-                    quantity: 2,
-                },
-                ModelPosition {
-                    model: ModelLookup::Telegram {
-                        gift_id: market_gifts::TelegramGiftId::new(99).unwrap(),
-                        document_id: market_gifts::TelegramDocumentId::new(20).unwrap(),
-                    },
-                    quantity: 1,
-                },
-                ModelPosition {
-                    model: ModelLookup::Name {
-                        collection: "gift".into(),
-                        model: "Unknown".into(),
-                    },
-                    quantity: 1,
-                },
-            ],
-            currency_id: "GRAM".into(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(value.total.as_str(), "4.000000000000000002");
-    assert_eq!((value.priced, value.unpriced), (2, 2));
-    assert_eq!(value.cursor, "c2");
-    assert_eq!(
-        value
-            .rows
-            .iter()
-            .find(|row| row.floor.is_some())
-            .unwrap()
-            .venue_id
-            .as_deref(),
-        Some("another")
-    );
-    assert!(
-        value
-            .rows
-            .iter()
-            .any(|row| row.unpriced == Some(UnpricedReason::NoListing))
-    );
-    assert!(
-        value
-            .rows
-            .iter()
-            .any(|row| row.unpriced == Some(UnpricedReason::UnknownModel))
-    );
-    let stars = service
-        .handle
-        .value_models(ValuationRequest {
-            strategy: Default::default(),
-            positions: vec![ModelPosition {
-                model: lookup.clone(),
-                quantity: 2,
-            }],
-            currency_id: "XTR".into(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(stars.total.as_str(), "0.0002");
-    assert!(
-        service
-            .handle
-            .value_models(ValuationRequest {
-                strategy: Default::default(),
-                positions: vec![ModelPosition {
-                    model: lookup,
-                    quantity: 0
-                }],
-                currency_id: "GRAM".into()
-            })
-            .await
-            .is_err()
-    );
-    let stop = CancellationToken::new();
-    stop.cancel();
-    service.task.run(stop).await.unwrap();
-}
-
-#[tokio::test]
 async fn gift_snapshot_pages_survive_requests_and_catalog_replacement() {
     use market_gifts::{GiftFilters, GiftHistoryQuery, GiftOrdersQuery, ReadConsistency};
     let (_directory, mut writer) = fixture();
@@ -867,39 +619,37 @@ async fn gift_snapshot_pages_survive_requests_and_catalog_replacement() {
 }
 
 #[tokio::test]
-async fn saturated_valuation_capacity_leaves_normal_reads_available() {
+async fn saturated_snapshot_capacity_leaves_normal_reads_available() {
     let (_dir, writer) = fixture();
     let service = MarketDataService::start(writer.reader(), 4, 1)
         .await
         .unwrap();
     let busy = service
-        .handle
         .orderbooks
-        .valuations
+        .workers
         .clone()
         .acquire_owned()
         .await
         .unwrap();
-    let result = service
-        .handle
-        .orderbooks
-        .value_models(market_gifts::valuation::ValuationRequest {
-            strategy: Default::default(),
-            currency_id: "GRAM".into(),
-            positions: vec![],
-        })
-        .await;
-    assert_eq!(result.unwrap_err().code(), tonic::Code::ResourceExhausted);
+    let reader = service.orderbooks.clone();
+    let mut work =
+        tokio::spawn(async move { reader.prepare(|snapshot| snapshot.revision()).await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut work)
+            .await
+            .is_err()
+    );
     assert!(service.handle.orders_raw(query()).await.is_ok());
     assert!(service.handle.catalog().await.is_ok());
     drop(busy);
+    work.await.unwrap().unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
 }
 
 #[tokio::test]
-async fn freshness_does_not_wait_for_query_capacity_and_valuation_admission_is_isolated() {
+async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_isolated() {
     let (_directory, writer) = fixture();
     let service = MarketDataService::start(writer.reader(), 2, 1)
         .await
@@ -925,141 +675,24 @@ async fn freshness_does_not_wait_for_query_capacity_and_valuation_admission_is_i
     assert!(Arc::ptr_eq(&original, &same));
     assert!(sync.ready);
     drop((query_a, query_b));
-    let heavy = handle
+    let heavy = service
         .orderbooks
-        .valuations
+        .workers
         .clone()
         .try_acquire_owned()
         .unwrap();
-    let valuation = handle
-        .orderbooks
-        .value_models(market_gifts::valuation::ValuationRequest {
-            strategy: Default::default(),
-            positions: vec![],
-            currency_id: "GRAM".into(),
-        })
-        .await;
-    assert_eq!(
-        valuation.unwrap_err().code(),
-        tonic::Code::ResourceExhausted
-    );
-    // An occupied heavy slot does not consume ordinary read capacity.
-    assert_eq!(handle.orders_raw(query()).await.unwrap().page.cursor, "c0");
-    drop(heavy);
-    let stop = CancellationToken::new();
-    stop.cancel();
-    service.task.run(stop).await.unwrap();
-}
-
-#[tokio::test]
-async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
-    use crate::error::DataErrorCode;
-    use crate::valuation::{CollectionFloorStrategy, ModelFloorStrategy, ValuationHandle};
-    use market_gifts::valuation::{ModelLookup, ModelPosition, StrategyId, ValuationRequest};
-    let (_directory, mut writer) = fixture();
-    let data = MarketDataService::start(writer.reader(), 2, 1)
-        .await
-        .unwrap();
-    let model = market_valuation::Service::start(
-        ModelFloorStrategy::new(data.handle.clone()),
-        Default::default(),
-    )
-    .unwrap();
-    let collection = market_valuation::Service::start(
-        CollectionFloorStrategy::new(data.handle.clone()),
-        Default::default(),
-    )
-    .unwrap();
-    assert!(ValuationHandle::new([]).is_err());
-    assert!(ValuationHandle::new([model.handle.clone(), model.handle.clone()]).is_err());
-    let registry = ValuationHandle::new([model.handle.clone(), collection.handle.clone()]).unwrap();
-    assert_eq!(registry.strategies().count(), 2);
-    let request = ValuationRequest {
-        strategy: StrategyId::model_floor(),
-        currency_id: "GRAM".into(),
-        positions: vec![ModelPosition {
-            model: ModelLookup::named("Gift", "Missing").unwrap(),
-            quantity: 2,
-        }],
-    };
-    let broad = ValuationRequest {
-        strategy: StrategyId::collection_floor(),
-        ..request.clone()
-    };
-    let permit = data
-        .handle
-        .orderbooks
-        .valuations
-        .clone()
-        .acquire_owned()
-        .await
-        .unwrap();
-    let jobs = async { tokio::join!(registry.mark(request.clone()), registry.mark(broad.clone())) };
-    tokio::pin!(jobs);
+    let reader = service.orderbooks.clone();
+    let mut work =
+        tokio::spawn(async move { reader.prepare(|snapshot| snapshot.revision()).await });
     assert!(
-        tokio::time::timeout(Duration::from_millis(30), &mut jobs)
+        tokio::time::timeout(Duration::from_millis(20), &mut work)
             .await
             .is_err()
     );
-    assert!(data.handle.status().await.unwrap().ready);
-    drop(permit);
-    let (missing, priced) = jobs.await;
-    let error = missing.unwrap_err();
-    assert_eq!(error.code(), DataErrorCode::NotEnoughData);
-    assert_eq!(
-        error.valuation_details().unwrap().strategy,
-        StrategyId::model_floor()
-    );
-    let priced = priced.unwrap();
-    assert_eq!(priced.strategy, "collection_floor");
-    assert_eq!(priced.total.as_str(), "6");
-    assert!(Arc::ptr_eq(
-        &priced,
-        &registry.mark(broad.clone()).await.unwrap()
-    ));
-    let unknown = ValuationRequest {
-        strategy: StrategyId::new("unknown").unwrap(),
-        ..request.clone()
-    };
-    let error = registry.mark(unknown).await.unwrap_err();
-    assert_eq!(error.code(), DataErrorCode::UnsupportedStrategy);
-    assert_eq!(
-        error.valuation_details().unwrap().strategy.as_str(),
-        "unknown"
-    );
-    // No eligible asks is an explicit reason, never a cached zero estimate.
-    let mut exhausted = order("0");
-    if let Some(w::change::Change::Upsert(w::Entity {
-        entity: Some(w::entity::Entity::Order(o)),
-    })) = exhausted.change.as_mut()
-    {
-        o.quantity = "0".into();
-    }
-    writer
-        .apply(w::Batch {
-            cursor: "empty".into(),
-            changes: vec![exhausted],
-        })
-        .unwrap();
-    let error = registry.mark(broad.clone()).await.unwrap_err();
-    assert_eq!(error.code(), DataErrorCode::NotEnoughData);
-    assert_eq!(
-        error.valuation_details().unwrap().unpriced[0].unpriced,
-        Some(market_gifts::valuation::UnpricedReason::NoListing)
-    );
-    writer
-        .apply(w::Batch {
-            cursor: "recovered".into(),
-            changes: vec![order("4")],
-        })
-        .unwrap();
-    assert_eq!(
-        registry.mark(broad.clone()).await.unwrap().total.as_str(),
-        "8"
-    );
-    model.task.shutdown().await.unwrap();
-    collection.task.shutdown().await.unwrap();
+    assert_eq!(handle.orders_raw(query()).await.unwrap().page.cursor, "c0");
+    drop(heavy);
+    work.await.unwrap().unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
-    data.task.run(stop).await.unwrap();
+    service.task.run(stop).await.unwrap();
 }

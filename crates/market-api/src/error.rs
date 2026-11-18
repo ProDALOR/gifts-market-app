@@ -16,6 +16,7 @@ pub enum ErrorCode {
     Unavailable,
     NotFound,
     NotEnoughData,
+    InvalidBaseline,
     UnsupportedStrategy,
     TimedOut,
 }
@@ -46,6 +47,7 @@ impl From<market_actors::error::DataError> for ApiError {
             DataErrorCode::CapacityExceeded => ErrorCode::CapacityExceeded,
             DataErrorCode::Unavailable => ErrorCode::Unavailable,
             DataErrorCode::NotEnoughData => ErrorCode::NotEnoughData,
+            DataErrorCode::InvalidBaseline => ErrorCode::InvalidBaseline,
             DataErrorCode::UnsupportedStrategy => ErrorCode::UnsupportedStrategy,
             DataErrorCode::TimedOut => ErrorCode::TimedOut,
         };
@@ -81,7 +83,9 @@ impl ResponseError for ApiError {
             ErrorCode::CapacityExceeded => StatusCode::TOO_MANY_REQUESTS,
             ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
-            ErrorCode::NotEnoughData => StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::NotEnoughData | ErrorCode::InvalidBaseline => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             ErrorCode::UnsupportedStrategy => StatusCode::BAD_REQUEST,
             ErrorCode::TimedOut => StatusCode::SERVICE_UNAVAILABLE,
         }

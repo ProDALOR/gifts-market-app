@@ -17,7 +17,7 @@ pub trait ValuationProvider: Send + Sync + 'static {
         request: ValuationRequest,
     ) -> impl Future<Output = Result<std::sync::Arc<market_valuation::Mark<Valuation>>, DataError>> + Send;
 }
-impl ValuationProvider for market_actors::valuation::ValuationHandle {
+impl ValuationProvider for market_valuation::ValuationHandle {
     async fn mark(
         &self,
         request: ValuationRequest,

@@ -12,7 +12,7 @@ impl BotService {
         worker: TelegramWorker,
         data: MarketDataHandle,
         portfolio: market_portfolio::PortfolioHandle,
-        valuation: market_actors::valuation::ValuationHandle,
+        valuation: market_valuation::ValuationHandle,
     ) -> Self {
         Self {
             worker,

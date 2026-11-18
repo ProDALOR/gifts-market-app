@@ -1,276 +1,246 @@
 use super::*;
-use std::sync::Mutex;
-struct Call {
-    key: u8,
-    reply: oneshot::Sender<Result<Evaluation<u32>, &'static str>>,
+use actix::{AtomicResponse, WrapFuture};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+type TestMessage = Evaluate<u8, u64, &'static str>;
+struct TestActor {
+    life: Lifecycle,
+    gate: Arc<Semaphore>,
+    entered: Arc<AtomicUsize>,
 }
-#[derive(Clone)]
-struct Source {
-    calls: Arc<Mutex<Vec<Call>>>,
-    changed: watch::Sender<u64>,
+impl Actor for TestActor {
+    type Context = Context<Self>;
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.life.started(ctx);
+    }
 }
-impl Source {
-    fn new() -> Self {
-        Self {
-            calls: Default::default(),
-            changed: watch::channel(0).0,
+impl Handler<TestMessage> for TestActor {
+    type Result = AtomicResponse<Self, Result<Arc<Mark<u64>>, &'static str>>;
+    fn handle(&mut self, message: TestMessage, _: &mut Self::Context) -> Self::Result {
+        let (input, request) = message.into_parts();
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        assert_ne!(input, 254, "synthetic actor panic");
+        let stop = self.life.stop_token();
+        let gate = self.gate.clone();
+        AtomicResponse::new(Box::pin(
+            async move {
+                let _request = request;
+                if input == 255 {
+                    return Err("invalid input");
+                }
+                tokio::select! { biased;
+                    _ = stop.cancelled() => return Err("stopping"),
+                    _ = _request.cancelled.cancelled() => return Err("cancelled"),
+                    permit = gate.acquire() => permit.unwrap().forget(),
+                }
+                Ok(u64::from(input) * 2)
+            }
+            .into_actor(self)
+            .map(|value, actor, _| {
+                value.map(|data| {
+                    Arc::new(Mark::evaluated(
+                        actor.life.strategy(),
+                        Prepared {
+                            prepared_at: jiff::Timestamp::now(),
+                            data,
+                            revision: "pinned-revision".into(),
+                        },
+                    ))
+                })
+            }),
+        ))
+    }
+}
+fn start(
+    config: Config,
+) -> (
+    Service<u8, u64, &'static str>,
+    Arc<Semaphore>,
+    Arc<AtomicUsize>,
+) {
+    let gate = Arc::new(Semaphore::new(0));
+    let entered = Arc::new(AtomicUsize::new(0));
+    let service = Service::start("test", config, |life| TestActor {
+        life,
+        gate: gate.clone(),
+        entered: entered.clone(),
+    })
+    .unwrap();
+    (service, gate, entered)
+}
+async fn until_entered(entered: &AtomicUsize, count: usize) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while entered.load(Ordering::SeqCst) < count {
+            tokio::task::yield_now().await;
         }
-    }
-    fn count(&self) -> usize {
-        self.calls.lock().unwrap().len()
-    }
-    fn answer(&self, n: usize, value: u32) {
-        let call = self.calls.lock().unwrap().remove(n);
-        let _ = call.reply.send(Ok(Evaluation {
-            value,
-            revision: value.to_string(),
-            coverage: Coverage {
-                priced: 1,
-                unpriced: 0,
-            },
-        }));
-    }
+    })
+    .await
+    .unwrap();
 }
-impl Strategy for Source {
-    const ID: &'static str = "test";
-    type Key = u8;
-    type Value = u32;
-    type Error = &'static str;
-    fn normalize(&self, key: u8) -> Result<u8, Self::Error> {
-        if key == 255 {
-            Err("invalid key")
-        } else {
-            Ok(key % 10)
-        }
-    }
-    fn changes(&self) -> watch::Receiver<u64> {
-        self.changed.subscribe()
-    }
-    async fn evaluate(&self, key: u8) -> Result<Evaluation<u32>, Self::Error> {
-        let (reply, rx) = oneshot::channel();
-        self.calls.lock().unwrap().push(Call { key, reply });
-        rx.await.unwrap_or(Err("cancelled"))
-    }
-}
-async fn flush() {
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-    }
-}
-fn ask(
-    handle: &Handle<u8, u32, &'static str>,
-    key: u8,
-) -> tokio::task::JoinHandle<Result<Arc<Mark<u32>>, Error<&'static str>>> {
-    let handle = handle.clone();
-    tokio::spawn(async move { handle.mark(key).await })
-}
-#[tokio::test(start_paused = true)]
-async fn normalizes_coalesces_and_serves_the_same_cached_mark() {
-    let source = Source::new();
-    let service = Service::start(source.clone(), Default::default()).unwrap();
-    let a = ask(&service.handle, 1);
-    let b = ask(&service.handle, 11);
-    flush().await;
-    assert_eq!(source.count(), 1);
-    assert_eq!(source.calls.lock().unwrap()[0].key, 1);
-    source.answer(0, 42);
-    let a = a.await.unwrap().unwrap();
-    let b = b.await.unwrap().unwrap();
-    assert!(Arc::ptr_eq(&a, &b));
-    let c = service.handle.mark(1).await.unwrap();
-    assert!(Arc::ptr_eq(&a, &c));
-    assert_eq!(a.revision, "42");
-    assert_eq!(a.strategy, "test");
-    assert_eq!(service.handle.strategy(), "test");
-    assert_eq!(a.coverage.priced, 1);
+#[actix::test]
+async fn typed_results_and_strategy_errors_keep_identity_and_revision() {
+    let (service, gate, _) = start(Config::default());
+    gate.add_permits(1);
+    let mark = service.handle.evaluate(4).await.unwrap();
+    assert_eq!(mark.data, 8);
+    assert_eq!(mark.strategy, "test");
+    assert_eq!(mark.revision, "pinned-revision");
     assert_eq!(
-        service.handle.mark(255).await,
-        Err(Error::Strategy("invalid key"))
+        service.handle.evaluate(255).await,
+        Err(Error::Strategy("invalid input"))
     );
     service.task.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
-async fn invalidation_discards_an_older_inflight_evaluation() {
-    let source = Source::new();
-    let service = Service::start(source.clone(), Default::default()).unwrap();
-    let result = ask(&service.handle, 1);
-    flush().await;
-    source.changed.send_replace(1);
-    source.answer(0, 1);
-    flush().await;
-    assert!(!result.is_finished());
-    assert_eq!(source.count(), 1);
-    source.answer(0, 2);
-    let mark = result.await.unwrap().unwrap();
-    assert_eq!(mark.value, 2);
-    service.task.shutdown().await.unwrap();
-}
-#[tokio::test(start_paused = true)]
-async fn refreshes_on_changes_and_periodically_without_keepalive_of_idle_entries() {
-    let source = Source::new();
-    let config = Config {
-        idle_ttl: std::time::Duration::from_secs(60),
+#[actix::test]
+async fn native_actor_admission_is_bounded_and_caller_cancellation_unblocks_next_request() {
+    let (service, gate, entered) = start(Config {
+        max_requests: 1,
         ..Default::default()
-    };
-    let service = Service::start(source.clone(), config).unwrap();
-    let first = ask(&service.handle, 1);
-    flush().await;
-    source.answer(0, 1);
-    first.await.unwrap().unwrap();
-    source.changed.send_replace(1);
-    flush().await;
-    assert_eq!(source.count(), 0);
-    tokio::time::advance(Duration::from_millis(101)).await;
-    flush().await;
-    assert_eq!(source.count(), 1);
-    source.answer(0, 2);
-    flush().await;
-    assert_eq!(service.handle.mark(1).await.unwrap().value, 2);
-    tokio::time::advance(Duration::from_secs(30)).await;
-    flush().await;
-    assert_eq!(source.count(), 1);
-    source.answer(0, 3);
-    flush().await;
-    assert_eq!(service.handle.mark(1).await.unwrap().value, 3);
-    tokio::time::advance(Duration::from_secs(61)).await;
-    flush().await;
-    assert_eq!(source.count(), 0);
-    service.task.shutdown().await.unwrap();
-}
-#[tokio::test(start_paused = true)]
-async fn failures_and_timeouts_are_not_cached_or_substituted_with_stale_values() {
-    let source = Source::new();
-    let service = Service::start(source.clone(), Default::default()).unwrap();
-    let a = ask(&service.handle, 1);
-    let b = ask(&service.handle, 1);
-    flush().await;
-    source
-        .calls
-        .lock()
-        .unwrap()
-        .remove(0)
-        .reply
-        .send(Err("failed"))
-        .unwrap();
-    assert_eq!(a.await.unwrap(), Err(Error::Strategy("failed")));
-    assert_eq!(b.await.unwrap(), Err(Error::Strategy("failed")));
-    let retry = ask(&service.handle, 1);
-    flush().await;
-    assert_eq!(source.count(), 1);
-    tokio::time::advance(Duration::from_secs(10)).await;
-    assert_eq!(retry.await.unwrap(), Err(Error::TimedOut));
-    service.task.shutdown().await.unwrap();
-}
-#[tokio::test(start_paused = true)]
-async fn admission_cache_and_shutdown_are_bounded() {
-    let source = Source::new();
-    let service = Service::start(
-        source.clone(),
-        Config {
-            max_requests: 2,
-            max_entries: 1,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let first = ask(&service.handle, 1);
-    flush().await;
-    let second = ask(&service.handle, 2);
-    flush().await;
-    assert_eq!(second.await.unwrap(), Err(Error::Busy));
-    let duplicate = ask(&service.handle, 1);
-    flush().await;
-    assert_eq!(service.handle.mark(3).await, Err(Error::Busy));
+    });
+    let handle = service.handle.clone();
+    let first = tokio::spawn(async move { handle.evaluate(1).await });
+    until_entered(&entered, 1).await;
+    assert_eq!(service.handle.evaluate(2).await, Err(Error::Busy));
     first.abort();
     let _ = first.await;
-    service.task.shutdown().await.unwrap();
-    assert_eq!(duplicate.await.unwrap(), Err(Error::Stopped));
-    assert!(source.calls.lock().unwrap()[0].reply.is_closed());
-    assert_eq!(service.handle.mark(1).await, Err(Error::Stopped));
-}
-
-#[tokio::test(start_paused = true)]
-async fn abandoning_queued_callers_releases_admission_and_does_not_evaluate_their_keys() {
-    let source = Source::new();
-    let service = Service::start(
-        source.clone(),
-        Config {
-            max_requests: 2,
-            ..Default::default()
-        },
-    )
+    gate.add_permits(1);
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match service.handle.evaluate(3).await {
+                Err(Error::Busy) => tokio::task::yield_now().await,
+                other => break other,
+            }
+        }
+    })
+    .await
+    .unwrap()
     .unwrap();
-    let first = ask(&service.handle, 1);
-    flush().await;
-    let abandoned = ask(&service.handle, 2);
-    flush().await;
-    abandoned.abort();
-    let _ = abandoned.await;
-    flush().await;
-    source.answer(0, 1);
-    first.await.unwrap().unwrap();
-    flush().await;
-    assert_eq!(source.count(), 0);
-    let next = ask(&service.handle, 3);
-    flush().await;
-    assert_eq!(source.calls.lock().unwrap()[0].key, 3);
-    source.answer(0, 3);
-    next.await.unwrap().unwrap();
+    assert_eq!(result.data, 6);
     service.task.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
-async fn dropped_lifecycle_owner_closes_handles_and_aborts_active_work() {
-    let source = Source::new();
-    let service = Service::start(source.clone(), Default::default()).unwrap();
-    let result = ask(&service.handle, 1);
-    flush().await;
+#[actix::test]
+async fn timeout_cancels_native_work_and_releases_admission() {
+    let (service, gate, entered) = start(Config {
+        max_requests: 1,
+        request_timeout: Duration::from_millis(30),
+    });
+    assert_eq!(service.handle.evaluate(1).await, Err(Error::TimedOut));
+    until_entered(&entered, 1).await;
+    gate.add_permits(1);
+    let mark = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match service.handle.evaluate(2).await {
+                Err(Error::Busy) => tokio::task::yield_now().await,
+                other => break other,
+            }
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(mark.data, 4);
+    service.task.shutdown().await.unwrap();
+}
+#[actix::test]
+async fn stopping_actor_interrupts_pending_response_and_closes_handle() {
+    let (service, _, entered) = start(Config::default());
+    let handle = service.handle.clone();
+    let request_handle = handle.clone();
+    let request = tokio::spawn(async move { request_handle.evaluate(1).await });
+    until_entered(&entered, 1).await;
+    tokio::time::timeout(Duration::from_secs(2), service.task.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(request.await.unwrap(), Err(Error::Stopped));
+    handle.closed().await;
+    assert_eq!(handle.evaluate(2).await, Err(Error::Stopped));
+}
+#[actix::test]
+async fn supervision_reports_unexpected_actor_exit() {
+    let (service, _, _) = start(Config::default());
+    assert_eq!(service.handle.evaluate(254).await, Err(Error::Stopped));
+    assert_eq!(
+        service.task.run(CancellationToken::new()).await,
+        Err(ServiceError)
+    );
+}
+#[actix::test]
+async fn supervisor_cancellation_and_task_drop_stop_native_actor() {
+    let (service, _, _) = start(Config::default());
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+    assert_eq!(service.handle.evaluate(1).await, Err(Error::Stopped));
+    let (service, _, _) = start(Config::default());
     drop(service.task);
-    assert_eq!(result.await.unwrap(), Err(Error::Stopped));
-    service.handle.closed().await;
-    assert!(source.calls.lock().unwrap()[0].reply.is_closed());
-    assert_eq!(service.handle.mark(2).await, Err(Error::Stopped));
+    tokio::time::timeout(Duration::from_secs(2), service.handle.closed())
+        .await
+        .unwrap();
+}
+#[actix::test]
+async fn rejects_invalid_configuration_before_building_actor() {
+    for (id, config) in [
+        ("", Config::default()),
+        (
+            "test",
+            Config {
+                max_requests: 0,
+                ..Default::default()
+            },
+        ),
+        (
+            "test",
+            Config {
+                max_requests: 4097,
+                ..Default::default()
+            },
+        ),
+        (
+            "test",
+            Config {
+                request_timeout: Duration::ZERO,
+                ..Default::default()
+            },
+        ),
+    ] {
+        let result = Service::<u8, u64, &'static str>::start::<TestActor, _>(id, config, |_| {
+            panic!("invalid factory invoked")
+        });
+        assert!(result.is_err());
+    }
+}
+#[tokio::test]
+async fn requires_actix_context() {
+    assert!(
+        Service::<u8, u64, &'static str>::start::<TestActor, _>(
+            "test",
+            Config::default(),
+            |_| panic!("factory invoked without Actix")
+        )
+        .is_err()
+    );
 }
 
-#[tokio::test(start_paused = true)]
-async fn strategy_panics_are_reported_and_never_leave_waiters_hanging() {
-    struct Broken(tokio::sync::watch::Receiver<u64>);
-    impl Strategy for Broken {
-        const ID: &'static str = "test";
-        type Key = u8;
-        type Value = u32;
-        type Error = &'static str;
-        fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
-            self.0.clone()
-        }
-        async fn evaluate(&self, _: u8) -> Result<Evaluation<u32>, Self::Error> {
-            panic!("simulated valuation failure")
-        }
-    }
-    let (_sender, changes) = tokio::sync::watch::channel(0);
-    let service = Service::start(Broken(changes), Default::default()).unwrap();
-    let result = ask(&service.handle, 1);
-    assert_eq!(result.await.unwrap(), Err(Error::Stopped));
-    assert!(service.task.run(CancellationToken::new()).await.is_err());
-}
-
-#[tokio::test(start_paused = true)]
-async fn bounded_mark_cache_evicts_inactive_keys_and_recomputes_on_next_read() {
-    let source = Source::new();
-    let service = Service::start(
-        source.clone(),
-        Config {
-            max_entries: 1,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    for key in [1, 2, 1] {
-        let result = ask(&service.handle, key);
-        flush().await;
-        assert_eq!(source.count(), 1);
-        assert_eq!(source.calls.lock().unwrap()[0].key, key);
-        source.answer(0, u32::from(key));
-        assert_eq!(result.await.unwrap().unwrap().value, u32::from(key));
-    }
+#[actix::test]
+async fn cancelled_queued_request_never_executes_or_retains_capacity() {
+    let (service, gate, entered) = start(Config {
+        max_requests: 2,
+        ..Default::default()
+    });
+    let first = tokio::spawn(service.handle.evaluate(1));
+    until_entered(&entered, 1).await;
+    let mut queued = Box::pin(service.handle.evaluate(2));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut queued)
+            .await
+            .is_err()
+    );
+    assert_eq!(service.handle.evaluate(3).await, Err(Error::Busy));
+    drop(queued);
+    gate.add_permits(2);
+    first.await.unwrap().unwrap();
+    assert_eq!(service.handle.evaluate(3).await.unwrap().data, 6);
+    assert_eq!(entered.load(Ordering::SeqCst), 2);
     service.task.shutdown().await.unwrap();
 }

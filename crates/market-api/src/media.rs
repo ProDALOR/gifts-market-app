@@ -182,10 +182,13 @@ mod tests {
         let data = market_actors::MarketDataService::start(writer.reader(), 2, 2)
             .await
             .unwrap();
-        let valuation = market_valuation::Service::start(
-            market_actors::valuation::ModelFloorStrategy::new(data.handle.clone()),
+        let valuation = market_valuation::Service::start_on(
+            &data,
+            "model_floor",
+            market_valuation::FloorActor::model,
             Default::default(),
         )
+        .await
         .unwrap();
         let media_path = directory.path().join("media");
         let (cache, downloads) = MediaCache::open(&media_path).await.unwrap();
@@ -207,8 +210,7 @@ mod tests {
                 .wrap(crate::security_headers())
                 .app_data(web::Data::new(MarketApi::new(
                     data.handle.clone(),
-                    market_actors::valuation::ValuationHandle::new([valuation.handle.clone()])
-                        .unwrap(),
+                    market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
                 )))
                 .app_data(web::Data::new(MediaApi::new(cache.clone())))
                 .configure(crate::configure),

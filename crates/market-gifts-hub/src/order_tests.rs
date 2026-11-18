@@ -120,15 +120,14 @@ fn floors_and_order_projection_agree_on_singleton_and_duplicate_model_predicates
     ] {
         let mut raw = fixture();
         raw.attributes.insert(MODEL.into(), predicate);
-        assert_eq!(concrete_model(&raw), Some("model"));
         let projected = order(raw.clone()).unwrap();
-        let quote = floor_quote(raw, 0).unwrap().unwrap();
+        let quote = ask_quote(raw, 0).unwrap().unwrap();
         assert_eq!(quote.price, projected.price);
         assert_eq!(quote.venue_id, projected.book.venue_id);
         let GiftTarget::Gift { gift } = projected.target else {
             panic!("expected concrete gift")
         };
-        assert_eq!(Some(quote.model_id), gift.traits.model);
+        assert_eq!(quote.model_id, gift.traits.model);
     }
 }
 
@@ -139,35 +138,34 @@ fn floors_exclude_unsupported_expired_and_nonconcrete_listings() {
         "future.condition".into(),
         eq(w::attribute_value::Value::Boolean(true)),
     );
-    assert!(floor_quote(unknown, 0).unwrap().is_none());
+    assert!(ask_quote(unknown, 0).unwrap().is_none());
     let mut multiple = fixture();
     multiple
         .attributes
         .insert(MODEL.into(), models(&["model", "other"]));
-    assert_eq!(concrete_model(&multiple), None);
-    assert!(floor_quote(multiple, 0).unwrap().is_none());
+    assert!(ask_quote(multiple, 0).unwrap().is_none());
     let mut nonconcrete = fixture();
     nonconcrete
         .attributes
         .insert(BACKDROP.into(), models(&["one", "two"]));
-    assert!(floor_quote(nonconcrete, 0).unwrap().is_none());
+    assert!(ask_quote(nonconcrete, 0).unwrap().is_none());
     let mut expired = fixture();
     expired.expires_at_ms = Some(10);
-    assert!(floor_quote(expired, 10).unwrap().is_none());
+    assert!(ask_quote(expired, 10).unwrap().is_none());
     let mut bid = fixture();
     bid.mode = w::OrderMode::Bid as i32;
-    assert!(floor_quote(bid, 0).unwrap().is_none());
+    assert!(ask_quote(bid, 0).unwrap().is_none());
     for quantity in ["0", "-1"] {
         let mut exhausted = fixture();
         exhausted.quantity = quantity.into();
         assert!(order(exhausted.clone()).is_err());
-        assert!(floor_quote(exhausted, 0).unwrap().is_none());
+        assert!(ask_quote(exhausted, 0).unwrap().is_none());
     }
     for quantity in ["0.5", "1.5", "4294967296", "invalid"] {
         let mut invalid = fixture();
         invalid.quantity = quantity.into();
         assert!(order(invalid.clone()).is_err());
-        assert!(floor_quote(invalid, 0).is_err());
+        assert!(ask_quote(invalid, 0).is_err());
     }
 }
 
@@ -175,20 +173,39 @@ fn floors_exclude_unsupported_expired_and_nonconcrete_listings() {
 fn collection_and_model_floors_share_eligibility_but_differ_on_model_scope() {
     let mut broad = fixture();
     broad.attributes.remove(MODEL);
-    assert!(floor_quote(broad.clone(), 0).unwrap().is_none());
-    assert!(collection_floor_quote(broad, 0).unwrap().is_some());
+    assert!(
+        ask_quote(broad.clone(), 0)
+            .unwrap()
+            .unwrap()
+            .model_id
+            .is_none()
+    );
+    assert!(ask_quote(broad, 0).unwrap().is_some());
     for (price, quantity, expiry) in [("0", "1", None), ("1", "0", None), ("1", "1", Some(10))] {
         let mut raw = fixture();
         raw.price = price.into();
         raw.quantity = quantity.into();
         raw.expires_at_ms = expiry;
-        assert!(floor_quote(raw.clone(), 10).unwrap().is_none());
-        assert!(collection_floor_quote(raw, 10).unwrap().is_none());
+        assert!(ask_quote(raw.clone(), 10).unwrap().is_none());
+        assert!(ask_quote(raw, 10).unwrap().is_none());
     }
     let mut unknown = fixture();
     unknown.attributes.insert(
         "future.condition".into(),
         eq(w::attribute_value::Value::Boolean(true)),
     );
-    assert!(collection_floor_quote(unknown, 0).unwrap().is_none());
+    assert!(ask_quote(unknown, 0).unwrap().is_none());
+}
+
+#[test]
+fn trait_evidence_never_invents_a_model_from_broad_criteria() {
+    let mut raw = fixture();
+    raw.item_id = None;
+    raw.attributes
+        .insert(MODEL.into(), models(&["model", "other"]));
+    raw.attributes
+        .insert(BACKDROP.into(), models(&["backdrop", "backdrop"]));
+    let quote = ask_quote(raw, 0).unwrap().unwrap();
+    assert!(quote.model_id.is_none());
+    assert_eq!(quote.backdrop_id.as_deref(), Some("backdrop"));
 }

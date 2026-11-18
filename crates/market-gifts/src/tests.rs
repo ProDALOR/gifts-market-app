@@ -113,7 +113,7 @@ fn domain_ranges_reject_reversed_bounds_and_zero_gift_numbers() {
 fn valuation_validates_positive_positions_names_and_total_overflow() {
     use crate::valuation::{ModelLookup, ModelPosition, ValuationRequest};
     let mut request = ValuationRequest {
-        strategy: Default::default(),
+        strategy: crate::valuation::StrategyId::model_floor(),
         positions: vec![ModelPosition {
             model: ModelLookup::Name {
                 collection: "Gift".into(),
@@ -157,7 +157,7 @@ fn named_lookups_and_portfolios_share_the_same_name_validation() {
         };
         assert!(raw.validate().is_err());
         let request = ValuationRequest {
-            strategy: Default::default(),
+            strategy: crate::valuation::StrategyId::model_floor(),
             positions: vec![ModelPosition {
                 model: raw,
                 quantity: 1,
@@ -170,7 +170,7 @@ fn named_lookups_and_portfolios_share_the_same_name_validation() {
         let model = ModelLookup::named("Collection", name).unwrap();
         assert!(
             ValuationRequest {
-                strategy: Default::default(),
+                strategy: crate::valuation::StrategyId::model_floor(),
                 positions: vec![ModelPosition { model, quantity: 1 }],
                 currency_id: "GRAM".into()
             }
@@ -181,11 +181,14 @@ fn named_lookups_and_portfolios_share_the_same_name_validation() {
 }
 
 #[test]
-fn valuation_strategy_ids_are_stable_validated_and_default_to_model_floor() {
+fn valuation_strategy_ids_are_stable_validated_and_selection_is_required() {
     use crate::valuation::{StrategyId, ValuationRequest};
-    let request: ValuationRequest =
-        serde_json::from_value(serde_json::json!({"positions":[],"currency_id":"GRAM"})).unwrap();
-    assert_eq!(request.strategy, StrategyId::model_floor());
+    assert!(
+        serde_json::from_value::<ValuationRequest>(
+            serde_json::json!({"positions":[],"currency_id":"GRAM"})
+        )
+        .is_err()
+    );
     for id in ["model_floor", "collection_floor", "strategy_v2"] {
         let parsed = StrategyId::new(id).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), id);
@@ -193,4 +196,34 @@ fn valuation_strategy_ids_are_stable_validated_and_default_to_model_floor() {
     for id in ["", "ModelFloor", "1floor", "a-b", "a/b", &"x".repeat(65)] {
         assert!(StrategyId::new(id).is_err());
     }
+}
+
+#[test]
+fn multiplier_ratios_validate_baselines_and_round_deterministically() {
+    use crate::valuation::*;
+    assert_eq!(
+        Multiplier::from_floors(&"10".into(), &"3".into())
+            .unwrap()
+            .as_str(),
+        "3.333333333333"
+    );
+    assert_eq!(
+        Multiplier::from_floors(&"6".into(), &"2".into())
+            .unwrap()
+            .as_str(),
+        "3"
+    );
+    assert!(Multiplier::from_floors(&"2".into(), &"0".into()).is_err());
+    for value in ["0", "-1", "invalid"] {
+        assert!(Multiplier::try_from(value.to_owned()).is_err());
+    }
+    for value in [
+        serde_json::json!({"collection_id":"gift","model_id":"model","currency_id":"GRAM"}),
+        serde_json::json!({"strategy":"model_multiplier","collection_id":"gift","backdrop_id":"backdrop","currency_id":"GRAM"}),
+        serde_json::json!({"strategy":"backdrop_multiplier","collection_id":"gift","backdrop_id":"backdrop","currency_id":"GRAM","positions":[]}),
+    ] {
+        assert!(serde_json::from_value::<ValuationQuery>(value).is_err());
+    }
+    let request:ValuationQuery=serde_json::from_value(serde_json::json!({"strategy":"model_multiplier","collection_id":"gift","model_id":"model","currency_id":"GRAM"})).unwrap();
+    assert!(matches!(request, ValuationQuery::ModelMultiplier(_)));
 }

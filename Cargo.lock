@@ -1954,7 +1954,6 @@ dependencies = [
  "market-gifts-hub",
  "market-hub-protocol",
  "market-replica",
- "market-valuation",
  "prost",
  "rust_decimal",
  "serde",
@@ -1970,6 +1969,7 @@ dependencies = [
 name = "market-api"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "actix-cors",
  "actix-files",
  "actix-web",
@@ -2006,6 +2006,7 @@ dependencies = [
 name = "market-app"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "anyhow",
  "clap",
  "futures-util",
@@ -2184,6 +2185,7 @@ dependencies = [
 name = "market-telegram-bot"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "anyhow",
  "jiff",
  "market-actors",
@@ -2220,9 +2222,18 @@ dependencies = [
 name = "market-valuation"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "jiff",
+ "market-actors",
+ "market-gifts",
+ "market-gifts-hub",
+ "market-hub-protocol",
+ "market-replica",
+ "rust_decimal",
+ "tempfile",
  "tokio",
  "tokio-util",
+ "tonic",
 ]
 
 [[package]]

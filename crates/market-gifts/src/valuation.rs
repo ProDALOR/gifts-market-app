@@ -1,8 +1,10 @@
-//! Model floors and portfolio positions, independent of Telegram inventory retrieval.
+//! Explicit gift valuation requests, measurements and portfolio estimates.
+mod multiplier;
 use crate::{
     Amount, CollectionId, CurrencyId, InvalidValue, ModelId, SyncStatus, TelegramDocumentId,
     TelegramGiftId, VenueId,
 };
+pub use multiplier::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -66,7 +68,6 @@ impl ModelPosition {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ValuationRequest {
-    #[serde(default)]
     pub strategy: StrategyId,
     pub positions: Vec<ModelPosition>,
     pub currency_id: CurrencyId,
@@ -109,7 +110,6 @@ pub struct Valuation {
     pub priced: u32,
     pub unpriced: u32,
     pub currency_id: CurrencyId,
-    pub cursor: String,
     pub sync: SyncStatus,
 }
 impl ValuationRequest {
@@ -157,11 +157,6 @@ impl StrategyId {
         Self("collection_floor".into())
     }
 }
-impl Default for StrategyId {
-    fn default() -> Self {
-        Self::model_floor()
-    }
-}
 impl std::fmt::Display for StrategyId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -178,7 +173,7 @@ impl From<StrategyId> for String {
         value.0
     }
 }
-/// Safe public context for a failed valuation. Rows explain individual missing quotes/identities.
+/// Shared failure metadata with typed, operation-specific evidence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ValuationErrorDetails {
@@ -191,8 +186,8 @@ pub struct ValuationErrorDetails {
     pub required_samples: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available_samples: Option<u32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unpriced: Vec<ModelValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<ValuationErrorContext>,
 }
 impl ValuationErrorDetails {
     pub fn strategy(strategy: StrategyId) -> Self {
@@ -202,7 +197,7 @@ impl ValuationErrorDetails {
             revision: None,
             required_samples: None,
             available_samples: None,
-            unpriced: vec![],
+            context: None,
         }
     }
 }

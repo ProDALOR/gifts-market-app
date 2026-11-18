@@ -12,7 +12,10 @@ fn message(id: i32, text: &str) -> IncomingMessage<'_> {
 #[test]
 fn floor_and_portfolio_arguments_are_typed_without_overriding_caller_identity() {
     let request = commands::parse(
-        message(21, "/floor@MARKET_BOT Bunny Muffin | Red Alert | TON"),
+        message(
+            21,
+            "/floor@MARKET_BOT model_floor | Bunny Muffin | Red Alert | TON",
+        ),
         &["market_bot"],
     )
     .unwrap();
@@ -25,7 +28,8 @@ fn floor_and_portfolio_arguments_are_typed_without_overriding_caller_identity() 
         market_gifts::valuation::ModelLookup::named("Bunny Muffin", "Red Alert").unwrap()
     );
     assert_eq!(query.currency.as_str(), "GRAM");
-    let request = commands::parse(message(22, "/portfolio TON"), &["market_bot"]).unwrap();
+    let request =
+        commands::parse(message(22, "/portfolio model_floor | TON"), &["market_bot"]).unwrap();
     assert_eq!(request.user_id, 7);
     let Command::Portfolio { currency, .. } = request.command else {
         panic!("expected portfolio")
@@ -33,8 +37,8 @@ fn floor_and_portfolio_arguments_are_typed_without_overriding_caller_identity() 
     assert_eq!(currency.as_str(), "GRAM");
     for command in [
         "/floor bad",
-        "/floor A | B | GRAM | XTR",
-        "/portfolio GRAM user_id=999",
+        "/floor model_floor | A | B | GRAM | XTR",
+        "/portfolio model_floor | GRAM user_id=999",
     ] {
         let request = commands::parse(message(23, command), &["market_bot"]).unwrap();
         assert!(matches!(request.command, Command::Invalid(_)));
@@ -45,7 +49,7 @@ fn floor_and_portfolio_arguments_are_typed_without_overriding_caller_identity() 
 fn floor_commands_reuse_domain_name_limits_and_keep_currency_shorthand_local() {
     use market_gifts::valuation::ModelLookup;
     for name in ["x".repeat(256), "💎".repeat(64)] {
-        let text = format!("/floor  Collection | {name} | xtr ");
+        let text = format!("/floor model_floor | Collection | {name} | xtr ");
         let request = commands::parse(message(1, &text), &["market_bot"]).unwrap();
         let Command::Floor(query) = request.command else {
             panic!("expected floor")
@@ -54,7 +58,7 @@ fn floor_commands_reuse_domain_name_limits_and_keep_currency_shorthand_local() {
         assert_eq!(query.currency.as_str(), "XTR");
     }
     for name in ["".to_owned(), "x".repeat(257), "💎".repeat(65)] {
-        let text = format!("/floor Collection | {name}");
+        let text = format!("/floor model_floor | Collection | {name}");
         let request = commands::parse(message(1, &text), &["market_bot"]).unwrap();
         assert!(matches!(
             request.command,
@@ -62,9 +66,9 @@ fn floor_commands_reuse_domain_name_limits_and_keep_currency_shorthand_local() {
         ));
     }
     for text in [
-        "/floor Collection | Model",
-        "/floor Collection | Model | ton",
-        "/floor Collection | Model | ",
+        "/floor model_floor | Collection | Model",
+        "/floor model_floor | Collection | Model | ton",
+        "/floor model_floor | Collection | Model | ",
     ] {
         let request = commands::parse(message(1, text), &["market_bot"]).unwrap();
         let Command::Floor(query) = request.command else {
@@ -104,26 +108,29 @@ impl InventoryProvider for Source {
     }
 }
 async fn services(
-    data: market_actors::MarketDataHandle,
+    data: &market_actors::MarketDataService,
     error: InventoryError,
 ) -> (
     market_invocations::Runtime,
     market_valuation::Service<
-        market_gifts::valuation::ValuationRequest,
+        market_gifts::valuation::PortfolioPositions,
         market_gifts::valuation::Valuation,
         market_actors::error::DataError,
     >,
     market_portfolio::PortfolioService,
 ) {
     let invocations = market_invocations::Runtime::start(Default::default()).unwrap();
-    let valuation = market_valuation::Service::start(
-        market_actors::valuation::ModelFloorStrategy::new(data),
+    let valuation = market_valuation::Service::start_on(
+        data,
+        "model_floor",
+        market_valuation::FloorActor::model,
         Default::default(),
     )
+    .await
     .unwrap();
     let portfolio = market_portfolio::PortfolioService::start(
         Source(error),
-        market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+        market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
         Default::default(),
         invocations.handle(),
     )
@@ -138,16 +145,15 @@ async fn bot_status_reads_the_shared_actor_and_portfolio_permission_failure_is_a
     let data = market_actors::MarketDataService::start(writer.reader(), 1, 1)
         .await
         .unwrap();
-    let (_invocations, _valuation, portfolio) =
-        services(data.handle.clone(), InventoryError::Forbidden).await;
+    let (_invocations, _valuation, portfolio) = services(&data, InventoryError::Forbidden).await;
     let handler = MarketCommands::new(
         data.handle.clone(),
         portfolio.handle.clone(),
-        market_actors::valuation::ValuationHandle::new([_valuation.handle.clone()]).unwrap(),
+        market_valuation::ValuationHandle::new([_valuation.handle.clone()]).unwrap(),
     );
     let names = vec!["market_bot".to_owned(), "market_alias".to_owned()];
     let request = handler
-        .parse(message(1, "/portfolio@MARKET_ALIAS"), &names)
+        .parse(message(1, "/portfolio@MARKET_ALIAS model_floor"), &names)
         .unwrap();
     let reply = handler.handle(request).await.unwrap();
     assert!(reply.text.contains("Telegram did not allow"));
@@ -173,7 +179,15 @@ async fn application_handler_owns_menu_alias_routing_launch_and_usage_without_mt
             .iter()
             .map(|command| command.name)
             .collect::<Vec<_>>(),
-        ["start", "market", "help", "status", "floor", "portfolio"]
+        [
+            "start",
+            "market",
+            "help",
+            "status",
+            "floor",
+            "portfolio",
+            "multiplier"
+        ]
     );
     assert!(
         handler
@@ -227,13 +241,12 @@ async fn bot_service_cancellation_opens_no_telegram_storage_and_keeps_market_dat
     .unwrap();
     let stop = tokio_util::sync::CancellationToken::new();
     stop.cancel();
-    let (_invocations, _valuation, portfolio) =
-        services(data.handle.clone(), InventoryError::Forbidden).await;
+    let (_invocations, _valuation, portfolio) = services(&data, InventoryError::Forbidden).await;
     BotService::new(
         worker,
         data.handle.clone(),
         portfolio.handle.clone(),
-        market_actors::valuation::ValuationHandle::new([_valuation.handle.clone()]).unwrap(),
+        market_valuation::ValuationHandle::new([_valuation.handle.clone()]).unwrap(),
     )
     .run(stop.clone())
     .await
@@ -253,14 +266,14 @@ async fn portfolio_authorization_failure_remains_fatal_for_the_transport() {
         .await
         .unwrap();
     let (_invocations, _valuation, portfolio) =
-        services(data.handle.clone(), InventoryError::Authorization).await;
+        services(&data, InventoryError::Authorization).await;
     let handler = MarketCommands::new(
         data.handle.clone(),
         portfolio.handle.clone(),
-        market_actors::valuation::ValuationHandle::new([_valuation.handle.clone()]).unwrap(),
+        market_valuation::ValuationHandle::new([_valuation.handle.clone()]).unwrap(),
     );
     let request = handler
-        .parse(message(1, "/portfolio"), &["market_bot".into()])
+        .parse(message(1, "/portfolio model_floor"), &["market_bot".into()])
         .unwrap();
     assert_eq!(handler.handle(request).await, Err(BotError::Authorization));
     let stop = tokio_util::sync::CancellationToken::new();
@@ -330,23 +343,51 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
         }
     }
     struct Floors {
+        life: market_valuation::Lifecycle,
         changes: tokio::sync::watch::Receiver<u64>,
         calls: Arc<AtomicUsize>,
+        last: Option<(
+            PortfolioPositions,
+            u64,
+            Arc<market_valuation::Mark<Valuation>>,
+        )>,
     }
-    impl market_valuation::Strategy for Floors {
-        const ID: &'static str = "model_floor";
-        type Key = ValuationRequest;
-        type Value = Valuation;
-        type Error = market_actors::error::DataError;
-        fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
-            self.changes.clone()
+    impl actix::Actor for Floors {
+        type Context = actix::Context<Self>;
+        fn started(&mut self, ctx: &mut Self::Context) {
+            self.life.started(ctx);
         }
-        async fn evaluate(
-            &self,
-            request: ValuationRequest,
-        ) -> Result<market_valuation::Evaluation<Valuation>, Self::Error> {
-            self.calls.fetch_add(1, Ordering::Relaxed);
+    }
+    impl
+        actix::Handler<
+            market_valuation::Evaluate<
+                PortfolioPositions,
+                Valuation,
+                market_actors::error::DataError,
+            >,
+        > for Floors
+    {
+        type Result =
+            Result<Arc<market_valuation::Mark<Valuation>>, market_actors::error::DataError>;
+        fn handle(
+            &mut self,
+            message: market_valuation::Evaluate<
+                PortfolioPositions,
+                Valuation,
+                market_actors::error::DataError,
+            >,
+            _: &mut Self::Context,
+        ) -> Self::Result {
+            let (request, _context) = message.into_parts();
             let revision = *self.changes.borrow();
+            if let Some((key, version, mark)) = &self.last
+                && key == &request
+                && *version == revision
+            {
+                return Ok(mark.clone());
+            }
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let key = request.clone();
             let price = revision + 2;
             let count: u32 = request.positions.iter().map(|p| p.quantity).sum();
             let value = Valuation {
@@ -373,21 +414,22 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
                 priced: count,
                 unpriced: 0,
                 currency_id: request.currency_id,
-                cursor: revision.to_string(),
                 sync: SyncStatus {
                     ready: true,
                     state: SyncState::Live,
                     updated_at: None,
                 },
             };
-            Ok(market_valuation::Evaluation {
-                revision: value.cursor.clone(),
-                coverage: market_valuation::Coverage {
-                    priced: count,
-                    unpriced: 0,
+            let mark = Arc::new(market_valuation::Mark::evaluated(
+                self.life.strategy(),
+                market_valuation::Prepared {
+                    prepared_at: jiff::Timestamp::now(),
+                    revision: revision.to_string(),
+                    data: value,
                 },
-                value,
-            })
+            ));
+            self.last = Some((key, revision, mark.clone()));
+            Ok(mark)
         }
     }
     let directory = tempfile::tempdir().unwrap();
@@ -398,18 +440,24 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
     let invocations = market_invocations::Runtime::start(Default::default()).unwrap();
     let (changed, changes) = tokio::sync::watch::channel(0);
     let quotes = Arc::new(AtomicUsize::new(0));
-    let valuation = market_valuation::Service::start(
-        Floors {
+    let quote_calls = quotes.clone();
+    let valuation = market_valuation::Service::start_on(
+        &data,
+        "model_floor",
+        move |_, life| Floors {
             changes,
-            calls: quotes.clone(),
+            calls: quote_calls,
+            life,
+            last: None,
         },
         Default::default(),
     )
+    .await
     .unwrap();
     let pages = Pages::default();
     let portfolio = market_portfolio::PortfolioService::start(
         pages.clone(),
-        market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+        market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
         Default::default(),
         invocations.handle(),
     )
@@ -418,10 +466,10 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
     let handler = MarketCommands::new(
         data.handle.clone(),
         portfolio.handle.clone(),
-        market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+        market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
     );
     let request = handler
-        .parse(message(1, "/portfolio"), &["market_bot".into()])
+        .parse(message(1, "/portfolio model_floor"), &["market_bot".into()])
         .unwrap();
     let (first, duplicate) = tokio::join!(
         handler.handle(request.clone()),
@@ -452,14 +500,14 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
 }
 
 #[test]
-fn commands_accept_explicit_valuation_strategy_without_changing_defaults() {
+fn commands_accept_explicit_valuation_strategies() {
     let names = ["market_bot".to_owned()];
     for (text, expected) in [
-        ("/portfolio", "model_floor"),
-        ("/portfolio GRAM | collection_floor", "collection_floor"),
-        ("/floor Gift | Model", "model_floor"),
+        ("/portfolio model_floor", "model_floor"),
+        ("/portfolio collection_floor | GRAM", "collection_floor"),
+        ("/floor model_floor | Gift | Model", "model_floor"),
         (
-            "/floor Gift | Model | GRAM | collection_floor",
+            "/floor collection_floor | Gift | Model | GRAM",
             "collection_floor",
         ),
     ] {
@@ -474,7 +522,46 @@ fn commands_accept_explicit_valuation_strategy_without_changing_defaults() {
         assert_eq!(strategy.as_str(), expected);
     }
     let parsed = commands::LaunchCommands
-        .parse(message(1, "/portfolio GRAM | Invalid!"), &names)
+        .parse(
+            message(1, "/portfolio model_floor | GRAM | Invalid!"),
+            &names,
+        )
         .unwrap();
     assert!(matches!(parsed.command, commands::Command::Invalid(_)));
+}
+
+#[test]
+fn commands_require_selection_and_multipliers_have_their_own_inputs() {
+    for text in [
+        "/portfolio",
+        "/portfolio GRAM",
+        "/floor Gift | Model",
+        "/portfolio model_multiplier",
+    ] {
+        let request = commands::parse(message(1, text), &["bot"]).unwrap();
+        assert!(
+            matches!(request.command, commands::Command::Invalid(_)),
+            "{text}"
+        );
+    }
+    for (text, model) in [
+        ("/multiplier model_multiplier | gift | model | TON", true),
+        (
+            "/multiplier backdrop_multiplier | gift | backdrop | GRAM",
+            false,
+        ),
+    ] {
+        let request = commands::parse(message(1, text), &["bot"]).unwrap();
+        let commands::Command::Multiplier(query) = request.command else {
+            panic!("multiplier command required");
+        };
+        match query {
+            market_gifts::valuation::ValuationQuery::ModelMultiplier(p) => {
+                assert!(model);
+                assert_eq!(p.currency_id.as_str(), "GRAM");
+            }
+            market_gifts::valuation::ValuationQuery::BackdropMultiplier(_) => assert!(!model),
+            _ => panic!("unexpected measurement"),
+        }
+    }
 }

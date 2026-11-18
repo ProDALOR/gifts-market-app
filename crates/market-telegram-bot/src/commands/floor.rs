@@ -1,6 +1,6 @@
 use super::{FloorQuery, Reply, render};
-use market_actors::valuation::ValuationHandle;
 use market_gifts::valuation::{ModelPosition, ValuationRequest};
+use market_valuation::ValuationHandle;
 pub(super) async fn execute(market: &ValuationHandle, query: FloorQuery) -> Reply {
     match market
         .mark(ValuationRequest {
