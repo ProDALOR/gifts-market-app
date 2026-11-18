@@ -1,18 +1,24 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
+const motion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = {
   pageVisible: !document.hidden,
-  reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+  reducedMotion: motion.matches,
 };
 const subscribers = new Set<() => void>();
-const motion = matchMedia("(prefers-reduced-motion: reduce)");
-function update() {
-  const next = { pageVisible: !document.hidden, reducedMotion: motion.matches };
+function getSnapshot() {
+  const pageVisible = !document.hidden;
+  const reducedMotion = motion.matches;
   if (
-    next.pageVisible === snapshot.pageVisible &&
-    next.reducedMotion === snapshot.reducedMotion
+    pageVisible === snapshot.pageVisible &&
+    reducedMotion === snapshot.reducedMotion
   )
-    return;
-  snapshot = next;
+    return snapshot;
+  snapshot = { pageVisible, reducedMotion };
+  return snapshot;
+}
+function update() {
+  getSnapshot();
+  // A render can read the new flags before the native change event is delivered.
   subscribers.forEach((subscriber) => subscriber());
 }
 function subscribe(subscriber: () => void) {
@@ -31,7 +37,7 @@ function subscribe(subscriber: () => void) {
   };
 }
 export function usePreviewEnvironment() {
-  return useSyncExternalStore(subscribe, () => snapshot);
+  return useSyncExternalStore(subscribe, getSnapshot);
 }
 const intersections = new Map<Element, (visible: boolean) => void>();
 let observer: IntersectionObserver | undefined;

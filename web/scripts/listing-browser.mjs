@@ -11,6 +11,8 @@ import React,{useState,useEffect} from 'react';
 import {createRoot} from 'react-dom/client';
 import {useOrderFeed} from '/src/use-order-feed.ts';
 import {GiftGrid} from '/src/orderbook/gift-grid.tsx';
+import {GiftCard} from '/src/orderbook/gift-card.tsx';
+import {Modal} from '/src/ui/modal.tsx';
 import {OrderDetails} from '/src/orderbook/order-details.tsx';
 import {orderKey} from '/src/orderbook/order-activity.ts';
 import '/src/style.css';
@@ -29,6 +31,9 @@ React.createElement('h2',{style:{margin:'14px 0'}},'Live gift market'),
 React.createElement(GiftGrid,{orders:feed.displayOrders,busy:feed.loadingMore,visible:feed.setVisibleRange,card:order=>({options,collectionName:'Gift',venueName:'MRKT',selected:selected?.id===order.id,open:select,activity:feed.activity.get(orderKey(order))})})),
 selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Gift',removed:!feed.page.data.some(row=>orderKey(row)===orderKey(selected)),close:()=>select(undefined)}));}
 const app=createRoot(document.getElementById('fixture'));app.render(React.createElement(App));window.unmount=()=>app.unmount();
+window.renderListing=(order,activity)=>app.render(React.createElement('ul',{className:'gift-grid'},React.createElement(GiftCard,{order,activity,options,collectionName:'Gift',venueName:'MRKT',selected:false,open:()=>{}})));
+window.renderMotionModal=()=>app.render(React.createElement(Modal,{label:'Motion test',heading:'Motion test',className:'valuation-popup',closeLabel:'Close motion test',close:()=>{window.modalCloseCalls=(window.modalCloseCalls||0)+1;app.render(null);}},React.createElement('p',null,'Motion fixture')));
+
 </script></body></html>`;
 const methodology = await readFile(
   new URL(
@@ -188,20 +193,25 @@ try {
       .waitFor();
   };
   const toggleGuide = async () => {
-    if (await page.locator(".valuation-popup").count())
+    const popup = page.locator(".valuation-popup");
+    if (await popup.count()) {
       await page
         .getByRole("button", { name: "Close calculation guide", exact: true })
         .click();
-    else
+      await popup.waitFor({ state: "detached" });
+    } else {
       await page
         .getByRole("button", { name: "How is this calculated?", exact: true })
         .click();
+      await popup.waitFor();
+    }
   };
   const closeDetails = async () => {
     if (await page.locator(".valuation-popup").count()) await toggleGuide();
     await page
       .getByRole("button", { name: "Close details", exact: true })
       .click();
+    await page.locator(".detail").waitFor({ state: "detached" });
   };
   let symbolAnimations = 0;
   page.on("request", (request) => {
@@ -214,6 +224,15 @@ try {
     }),
   );
   const errors = [];
+  await page.addInitScript(() => {
+    window.motionAnimations = [];
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (...args) {
+      const animation = animate.apply(this, args);
+      window.motionAnimations.push({ target: this, animation });
+      return animation;
+    };
+  });
   let guideModuleRequests = 0;
   page.on("request", (request) => {
     if (request.url().includes("/src/orderbook/valuation-methodology.tsx"))
@@ -335,11 +354,31 @@ try {
   await page.locator(".gift-card").nth(1).waitFor();
   assert.equal(requests.length, 0);
   assert.equal(await page.locator(".activity-ribbon").count(), 0);
+  assert.equal(
+    await page
+      .locator(".gift-card")
+      .first()
+      .evaluate((el) => getComputedStyle(el).animationName),
+    "none",
+    "Baseline listings do not animate into view",
+  );
   socket.send(JSON.stringify(frame([x, a, b])));
   await page.locator('[data-order-id="x"]').waitFor();
   assert.equal(
     await page.locator(".is-new .activity-ribbon").textContent(),
     "New",
+  );
+  assert.equal(
+    await page
+      .locator(".is-new")
+      .evaluate((el) => getComputedStyle(el).animationName),
+    "listing-arrive",
+  );
+  assert.equal(
+    await page
+      .locator(".is-new")
+      .evaluate((el) => getComputedStyle(el).animationDuration),
+    "0.18s",
   );
   const clock = page.locator(".is-new .card-clock");
   assert.equal(
@@ -359,6 +398,14 @@ try {
   await page.screenshot({ path: "/tmp/gifts-market-ui/fresh-listings.png" });
   await page.locator('[data-order-id="a"]').click();
   await page.locator('.valuation-summary [data-metric="decision"]').waitFor();
+  assert.ok(
+    await page.evaluate(() =>
+      window.motionAnimations.some(
+        ({ target, animation }) =>
+          target.classList.contains("detail") && animation.id === "modal-enter",
+      ),
+    ),
+  );
   assert.equal(await page.locator(".price-comparison").count(), 0);
   assert.equal(await page.locator(".valuation-breakdown").count(), 0);
   assert.equal(
@@ -465,15 +512,19 @@ try {
   socket.send(JSON.stringify(frame([x, b])));
   await page.locator(".is-removed").waitFor();
   assert.equal(
+    await page
+      .locator(".is-removed .card-preview")
+      .evaluate((el) => getComputedStyle(el).transitionDuration),
+    "0.25s, 0.25s",
+  );
+  assert.equal(
     await page.locator(".is-removed .activity-ribbon").textContent(),
     "Gone",
   );
-  assert.ok(
-    (
-      await page
-        .locator(".is-removed .card-preview")
-        .evaluate((el) => getComputedStyle(el).filter)
-    ).includes("grayscale(1)"),
+  await page.waitForFunction(
+    () =>
+      getComputedStyle(document.querySelector(".is-removed .card-preview"))
+        .filter === "grayscale(1)",
   );
   await page.locator(".listing-gone").waitFor();
   assert.equal(await page.locator(".detail-market").count(), 0);
@@ -557,7 +608,7 @@ try {
     .getByRole("button", { name: "Retry strategy information" })
     .click();
   await page
-    .locator(".valuation-popup-heading")
+    .locator(".valuation-popup .modal-heading")
     .getByRole("heading", { name: strategyMetadata.name, exact: true })
     .waitFor();
   assert.equal(metadataRequests, previousMetadataRequests + 1);
@@ -610,6 +661,7 @@ try {
     "Keyboard focus stays in the popup",
   );
   await page.mouse.click(2, 2);
+  await guide.waitFor({ state: "detached" });
   assert.equal(await guide.count(), 0, "Backdrop click closes only the guide");
   assert.equal(await page.locator(".detail").count(), 1);
   assert.equal(
@@ -737,6 +789,8 @@ try {
   await page.clock.runFor(60_001);
   await page.evaluate((order) => window.selectListing(order), b);
   await waitReport();
+  const abortedGuidesBefore = abortedGuides;
+  const abortedMetadataBefore = abortedMetadata;
   holdGuide = true;
   holdMetadata = true;
   await toggleGuide();
@@ -757,29 +811,37 @@ try {
     "Guide reads wait for current metadata",
   );
   await toggleGuide();
-  for (let tries = 0; !abortedMetadata && tries < 100; tries++)
+  for (
+    let tries = 0;
+    abortedMetadata === abortedMetadataBefore && tries < 100;
+    tries++
+  )
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(
     abortedMetadata,
-    1,
+    abortedMetadataBefore + 1,
     "Closing the popup cancels its pending metadata read",
   );
   holdMetadata = false;
   releaseMetadata();
   await toggleGuide();
   await page
-    .locator(".valuation-popup-heading")
+    .locator(".valuation-popup .modal-heading")
     .getByRole("heading", { name: strategyMetadata.name, exact: true })
     .waitFor();
   for (let tries = 0; !releaseGuide && tries < 100; tries++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(releaseGuide);
   await toggleGuide();
-  for (let tries = 0; !abortedGuides && tries < 100; tries++)
+  for (
+    let tries = 0;
+    abortedGuides === abortedGuidesBefore && tries < 100;
+    tries++
+  )
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(
     abortedGuides,
-    1,
+    abortedGuidesBefore + 1,
     "Collapsing a pending guide cancels its fetch",
   );
   assert.equal(await page.locator(".valuation-popup article").count(), 0);
@@ -803,6 +865,7 @@ try {
     "New documentation revision loads after a cancelled attempt",
   );
   await page.keyboard.press("Escape");
+  await guide.waitFor({ state: "detached" });
   assert.equal(await guide.count(), 0, "Escape closes only the info popup");
   assert.equal(await page.locator(".detail").count(), 1);
   assert.equal(
@@ -890,6 +953,199 @@ try {
   );
   assert.equal(requests.length, countBeforeCriteria);
   assert.equal(symbolAnimations, 0);
+  // Retained activity timestamps prevent entry replay after virtualized remounts.
+  await page.evaluate(
+    (order) =>
+      window.renderListing(order, { state: "new", since: Date.now() - 5000 }),
+    a,
+  );
+  await page.locator(".is-new").waitFor();
+  assert.equal(
+    await page
+      .locator(".is-new")
+      .evaluate((el) =>
+        el
+          .getAnimations()
+          .some((animation) => animation.animationName === "listing-arrive"),
+      ),
+    false,
+  );
+  assert.equal(
+    await page
+      .locator(".is-new")
+      .evaluate((el) => getComputedStyle(el).opacity),
+    "1",
+  );
+  await page.evaluate((order) => {
+    window.motionAnimations = [];
+    window.renderListing(order);
+  }, a);
+  await page.waitForFunction(() => !document.querySelector(".is-new"));
+  await page.evaluate(
+    (order) => window.renderListing({ ...order, price: "12" }),
+    a,
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".card-copy .quote-amount")?.textContent === "12",
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.motionAnimations.filter(
+          ({ animation }) => animation.id === "price-highlight",
+        ).length,
+    ),
+    1,
+    "Only changed prices flash",
+  );
+  await page.evaluate(
+    (order) => window.renderListing({ ...order, price: "12", quantity: 2 }),
+    a,
+  );
+  await page.locator(".card-head").waitFor();
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.motionAnimations.filter(
+          ({ animation }) => animation.id === "price-highlight",
+        ).length,
+    ),
+    1,
+    "Unchanged prices do not restart the effect",
+  );
+  await page.evaluate(
+    (order) => window.renderListing({ ...order, price: "13" }),
+    a,
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".card-copy .quote-amount")?.textContent === "13",
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.motionAnimations.filter(
+          ({ animation }) => animation.id === "price-highlight",
+        ).length,
+    ),
+    2,
+  );
+  await page.evaluate(
+    (order) =>
+      window.renderListing({
+        ...order,
+        price: "14",
+        book: { ...order.book, currency_id: "XTR" },
+      }),
+    a,
+  );
+  await page.locator(".card-copy .currency-symbol.star").waitFor();
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.motionAnimations.filter(
+          ({ animation }) => animation.id === "price-highlight",
+        ).length,
+    ),
+    2,
+    "Currency switches do not flash",
+  );
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.evaluate((order) => {
+    window.motionAnimations = [];
+    window.renderListing(
+      { ...order, price: "15", book: { ...order.book, currency_id: "XTR" } },
+      { state: "new", since: Date.now() },
+    );
+  }, a);
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".card-copy .quote-amount")?.textContent === "15",
+  );
+  assert.equal(
+    await page
+      .locator(".gift-card")
+      .evaluate((el) => getComputedStyle(el).animationName),
+    "none",
+  );
+  assert.equal(
+    await page
+      .locator(".card-preview")
+      .evaluate((el) => getComputedStyle(el).transitionDuration),
+    "0s",
+  );
+  assert.equal(
+    await page.evaluate(() => window.motionAnimations.length),
+    0,
+    "Reduced motion skips price flashes",
+  );
+  await page.evaluate(() => {
+    window.modalCloseCalls = 0;
+    window.renderMotionModal();
+  });
+  await page
+    .getByRole("dialog", { name: "Motion test", exact: true })
+    .waitFor();
+  assert.equal(
+    await page.evaluate(() => window.motionAnimations.length),
+    0,
+    "Reduced motion skips modal entry",
+  );
+  await page
+    .getByRole("button", { name: "Close motion test", exact: true })
+    .click();
+  await page.locator(".valuation-popup").waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => window.modalCloseCalls), 1);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.evaluate(() => {
+    window.modalCloseCalls = 0;
+    window.renderMotionModal();
+  });
+  const motionModal = page.getByRole("dialog", {
+    name: "Motion test",
+    exact: true,
+  });
+  await motionModal.waitFor();
+  assert.ok(
+    await page.evaluate(() =>
+      window.motionAnimations.some(
+        ({ animation }) => animation.id === "modal-enter",
+      ),
+    ),
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".valuation-popup")?.dataset.closing === "true",
+  );
+  await page.keyboard.press("Escape");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await motionModal.waitFor({ state: "detached" });
+  assert.equal(
+    await page.evaluate(() => window.modalCloseCalls),
+    1,
+    "Motion preference changes and repeated Escape finish dismissal once",
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.evaluate(() => {
+    window.modalCloseCalls = 0;
+    window.renderMotionModal();
+  });
+  await motionModal.waitFor();
+  await page.evaluate((order) => {
+    document
+      .querySelector(".valuation-popup")
+      .dispatchEvent(new Event("cancel", { cancelable: true }));
+    window.renderListing(order);
+  }, a);
+  await motionModal.waitFor({ state: "detached" });
+  await page.waitForTimeout(180);
+  assert.equal(
+    await page.evaluate(() => window.modalCloseCalls),
+    0,
+    "Unmount cancels an outstanding exit callback",
+  );
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(

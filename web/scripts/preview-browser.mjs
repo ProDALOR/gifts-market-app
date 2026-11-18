@@ -288,6 +288,18 @@ try {
   await preview.hover();
   await preview.locator(".model-animation.ready canvas").waitFor();
   assert.equal(
+    await preview
+      .locator(".model-animation.ready")
+      .evaluate((el) => getComputedStyle(el).animationName),
+    "preview-handoff",
+  );
+  assert.equal(
+    await preview
+      .locator(".gift-model-image")
+      .evaluate((el) => getComputedStyle(el).transitionDuration),
+    "0.12s",
+  );
+  assert.equal(
     await logoVisible(),
     true,
     "Animation playback hides only the model thumbnail, preserving the MRKT logo",
@@ -484,6 +496,7 @@ try {
     })
     .waitFor();
   await page.keyboard.press("Escape");
+  await page.locator(".valuation-popup").waitFor({ state: "detached" });
   await page.locator(".detail-test .model-animation.ready canvas").waitFor();
   assert.equal(
     animations,

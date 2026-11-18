@@ -46,13 +46,13 @@ function CalculationPopup({
     retry,
   } = useStrategy(state.report?.strategy);
   return (
-    <Modal className="valuation-popup" label="Calculation guide" close={close}>
-      <header className="valuation-popup-heading">
-        <h3>{strategy?.name ?? "Calculation guide"}</h3>
-        <button aria-label="Close calculation guide" onClick={close} autoFocus>
-          ×
-        </button>
-      </header>
+    <Modal
+      className="valuation-popup"
+      label="Calculation guide"
+      close={close}
+      closeLabel="Close calculation guide"
+      heading={strategy?.name ?? "Calculation guide"}
+    >
       <div className="valuation-popup-body">
         <section aria-label="Valuation result" aria-busy={state.loading}>
           <ValuationFields fields={state.fields.primary} />

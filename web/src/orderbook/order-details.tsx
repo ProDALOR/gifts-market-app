@@ -51,14 +51,6 @@ export function OrderDetails({
           playback="detail"
         />
       </div>
-      <button
-        className="detail-close"
-        aria-label="Close details"
-        onClick={close}
-        autoFocus
-      >
-        ×
-      </button>
       <div className="detail-body">
         <h2 id="detail-title">
           {names.get(selected.book.collection_id) ||

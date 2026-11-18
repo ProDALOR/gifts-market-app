@@ -43,6 +43,14 @@ export const GiftCard = memo(function GiftCard({
     <li
       className={`gift-card${selected ? " selected" : ""}${activity ? ` is-${activity.state}` : ""}`}
       data-activity={activity?.state}
+      style={
+        activity?.state === "new"
+          ? {
+              animationDelay: clockStyle.animationDelay,
+              animationName: pageVisible && !reducedMotion ? undefined : "none",
+            }
+          : undefined
+      }
       aria-posinset={position}
       aria-setsize={total}
     >

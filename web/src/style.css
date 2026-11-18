@@ -25,6 +25,7 @@
   --tint: #382c38;
   --accent-line: #a47999;
   --green: var(--accent);
+  --quote-flash: #75506e66;
   --control-gap: 8px;
   --rail-duration: 220ms;
   --rail-easing: cubic-bezier(0.2, 0.7, 0.2, 1);
@@ -99,6 +100,7 @@ p {
   --plum: #75506e;
   --accent: #734868;
   --tint: #f0e5ee;
+  --quote-flash: #75506e25;
   --accent-line: #a47999;
 }
 .telegram[data-telegram-theme="light"] .primary {
@@ -110,6 +112,7 @@ p {
   *::before,
   *::after {
     transition: none !important;
+    animation: none !important;
     scroll-behavior: auto !important;
   }
 }

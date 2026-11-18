@@ -12,6 +12,7 @@ export function DetailSheet({
       close={close}
       className="detail"
       label="Order details"
+      closeLabel="Close details"
       describedBy="detail-title"
     >
       {children}
