@@ -3,11 +3,11 @@ use crate::{
     MarketDataHandle,
     catalog::{CatalogActor, handle::CatalogHandle},
     orderbooks::{OrderbooksActor, handle::OrderbooksHandle},
-    runtime::{ActorEnvironment, QueryBudget},
+    runtime::ActorEnvironment,
     subscriptions::UserSubscriptionsActor,
 };
 use actix::Actor;
-use market_replica::ReplicaReader;
+use market_replica::{ReadExecutor, ReplicaReader};
 use std::{
     sync::{
         Arc,
@@ -22,7 +22,7 @@ use tonic::Status;
 pub struct MarketDataService {
     pub handle: MarketDataHandle,
     pub task: MarketDataTask,
-    pub reader: crate::MarketReader,
+    pub reads: ReadExecutor,
     arbiter: actix::ArbiterHandle,
 }
 pub struct MarketDataTask {
@@ -33,23 +33,9 @@ pub struct MarketDataTask {
     jobs: TaskTracker,
 }
 impl MarketDataService {
-    /// Run a service factory on the shared data Arbiter with read-only market access.
-    pub async fn start_actor<T: Send + 'static>(
-        &self,
-        build: impl FnOnce(crate::MarketReader) -> T + Send + 'static,
-    ) -> Result<T, crate::error::DataError> {
-        let source = self.reader.clone();
-        let (reply, response) = tokio::sync::oneshot::channel();
-        if !self.arbiter.spawn_fn(move || {
-            let _ = reply.send(build(source));
-        }) {
-            return Err(crate::error::DataError::unavailable(
-                "Market data Arbiter stopped",
-            ));
-        }
-        response
-            .await
-            .map_err(|_| crate::error::DataError::unavailable("Market data Arbiter stopped"))
+    /// Shared data Arbiter; the application wires independent services onto it.
+    pub fn arbiter(&self) -> actix::ArbiterHandle {
+        self.arbiter.clone()
     }
     pub async fn start(
         reader: ReplicaReader,
@@ -75,21 +61,16 @@ impl MarketDataService {
         }
         let exited = CancellationToken::new();
         let panicked = Arc::new(AtomicBool::new(false));
-        let jobs = TaskTracker::new();
+        let reads = ReadExecutor::new(reader.clone(), query_limit, stop.clone())?;
+        let jobs = reads.tasks();
         let runtime = Handle::current();
-        let query_slots = Arc::new(Semaphore::new(query_limit));
         let environment = ActorEnvironment {
             jobs: jobs.clone(),
             runtime,
             stop: stop.clone(),
             panicked: panicked.clone(),
         };
-        let budget = QueryBudget {
-            slots: query_slots,
-            stop: stop.clone(),
-        };
-        let market_reader =
-            crate::MarketReader::new(reader.clone(), environment.clone(), budget.clone());
+        let budget = reads.budget();
         let exit_guard = exited.clone().drop_guard();
         let (ready, started) = tokio::sync::oneshot::channel();
         let thread = std::thread::Builder::new()
@@ -150,7 +131,7 @@ impl MarketDataService {
                 handle,
                 task,
                 arbiter,
-                reader: market_reader,
+                reads,
             }),
             Err(_) => {
                 task.stop.cancel();

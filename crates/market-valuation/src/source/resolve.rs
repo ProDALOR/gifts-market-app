@@ -1,5 +1,6 @@
 //! Resolve model lookups within the caller's pinned market view.
-use market_gifts::valuation::{ModelIdentity, ModelLookup, UnpricedReason};
+use market_gifts::ModelLookupError;
+use market_gifts::{ModelIdentity, ModelLookup};
 use market_hub_protocol::wire as w;
 use market_replica::ReplicaReader;
 use std::collections::BTreeMap;
@@ -11,7 +12,7 @@ pub struct ResolvedModel {
     pub collection: Option<market_gifts::CollectionId>,
     pub collection_label: String,
     pub model_label: String,
-    pub unresolved: Option<UnpricedReason>,
+    pub unresolved: Option<ModelLookupError>,
 }
 
 pub(crate) fn resolve(
@@ -19,8 +20,12 @@ pub(crate) fn resolve(
     lookups: Vec<ModelLookup>,
     cancelled: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<ResolvedModel>, Status> {
-    let items =
-        super::projection::entities_cancellable(reader, w::EntityKind::ItemType, None, cancelled)?;
+    let items = market_replica::catalog_read::entities_cancellable(
+        reader,
+        w::EntityKind::ItemType,
+        None,
+        cancelled,
+    )?;
     let mut options = BTreeMap::new();
     let mut result = Vec::with_capacity(lookups.len());
     for lookup in lookups {
@@ -75,7 +80,7 @@ pub(crate) fn resolve(
             let rules =
                 CollectionChoices::new(item).map_err(|e| Status::data_loss(e.to_string()))?;
             let ids = rules.model_option_ids();
-            let values = super::projection::trait_options(
+            let values = market_replica::catalog_read::trait_options(
                 reader,
                 market_gifts_hub::MODEL,
                 ids.as_deref(),

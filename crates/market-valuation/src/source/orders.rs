@@ -23,19 +23,44 @@ pub(super) fn request(scope: &BookScope) -> w::ReadRequest {
         ..Default::default()
     }
 }
-impl MarketSnapshot {
-    pub fn orders(&self, query: GiftOrdersQuery) -> Result<Page<GiftOrder>> {
+impl ValuationSnapshot {
+    pub(super) fn orders(&self, query: GiftOrdersQuery) -> Result<Page<GiftOrder>> {
         self.check_cancelled()?;
-        let request = crate::query::orders(query, w::ReadMode::Live)?;
-        crate::protocol::orders(self.reader.read_checked(
-            request,
-            crate::catalog::validate_order_collection,
-            |entity| {
-                self.check_cancelled()
-                    .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
-                crate::protocol::include_order(entity)
-            },
-        )?)
+        let request = market_gifts_hub::query::orders(query, w::ReadMode::Live)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let page = self
+            .reader
+            .read_checked(
+                request,
+                |_, _| Ok(()),
+                |entity| {
+                    self.check_cancelled()?;
+                    match entity.entity.as_ref() {
+                        Some(w::entity::Entity::Order(order)) => {
+                            market_gifts_hub::is_exhausted(order)
+                                .map(|v| !v)
+                                .map_err(|e| Status::data_loss(e.to_string()))
+                        }
+                        _ => Err(Status::data_loss("expected a gift order")),
+                    }
+                },
+            )?
+            .page;
+        Ok(Page {
+            sync: self.sync()?,
+            cursor: page.cursor,
+            next_page_token: page.next_page_token,
+            data: page
+                .entities
+                .into_iter()
+                .map(|entity| match entity.entity {
+                    Some(w::entity::Entity::Order(order)) => {
+                        market_gifts_hub::order(order).map_err(|e| Status::data_loss(e.to_string()))
+                    }
+                    _ => Err(Status::data_loss("expected a gift order")),
+                })
+                .collect::<Result<_>>()?,
+        })
     }
     /// One page of sorted, eligible asks; cancellation is checked at every page boundary.
     pub fn asks(
@@ -43,7 +68,7 @@ impl MarketSnapshot {
         scope: &BookScope,
         now_ms: i64,
         page_token: String,
-    ) -> Result<Page<AskQuote>> {
+    ) -> Result<Page<market_gifts::AskQuote>> {
         self.check_cancelled()?;
         let mut query = request(scope);
         query.page_token = page_token;
@@ -52,7 +77,7 @@ impl MarketSnapshot {
         for entity in page.entities {
             if let Some(w::entity::Entity::Order(order)) = entity.entity
                 && let Some(quote) = market_gifts_hub::ask_quote(order, now_ms)
-                    .map_err(|e| DataError::unavailable(e.to_string()))?
+                    .map_err(|e| Status::unavailable(e.to_string()))?
             {
                 data.push(quote);
             }

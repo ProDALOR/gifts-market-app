@@ -76,15 +76,15 @@ pub(crate) async fn executions(
     let page = state.executions(query.into_inner()).await?;
     Ok(HttpResponse::Ok().json(OrderPageResponse::from(&page)))
 }
-#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with every registered strategy",description="Accepts a Telegram gift URL, collection-number slug, or a gift object with collection_id and number, plus an explicit currency. Catalog identity lookup does not require a canonical collection slug. All gift traits are resolved server-side. The response slug is null for catalog identity requests. Resolves concrete gifts from synchronized concrete active asks across quote currencies; unlisted/unknown gifts return 404. Each strategy returns its own typed data, revision and evaluation time, or a structured error. Missing evidence for one strategy does not discard others; all-strategy failures still return 200 for a resolved gift. Multiplier results are dimensionless ratios, not price estimates. Marks can have different revisions because actors cache and prepare independently. No Telegram account or external lookup is used.",request_body=market_gifts::valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with one coherent floor report",description="Accepts a Telegram gift URL, slug, or gift object with collection_id and number, plus currency_id. Resolves gift facts and all metrics from one pinned replica view. Returns collection, model, backdrop and matching model+backdrop floors; two-decimal dimensionless model/backdrop multipliers; and final_mark = round2(min(matching floor, collection floor * unrounded multipliers)). Rounding uses midpoint-to-even. Floor prices retain exact precision. Multipliers require at least three eligible listing rows for the collection and selected trait. Each metric has value or a structured error; a resolved gift returns 200 even when some metrics are unavailable. One strategy, revision, evaluated_at and sync status apply to the whole report. The response slug is null for catalog references. Unknown/unlisted gifts return 404. No Telegram account or external lookup is used.",request_body=market_valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn gift_valuation(
     state: web::Data<MarketApi>,
-    query: web::Json<market_gifts::valuation::GiftValuationRequest>,
+    query: web::Json<market_valuation::GiftValuationRequest>,
 ) -> Result<HttpResponse> {
     let result = state.gift_valuation(query.into_inner()).await?;
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(GiftValuationResponse::from(&result)))
+        .json(GiftValuationResponse::from(result.as_ref())))
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

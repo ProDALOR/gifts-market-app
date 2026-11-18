@@ -1,10 +1,8 @@
 //! Valuation failures and evidence; data-access errors remain owned by the data layer.
-use market_actors::error::{DataError, DataErrorCode};
-use market_gifts::{
-    CurrencyId,
-    valuation::{StrategyId, ValuationErrorDetails},
-};
+use crate::{StrategyId, ValuationErrorDetails};
+use market_gifts::CurrencyId;
 use std::sync::Arc;
+use tonic::{Code, Status};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValuationErrorCode {
     InvalidQuery,
@@ -22,7 +20,7 @@ pub struct ValuationError {
     code: ValuationErrorCode,
     message: String,
     details: Option<Arc<ValuationErrorDetails>>,
-    source: Option<DataError>,
+    source: Option<Status>,
 }
 pub type Result<T> = std::result::Result<T, ValuationError>;
 impl ValuationError {
@@ -79,15 +77,14 @@ impl ValuationError {
         self.details.as_ref()
     }
 }
-impl From<DataError> for ValuationError {
-    fn from(error: DataError) -> Self {
+impl From<Status> for ValuationError {
+    fn from(error: Status) -> Self {
         let code = match error.code() {
-            DataErrorCode::InvalidQuery => ValuationErrorCode::InvalidQuery,
-            DataErrorCode::RestartRead => ValuationErrorCode::RestartRead,
-            DataErrorCode::CapacityExceeded => ValuationErrorCode::CapacityExceeded,
-            DataErrorCode::Unavailable => ValuationErrorCode::Unavailable,
-            DataErrorCode::NotFound => ValuationErrorCode::NotFound,
-            DataErrorCode::TimedOut => ValuationErrorCode::TimedOut,
+            Code::InvalidArgument => ValuationErrorCode::InvalidQuery,
+            Code::FailedPrecondition | Code::OutOfRange => ValuationErrorCode::RestartRead,
+            Code::ResourceExhausted => ValuationErrorCode::CapacityExceeded,
+            Code::NotFound => ValuationErrorCode::NotFound,
+            _ => ValuationErrorCode::Unavailable,
         };
         Self {
             code,
@@ -114,17 +111,17 @@ mod tests {
     use std::error::Error;
     #[test]
     fn data_failures_keep_their_source_and_valuation_context() {
-        let error = ValuationError::from(DataError::capacity("read budget full"))
+        let error = ValuationError::from(Status::resource_exhausted("read budget full"))
             .with_context(StrategyId::model_floor(), "GRAM".into());
         assert_eq!(error.code(), ValuationErrorCode::CapacityExceeded);
         assert_eq!(
             error
                 .source()
                 .unwrap()
-                .downcast_ref::<DataError>()
+                .downcast_ref::<Status>()
                 .unwrap()
                 .code(),
-            DataErrorCode::CapacityExceeded
+            Code::ResourceExhausted
         );
         assert_eq!(error.details().unwrap().strategy, StrategyId::model_floor());
         assert_eq!(

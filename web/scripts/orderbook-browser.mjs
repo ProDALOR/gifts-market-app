@@ -300,12 +300,11 @@ try {
     const body = route.request().postDataJSON(),
       number = body.gift.number;
     const collection = body.gift.collection_id;
-    const mark = {
-      revision: "valuation",
-      evaluated_at: "2026-11-18T12:00:00Z",
-    };
     return route.fulfill({
       json: {
+        strategy: "gift_floor",
+        revision: "view",
+        evaluated_at: "2026-11-18T12:00:00Z",
         slug: null,
         gift: {
           id: `gift-${3000 - number}`,
@@ -314,57 +313,21 @@ try {
           traits: { model: "barbie", backdrop: "raspberry", pattern: "stars" },
         },
         currency_id: body.currency_id,
-        gift_revision: "view",
-        strategies: [
-          {
-            strategy: "model_floor",
-            ...mark,
-            data: {
-              rows: [],
-              total: "10.000000001",
-              priced: 1,
-              unpriced: 0,
-              currency_id: body.currency_id,
-              sync,
-            },
-          },
-          {
-            strategy: "collection_floor",
-            ...mark,
-            data: {
-              rows: [],
-              total: "8",
-              priced: 1,
-              unpriced: 0,
-              currency_id: body.currency_id,
-              sync,
-            },
-          },
-          {
-            strategy: "model_multiplier",
-            ...mark,
-            data: {
-              factor: "1.25",
-              currency_id: body.currency_id,
-              collection_id: collection,
-              model_id: "barbie",
-              sync,
-              evidence: {
-                minimum_samples: 3,
-                collection: { floor: "8", samples: 5 },
-                selected_trait: { floor: "10", samples: 3 },
-              },
-            },
-          },
-          {
-            strategy: "backdrop_multiplier",
-            error: {
-              code: "not_enough_data",
-              message: "More backdrop listings are needed.",
-              details: { required_samples: 3, available_samples: 1 },
-            },
-          },
-        ],
+        sync,
+        collection_floor: { value: "8" },
+        model_floor: { value: "10.000000001" },
+        backdrop_floor: { value: "9" },
+        model_backdrop_floor: { value: "12.5" },
+        model_multiplier: { value: "1.25" },
+        backdrop_multiplier: { value: "1.13" },
+        final_mark: { value: "11.25" },
+        evidence: {
+          collection_samples: 5,
+          model_samples: 3,
+          backdrop_samples: 3,
+          model_backdrop_samples: 1,
+          minimum_multiplier_samples: 3,
+        },
       },
     });
   });
@@ -883,20 +846,20 @@ try {
   ])
     assert.ok(!labels.includes(hidden), hidden);
   assert.equal(await page.locator(".source-details").count(), 0);
-  await page
-    .locator('[data-strategy="model_floor"] .valuation-value')
-    .waitFor();
-  assert.equal(await page.locator(".gift-valuations li").count(), 4);
+  await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
+  assert.equal(await page.locator(".gift-valuations li").count(), 6);
   assert.equal(
     await page
-      .locator('[data-strategy="model_multiplier"] .valuation-value')
+      .locator('[data-metric="model_multiplier"] .valuation-value')
       .textContent(),
     "1.25×",
   );
-  await page
-    .locator(".gift-valuations")
-    .getByText("Not enough data", { exact: true })
-    .waitFor();
+  assert.equal(
+    await page
+      .locator('[data-metric="final_mark"] .quote-amount')
+      .textContent(),
+    "11.25",
+  );
   assert.equal(
     await button("Close details").evaluate(
       (el) => el === document.activeElement,

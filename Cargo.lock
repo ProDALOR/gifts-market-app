@@ -2222,7 +2222,6 @@ name = "market-valuation"
 version = "0.1.0"
 dependencies = [
  "actix",
- "futures-util",
  "jiff",
  "market-actors",
  "market-gifts",
@@ -2230,10 +2229,13 @@ dependencies = [
  "market-hub-protocol",
  "market-replica",
  "rust_decimal",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
  "tonic",
+ "utoipa",
 ]
 
 [[package]]

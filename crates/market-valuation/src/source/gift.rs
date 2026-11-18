@@ -2,7 +2,7 @@
 use super::*;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
-impl MarketSnapshot {
+impl ValuationSnapshot {
     pub fn gift(&self, lookup: &GiftLookup) -> Result<CollectibleGift> {
         match lookup {
             GiftLookup::Slug(slug) => self.gift_by_slug(slug),
@@ -13,12 +13,12 @@ impl MarketSnapshot {
                 let Some(w::entity::Entity::ItemType(item)) =
                     self.entity(w::EntityKind::ItemType, collection_id)?
                 else {
-                    return Err(DataError::not_found(
+                    return Err(Status::not_found(
                         "Gift collection is not in synchronized market data",
                     ));
                 };
                 if !market_gifts_hub::is_gift(&item) {
-                    return Err(DataError::not_found(
+                    return Err(Status::not_found(
                         "Gift collection is not in synchronized market data",
                     ));
                 }
@@ -28,7 +28,7 @@ impl MarketSnapshot {
     }
     fn gift_by_slug(&self, slug: &GiftSlug) -> Result<CollectibleGift> {
         self.check_cancelled()?;
-        let items = crate::catalog::projection::entities_cancellable(
+        let items = market_replica::catalog_read::entities_cancellable(
             &self.reader,
             w::EntityKind::ItemType,
             None,
@@ -43,28 +43,28 @@ impl MarketSnapshot {
                 continue;
             }
             let canonical = market_gifts_hub::collection_slug(item)
-                .map_err(|e| DataError::unavailable(e.to_string()))?;
+                .map_err(|e| Status::unavailable(e.to_string()))?;
             if canonical.as_ref() != Some(slug.collection()) {
                 continue;
             }
             if collection.replace(item).is_some() {
-                return Err(DataError::invalid("Gift collection slug is ambiguous"));
+                return Err(Status::invalid_argument(
+                    "Gift collection slug is ambiguous",
+                ));
             }
         }
         let item = collection.ok_or_else(|| {
-            DataError::not_found(
-                "Canonical gift collection slug is not in synchronized market data",
-            )
+            Status::not_found("Canonical gift collection slug is not in synchronized market data")
         })?;
         self.gift_by_number(item, slug.number())
     }
     fn gift_by_number(&self, item: &w::ItemType, number: GiftNumber) -> Result<CollectibleGift> {
         if !item.attributes.contains_key(market_gifts_hub::NUMBER) {
-            return Err(DataError::not_found(
+            return Err(Status::not_found(
                 "Gift number is unavailable in synchronized market data",
             ));
         }
-        let currencies = crate::catalog::projection::entities_cancellable(
+        let currencies = market_replica::catalog_read::entities_cancellable(
             &self.reader,
             w::EntityKind::Currency,
             None,
@@ -77,8 +77,8 @@ impl MarketSnapshot {
             };
             let mut filters = GiftFilters::new(
                 CollectionId::new(item.id.clone())
-                    .map_err(|e| DataError::unavailable(e.to_string()))?,
-                CurrencyId::new(currency.id).map_err(|e| DataError::unavailable(e.to_string()))?,
+                    .map_err(|e| Status::unavailable(e.to_string()))?,
+                CurrencyId::new(currency.id).map_err(|e| Status::unavailable(e.to_string()))?,
             );
             filters.number = Some(GiftNumberRange {
                 min: Some(number),
@@ -101,7 +101,7 @@ impl MarketSnapshot {
                         None => found = Some(gift),
                         Some(current) => {
                             if current.id != gift.id {
-                                return Err(DataError::unavailable(
+                                return Err(Status::unavailable(
                                     "Conflicting gift identities for this collection and number",
                                 ));
                             }
@@ -118,7 +118,7 @@ impl MarketSnapshot {
             }
         }
         found.ok_or_else(|| {
-            DataError::not_found(
+            Status::not_found(
                 "Gift is not in synchronized market asks; unlisted gifts cannot be resolved",
             )
         })
@@ -126,7 +126,7 @@ impl MarketSnapshot {
 }
 fn merge<T: PartialEq>(current: &mut Option<T>, next: Option<T>) -> Result<()> {
     match (current.as_ref(), next) {
-        (Some(current), Some(next)) if current != &next => Err(DataError::unavailable(
+        (Some(current), Some(next)) if current != &next => Err(Status::unavailable(
             "Conflicting gift traits in synchronized market orders",
         )),
         (None, next) => {

@@ -3,12 +3,13 @@ pub mod catalog;
 pub mod gift;
 mod ids;
 pub mod inventory;
+mod lookup;
 pub mod media;
 mod money;
 pub mod orders;
 pub mod query;
 pub mod read;
-pub mod valuation;
+pub use lookup::*;
 
 pub use catalog::*;
 pub use gift::*;

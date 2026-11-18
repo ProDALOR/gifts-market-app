@@ -25,7 +25,7 @@ pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<std::sync::Arc<market_gifts::valuation::ValuationErrorDetails>>,
+    pub details: Option<std::sync::Arc<market_valuation::ValuationErrorDetails>>,
 }
 pub type Result<T> = std::result::Result<T, ApiError>;
 impl ApiError {

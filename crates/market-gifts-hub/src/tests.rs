@@ -1,6 +1,6 @@
 use super::lookup::{collection_matches, model_matches};
 use super::*;
-use market_gifts::valuation::ModelLookup;
+use market_gifts::ModelLookup;
 use market_gifts::{MediaTarget, TelegramDocumentId, TelegramGiftId};
 use market_hub_protocol::wire as w;
 fn option(namespace: &str, document: &str) -> w::AttributeOption {
@@ -93,7 +93,7 @@ fn collection_rules_validate_typed_ids_and_distinguish_empty_from_unrestricted()
 
 #[test]
 fn model_lookup_rejects_wrong_kinds_and_reports_missing_or_ambiguous_names() {
-    use market_gifts::valuation::UnpricedReason;
+    use market_gifts::ModelLookupError;
     let lookup = ModelLookup::Name {
         collection: "Gift".into(),
         model: "Model".into(),
@@ -112,11 +112,11 @@ fn model_lookup_rejects_wrong_kinds_and_reports_missing_or_ambiguous_names() {
     );
     assert_eq!(
         find_collection(&lookup, [&collection, &collection].into_iter()).unwrap_err(),
-        UnpricedReason::AmbiguousCollection
+        ModelLookupError::AmbiguousCollection
     );
     assert_eq!(
         find_collection(&lookup, std::iter::empty()).unwrap_err(),
-        UnpricedReason::UnknownCollection
+        ModelLookupError::UnknownCollection
     );
     let model = option("tg", "1");
     let mut pattern = model.clone();
@@ -129,11 +129,11 @@ fn model_lookup_rejects_wrong_kinds_and_reports_missing_or_ambiguous_names() {
     );
     assert_eq!(
         find_model(&lookup, std::iter::once(&pattern)).unwrap_err(),
-        UnpricedReason::UnknownModel
+        ModelLookupError::UnknownModel
     );
     assert_eq!(
         find_model(&lookup, [&model, &model].into_iter()).unwrap_err(),
-        UnpricedReason::AmbiguousModel
+        ModelLookupError::AmbiguousModel
     );
     let identity = model_identity(&collection, &model).unwrap();
     assert_eq!(identity.collection_id.as_str(), "collection");

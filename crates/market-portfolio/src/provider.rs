@@ -1,6 +1,6 @@
 use crate::{InventoryError, InventoryPage, InventoryPageRequest};
-use market_gifts::valuation::{Valuation, ValuationRequest};
 use market_valuation::ValuationError;
+use market_valuation::{Valuation, ValuationRequest};
 use std::future::Future;
 
 /// Build one unsubmitted, replayable page operation. The actor submits it to the shared runtime.
@@ -19,7 +19,7 @@ pub trait ValuationProvider: Send + Sync + 'static {
         Output = Result<std::sync::Arc<market_valuation::Mark<Valuation>>, ValuationError>,
     > + Send;
 }
-impl ValuationProvider for market_valuation::ValuationHandle {
+impl ValuationProvider for market_valuation::PortfolioValuationHandle {
     async fn mark(
         &self,
         request: ValuationRequest,

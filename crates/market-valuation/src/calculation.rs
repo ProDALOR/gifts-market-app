@@ -1,7 +1,8 @@
 //! Portfolio floor calculation over one immutable market snapshot.
 use crate::error::{Result, ValuationError};
-use market_actors::{BookScope, CatalogTrait, MarketSnapshot, ReadDependencies};
-use market_gifts::{valuation::*, *};
+use crate::source::{BookScope, CatalogTrait, ReadDependencies, ValuationSnapshot};
+use crate::types::*;
+use market_gifts::*;
 use rust_decimal::Decimal;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -44,7 +45,7 @@ pub(crate) fn normalize(input: PortfolioPositions) -> Result<PortfolioPositions>
     })
 }
 pub(crate) fn portfolio(
-    snapshot: MarketSnapshot,
+    snapshot: ValuationSnapshot,
     input: PortfolioPositions,
     kind: FloorKind,
 ) -> Result<(crate::Prepared<Valuation>, ReadDependencies)> {
@@ -119,7 +120,7 @@ pub(crate) fn portfolio(
             floor: None,
             value: None,
             venue_id: None,
-            unpriced: position.unresolved,
+            unpriced: position.unresolved.map(Into::into),
         };
         if let Some((price, venue)) = quote {
             let value = price
@@ -175,7 +176,7 @@ fn scan(
     missing: BTreeMap<CollectionId, BTreeSet<ModelId>>,
     currency: &CurrencyId,
     kind: FloorKind,
-    mut read: impl FnMut(&BookScope, String) -> Result<Page<market_actors::AskQuote>>,
+    mut read: impl FnMut(&BookScope, String) -> Result<Page<market_gifts::AskQuote>>,
 ) -> Result<Floors> {
     let mut models = BTreeMap::new();
     let mut broad = BTreeMap::new();
@@ -288,7 +289,7 @@ mod tests {
         writer
             .install_snapshot(seed.finish("seed").unwrap())
             .unwrap();
-        let service = market_actors::MarketDataService::start(writer.reader(), 2, 1)
+        let service = crate::test_support::MarketDataService::start(writer.reader(), 2, 1)
             .await
             .unwrap();
         let snapshot = service.reader.snapshot().unwrap();

@@ -1,18 +1,20 @@
 //! Floor actors own a small bounded portfolio cache and evaluate on demand.
+use crate::source::{ReadDependencies, ValuationSource};
+use crate::*;
 use crate::{
     Evaluate, Lifecycle, Mark,
     calculation::{self, FloorKind},
 };
 use crate::{ValuationError, ValuationErrorCode};
 use actix::{Actor, ActorFutureExt, AtomicResponse, Context, Handler, WrapFuture};
-use market_actors::{MarketReader, ReadDependencies};
-use market_gifts::valuation::*;
+#[cfg(test)]
+use market_gifts::ModelLookup;
 use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
 const CACHE_LIMIT: usize = 16;
 const FRESHNESS: Duration = Duration::from_secs(30);
 pub struct FloorActor {
-    source: MarketReader,
+    source: ValuationSource,
     life: Lifecycle,
     kind: FloorKind,
     cache: Vec<CachedPortfolio>,
@@ -25,7 +27,7 @@ struct CachedPortfolio {
     mark: Arc<Mark<Valuation>>,
 }
 impl FloorActor {
-    pub fn model(source: MarketReader, life: Lifecycle) -> Self {
+    pub fn model(source: ValuationSource, life: Lifecycle) -> Self {
         Self {
             source,
             life,
@@ -33,7 +35,7 @@ impl FloorActor {
             cache: Vec::new(),
         }
     }
-    pub fn collection(source: MarketReader, life: Lifecycle) -> Self {
+    pub fn collection(source: ValuationSource, life: Lifecycle) -> Self {
         Self {
             source,
             life,
@@ -164,7 +166,7 @@ mod tests {
     #[actix::test]
     async fn cache_hits_do_not_extend_preparation_freshness() {
         let (_dir, writer) = crate::integration_tests::model_fixture();
-        let data = market_actors::MarketDataService::start(writer.reader(), 2, 1)
+        let data = crate::test_support::MarketDataService::start(writer.reader(), 2, 1)
             .await
             .unwrap();
         let input = PortfolioPositions {
@@ -241,7 +243,7 @@ mod tests {
     async fn expiry_is_rechecked_after_waiting_for_metadata_validation() {
         use market_hub_protocol::wire as w;
         let (_dir, mut writer) = crate::integration_tests::model_fixture();
-        let data = market_actors::MarketDataService::start(writer.reader(), 1, 1)
+        let data = crate::test_support::MarketDataService::start(writer.reader(), 1, 1)
             .await
             .unwrap();
         let input = PortfolioPositions {

@@ -182,14 +182,10 @@ mod tests {
         let data = market_actors::MarketDataService::start(writer.reader(), 2, 2)
             .await
             .unwrap();
-        let valuation = market_valuation::Service::start_on(
-            &data,
-            "model_floor",
-            market_valuation::FloorActor::model,
-            Default::default(),
-        )
-        .await
-        .unwrap();
+        let (valuation, valuation_task) =
+            market_valuation::ValuationHandle::start(&data.arbiter(), data.reads.clone())
+                .await
+                .unwrap();
         let media_path = directory.path().join("media");
         let (cache, downloads) = MediaCache::open(&media_path).await.unwrap();
         drop(downloads);
@@ -210,7 +206,7 @@ mod tests {
                 .wrap(crate::security_headers())
                 .app_data(web::Data::new(MarketApi::new(
                     data.handle.clone(),
-                    market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+                    valuation.clone(),
                 )))
                 .app_data(web::Data::new(MediaApi::new(cache.clone())))
                 .configure(crate::configure),
@@ -385,7 +381,7 @@ mod tests {
             "Cache-only API nodes do not enqueue downloads"
         );
         cache.shutdown().await;
-        valuation.task.shutdown().await.unwrap();
+        valuation_task.shutdown().await.unwrap();
         let stop = tokio_util::sync::CancellationToken::new();
         stop.cancel();
         data.task.run(stop).await.unwrap();

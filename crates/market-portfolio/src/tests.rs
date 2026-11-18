@@ -1,13 +1,11 @@
 use super::*;
-use market_gifts::{
-    SyncState, SyncStatus, TelegramDocumentId, TelegramGiftId,
-    valuation::{ModelValue, Valuation, ValuationRequest},
-};
+use market_gifts::{SyncState, SyncStatus, TelegramDocumentId, TelegramGiftId};
 use market_invocations::{
     AttemptError, Invocation, Policy, RateKey, RateLimit, Replay, Retry,
     Runtime as InvocationRuntime, operation,
 };
 use market_valuation::ValuationError;
+use market_valuation::{ModelValue, Valuation, ValuationRequest};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -171,7 +169,7 @@ fn page(ids: &[&str], next: Option<&str>, total: usize) -> InventoryPage {
 }
 fn request(id: u64, currency: &str, priority: Priority) -> PortfolioRequest {
     PortfolioRequest {
-        strategy: market_gifts::valuation::StrategyId::model_floor(),
+        strategy: market_valuation::StrategyId::model_floor(),
         user: user(id),
         currency_id: currency.to_owned().try_into().unwrap(),
         priority,
@@ -983,16 +981,19 @@ async fn real_market_actors_supply_exact_model_floor_values() {
         .unwrap();
     let source = Source::default();
     let valuation = market_valuation::Service::start_on(
-        &market,
+        &market.arbiter(),
         "model_floor",
-        market_valuation::FloorActor::model,
+        {
+            let source = market_valuation::ValuationSource::new(market.reads.clone());
+            move |life| market_valuation::FloorActor::model(source, life)
+        },
         Default::default(),
     )
     .await
     .unwrap();
     let portfolio = PortfolioService::start(
         source.clone(),
-        market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+        market_valuation::PortfolioValuationHandle::new([valuation.handle.clone()]).unwrap(),
         PortfolioConfig::default(),
         invocations.handle(),
     )
@@ -1211,7 +1212,7 @@ async fn strategies_share_inventory_but_never_coalesce_valuation_jobs() {
     let model = ask(&handle, 1, "GRAM", Priority::Normal);
     let second = handle.clone();
     let mut broad = request(1, "GRAM", Priority::Interactive);
-    broad.strategy = market_gifts::valuation::StrategyId::collection_floor();
+    broad.strategy = market_valuation::StrategyId::collection_floor();
     let collection = tokio::spawn(async move { second.request(broad).await });
     next(&source, 1).await;
     flush().await;
@@ -1232,13 +1233,13 @@ async fn strategies_share_inventory_but_never_coalesce_valuation_jobs() {
 }
 
 #[actix::test]
-async fn multiplier_selection_is_rejected_before_inventory_is_requested() {
+async fn gift_strategy_is_rejected_before_inventory_is_requested() {
     let source = Source::default();
     let quotes = Quotes::default();
     let (handle, stop, closed, _invocations) =
         setup(source.clone(), quotes.clone(), Default::default());
     let mut request = request(1, "GRAM", Priority::Normal);
-    request.strategy = market_gifts::valuation::StrategyId::model_multiplier();
+    request.strategy = market_valuation::StrategyId::new("gift_floor").unwrap();
     let error = handle.request(request).await.unwrap_err();
     let PortfolioError::Valuation(error) = error else {
         panic!("strategy error required");

@@ -2,8 +2,6 @@ import type { components } from "./gen/api";
 export type GiftValuationRequest =
   components["schemas"]["GiftValuationRequest"];
 export type GiftValuation = components["schemas"]["GiftValuationResponse"];
-export type ModelMultiplier = components["schemas"]["ModelMultiplier"];
-export type BackdropMultiplier = components["schemas"]["BackdropMultiplier"];
 export type ValuationErrorDetails =
   components["schemas"]["ValuationErrorDetails"];
 export type Order = components["schemas"]["OrderResponse"];

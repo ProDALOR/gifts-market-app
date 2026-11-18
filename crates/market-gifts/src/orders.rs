@@ -13,6 +13,7 @@ pub struct AskQuote {
     pub price: Amount,
     pub model_id: Option<ModelId>,
     pub backdrop_id: Option<BackdropId>,
+    pub expires_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

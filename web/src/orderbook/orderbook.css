@@ -475,3 +475,19 @@
 .detail-market {
   margin-top: 16px;
 }
+
+.valuation-final {
+  margin: 0 0 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--raised);
+  border: 1px solid var(--accent);
+}
+.valuation-final .valuation-value {
+  font-size: 24px;
+}
+.valuation-final p {
+  font-size: 11px;
+  margin-top: 6px;
+  color: var(--muted);
+}

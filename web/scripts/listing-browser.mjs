@@ -83,60 +83,36 @@ const frame = (rows) => ({
 });
 function report(body) {
   const number = body.gift.number;
-  const mark = { revision: "r", evaluated_at: "2026-11-18T12:00:00Z" };
+  const missing = {
+    error: {
+      code: "not_enough_data",
+      message: "More backdrop listings are needed.",
+      required_samples: 3,
+      available_samples: 1,
+    },
+  };
   return {
+    strategy: "gift_floor",
+    revision: "view",
+    evaluated_at: "2026-11-18T12:00:00Z",
     slug: null,
     gift: order("gift", number).target.gift,
     currency_id: body.currency_id,
-    gift_revision: "view",
-    strategies: [
-      {
-        strategy: "model_floor",
-        ...mark,
-        data: {
-          rows: [],
-          total: String(number * 10),
-          priced: 1,
-          unpriced: 0,
-          currency_id: body.currency_id,
-          sync,
-        },
-      },
-      {
-        strategy: "collection_floor",
-        ...mark,
-        data: {
-          rows: [],
-          total: "8",
-          priced: 1,
-          unpriced: 0,
-          currency_id: body.currency_id,
-          sync,
-        },
-      },
-      {
-        strategy: "model_multiplier",
-        ...mark,
-        data: {
-          factor: "1.25",
-          currency_id: body.currency_id,
-          sync,
-          evidence: {
-            minimum_samples: 3,
-            collection: { floor: "8", samples: 5 },
-            selected_trait: { floor: "10", samples: 3 },
-          },
-        },
-      },
-      {
-        strategy: "backdrop_multiplier",
-        error: {
-          code: "not_enough_data",
-          message: "More backdrop listings are needed.",
-          details: { required_samples: 3, available_samples: 1 },
-        },
-      },
-    ],
+    sync,
+    collection_floor: { value: "8" },
+    model_floor: { value: String(number * 10) },
+    backdrop_floor: { value: "9" },
+    model_backdrop_floor: { value: "12" },
+    model_multiplier: { value: "1.25" },
+    backdrop_multiplier: missing,
+    final_mark: missing,
+    evidence: {
+      collection_samples: 5,
+      model_samples: 3,
+      backdrop_samples: 1,
+      model_backdrop_samples: 1,
+      minimum_multiplier_samples: 3,
+    },
   };
 }
 let browser;
@@ -218,24 +194,23 @@ try {
   await mkdir("/tmp/gifts-market-ui", { recursive: true });
   await page.screenshot({ path: "/tmp/gifts-market-ui/fresh-listings.png" });
   await page.locator('[data-order-id="a"]').click();
-  await page
-    .locator('[data-strategy="model_floor"] .valuation-value')
-    .waitFor();
+  await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
   assert.equal(requests.length, 1);
   assert.deepEqual(requests[0], {
     gift: { collection_id: "gift", number: 1 },
     currency_id: "GRAM",
   });
-  assert.equal(await page.locator(".gift-valuations li").count(), 4);
+  assert.equal(await page.locator(".gift-valuations li").count(), 6);
   assert.equal(
     await page
-      .locator('[data-strategy="model_multiplier"] .valuation-value')
+      .locator('[data-metric="model_multiplier"] .valuation-value')
       .textContent(),
     "1.25×",
   );
   await page
     .locator(".gift-valuations")
     .getByText("Not enough data", { exact: true })
+    .first()
     .waitFor();
   for (const label of [
     "Listing information",
@@ -292,20 +267,18 @@ try {
   assert.ok(release, "The delayed valuation request started");
   mode = "ok";
   await page.evaluate((order) => window.selectListing(order), b);
-  await page
-    .locator('[data-strategy="model_floor"] .valuation-value')
-    .waitFor();
+  await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
   release();
   assert.ok((await page.locator("#detail-title").textContent()).includes("#2"));
   assert.equal(
     await page
-      .locator('[data-strategy="model_floor"] .quote-amount')
+      .locator('[data-metric="model_floor"] .quote-amount')
       .textContent(),
     "20",
   );
   mode = "error";
   await page
-    .getByRole("button", { name: "Refresh valuations", exact: true })
+    .getByRole("button", { name: "Refresh valuation", exact: true })
     .click();
   await page
     .locator('.gift-valuations [role="alert"]')
@@ -313,15 +286,13 @@ try {
     .waitFor();
   mode = "ok";
   await page
-    .getByRole("button", { name: "Refresh valuations", exact: true })
+    .getByRole("button", { name: "Refresh valuation", exact: true })
     .click();
-  await page
-    .locator('[data-strategy="model_floor"] .valuation-value')
-    .waitFor();
+  await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(
-    "Listing browser passed: 60-second clock, new/grey ribbons, bounded expiry, all strategies, exact units, cancelled requests and retry.",
+    "Listing browser passed: 60-second clock, new/grey ribbons, bounded expiry, unified report, exact units, cancelled requests and retry.",
   );
 } finally {
   await browser?.close();

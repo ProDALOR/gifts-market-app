@@ -1,143 +1,192 @@
-//! One concrete gift, every registered strategy, independent typed outcomes.
+//! One supervised gift strategy. Cached collection statistics are checked against each pinned view.
+use crate::gift_calculation::{REFRESH, Statistics};
+use crate::source::{BookScope, ValuationSnapshot, ValuationSource};
 use crate::*;
-use market_gifts::{valuation::*, *};
-#[derive(Debug, Clone)]
-pub struct GiftStrategyResult {
-    pub strategy: StrategyId,
-    pub result: Result<ValuationResult, ValuationError>,
-}
-#[derive(Debug, Clone)]
-pub struct GiftValuationResult {
-    pub slug: Option<GiftSlug>,
-    pub gift: CollectibleGift,
-    pub currency_id: CurrencyId,
-    pub gift_revision: String,
-    pub strategies: Vec<GiftStrategyResult>,
+use crate::{
+    Evaluate, Handle, Lifecycle, Mark, Prepared, Service, ServiceError, Task, ValuationError,
+};
+use actix::{Actor, ActorFutureExt, AsyncContext, Context, Handler, ResponseActFuture, WrapFuture};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::time::Instant;
+
+pub const GIFT_STRATEGY: &str = "gift_floor";
+pub type GiftValuationResult = Mark<GiftValuation>;
+type NativeHandle = Handle<GiftValuationRequest, GiftValuation, ValuationError>;
+#[derive(Clone)]
+pub struct ValuationHandle(NativeHandle);
+impl From<NativeHandle> for ValuationHandle {
+    fn from(handle: NativeHandle) -> Self {
+        Self(handle)
+    }
 }
 impl ValuationHandle {
     pub async fn gift(
         &self,
         request: GiftValuationRequest,
-    ) -> Result<GiftValuationResult, ValuationError> {
-        let _slot = self
-            .gift_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| ValuationError::capacity("Gift valuation requests are busy"))?;
-        let reader = self
-            .reader
-            .as_ref()
-            .ok_or_else(|| ValuationError::unavailable("Gift lookup is unavailable"))?;
-        let work = async {
-            let lookup = request.gift.clone();
-            let currency = request.currency_id.clone();
-            let lookup = reader.prepare(
-                move |snapshot| -> Result<_, market_actors::error::DataError> {
-                    snapshot.require_currency(&currency)?;
-                    Ok((snapshot.gift(&lookup)?, snapshot.revision()?))
-                },
-            );
-            let (gift, gift_revision) =
-                tokio::time::timeout(std::time::Duration::from_secs(10), lookup)
-                    .await
-                    .map_err(|_| ValuationError::timed_out("Gift lookup timed out"))???;
-            let strategies =
-                futures_util::future::join_all(self.strategies().cloned().map(|strategy| {
-                    let gift = &gift;
-                    let currency = &request.currency_id;
-                    let revision = &gift_revision;
-                    async move {
-                        let result = match query(&strategy, gift, currency, revision) {
-                            Ok(query) => tokio::time::timeout(
-                                std::time::Duration::from_secs(15),
-                                self.query(query),
-                            )
-                            .await
-                            .unwrap_or_else(|_| {
-                                Err(ValuationError::timed_out("Strategy evaluation timed out")
-                                    .with_context(strategy.clone(), currency.clone()))
-                            }),
-                            Err(error) => {
-                                Err(error.with_context(strategy.clone(), currency.clone()))
-                            }
-                        };
-                        GiftStrategyResult { strategy, result }
-                    }
-                }))
-                .await;
-            Ok(GiftValuationResult {
-                slug: match request.gift {
-                    GiftLookup::Slug(slug) => Some(slug),
-                    GiftLookup::Catalog { .. } => None,
-                },
-                gift,
-                currency_id: request.currency_id,
-                gift_revision,
-                strategies,
-            })
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(30), work)
-            .await
-            .map_err(|_| ValuationError::timed_out("Gift valuation timed out"))?
+    ) -> Result<Arc<GiftValuationResult>, ValuationError> {
+        let currency = request.currency_id.clone();
+        crate::client::invoke(
+            &self.0,
+            request,
+            StrategyId::new(GIFT_STRATEGY).unwrap(),
+            currency,
+        )
+        .await
     }
-}
-fn query(
-    id: &StrategyId,
-    gift: &CollectibleGift,
-    currency: &CurrencyId,
-    revision: &str,
-) -> Result<ValuationQuery, ValuationError> {
-    let missing = |name| {
-        ValuationError::with_details(
-            ValuationErrorCode::NotEnoughData,
-            format!("Gift has no resolved catalog {name}"),
-            ValuationErrorDetails {
-                currency_id: Some(currency.clone()),
-                revision: Some(revision.to_owned()),
-                ..ValuationErrorDetails::strategy(id.clone())
+    pub async fn start(
+        arbiter: &actix::ArbiterHandle,
+        reads: market_replica::ReadExecutor,
+    ) -> Result<(Self, Task), ServiceError> {
+        let service = Service::start_on(
+            arbiter,
+            GIFT_STRATEGY,
+            move |life| GiftValuationActor::new(ValuationSource::new(reads), life),
+            crate::Config {
+                max_requests: 32,
+                ..Default::default()
             },
         )
-    };
-    Ok(match id.as_str() {
-        "collection_floor" | "model_floor" => {
-            let model = if id.as_str() == "collection_floor" {
-                ModelLookup::Collection {
-                    collection: gift.collection_id.clone(),
-                }
-            } else {
-                ModelLookup::Catalog {
-                    collection: gift.collection_id.clone(),
-                    model: gift.traits.model.clone().ok_or_else(|| missing("model"))?,
-                }
-            };
-            let positions = PortfolioPositions {
-                positions: vec![ModelPosition { model, quantity: 1 }],
-                currency_id: currency.clone(),
-            };
-            if id.as_str() == "model_floor" {
-                ValuationQuery::ModelFloor(positions)
-            } else {
-                ValuationQuery::CollectionFloor(positions)
-            }
-        }
-        "model_multiplier" => ValuationQuery::ModelMultiplier(ModelMultiplierRequest {
-            collection_id: gift.collection_id.clone(),
-            model_id: gift.traits.model.clone().ok_or_else(|| missing("model"))?,
-            currency_id: currency.clone(),
-        }),
-        "backdrop_multiplier" => ValuationQuery::BackdropMultiplier(BackdropMultiplierRequest {
-            collection_id: gift.collection_id.clone(),
-            backdrop_id: gift
-                .traits
-                .backdrop
-                .clone()
-                .ok_or_else(|| missing("backdrop"))?,
-            currency_id: currency.clone(),
-        }),
-        _ => {
-            return Err(ValuationError::unavailable(
-                "Unsupported gift valuation strategy",
-            ));
-        }
-    })
+        .await?;
+        Ok((service.handle.into(), service.task))
+    }
 }
+struct CachedBook {
+    stats: Arc<Statistics>,
+    used: Instant,
+}
+#[derive(Default)]
+struct Books(HashMap<BookScope, CachedBook>);
+impl Books {
+    fn get(
+        &mut self,
+        snapshot: &ValuationSnapshot,
+        scope: &BookScope,
+    ) -> Result<Arc<Statistics>, ValuationError> {
+        let now = Instant::now();
+        self.0
+            .retain(|_, entry| entry.used.elapsed() < Duration::from_secs(300));
+        if let Some(cached) = self.0.get_mut(scope) {
+            if cached.stats.current(snapshot)? {
+                cached.used = now;
+                return Ok(cached.stats.clone());
+            }
+            self.0.remove(scope);
+        }
+        let stats = Arc::new(Statistics::read(snapshot, scope)?);
+        snapshot.check_cancelled()?;
+        if self.0.len() >= 8 {
+            let oldest = self
+                .0
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(scope, _)| scope.clone())
+                .unwrap();
+            self.0.remove(&oldest);
+        }
+        self.0.insert(
+            scope.clone(),
+            CachedBook {
+                stats: stats.clone(),
+                used: now,
+            },
+        );
+        Ok(stats)
+    }
+}
+pub struct GiftValuationActor {
+    life: Lifecycle,
+    source: ValuationSource,
+    // Only tracked read workers access this cache. The Arbiter never takes its lock.
+    books: Arc<Mutex<Books>>,
+    active: Option<(BookScope, Instant)>,
+    refreshing: bool,
+}
+impl GiftValuationActor {
+    pub fn new(source: ValuationSource, life: Lifecycle) -> Self {
+        Self {
+            life,
+            source,
+            books: Arc::new(Mutex::new(Books::default())),
+            active: None,
+            refreshing: false,
+        }
+    }
+}
+impl Actor for GiftValuationActor {
+    type Context = Context<Self>;
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.life.started(ctx);
+        ctx.run_interval(REFRESH, |actor, ctx| {
+            let Some((scope, used)) = actor.active.as_ref() else {
+                return;
+            };
+            if actor.refreshing || used.elapsed() >= Duration::from_secs(300) {
+                return;
+            }
+            actor.refreshing = true;
+            let source = actor.source.clone();
+            let books = actor.books.clone();
+            let scope = scope.clone();
+            ctx.spawn(
+                async move {
+                    source
+                        .prepare(move |snapshot| {
+                            books
+                                .lock()
+                                .map_err(|_| {
+                                    ValuationError::unavailable("Valuation cache is unavailable")
+                                })?
+                                .get(&snapshot, &scope)
+                        })
+                        .await
+                }
+                .into_actor(actor)
+                .map(|_, actor, _| actor.refreshing = false),
+            );
+        });
+    }
+}
+impl Handler<Evaluate<GiftValuationRequest, GiftValuation, ValuationError>> for GiftValuationActor {
+    type Result = ResponseActFuture<Self, Result<Arc<GiftValuationResult>, ValuationError>>;
+    fn handle(
+        &mut self,
+        message: Evaluate<GiftValuationRequest, GiftValuation, ValuationError>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
+        let (input, request) = message.into_parts();
+        let source = self.source.clone();
+        let books = self.books.clone();
+        let stop = self.life.stop_token();
+        Box::pin(async move {
+            let cancelled = request.cancelled.clone();
+            let _request = request;
+            let work = source.prepare(move |snapshot| -> Result<_, ValuationError> {
+                snapshot.require_currency(&input.currency_id)?;
+                let gift = snapshot.gift(&input.gift)?;
+                let scope = BookScope { collection: gift.collection_id.clone(), currency: input.currency_id.clone() };
+                let stats = books.lock().map_err(|_| ValuationError::unavailable("Valuation cache is unavailable"))?.get(&snapshot, &scope)?;
+                let data = stats.report(gift, input.gift, input.currency_id, snapshot.sync()?);
+                snapshot.check_cancelled()?;
+                Ok((Prepared::new(data, snapshot.revision()?), scope))
+            });
+            tokio::select! {biased;
+                _=stop.cancelled()=>Err(ValuationError::unavailable("Valuation actor is stopping")),
+                _=cancelled.cancelled()=>Err(ValuationError::unavailable("Valuation request cancelled")),
+                result=tokio::time::timeout(Duration::from_secs(30),work)=> {
+                    result.map_err(|_|ValuationError::timed_out("Gift valuation timed out"))??
+                }
+            }
+        }.into_actor(self).map(|result, actor, _| result.map(|(prepared, scope)| {
+            actor.active = Some((scope, Instant::now()));
+            Arc::new(Mark::evaluated(GIFT_STRATEGY, prepared))
+        })))
+    }
+}
+
+#[cfg(test)]
+#[path = "gift_tests.rs"]
+mod tests;

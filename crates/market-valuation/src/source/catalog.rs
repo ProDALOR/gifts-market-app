@@ -1,5 +1,5 @@
 use super::*;
-use market_gifts::{valuation::ModelLookup, *};
+use market_gifts::*;
 use market_hub_protocol::wire as w;
 use std::collections::BTreeSet;
 #[derive(Clone, Copy, Debug)]
@@ -15,14 +15,10 @@ impl CatalogTrait {
         }
     }
 }
-impl MarketSnapshot {
+impl ValuationSnapshot {
     pub fn resolve_models(&self, lookups: Vec<ModelLookup>) -> Result<Vec<ResolvedModel>> {
         self.check_cancelled()?;
-        Ok(crate::catalog::resolve_models(
-            &self.reader,
-            lookups,
-            &self.cancelled,
-        )?)
+        super::resolve::resolve(&self.reader, lookups, &self.cancelled)
     }
     pub(super) fn entity(
         &self,
@@ -30,7 +26,7 @@ impl MarketSnapshot {
         id: &str,
     ) -> Result<Option<w::entity::Entity>> {
         self.check_cancelled()?;
-        Ok(crate::catalog::projection::entities_cancellable(
+        Ok(market_replica::catalog_read::entities_cancellable(
             &self.reader,
             kind,
             Some(&[id.to_owned()]),
@@ -41,22 +37,22 @@ impl MarketSnapshot {
     }
     pub fn require_currency(&self, currency: &CurrencyId) -> Result<()> {
         self.entity(w::EntityKind::Currency, currency)?
-            .ok_or_else(|| DataError::invalid("unknown quote currency"))?;
+            .ok_or_else(|| Status::invalid_argument("unknown quote currency"))?;
         Ok(())
     }
     fn options(&self, collection: &CollectionId, kind: CatalogTrait) -> Result<Vec<String>> {
         let Some(w::entity::Entity::ItemType(item)) =
             self.entity(w::EntityKind::ItemType, collection)?
         else {
-            return Err(DataError::invalid("unknown gift collection"));
+            return Err(Status::invalid_argument("unknown gift collection"));
         };
         if !market_gifts_hub::is_gift(&item) {
-            return Err(DataError::invalid("unknown gift collection"));
+            return Err(Status::invalid_argument("unknown gift collection"));
         }
         let rules = market_gifts_hub::CollectionChoices::new(&item)
-            .map_err(|e| DataError::unavailable(e.to_string()))?;
+            .map_err(|e| Status::unavailable(e.to_string()))?;
         let ids = rules.trait_option_ids(kind.attribute());
-        let options = crate::catalog::projection::trait_options(
+        let options = market_replica::catalog_read::trait_options(
             &self.reader,
             kind.attribute(),
             ids.as_deref(),
@@ -73,7 +69,7 @@ impl MarketSnapshot {
             .into_iter()
             .map(|id| {
                 id.try_into()
-                    .map_err(|e| DataError::unavailable(format!("{e}")))
+                    .map_err(|e| Status::unavailable(format!("{e}")))
             })
             .collect()
     }
@@ -82,7 +78,7 @@ impl MarketSnapshot {
             .into_iter()
             .map(|id| {
                 id.try_into()
-                    .map_err(|e| DataError::unavailable(format!("{e}")))
+                    .map_err(|e| Status::unavailable(format!("{e}")))
             })
             .collect()
     }

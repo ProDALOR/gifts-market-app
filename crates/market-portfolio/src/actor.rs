@@ -5,13 +5,11 @@ use crate::{
     *,
 };
 use actix::prelude::*;
-use market_gifts::{
-    CurrencyId,
-    valuation::{ModelLookup, ModelPosition, ValuationRequest},
-};
+use market_gifts::{CurrencyId, ModelLookup};
 use market_invocations::{
     Control, Error as InvocationError, Handle as InvocationHandle, Options, RuntimeError,
 };
+use market_valuation::{ModelPosition, ValuationRequest};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
@@ -23,7 +21,7 @@ struct QuoteKey {
     user: UserId,
     currency: CurrencyId,
     snapshot: u64,
-    strategy: market_gifts::valuation::StrategyId,
+    strategy: market_valuation::StrategyId,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Work {

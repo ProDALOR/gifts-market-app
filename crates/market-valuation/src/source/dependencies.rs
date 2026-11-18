@@ -1,5 +1,5 @@
 use super::*;
-use market_gifts::{valuation::ModelLookup, *};
+use market_gifts::*;
 use market_hub_protocol::wire as w;
 use market_replica::{MetadataDependencies, MetadataRevision, ReadRevision};
 use std::{collections::BTreeSet, sync::Mutex};
@@ -17,7 +17,27 @@ struct Dependencies {
     checked: Mutex<MetadataRevision>,
     sync: SyncStatus,
 }
-impl MarketSnapshot {
+impl ValuationSnapshot {
+    /// Validate cached projections against this pinned view on a read worker.
+    pub fn dependencies_current(&self, dependencies: &ReadDependencies) -> Result<bool> {
+        self.check_cancelled()?;
+        let deps = &dependencies.0;
+        if !self.books_current(deps)? {
+            return Ok(false);
+        }
+        let stamp = self.reader.metadata_revision(KINDS)?;
+        if *deps.checked.lock().unwrap() == stamp {
+            return Ok(true);
+        }
+        let matches = self.reader.metadata_matches_with(&deps.metadata, || {
+            self.check_cancelled()
+                .map_err(|e| tonic::Status::cancelled(e.to_string()))
+        })?;
+        if matches {
+            *deps.checked.lock().unwrap() = stamp;
+        }
+        Ok(matches)
+    }
     fn books_current(&self, deps: &Dependencies) -> Result<bool> {
         let sync = self.sync()?;
         if sync.ready != deps.sync.ready || sync.state != deps.sync.state {
@@ -67,7 +87,7 @@ impl MarketSnapshot {
                 self.entity(w::EntityKind::ItemType, &scope.collection)?
             {
                 let rules = market_gifts_hub::CollectionChoices::new(&item)
-                    .map_err(|e| DataError::unavailable(e.to_string()))?;
+                    .map_err(|e| Status::unavailable(e.to_string()))?;
                 if let Some(ids) = rules.trait_option_ids(kind.attribute()) {
                     keys.extend(ids.into_iter().map(|id| w::Key {
                         kind: w::EntityKind::AttributeOption as i32,
@@ -79,7 +99,9 @@ impl MarketSnapshot {
                 }
             }
             if keys.len() > 50_000 {
-                return Err(DataError::capacity("read dependency budget exceeded"));
+                return Err(Status::resource_exhausted(
+                    "read dependency budget exceeded",
+                ));
             }
         }
         Ok(ReadDependencies(Arc::new(Dependencies {
@@ -100,7 +122,7 @@ impl MarketSnapshot {
         })))
     }
 }
-impl MarketReader {
+impl ValuationSource {
     /// Price-only updates take the cheap revision path. Full metadata checks run off the Arbiter.
     pub async fn is_current(&self, dependencies: &ReadDependencies) -> bool {
         self.validate(dependencies).await.unwrap_or(false)
@@ -115,31 +137,17 @@ impl MarketReader {
         if *deps.checked.lock().unwrap() == stamp {
             return Ok(true);
         }
-        let _admission = self.environment.jobs.token();
-        let cancelled = self.environment.stop.child_token();
-        let _guard = cancelled.clone().drop_guard();
-        let permit = self.budget.wait().await?;
         let dependencies = dependencies.clone();
         let checked = self
-            .environment
-            .jobs
-            .spawn_blocking_on(
-                move || {
-                    let _permit = permit;
-                    snapshot
-                        .reader
-                        .metadata_matches_with(&dependencies.0.metadata, || {
-                            if cancelled.is_cancelled() {
-                                Err(tonic::Status::cancelled("Market read cancelled"))
-                            } else {
-                                Ok(())
-                            }
-                        })
-                },
-                &self.environment.runtime,
-            )
-            .await
-            .map_err(|_| DataError::unavailable("Dependency worker stopped"))??;
+            .executor
+            .run(move |cancelled| {
+                snapshot
+                    .reader
+                    .metadata_matches_with(&dependencies.0.metadata, || {
+                        market_replica::catalog_read::check(&cancelled)
+                    })
+            })
+            .await??;
         if !checked {
             return Ok(false);
         }

@@ -43,14 +43,6 @@ impl<T> Mark<T> {
             evaluated_at: value.prepared_at,
         }
     }
-    pub fn prepared<P>(strategy: &'static str, data: T, prepared: &Prepared<P>) -> Self {
-        Self {
-            strategy,
-            data,
-            revision: prepared.revision.clone(),
-            evaluated_at: prepared.prepared_at,
-        }
-    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error<E> {
@@ -199,18 +191,22 @@ pub struct Task {
 }
 impl<I: Send + 'static, V: Send + Sync + 'static, E: Send + 'static> Service<I, V, E> {
     pub async fn start_on<A, F>(
-        data: &market_actors::MarketDataService,
+        arbiter: &actix::ArbiterHandle,
         id: &'static str,
         build: F,
         config: Config,
     ) -> Result<Self, ServiceError>
     where
         A: Actor<Context = Context<A>> + Handler<Evaluate<I, V, E>>,
-        F: FnOnce(market_actors::MarketReader, Lifecycle) -> A + Send + 'static,
+        F: FnOnce(Lifecycle) -> A + Send + 'static,
     {
-        data.start_actor(move |source| Self::start(id, config, |life| build(source, life)))
-            .await
-            .map_err(|_| ServiceError)?
+        let (reply, response) = tokio::sync::oneshot::channel();
+        if !arbiter.spawn_fn(move || {
+            let _ = reply.send(Self::start(id, config, build));
+        }) {
+            return Err(ServiceError);
+        }
+        response.await.map_err(|_| ServiceError)?
     }
     pub fn start<A, F>(
         strategy: &'static str,
@@ -278,31 +274,3 @@ impl Drop for Task {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-
-#[cfg(test)]
-pub(crate) fn test_lifecycle(
-    strategy: &'static str,
-) -> (Lifecycle, CancellationToken, CancellationToken) {
-    let stop = CancellationToken::new();
-    let closed = CancellationToken::new();
-    (
-        Lifecycle {
-            strategy,
-            stop: stop.clone(),
-            closed: closed.clone(),
-        },
-        stop,
-        closed,
-    )
-}
-#[cfg(test)]
-pub(crate) fn test_message<I, V, E>(input: I) -> Evaluate<I, V, E> {
-    Evaluate {
-        input,
-        context: RequestContext {
-            cancelled: CancellationToken::new(),
-            _permit: Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
-        },
-        _result: PhantomData,
-    }
-}

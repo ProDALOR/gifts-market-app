@@ -67,7 +67,7 @@ impl CatalogHandle {
         ids: Vec<market_gifts::CollectionId>,
     ) -> Result<market_gifts::CatalogVersions, Status> {
         let projection = tokio::select! { biased;
-            _ = self.budget.stop.cancelled() => return Err(Status::unavailable("Catalog stopped")),
+            _ = self.budget.cancelled() => return Err(Status::unavailable("Catalog stopped")),
             result = self.projections.clone().acquire_owned() => result.map_err(|_| Status::unavailable("Catalog stopped"))?,
         };
         let permit = self.budget.wait().await?;

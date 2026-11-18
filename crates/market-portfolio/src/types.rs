@@ -1,4 +1,5 @@
-use market_gifts::{CurrencyId, valuation::Valuation};
+use market_gifts::CurrencyId;
+use market_valuation::Valuation;
 use market_valuation::ValuationError;
 use std::{fmt, sync::Arc};
 
@@ -34,7 +35,7 @@ pub struct Portfolio {
 }
 #[derive(Debug, Clone)]
 pub struct PortfolioRequest {
-    pub strategy: market_gifts::valuation::StrategyId,
+    pub strategy: market_valuation::StrategyId,
     pub user: UserId,
     pub currency_id: CurrencyId,
     pub priority: Priority,

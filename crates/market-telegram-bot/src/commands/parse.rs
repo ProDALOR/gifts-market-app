@@ -1,6 +1,7 @@
 use super::{Command, CommandRequest};
-use market_gifts::{CurrencyId, GiftSlug, valuation::GiftValuationRequest};
+use market_gifts::{CurrencyId, GiftSlug};
 use market_telegram::IncomingMessage;
+use market_valuation::GiftValuationRequest;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
     Start,
@@ -32,7 +33,7 @@ impl CommandKind {
             Self::Market => "Browse markets",
             Self::Help => "How to use the app",
             Self::Status => "Check market data status",
-            Self::Value => "Value a gift URL or slug with all strategies",
+            Self::Value => "Value a gift URL or slug",
         }
     }
 }

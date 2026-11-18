@@ -13,7 +13,7 @@ pub enum Command {
     Market,
     Help,
     Status,
-    Value(market_gifts::valuation::GiftValuationRequest),
+    Value(market_valuation::GiftValuationRequest),
     Invalid(CommandKind),
 }
 impl Command {

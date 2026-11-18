@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    MarketDataService,
-    tests::{entity, fixture, order},
+    integration_tests::{entity, fixture, order},
+    test_support::MarketDataService,
 };
 use market_gifts::CurrencyId;
 use market_hub_protocol::wire as w;
@@ -19,14 +19,7 @@ async fn dependency_checks_use_revisions_then_a_bounded_worker_and_memoize_succe
         .unwrap()
         .dependencies([], &CurrencyId::from("GRAM"), CatalogTrait::Model, &[])
         .unwrap();
-    let held = data
-        .reader
-        .budget
-        .slots
-        .clone()
-        .acquire_owned()
-        .await
-        .unwrap();
+    let held = data.reader.executor.budget().wait().await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(100), data.reader.is_current(&deps))
             .await
@@ -51,14 +44,7 @@ async fn dependency_checks_use_revisions_then_a_bounded_worker_and_memoize_succe
     assert!(data.handle.status().await.unwrap().ready);
     drop(held);
     assert!(validation.await);
-    let held = data
-        .reader
-        .budget
-        .slots
-        .clone()
-        .acquire_owned()
-        .await
-        .unwrap();
+    let held = data.reader.executor.budget().wait().await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(100), data.reader.is_current(&deps))
             .await
@@ -116,13 +102,51 @@ async fn cancelling_a_worker_stops_its_scan_at_the_next_page_and_releases_capaci
     assert_eq!(started.await.unwrap(), 500);
     task.abort();
     let _ = task.await;
-    assert_eq!(data.reader.workers.available_permits(), 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), data.reader.prepare(|_| ()))
+            .await
+            .is_err()
+    );
     release.send(()).unwrap();
     assert!(done.await.unwrap());
     tokio::time::timeout(Duration::from_secs(1), data.reader.prepare(|_| ()))
         .await
         .unwrap()
         .unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn valuation_and_data_actor_queries_share_one_admission_budget() {
+    use market_gifts::{GiftFilters, GiftOrdersQuery};
+    let (_dir, writer) = fixture();
+    let data = MarketDataService::start(writer.reader(), 1, 1)
+        .await
+        .unwrap();
+    let held = data.reader.executor.budget().try_query().unwrap();
+    let error = data
+        .handle
+        .orders(GiftOrdersQuery::new(GiftFilters::new(
+            "gift".into(),
+            "GRAM".into(),
+        )))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        market_actors::error::DataErrorCode::CapacityExceeded
+    );
+    let mut work = Box::pin(data.reader.prepare(|snapshot| snapshot.revision()));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut work)
+            .await
+            .is_err()
+    );
+    assert!(data.handle.status().await.unwrap().ready);
+    drop(held);
+    assert_eq!(work.await.unwrap().unwrap(), "c0");
     let stop = CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();

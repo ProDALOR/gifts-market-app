@@ -1,5 +1,5 @@
 use super::TELEGRAM_NAMESPACE;
-use market_gifts::valuation::{ModelIdentity, ModelLookup, UnpricedReason};
+use market_gifts::{ModelIdentity, ModelLookup, ModelLookupError};
 use market_hub_protocol::wire as w;
 fn by_name(input: &str, id: &str, name: &str) -> bool {
     id == input || name.eq_ignore_ascii_case(input)
@@ -31,9 +31,9 @@ pub(crate) fn model_matches(lookup: &ModelLookup, option: &w::AttributeOption) -
 
 fn unique<T>(
     mut matches: impl Iterator<Item = T>,
-    missing: UnpricedReason,
-    ambiguous: UnpricedReason,
-) -> std::result::Result<T, UnpricedReason> {
+    missing: ModelLookupError,
+    ambiguous: ModelLookupError,
+) -> std::result::Result<T, ModelLookupError> {
     let first = matches.next().ok_or(missing)?;
     if matches.next().is_some() {
         Err(ambiguous)
@@ -44,23 +44,23 @@ fn unique<T>(
 pub fn find_collection<'a>(
     lookup: &ModelLookup,
     items: impl Iterator<Item = &'a w::ItemType>,
-) -> std::result::Result<&'a w::ItemType, UnpricedReason> {
+) -> std::result::Result<&'a w::ItemType, ModelLookupError> {
     unique(
         items.filter(|item| super::is_gift(item) && collection_matches(lookup, item)),
-        UnpricedReason::UnknownCollection,
-        UnpricedReason::AmbiguousCollection,
+        ModelLookupError::UnknownCollection,
+        ModelLookupError::AmbiguousCollection,
     )
 }
 /// The caller supplies the collection's allowed model options, or all options for an unrestricted rule.
 pub fn find_model<'a>(
     lookup: &ModelLookup,
     options: impl Iterator<Item = &'a w::AttributeOption>,
-) -> std::result::Result<&'a w::AttributeOption, UnpricedReason> {
+) -> std::result::Result<&'a w::AttributeOption, ModelLookupError> {
     unique(
         options
             .filter(|option| option.attribute_id == super::MODEL && model_matches(lookup, option)),
-        UnpricedReason::UnknownModel,
-        UnpricedReason::AmbiguousModel,
+        ModelLookupError::UnknownModel,
+        ModelLookupError::AmbiguousModel,
     )
 }
 pub fn model_identity(

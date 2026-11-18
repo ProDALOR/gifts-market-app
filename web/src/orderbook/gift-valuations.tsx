@@ -2,66 +2,65 @@ import { useEffect, useState } from "react";
 import { amount, valuation } from "../market";
 import type { GiftValuation, Order } from "../market";
 import { Quote } from "../ui/market-controls";
-export const strategyLabel = (id: string) =>
+const issueLabel = (id: string) =>
   id.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
-type Outcome = GiftValuation["strategies"][number];
-function StrategyResult({ result }: { result: Outcome }) {
-  if ("error" in result)
+type Metric = GiftValuation["collection_floor"];
+const metrics = [
+  ["collection_floor", "Collection floor"],
+  ["model_floor", "Model floor"],
+  ["backdrop_floor", "Backdrop floor"],
+  ["model_backdrop_floor", "Model × backdrop floor"],
+  ["model_multiplier", "Model multiplier"],
+  ["backdrop_multiplier", "Backdrop multiplier"],
+] as const;
+function twoDecimals(value: string) {
+  const [whole, fraction = ""] = value.split(".");
+  return `${whole}.${fraction.padEnd(2, "0")}`;
+}
+function MetricResult({
+  metric,
+  currency,
+  ratio = false,
+  rounded = false,
+}: {
+  metric: Metric;
+  currency: string;
+  ratio?: boolean;
+  rounded?: boolean;
+}) {
+  if ("error" in metric)
     return (
       <>
         <strong className="valuation-unavailable">
-          {strategyLabel(result.error.code)}
+          {issueLabel(metric.error.code)}
         </strong>
-        <p>{result.error.message}</p>
-        {result.error.details?.required_samples != null && (
+        <p>{metric.error.message}</p>
+        {metric.error.required_samples != null && (
           <small>
-            {result.error.details.available_samples ?? 0} /{" "}
-            {result.error.details.required_samples} required listings
+            {metric.error.available_samples ?? 0} /{" "}
+            {metric.error.required_samples} required listings
           </small>
         )}
       </>
     );
-  const data = result.data;
-  const stale = data.sync.state !== "live";
   return (
-    <>
-      <strong className="valuation-value">
-        {"factor" in data ? (
-          `${amount(data.factor)}×`
-        ) : data.priced > 0 ? (
-          <Quote price={data.total} currency={data.currency_id} />
-        ) : (
-          "No floor available"
-        )}
-      </strong>
-      {"factor" in data && (
-        <p>
-          Trait floor ÷ collection floor ·{" "}
-          {data.evidence.selected_trait.samples} /{" "}
-          {data.evidence.collection.samples} listings
-        </p>
+    <strong className="valuation-value">
+      {ratio ? (
+        `${amount(twoDecimals(metric.value))}×`
+      ) : (
+        <Quote
+          price={rounded ? twoDecimals(metric.value) : metric.value}
+          currency={currency}
+        />
       )}
-      {!("factor" in data) && data.unpriced > 0 && (
-        <p>Not enough market data</p>
-      )}
-      <small>
-        {stale && <span className="valuation-stale">Stale · </span>}Updated{" "}
-        <time dateTime={result.evaluated_at}>
-          {new Date(result.evaluated_at).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
-        </time>
-      </small>
-    </>
+    </strong>
   );
 }
-/** One on-demand request returns every registered strategy; no per-card requests or polling. */
+/** One on-demand request returns the unified report; no per-card requests or polling. */
 export function GiftValuations({ order }: { order: Order }) {
   const gift = order.target.kind === "gift" ? order.target.gift : undefined;
   const number = gift?.number;
-  const giftId =
-    order.target.kind === "gift" ? order.target.gift.id : undefined;
+  const giftId = gift?.id;
   const key = JSON.stringify([
     number,
     giftId,
@@ -110,20 +109,21 @@ export function GiftValuations({ order }: { order: Order }) {
     return () => stop.abort();
   }, [key, attempt]);
   const current = state.key === key ? state : undefined;
-  const loading = !!number && !current?.value && !current?.error;
+  const report = current?.value;
+  const loading = !!number && !report && !current?.error;
   return (
     <section
       className="gift-valuations"
-      aria-label="Gift valuations"
+      aria-label="Gift valuation"
       aria-busy={loading}
     >
       <div className="valuation-heading">
-        <h3>Valuations</h3>
+        <h3>Valuation</h3>
         {number && (
           <button
             onClick={() => setAttempt((n) => n + 1)}
             disabled={loading}
-            aria-label="Refresh valuations"
+            aria-label="Refresh valuation"
           >
             ↻
           </button>
@@ -137,7 +137,7 @@ export function GiftValuations({ order }: { order: Order }) {
         </p>
       ) : loading ? (
         <p className="valuation-note" role="status">
-          Loading all strategies…
+          Calculating valuation…
         </p>
       ) : current?.error ? (
         <p className="valuation-note" role="alert">
@@ -145,16 +145,46 @@ export function GiftValuations({ order }: { order: Order }) {
         </p>
       ) : (
         <>
-          <ul>
-            {current?.value?.strategies.map((result) => (
-              <li key={result.strategy} data-strategy={result.strategy}>
-                <h4>{strategyLabel(result.strategy)}</h4>
-                <StrategyResult result={result} />
-              </li>
-            ))}
-          </ul>
+          {report && (
+            <>
+              <div className="valuation-final" data-metric="final_mark">
+                <h4>Final mark</h4>
+                <MetricResult
+                  metric={report.final_mark}
+                  currency={report.currency_id}
+                  rounded
+                />
+              </div>
+              <ul>
+                {metrics.map(([key, label]) => (
+                  <li key={key} data-metric={key}>
+                    <h4>{label}</h4>
+                    <MetricResult
+                      metric={report[key]}
+                      currency={report.currency_id}
+                      ratio={key.endsWith("multiplier")}
+                    />
+                  </li>
+                ))}
+              </ul>
+              <p className="valuation-note">
+                {report.sync.state !== "live" && (
+                  <span className="valuation-stale">Stale · </span>
+                )}
+                Updated{" "}
+                <time dateTime={report.evaluated_at}>
+                  {new Date(report.evaluated_at).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </time>
+                {` · ${report.evidence.collection_samples} collection listings`}
+              </p>
+            </>
+          )}
           <p className="valuation-note">
-            Current asks, before fees. Multipliers are ratios, not prices.
+            Min(combined floor, collection floor × unrounded multipliers),
+            rounded to 2 decimals. Current asks, before fees.
           </p>
         </>
       )}

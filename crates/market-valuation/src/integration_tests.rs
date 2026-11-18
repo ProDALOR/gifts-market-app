@@ -1,6 +1,8 @@
+use crate::ValuationSource;
+use crate::test_support::MarketDataService;
 use crate::*;
 use actix::prelude::*;
-use market_actors::{MarketDataService, MarketReader};
+use market_gifts::ModelLookup;
 use market_hub_protocol::wire as w;
 use market_replica::ReplicaWriter;
 use std::{sync::Arc, time::Duration};
@@ -78,7 +80,8 @@ pub(crate) fn fixture() -> (tempfile::TempDir, ReplicaWriter) {
 
 #[tokio::test]
 async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_separately() {
-    use market_gifts::valuation::{ModelLookup, ModelPosition, UnpricedReason, ValuationRequest};
+    use crate::{ModelPosition, UnpricedReason, ValuationRequest};
+    use market_gifts::ModelLookup;
     let (_directory, mut writer) = fixture();
     let option = "gift.model.10";
     let ask = |id: &str,
@@ -242,7 +245,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
     let value = calculate(
         &service.reader,
         ValuationRequest {
-            strategy: market_gifts::valuation::StrategyId::model_floor(),
+            strategy: crate::StrategyId::model_floor(),
             positions: vec![
                 ModelPosition {
                     model: lookup.clone(),
@@ -296,7 +299,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
     let stars = calculate(
         &service.reader,
         ValuationRequest {
-            strategy: market_gifts::valuation::StrategyId::model_floor(),
+            strategy: crate::StrategyId::model_floor(),
             positions: vec![ModelPosition {
                 model: lookup.clone(),
                 quantity: 2,
@@ -311,7 +314,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
         calculate(
             &service.reader,
             ValuationRequest {
-                strategy: market_gifts::valuation::StrategyId::model_floor(),
+                strategy: crate::StrategyId::model_floor(),
                 positions: vec![ModelPosition {
                     model: lookup,
                     quantity: 0
@@ -330,27 +333,39 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
 #[tokio::test]
 async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
     use crate::ValuationErrorCode;
-    use crate::{FloorActor, ValuationHandle};
-    use market_gifts::valuation::{ModelLookup, ModelPosition, StrategyId, ValuationRequest};
+    use crate::{FloorActor, PortfolioValuationHandle};
+    use crate::{ModelPosition, StrategyId, ValuationRequest};
+    use market_gifts::ModelLookup;
     let (_directory, mut writer) = fixture();
     let data = MarketDataService::start(writer.reader(), 2, 1)
         .await
         .unwrap();
-    let model =
-        crate::Service::start_on(&data, "model_floor", FloorActor::model, Default::default())
-            .await
-            .unwrap();
-    let collection = crate::Service::start_on(
-        &data,
-        "collection_floor",
-        FloorActor::collection,
+    let model = crate::Service::start_on(
+        &data.arbiter(),
+        "model_floor",
+        {
+            let source = data.reader.clone();
+            move |life| FloorActor::model(source, life)
+        },
         Default::default(),
     )
     .await
     .unwrap();
-    assert!(ValuationHandle::new([] as [crate::FloorStrategyHandle; 0]).is_err());
-    assert!(ValuationHandle::new([model.handle.clone(), model.handle.clone()]).is_err());
-    let registry = ValuationHandle::new([model.handle.clone(), collection.handle.clone()]).unwrap();
+    let collection = crate::Service::start_on(
+        &data.arbiter(),
+        "collection_floor",
+        {
+            let source = data.reader.clone();
+            move |life| FloorActor::collection(source, life)
+        },
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(PortfolioValuationHandle::new([] as [crate::FloorStrategyHandle; 0]).is_err());
+    assert!(PortfolioValuationHandle::new([model.handle.clone(), model.handle.clone()]).is_err());
+    let registry =
+        PortfolioValuationHandle::new([model.handle.clone(), collection.handle.clone()]).unwrap();
     assert_eq!(registry.strategies().count(), 2);
     let request = ValuationRequest {
         strategy: StrategyId::model_floor(),
@@ -408,15 +423,12 @@ async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
         .unwrap();
     let error = registry.mark(broad.clone()).await.unwrap_err();
     assert_eq!(error.code(), ValuationErrorCode::NotEnoughData);
-    let Some(market_gifts::valuation::ValuationErrorContext::Portfolio { unpriced }) =
+    let Some(crate::ValuationErrorContext::Portfolio { unpriced }) =
         &error.details().unwrap().context
     else {
         panic!("portfolio context required");
     };
-    assert_eq!(
-        unpriced[0].unpriced,
-        Some(market_gifts::valuation::UnpricedReason::NoListing)
-    );
+    assert_eq!(unpriced[0].unpriced, Some(crate::UnpricedReason::NoListing));
     writer
         .apply(w::Batch {
             cursor: "recovered".into(),
@@ -434,288 +446,8 @@ async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
     data.task.run(stop).await.unwrap();
 }
 
-#[tokio::test]
-async fn typed_multipliers_enforce_evidence_and_recover_without_stale_marks() {
-    use crate::*;
-    use market_gifts::valuation::*;
-    let (_directory, mut writer) = fixture();
-    let option = |id: &str, attribute: &str| {
-        entity(w::entity::Entity::AttributeOption(w::AttributeOption {
-            id: id.into(),
-            attribute_id: attribute.into(),
-            name: id.into(),
-            ..Default::default()
-        }))
-    };
-    let ask = |id: &str, price: &str, model: &str, backdrop: &str| {
-        let mut row = w::Order {
-            id: id.into(),
-            book: Some(w::BookKey {
-                venue_id: "venue".into(),
-                item_type_id: "gift".into(),
-                currency_id: "GRAM".into(),
-            }),
-            mode: w::OrderMode::Ask as i32,
-            price: price.into(),
-            quantity: "1".into(),
-            ..Default::default()
-        };
-        for (attribute, value) in [("tg.model", model), ("tg.backdrop", backdrop)] {
-            row.attributes.insert(
-                attribute.into(),
-                w::AttributePredicate {
-                    predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
-                        value: Some(w::attribute_value::Value::OptionId(value.into())),
-                    })),
-                },
-            );
-        }
-        row
-    };
-    let mut item = w::ItemType {
-        id: "gift".into(),
-        name: "Gift".into(),
-        quantity_step: "1".into(),
-        aliases: vec![w::ExternalId {
-            namespace: "tg".into(),
-            id: "99".into(),
-        }],
-        ..Default::default()
-    };
-    for (attribute, ids) in [
-        ("tg.model", vec!["m", "other"]),
-        ("tg.backdrop", vec!["b", "base"]),
-    ] {
-        item.attributes.insert(
-            attribute.into(),
-            w::AttributeRule {
-                required: true,
-                allowed_values: Some(w::AllowedAttributeValues {
-                    ids: ids.into_iter().map(str::to_owned).collect(),
-                }),
-            },
-        );
-    }
-    let mut changes = vec![
-        entity(w::entity::Entity::ItemType(item)),
-        option("m", "tg.model"),
-        option("other", "tg.model"),
-        option("b", "tg.backdrop"),
-        option("base", "tg.backdrop"),
-    ];
-    for (id, price, model, backdrop) in [
-        ("order", "2", "other", "base"),
-        ("base1", "3", "other", "base"),
-        ("base2", "4", "other", "base"),
-        ("trait0", "6", "m", "b"),
-        ("trait1", "7", "m", "b"),
-        ("trait2", "8", "m", "b"),
-    ] {
-        changes.push(entity(w::entity::Entity::Order(ask(
-            id, price, model, backdrop,
-        ))));
-    }
-    for (id, kind) in [
-        ("expired", 0),
-        ("bid", 1),
-        ("empty", 2),
-        ("zero", 3),
-        ("unsupported", 4),
-        ("other-currency", 5),
-    ] {
-        let mut row = ask(id, "0.1", "m", "b");
-        match kind {
-            0 => row.expires_at_ms = Some(1),
-            1 => row.mode = w::OrderMode::Bid as i32,
-            2 => row.quantity = "0".into(),
-            3 => row.price = "0".into(),
-            4 => {
-                row.attributes.insert(
-                    "unknown".into(),
-                    w::AttributePredicate {
-                        predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
-                            value: Some(w::attribute_value::Value::Boolean(true)),
-                        })),
-                    },
-                );
-            }
-            _ => row.book.as_mut().unwrap().currency_id = "XTR".into(),
-        };
-        changes.push(entity(w::entity::Entity::Order(row)));
-    }
-    writer
-        .apply(w::Batch {
-            cursor: "ratios".into(),
-            changes,
-        })
-        .unwrap();
-    let data = MarketDataService::start(writer.reader(), 2, 1)
-        .await
-        .unwrap();
-    let model = crate::Service::start_on(
-        &data,
-        "model_multiplier",
-        ModelMultiplierActor::new,
-        Default::default(),
-    )
-    .await
-    .unwrap();
-    let backdrop = crate::Service::start_on(
-        &data,
-        "backdrop_multiplier",
-        BackdropMultiplierActor::new,
-        Default::default(),
-    )
-    .await
-    .unwrap();
-    let registry = ValuationHandle::new([
-        RegisteredStrategy::from(model.handle.clone()),
-        RegisteredStrategy::from(backdrop.handle.clone()),
-    ])
-    .unwrap();
-    let request = ModelMultiplierRequest {
-        collection_id: "gift".into(),
-        model_id: "m".into(),
-        currency_id: "GRAM".into(),
-    };
-    let backdrop_request = BackdropMultiplierRequest {
-        collection_id: "gift".into(),
-        backdrop_id: "b".into(),
-        currency_id: "GRAM".into(),
-    };
-    let (a, b) = tokio::join!(
-        registry.query(ValuationQuery::ModelMultiplier(request.clone())),
-        registry.query(ValuationQuery::BackdropMultiplier(backdrop_request.clone()))
-    );
-    let ValuationResult::ModelMultiplier(a) = a.unwrap() else {
-        panic!("model result");
-    };
-    let ValuationResult::BackdropMultiplier(b) = b.unwrap() else {
-        panic!("backdrop result");
-    };
-    assert_eq!(a.factor.as_str(), "3");
-    assert_eq!(b.factor.as_str(), "3");
-    assert_eq!(a.evidence.collection.samples, 6);
-    assert_eq!(a.evidence.selected_trait.samples, 3);
-    assert_eq!(a.revision, "ratios");
-    assert_eq!(a.strategy, "model_multiplier");
-    assert!(Arc::ptr_eq(
-        &a,
-        &model.handle.evaluate(request.clone()).await.unwrap()
-    ));
-    let mut unrelated = ask("unrelated", "1", "other", "base");
-    unrelated.book.as_mut().unwrap().item_type_id = "another-gift".into();
-    writer
-        .apply(w::Batch {
-            cursor: "unrelated-change".into(),
-            changes: vec![entity(w::entity::Entity::Order(unrelated))],
-        })
-        .unwrap();
-    assert!(Arc::ptr_eq(
-        &a,
-        &model.handle.evaluate(request.clone()).await.unwrap()
-    ));
-    // Another model uses this actor's prepared collection state without acquiring a read worker.
-    let occupied = hold(&data.reader).await;
-    let another = ModelMultiplierRequest {
-        model_id: "other".into(),
-        ..request.clone()
-    };
-    let cached = tokio::time::timeout(Duration::from_secs(1), model.handle.evaluate(another))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(cached.factor.as_str(), "1");
-    assert_eq!(cached.evaluated_at, a.evaluated_at);
-    drop(occupied);
-    // The requested trait is beyond the first 500 ascending-price rows.
-    writer
-        .apply(w::Batch {
-            cursor: "paginated-ratio".into(),
-            changes: (0..501)
-                .map(|i| {
-                    entity(w::entity::Entity::Order(ask(
-                        &format!("bulk-{i}"),
-                        "5",
-                        "other",
-                        "base",
-                    )))
-                })
-                .collect(),
-        })
-        .unwrap();
-    let ValuationResult::BackdropMultiplier(paginated) = registry
-        .query(ValuationQuery::BackdropMultiplier(backdrop_request))
-        .await
-        .unwrap()
-    else {
-        panic!("backdrop result");
-    };
-    assert_eq!(paginated.evidence.collection.samples, 507);
-    assert_eq!(paginated.evidence.selected_trait.samples, 3);
-    assert_eq!(paginated.factor.as_str(), "3");
-    assert_eq!(paginated.revision, "paginated-ratio");
-    let wrong = ModelMultiplierRequest {
-        model_id: "b".into(),
-        ..request.clone()
-    };
-    assert_eq!(
-        registry
-            .query(ValuationQuery::ModelMultiplier(wrong))
-            .await
-            .unwrap_err()
-            .code(),
-        crate::ValuationErrorCode::InvalidQuery
-    );
-    let mut exhausted = ask("trait0", "6", "m", "b");
-    exhausted.quantity = "0".into();
-    writer
-        .apply(w::Batch {
-            cursor: "insufficient".into(),
-            changes: vec![entity(w::entity::Entity::Order(exhausted))],
-        })
-        .unwrap();
-    let error = registry
-        .query(ValuationQuery::ModelMultiplier(request.clone()))
-        .await
-        .unwrap_err();
-    assert_eq!(error.code(), crate::ValuationErrorCode::NotEnoughData);
-    let details = error.details().unwrap();
-    assert_eq!(details.available_samples, Some(2));
-    assert_eq!(details.required_samples, Some(3));
-    assert_eq!(details.revision.as_deref(), Some("insufficient"));
-    assert!(matches!(
-        details.context,
-        Some(ValuationErrorContext::Multiplier { .. })
-    ));
-    writer
-        .apply(w::Batch {
-            cursor: "ratio-recovered".into(),
-            changes: vec![
-                entity(w::entity::Entity::Order(ask("trait0", "6", "m", "b"))),
-                entity(w::entity::Entity::Order(ask("order", "1", "other", "base"))),
-            ],
-        })
-        .unwrap();
-    let ValuationResult::ModelMultiplier(fresh) = registry
-        .query(ValuationQuery::ModelMultiplier(request))
-        .await
-        .unwrap()
-    else {
-        panic!("model result");
-    };
-    assert_eq!(fresh.factor.as_str(), "6");
-    assert_eq!(fresh.revision, "ratio-recovered");
-    assert!(!Arc::ptr_eq(&a, &fresh));
-    model.task.shutdown().await.unwrap();
-    backdrop.task.shutdown().await.unwrap();
-    let stop = CancellationToken::new();
-    stop.cancel();
-    data.task.run(stop).await.unwrap();
-}
-
 struct SnapshotProbe {
-    source: MarketReader,
+    source: ValuationSource,
     life: crate::Lifecycle,
     entered: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     release: Arc<std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
@@ -766,26 +498,32 @@ async fn strategy_actors_share_arbiter_and_read_only_views_while_preparation_run
     let (entered, started) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let first = crate::Service::start_on(
-        &data,
+        &data.arbiter(),
         "snapshot_probe",
-        move |source, life| SnapshotProbe {
-            source,
-            life,
-            entered: Arc::new(std::sync::Mutex::new(Some(entered))),
-            release: Arc::new(std::sync::Mutex::new(Some(blocked))),
+        {
+            let source = data.reader.clone();
+            move |life| SnapshotProbe {
+                source,
+                life,
+                entered: Arc::new(std::sync::Mutex::new(Some(entered))),
+                release: Arc::new(std::sync::Mutex::new(Some(blocked))),
+            }
         },
         Default::default(),
     )
     .await
     .unwrap();
     let second = crate::Service::start_on(
-        &data,
+        &data.arbiter(),
         "snapshot_probe",
-        |source, life| SnapshotProbe {
-            source,
-            life,
-            entered: Default::default(),
-            release: Default::default(),
+        {
+            let source = data.reader.clone();
+            move |life| SnapshotProbe {
+                source,
+                life,
+                entered: Default::default(),
+                release: Default::default(),
+            }
         },
         Default::default(),
     )
@@ -832,13 +570,16 @@ async fn cancelled_strategy_preparation_retains_its_worker_until_shutdown_drains
     let (entered, started) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let strategy = crate::Service::start_on(
-        &data,
+        &data.arbiter(),
         "snapshot_probe",
-        move |source, life| SnapshotProbe {
-            source,
-            life,
-            entered: Arc::new(std::sync::Mutex::new(Some(entered))),
-            release: Arc::new(std::sync::Mutex::new(Some(blocked))),
+        {
+            let source = data.reader.clone();
+            move |life| SnapshotProbe {
+                source,
+                life,
+                entered: Arc::new(std::sync::Mutex::new(Some(entered))),
+                release: Arc::new(std::sync::Mutex::new(Some(blocked))),
+            }
         },
         Default::default(),
     )
@@ -866,10 +607,10 @@ async fn cancelled_strategy_preparation_retains_its_worker_until_shutdown_drains
 }
 
 async fn calculate(
-    source: &MarketReader,
-    request: market_gifts::valuation::ValuationRequest,
-) -> Result<Arc<Mark<market_gifts::valuation::Valuation>>, ValuationError> {
-    use market_gifts::valuation::*;
+    source: &ValuationSource,
+    request: crate::ValuationRequest,
+) -> Result<Arc<Mark<crate::Valuation>>, ValuationError> {
+    use crate::*;
     let kind = if request.strategy == StrategyId::model_floor() {
         calculation::FloorKind::Model
     } else {
@@ -894,7 +635,7 @@ impl Drop for HeldWorker {
         }
     }
 }
-pub(crate) async fn hold(source: &MarketReader) -> HeldWorker {
+pub(crate) async fn hold(source: &ValuationSource) -> HeldWorker {
     let (entered, started) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let source = source.clone();
@@ -979,14 +720,22 @@ pub(crate) fn model_fixture() -> (tempfile::TempDir, ReplicaWriter) {
 
 #[tokio::test]
 async fn floors_cache_multiple_portfolios_and_only_invalidate_relevant_dependencies() {
-    use market_gifts::valuation::*;
+    use crate::*;
     let (_dir, mut writer) = model_fixture();
     let data = MarketDataService::start(writer.reader(), 4, 1)
         .await
         .unwrap();
-    let service = Service::start_on(&data, "model_floor", FloorActor::model, Default::default())
-        .await
-        .unwrap();
+    let service = Service::start_on(
+        &data.arbiter(),
+        "model_floor",
+        {
+            let source = data.reader.clone();
+            move |life| FloorActor::model(source, life)
+        },
+        Default::default(),
+    )
+    .await
+    .unwrap();
     let input = |model: &str| PortfolioPositions {
         currency_id: "GRAM".into(),
         positions: vec![ModelPosition {
@@ -1090,7 +839,7 @@ async fn floors_cache_multiple_portfolios_and_only_invalidate_relevant_dependenc
 
 #[tokio::test]
 async fn catalog_resolution_and_floor_calculation_share_the_pinned_view() {
-    use market_gifts::valuation::*;
+    use crate::*;
     let (_dir, mut writer) = model_fixture();
     let data = MarketDataService::start(writer.reader(), 2, 1)
         .await
@@ -1191,7 +940,7 @@ async fn ask_projection_skips_unsupported_and_expired_rows_and_preserves_singlet
     let data = MarketDataService::start(writer.reader(), 2, 1)
         .await
         .unwrap();
-    let scope = market_actors::BookScope {
+    let scope = crate::source::BookScope {
         collection: "gift".into(),
         currency: "GRAM".into(),
     };
@@ -1211,14 +960,22 @@ async fn ask_projection_skips_unsupported_and_expired_rows_and_preserves_singlet
 
 #[tokio::test]
 async fn name_lookup_cache_detects_new_ambiguity_without_invalidating_catalog_ids() {
-    use market_gifts::valuation::*;
+    use crate::*;
     let (_dir, mut writer) = model_fixture();
     let data = MarketDataService::start(writer.reader(), 4, 1)
         .await
         .unwrap();
-    let service = Service::start_on(&data, "model_floor", FloorActor::model, Default::default())
-        .await
-        .unwrap();
+    let service = Service::start_on(
+        &data.arbiter(),
+        "model_floor",
+        {
+            let source = data.reader.clone();
+            move |life| FloorActor::model(source, life)
+        },
+        Default::default(),
+    )
+    .await
+    .unwrap();
     let input = |model| PortfolioPositions {
         currency_id: "GRAM".into(),
         positions: vec![ModelPosition { model, quantity: 1 }],
@@ -1268,95 +1025,6 @@ async fn name_lookup_cache_detects_new_ambiguity_without_invalidating_catalog_id
     assert!(Arc::ptr_eq(
         &original,
         &service.handle.evaluate(catalog).await.unwrap()
-    ));
-    service.task.shutdown().await.unwrap();
-    let stop = CancellationToken::new();
-    stop.cancel();
-    data.task.run(stop).await.unwrap();
-}
-
-#[tokio::test]
-async fn model_multiplier_ignores_unrestricted_backdrops_and_a_large_unrelated_catalog() {
-    use market_gifts::valuation::*;
-    let (_dir, mut writer) = model_fixture();
-    let mut changes = (0..50_001)
-        .map(|i| {
-            entity(w::entity::Entity::AttributeOption(w::AttributeOption {
-                id: format!("backdrop.{i}"),
-                attribute_id: "tg.backdrop".into(),
-                name: format!("Backdrop {i}"),
-                ..Default::default()
-            }))
-        })
-        .collect::<Vec<_>>();
-    changes.push(entity(w::entity::Entity::ItemType(w::ItemType {
-        id: "gift".into(),
-        name: "Gift".into(),
-        quantity_step: "1".into(),
-        aliases: vec![w::ExternalId {
-            namespace: "tg".into(),
-            id: "99".into(),
-        }],
-        attributes: [
-            (
-                "tg.model".into(),
-                w::AttributeRule {
-                    required: true,
-                    allowed_values: Some(w::AllowedAttributeValues {
-                        ids: vec!["a".into(), "b".into()],
-                    }),
-                },
-            ),
-            (
-                "tg.backdrop".into(),
-                w::AttributeRule {
-                    required: false,
-                    allowed_values: None,
-                },
-            ),
-        ]
-        .into(),
-    })));
-    writer
-        .apply(w::Batch {
-            cursor: "large-catalog".into(),
-            changes,
-        })
-        .unwrap();
-    let data = MarketDataService::start(writer.reader(), 4, 1)
-        .await
-        .unwrap();
-    let service = Service::start_on(
-        &data,
-        "model_multiplier",
-        ModelMultiplierActor::new,
-        Default::default(),
-    )
-    .await
-    .unwrap();
-    let request = ModelMultiplierRequest {
-        collection_id: "gift".into(),
-        model_id: "b".into(),
-        currency_id: "GRAM".into(),
-    };
-    let original = service.handle.evaluate(request.clone()).await.unwrap();
-    assert_eq!(original.factor.as_str(), "2");
-    writer
-        .apply(w::Batch {
-            cursor: "palette".into(),
-            changes: vec![entity(w::entity::Entity::AttributeOption(
-                w::AttributeOption {
-                    id: "backdrop.0".into(),
-                    attribute_id: "tg.backdrop".into(),
-                    name: "Changed backdrop".into(),
-                    ..Default::default()
-                },
-            ))],
-        })
-        .unwrap();
-    assert!(Arc::ptr_eq(
-        &original,
-        &service.handle.evaluate(request).await.unwrap()
     ));
     service.task.shutdown().await.unwrap();
     let stop = CancellationToken::new();

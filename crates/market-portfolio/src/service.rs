@@ -68,8 +68,7 @@ impl PortfolioHandle {
             return Err(PortfolioError::Stopped);
         }
         if !request.strategy.is_portfolio_strategy() {
-            let mut details =
-                market_gifts::valuation::ValuationErrorDetails::strategy(request.strategy);
+            let mut details = market_valuation::ValuationErrorDetails::strategy(request.strategy);
             details.currency_id = Some(request.currency_id);
             return Err(PortfolioError::Valuation(
                 market_valuation::ValuationError::with_details(

@@ -2,9 +2,15 @@
 name = "market-valuation"
 version.workspace = true
 edition.workspace = true
+[features]
+schema = ["dep:utoipa", "market-gifts/schema"]
 [dependencies]
-futures-util.workspace = true
-market-actors.workspace = true
+market-replica.workspace = true
+market-gifts-hub.workspace = true
+market-hub-protocol.workspace = true
+tonic.workspace = true
+serde.workspace = true
+utoipa = { workspace = true, optional = true }
 market-gifts.workspace = true
 rust_decimal.workspace = true
 actix.workspace = true
@@ -12,10 +18,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 jiff.workspace = true
 [dev-dependencies]
-market-replica.workspace = true
-market-hub-protocol.workspace = true
-market-gifts-hub.workspace = true
+market-actors.workspace = true
+serde_json.workspace = true
 tempfile = "3"
-tonic.workspace = true
 [lints]
 workspace = true

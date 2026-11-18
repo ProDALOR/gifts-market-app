@@ -31,40 +31,17 @@ impl MarketRuntime {
             stop.clone(),
         )
         .await?;
-        use market_valuation::*;
-        let registry = ValuationHandle::new([
-            RegisteredStrategy::from(
-                start_valuation(&supervisor, &data, "model_floor", FloorActor::model).await?,
-            ),
-            RegisteredStrategy::from(
-                start_valuation(
-                    &supervisor,
-                    &data,
-                    "collection_floor",
-                    FloorActor::collection,
-                )
-                .await?,
-            ),
-            RegisteredStrategy::from(
-                start_valuation(
-                    &supervisor,
-                    &data,
-                    "model_multiplier",
-                    ModelMultiplierActor::new,
-                )
-                .await?,
-            ),
-            RegisteredStrategy::from(
-                start_valuation(
-                    &supervisor,
-                    &data,
-                    "backdrop_multiplier",
-                    BackdropMultiplierActor::new,
-                )
-                .await?,
-            ),
-        ])?
-        .with_reader(data.reader.clone());
+        let (registry, valuation_task) =
+            market_valuation::ValuationHandle::start(&data.arbiter(), data.reads.clone()).await?;
+        let valuation_stop = supervisor.token();
+        supervisor.spawn_critical(
+            TaskKind::Valuation(market_valuation::GIFT_STRATEGY),
+            async move {
+                valuation_task.run(valuation_stop).await.map_err(|error| {
+                    tracing::error!(%error,"gift valuation actor stopped");
+                })
+            },
+        )?;
         supervisor.spawn_critical(TaskKind::MarketData, async move {
             if let Err(error) = data.task.run(stop).await {
                 tracing::error!(code=?error.code(),"market data actor stopped");
@@ -166,30 +143,6 @@ impl Drop for MarketRuntime {
     fn drop(&mut self) {
         let _ = self.supervisor.begin_shutdown();
     }
-}
-
-async fn start_valuation<A, F, I, V, E>(
-    supervisor: &TaskSupervisor,
-    data: &market_actors::MarketDataService,
-    id: &'static str,
-    build: F,
-) -> Result<market_valuation::Handle<I, V, E>>
-where
-    A: actix::Actor<Context = actix::Context<A>>
-        + actix::Handler<market_valuation::Evaluate<I, V, E>>,
-    I: Send + 'static,
-    V: Send + Sync + 'static,
-    E: Send + 'static,
-    F: FnOnce(market_actors::MarketReader, market_valuation::Lifecycle) -> A + Send + 'static,
-{
-    let service = market_valuation::Service::start_on(data, id, build, Default::default()).await?;
-    let stop = supervisor.token();
-    supervisor.spawn_critical(TaskKind::Valuation(id), async move {
-        service.task.run(stop).await.map_err(|error| {
-            tracing::error!(strategy=id,%error,"valuation actor stopped");
-        })
-    })?;
-    Ok(service.handle)
 }
 
 #[cfg(test)]

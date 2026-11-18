@@ -91,7 +91,15 @@ fn production_dependencies_follow_the_service_boundaries() {
             &["market-gifts", "market-media", "market-invocations"],
         ),
         ("market-invocations", &[]),
-        ("market-valuation", &["market-actors", "market-gifts"]),
+        (
+            "market-valuation",
+            &[
+                "market-replica",
+                "market-gifts",
+                "market-gifts-hub",
+                "market-hub-protocol",
+            ],
+        ),
         (
             "market-portfolio",
             &["market-gifts", "market-invocations", "market-valuation"],

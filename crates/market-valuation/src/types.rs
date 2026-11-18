@@ -1,58 +1,11 @@
 //! Explicit gift valuation requests, measurements and portfolio estimates.
-mod multiplier;
-use crate::{
-    Amount, CollectionId, CurrencyId, InvalidValue, ModelId, SyncStatus, TelegramDocumentId,
-    TelegramGiftId, VenueId,
+mod report;
+use market_gifts::{
+    Amount, CurrencyId, InvalidValue, ModelIdentity, ModelLookup, SyncStatus, VenueId,
 };
-pub use multiplier::*;
+pub use report::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub enum ModelLookup {
-    /// Collection-only floor lookup; no model identity is invented for a partial gift.
-    Collection {
-        collection: CollectionId,
-    },
-    Name {
-        collection: String,
-        model: String,
-    },
-    Catalog {
-        collection: CollectionId,
-        model: ModelId,
-    },
-    Telegram {
-        gift_id: TelegramGiftId,
-        document_id: TelegramDocumentId,
-    },
-}
-impl ModelLookup {
-    pub fn named(
-        collection: impl Into<String>,
-        model: impl Into<String>,
-    ) -> Result<Self, InvalidValue> {
-        let lookup = Self::Name {
-            collection: collection.into(),
-            model: model.into(),
-        };
-        lookup.validate()?;
-        Ok(lookup)
-    }
-    pub fn validate(&self) -> Result<(), InvalidValue> {
-        if let Self::Name { collection, model } = self
-            && [collection, model]
-                .iter()
-                .any(|name| name.trim().is_empty() || name.len() > 256)
-        {
-            return Err(InvalidValue(
-                "collection and model names must contain 1..256 bytes",
-            ));
-        }
-        Ok(())
-    }
-}
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -98,13 +51,6 @@ pub struct ModelValue {
     pub value: Option<Amount>,
     pub venue_id: Option<VenueId>,
     pub unpriced: Option<UnpricedReason>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct ModelIdentity {
-    pub collection_id: CollectionId,
-    pub model_id: ModelId,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -206,11 +152,44 @@ impl ValuationErrorDetails {
     }
 }
 
-/// Evaluate every registered strategy for one concrete gift found in market data.
+/// Evaluate one concrete gift using the unified floor strategy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftValuationRequest {
-    pub gift: crate::GiftLookup,
+    pub gift: market_gifts::GiftLookup,
     pub currency_id: CurrencyId,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortfolioPositions {
+    pub positions: Vec<ModelPosition>,
+    pub currency_id: CurrencyId,
+}
+impl StrategyId {
+    pub fn is_portfolio_strategy(&self) -> bool {
+        matches!(self.as_str(), "model_floor" | "collection_floor")
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum ValuationErrorContext {
+    Portfolio { unpriced: Vec<ModelValue> },
+}
+
+impl From<market_gifts::ModelLookupError> for UnpricedReason {
+    fn from(error: market_gifts::ModelLookupError) -> Self {
+        use market_gifts::ModelLookupError;
+        match error {
+            ModelLookupError::UnknownCollection => Self::UnknownCollection,
+            ModelLookupError::AmbiguousCollection => Self::AmbiguousCollection,
+            ModelLookupError::UnknownModel => Self::UnknownModel,
+            ModelLookupError::AmbiguousModel => Self::AmbiguousModel,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

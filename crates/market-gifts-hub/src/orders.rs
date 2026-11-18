@@ -132,6 +132,7 @@ pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
         price: order.price,
         model_id,
         backdrop_id,
+        expires_at: order.expires_at,
     }))
 }
 

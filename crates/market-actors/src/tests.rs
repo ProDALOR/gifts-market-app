@@ -624,16 +624,10 @@ async fn saturated_snapshot_capacity_leaves_normal_reads_available() {
     let service = MarketDataService::start(writer.reader(), 4, 1)
         .await
         .unwrap();
-    let busy = service
-        .reader
-        .workers
-        .clone()
-        .acquire_owned()
-        .await
-        .unwrap();
-    let reader = service.reader.clone();
+    let (busy, busy_task) = hold_read(service.reads.clone()).await;
+    let reader = service.reads.clone();
     let mut work =
-        tokio::spawn(async move { reader.prepare(|snapshot| snapshot.revision()).await });
+        tokio::spawn(async move { reader.prepare(|snapshot, _| snapshot.cursor()).await });
     assert!(
         tokio::time::timeout(Duration::from_millis(20), &mut work)
             .await
@@ -642,6 +636,7 @@ async fn saturated_snapshot_capacity_leaves_normal_reads_available() {
     assert!(service.handle.orders_raw(query()).await.is_ok());
     assert!(service.handle.catalog().await.is_ok());
     drop(busy);
+    busy_task.await.unwrap();
     work.await.unwrap().unwrap().unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
@@ -675,10 +670,10 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
     assert!(Arc::ptr_eq(&original, &same));
     assert!(sync.ready);
     drop((query_a, query_b));
-    let heavy = service.reader.workers.clone().try_acquire_owned().unwrap();
-    let reader = service.reader.clone();
+    let (heavy, heavy_task) = hold_read(service.reads.clone()).await;
+    let reader = service.reads.clone();
     let mut work =
-        tokio::spawn(async move { reader.prepare(|snapshot| snapshot.revision()).await });
+        tokio::spawn(async move { reader.prepare(|snapshot, _| snapshot.cursor()).await });
     assert!(
         tokio::time::timeout(Duration::from_millis(20), &mut work)
             .await
@@ -686,6 +681,7 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
     );
     assert_eq!(handle.orders_raw(query()).await.unwrap().page.cursor, "c0");
     drop(heavy);
+    heavy_task.await.unwrap();
     work.await.unwrap().unwrap().unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
@@ -832,4 +828,22 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
+}
+
+async fn hold_read(
+    reads: market_replica::ReadExecutor,
+) -> (std::sync::mpsc::Sender<()>, tokio::task::JoinHandle<()>) {
+    let (entered, started) = tokio::sync::oneshot::channel();
+    let (release, proceed) = std::sync::mpsc::channel();
+    let task = tokio::spawn(async move {
+        reads
+            .prepare(move |_, _| {
+                let _ = entered.send(());
+                let _ = proceed.recv();
+            })
+            .await
+            .unwrap();
+    });
+    started.await.unwrap();
+    (release, task)
 }
