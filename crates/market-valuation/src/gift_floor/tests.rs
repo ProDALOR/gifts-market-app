@@ -181,6 +181,7 @@ async fn unified_report_uses_combination_floor_and_full_precision_then_reacts_to
         .unwrap();
     let first = handle.gift(request()).await.unwrap();
     assert_eq!(first.revision, "initial");
+    assert_eq!(handle.metadata().id, first.strategy);
     assert_eq!(first.collection_floor.value().unwrap().as_str(), "3");
     assert_eq!(first.model_floor.value().unwrap().as_str(), "10");
     assert_eq!(first.backdrop_floor.value().unwrap().as_str(), "11");
@@ -343,4 +344,71 @@ async fn refresh_deadline_cancels_queued_work_without_retaining_capacity() {
     let stop = CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn strategy_display_preserves_typed_values_precision_and_structured_unavailability() {
+    let (_dir, mut writer) = book();
+    writer
+        .apply(w::Batch {
+            cursor: "presentation".into(),
+            changes: vec![ask("pair0", "m", "b", "20.125", 123, None)],
+        })
+        .unwrap();
+    let data = MarketDataService::start(writer.reader(), 2, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let result = handle.gift(request()).await.unwrap();
+    let mut output = result.data.clone();
+    output.model_floor = ValuationMetric::Value {
+        value: Amount::new("10000000000000000.000000001").unwrap(),
+    };
+    output.backdrop_multiplier = ValuationMetric::Unavailable {
+        error: ValuationIssue {
+            code: ValuationIssueCode::NotEnoughData,
+            message: "More observations are needed".into(),
+            required_samples: Some(3),
+            available_samples: Some(1),
+        },
+    };
+    let display = output.display();
+    let ids = display
+        .fields
+        .iter()
+        .map(|field| field.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), display.fields.len());
+    assert_eq!(
+        display.fields.iter().filter(|field| field.primary).count(),
+        1
+    );
+    let field = |id| display.fields.iter().find(|field| field.id == id).unwrap();
+    assert!(field("final_mark").primary);
+    let crate::DisplayValue::Currency { amount, .. } = &field("final_mark").value else {
+        panic!("money");
+    };
+    assert_eq!(amount, "20.12");
+    let crate::DisplayValue::Currency { amount, .. } = &field("model_floor").value else {
+        panic!("money");
+    };
+    assert_eq!(amount, "10000000000000000.000000001");
+    let crate::DisplayValue::Unavailable {
+        label,
+        message,
+        detail,
+    } = &field("backdrop_multiplier").value
+    else {
+        panic!("error");
+    };
+    assert_eq!(*label, "Not enough data");
+    assert_eq!(*message, "More observations are needed");
+    assert_eq!(detail.as_deref(), Some("1 / 3 required samples"));
+    assert_eq!(
+        output.model_floor.value().unwrap().as_str(),
+        "10000000000000000.000000001"
+    );
+    stop(data, task).await;
 }

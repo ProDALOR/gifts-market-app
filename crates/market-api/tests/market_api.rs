@@ -1548,6 +1548,16 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
     assert_eq!(body["slug"], "Gift-123");
     assert_eq!(body["gift"]["number"], 123);
     assert_eq!(body["final_mark"]["value"], "6");
+    let fields = body["display"]["fields"].as_array().unwrap();
+    assert_eq!(fields.len(), 7);
+    let final_field = fields
+        .iter()
+        .find(|field| field["id"] == "final_mark")
+        .unwrap();
+    assert_eq!(final_field["primary"], true);
+    assert_eq!(final_field["value"]["kind"], "currency");
+    assert_eq!(final_field["value"]["amount"], "6.00");
+    assert_eq!(final_field["value"]["currency_id"], "GRAM");
     assert!(body["revision"].is_string());
     assert!(body["evaluated_at"].is_string());
     assert!(body.get("strategies").is_none());
@@ -1605,6 +1615,14 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
         "missing_trait"
     );
     assert_eq!(report["final_mark"]["error"]["code"], "not_enough_data");
+    let primary = report["display"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["primary"] == true)
+        .unwrap();
+    assert_eq!(primary["value"]["kind"], "unavailable");
+    assert_eq!(primary["value"]["label"], "Not enough data");
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }

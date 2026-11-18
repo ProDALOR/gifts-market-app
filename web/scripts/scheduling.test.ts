@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TaskQueue, QueueFullError } from "../src/previews/task-queue.ts";
-import { MediaStore } from "../src/previews/media-client.ts";
+import { TaskQueue, QueueFullError } from "../src/resources/task-queue.ts";
+import { ResourceCache } from "../src/resources/cache.ts";
 import { PlaybackBudget } from "../src/previews/playback-budget.ts";
 const signal = () => new AbortController().signal;
 test("twenty-four resource consumers eventually complete with bounded producers", async () => {
   let active = 0,
     peak = 0;
-  const store = new MediaStore(
+  const store = new ResourceCache(
     async (key) => {
       peak = Math.max(peak, ++active);
       await new Promise((resolve) => setTimeout(resolve, 2));

@@ -37,15 +37,7 @@ fn catalog_response<T: serde::Serialize>(
     req: &HttpRequest,
 ) -> HttpResponse {
     let etag = format!("\"{}\"", snapshot.revision);
-    let unchanged = req
-        .headers()
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|value| value.trim().trim_start_matches("W/") == etag || value.trim() == "*")
-        });
+    let unchanged = etag_matches(req, &etag);
     let mut response = if unchanged {
         HttpResponse::NotModified()
     } else {
@@ -76,7 +68,7 @@ pub(crate) async fn executions(
     let page = state.executions(query.into_inner()).await?;
     Ok(HttpResponse::Ok().json(OrderPageResponse::from(&page)))
 }
-#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with one coherent floor report",description="Accepts a Telegram gift URL, slug, or gift object with collection_id and number, plus currency_id. Resolves gift facts and all metrics from one pinned replica view. Returns collection, model, backdrop and matching model+backdrop floors; two-decimal dimensionless model/backdrop multipliers; and final_mark = round2(min(matching floor, collection floor * unrounded multipliers)). Rounding uses midpoint-to-even. Floor prices retain exact precision. Multipliers require at least three eligible listing rows for the collection and selected trait. Each metric has value or a structured error; a resolved gift returns 200 even when some metrics are unavailable. One strategy, revision, evaluated_at and sync status apply to the whole report. The response slug is null for catalog references. Unknown/unlisted gifts return 404. No Telegram account or external lookup is used.",request_body=market_valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with one coherent floor report",description="Accepts a Telegram gift URL, slug, or gift object with collection_id and number, plus currency_id. Resolves gift facts and all metrics from one pinned replica view. Returns collection, model, backdrop and matching model+backdrop floors; two-decimal dimensionless model/backdrop multipliers; and final_mark = round2(min(matching floor, collection floor * unrounded multipliers)). Rounding uses midpoint-to-even. Floor prices retain exact precision. Multipliers require at least three eligible listing rows for the collection and selected trait. Each metric has value or a structured error; a resolved gift returns 200 even when some metrics are unavailable. A strategy-owned display projection supplies ordered fields, labels, formatted values, emphasis, summary and note for generic clients. Typed calculation fields remain in the response. One strategy, revision, evaluated_at and sync status apply to the whole report. The response slug is null for catalog references. Unknown/unlisted gifts return 404. No Telegram account or external lookup is used.",request_body=market_valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn gift_valuation(
     state: web::Data<MarketApi>,
     query: web::Json<market_valuation::GiftValuationRequest>,
@@ -92,29 +84,48 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 }
 pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usize) {
     crate::error::configure_extractors(cfg, json_bytes);
-    cfg.route("/healthz", web::get().to(health))
-        .route("/readyz", web::get().to(ready))
-        .route("/sync", web::get().to(sync))
-        .route("/catalog", web::get().to(catalog))
-        .route("/collections/{id}", web::get().to(collection))
-        .route("/orders/query", web::post().to(orders))
-        .route("/history/query", web::post().to(executions))
-        .route("/valuations/gift", web::post().to(gift_valuation))
-        .route(
-            "/media/models/{id}",
-            web::get().to(crate::media::model_thumbnail),
-        )
-        .route(
-            "/media/models/{id}/animation",
-            web::get().to(crate::media::model_animation),
-        )
-        .route(
-            "/media/patterns/{id}",
-            web::get().to(crate::media::pattern_thumbnail),
-        )
-        .route("/ws", web::get().to(crate::websocket::connect))
-        .route("/openapi.json", web::get().to(crate::schema::schema))
-        .route("/asyncapi.json", web::get().to(crate::schema::async_schema));
+    cfg.route(
+        "/valuations/strategies",
+        web::get().to(crate::valuation::strategies),
+    )
+    .route(
+        "/valuations/strategies/{strategy}/documentation",
+        web::get().to(crate::valuation::documentation),
+    )
+    .route("/healthz", web::get().to(health))
+    .route("/readyz", web::get().to(ready))
+    .route("/sync", web::get().to(sync))
+    .route("/catalog", web::get().to(catalog))
+    .route("/collections/{id}", web::get().to(collection))
+    .route("/orders/query", web::post().to(orders))
+    .route("/history/query", web::post().to(executions))
+    .route("/valuations/gift", web::post().to(gift_valuation))
+    .route(
+        "/media/models/{id}",
+        web::get().to(crate::media::model_thumbnail),
+    )
+    .route(
+        "/media/models/{id}/animation",
+        web::get().to(crate::media::model_animation),
+    )
+    .route(
+        "/media/patterns/{id}",
+        web::get().to(crate::media::pattern_thumbnail),
+    )
+    .route("/ws", web::get().to(crate::websocket::connect))
+    .route("/openapi.json", web::get().to(crate::schema::schema))
+    .route("/asyncapi.json", web::get().to(crate::schema::async_schema));
     #[cfg(feature = "miniapp")]
     cfg.configure(crate::miniapp::configure);
+}
+
+pub(crate) fn etag_matches(req: &HttpRequest, etag: &str) -> bool {
+    req.headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|value| value.trim().trim_start_matches("W/") == etag || value.trim() == "*")
+        })
 }

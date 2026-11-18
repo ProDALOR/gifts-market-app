@@ -296,6 +296,19 @@ try {
   const notifyCatalog = () => {
     for (const peer of catalogPeers) sendCatalog(peer);
   };
+  await page.route("**/valuations/strategies", (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: "gift_floor",
+          name: "Gift floor",
+          description: "Gift floor estimate",
+          documentation_url: "/valuations/strategies/gift_floor/documentation",
+          documentation_revision: "r1",
+        },
+      ],
+    }),
+  );
   await page.route("**/valuations/gift", (route) => {
     const body = route.request().postDataJSON(),
       number = body.gift.number;
@@ -321,6 +334,74 @@ try {
         model_multiplier: { value: "1.25" },
         backdrop_multiplier: { value: "1.13" },
         final_mark: { value: "11.25" },
+        display: {
+          fields: [
+            {
+              id: "final_mark",
+              label: "Final mark",
+              primary: true,
+              value: {
+                kind: "currency",
+                amount: "11.25",
+                currency_id: body.currency_id,
+              },
+            },
+            {
+              id: "collection_floor",
+              label: "Collection floor",
+              primary: false,
+              value: {
+                kind: "currency",
+                amount: "8",
+                currency_id: body.currency_id,
+              },
+            },
+            {
+              id: "model_floor",
+              label: "Model floor",
+              primary: false,
+              value: {
+                kind: "currency",
+                amount: "10.000000001",
+                currency_id: body.currency_id,
+              },
+            },
+            {
+              id: "backdrop_floor",
+              label: "Backdrop floor",
+              primary: false,
+              value: {
+                kind: "currency",
+                amount: "9",
+                currency_id: body.currency_id,
+              },
+            },
+            {
+              id: "model_backdrop_floor",
+              label: "Model × backdrop floor",
+              primary: false,
+              value: {
+                kind: "currency",
+                amount: "12.5",
+                currency_id: body.currency_id,
+              },
+            },
+            {
+              id: "model_multiplier",
+              label: "Model multiplier",
+              primary: false,
+              value: { kind: "number", amount: "1.25", suffix: "×" },
+            },
+            {
+              id: "backdrop_multiplier",
+              label: "Backdrop multiplier",
+              primary: false,
+              value: { kind: "number", amount: "1.13", suffix: "×" },
+            },
+          ],
+          summary: "5 collection listings",
+          note: "Current asks, before fees.",
+        },
         evidence: {
           collection_samples: 5,
           model_samples: 3,
@@ -847,7 +928,7 @@ try {
     assert.ok(!labels.includes(hidden), hidden);
   assert.equal(await page.locator(".source-details").count(), 0);
   await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
-  assert.equal(await page.locator(".gift-valuations li").count(), 6);
+  assert.equal(await page.locator(".valuation-metrics > li").count(), 7);
   assert.equal(
     await page
       .locator('[data-metric="model_multiplier"] .valuation-value')

@@ -1,4 +1,4 @@
-import { QueueFullError } from "./task-queue.ts";
+import { QueueFullError } from "../resources/task-queue.ts";
 /** Owns one renderer across brief hover transitions. Visibility loss is immediate. */
 export interface PreviewPlayer {
   play(): void;

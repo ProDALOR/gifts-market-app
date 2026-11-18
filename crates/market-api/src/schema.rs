@@ -10,6 +10,8 @@ use utoipa::OpenApi;
         crate::routes::catalog,
         crate::routes::collection,
         crate::routes::gift_valuation,
+        crate::valuation::documentation,
+        crate::valuation::strategies,
         crate::routes::orders,
         crate::routes::executions,
         crate::media::model_thumbnail,

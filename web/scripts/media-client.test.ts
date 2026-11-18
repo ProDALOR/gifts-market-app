@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MediaStore, fetchMedia, retryDelay } from "../src/previews/media-client.ts";
+import { ResourceCache } from "../src/resources/cache.ts";
+import { fetchMedia, retryDelay } from "../src/previews/media-client.ts";
 const signal = () => new AbortController().signal;
 test("resource cache uses byte limits and least-recently-used eviction", async () => {
   const calls: string[] = [];
-  const store = new MediaStore(async (key) => {
+  const store = new ResourceCache(async (key) => {
     calls.push(key);
     return { value: key, bytes: 4 };
   }, 8);
@@ -18,7 +19,7 @@ test("resource cache uses byte limits and least-recently-used eviction", async (
 });
 test("pending resources are bounded, shared, and cancelled by their last consumer", async () => {
   let aborted = false;
-  const store = new MediaStore(
+  const store = new ResourceCache(
     async (_key, signal) => {
       await new Promise((_, reject) =>
         signal.addEventListener("abort", () => {
@@ -48,7 +49,7 @@ test("pending resources are bounded, shared, and cancelled by their last consume
 });
 test("failed resources are removed and oversized values are not retained", async () => {
   let calls = 0;
-  const store = new MediaStore(async () => {
+  const store = new ResourceCache(async () => {
     if (++calls === 1) throw Error("unavailable");
     return { value: "large", bytes: 20 };
   }, 8);

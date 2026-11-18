@@ -413,7 +413,7 @@
   background: var(--raised);
   font-size: 19px;
 }
-.gift-valuations ul {
+.valuation-metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -421,14 +421,15 @@
   padding: 0;
   margin: 0;
 }
-.gift-valuations li {
+.valuation-metrics > li {
   min-width: 0;
   padding: 12px 10px;
   background: var(--raised);
   border: 1px solid var(--line);
   border-radius: 12px;
 }
-.gift-valuations h4 {
+.valuation-metrics h4,
+.valuation-primary h4 {
   font-size: 11px;
   color: var(--muted);
   margin: 0 0 8px;
@@ -455,7 +456,7 @@
   line-height: 1.4;
   font-weight: 550;
 }
-.gift-valuations li p,
+.valuation-metrics li p,
 .gift-valuations small {
   color: var(--muted);
   font-size: 10px;
@@ -476,18 +477,91 @@
   margin-top: 16px;
 }
 
-.valuation-final {
-  margin: 0 0 10px;
+.valuation-metrics > .valuation-primary {
+  grid-column: 1 / -1;
+  margin: 0;
   padding: 14px;
   border-radius: 12px;
   background: var(--raised);
   border: 1px solid var(--accent);
 }
-.valuation-final .valuation-value {
+.valuation-primary .valuation-value {
   font-size: 24px;
 }
-.valuation-final p {
+.valuation-primary p {
   font-size: 11px;
   margin-top: 6px;
   color: var(--muted);
+}
+
+.valuation-guide {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.valuation-guide summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 0;
+}
+.valuation-guide summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.valuation-guide-content {
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.valuation-guide-content h1 {
+  font-size: 17px;
+  margin: 18px 0 10px;
+}
+.valuation-guide-content h2 {
+  font-size: 14px;
+  margin: 22px 0 8px;
+}
+.valuation-guide-content p {
+  margin: 10px 0;
+}
+.valuation-guide-content ul {
+  display: block;
+  padding-left: 20px;
+  margin: 10px 0;
+  list-style: disc;
+}
+.valuation-guide-content li {
+  margin: 8px 0;
+}
+.valuation-guide-content pre {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raised);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.valuation-guide-error {
+  font-size: 13px;
+  color: var(--muted);
+}
+.valuation-guide-error button {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.valuation-guide-content .katex:has(> math[display="block"]) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 10px 0;
+  margin: 12px 0;
+  font-size: 1.1em;
 }

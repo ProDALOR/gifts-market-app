@@ -1,6 +1,6 @@
 export class QueueFullError extends Error {
   constructor() {
-    super("Media queue is full");
+    super("Resource queue is full");
   }
 }
 type Job = { priority: number; start: () => void };

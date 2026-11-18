@@ -1,61 +1,10 @@
-import { useEffect, useState } from "react";
-import { amount, valuation } from "../market";
-import type { GiftValuationResponse, Order } from "../market";
-import { Quote } from "../ui/market-controls";
-const issueLabel = (id: string) =>
-  id.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
-type Metric = GiftValuationResponse["collection_floor"];
-const metrics = [
-  ["collection_floor", "Collection floor"],
-  ["model_floor", "Model floor"],
-  ["backdrop_floor", "Backdrop floor"],
-  ["model_backdrop_floor", "Model × backdrop floor"],
-  ["model_multiplier", "Model multiplier"],
-  ["backdrop_multiplier", "Backdrop multiplier"],
-] as const;
-function twoDecimals(value: string) {
-  const [whole, fraction = ""] = value.split(".");
-  return `${whole}.${fraction.padEnd(2, "0")}`;
-}
-function MetricResult({
-  metric,
-  currency,
-  ratio = false,
-  rounded = false,
-}: {
-  metric: Metric;
-  currency: string;
-  ratio?: boolean;
-  rounded?: boolean;
-}) {
-  if ("error" in metric)
-    return (
-      <>
-        <strong className="valuation-unavailable">
-          {issueLabel(metric.error.code)}
-        </strong>
-        <p>{metric.error.message}</p>
-        {metric.error.required_samples != null && (
-          <small>
-            {metric.error.available_samples ?? 0} /{" "}
-            {metric.error.required_samples} required listings
-          </small>
-        )}
-      </>
-    );
-  return (
-    <strong className="valuation-value">
-      {ratio ? (
-        `${amount(twoDecimals(metric.value))}×`
-      ) : (
-        <Quote
-          price={rounded ? twoDecimals(metric.value) : metric.value}
-          currency={currency}
-        />
-      )}
-    </strong>
-  );
-}
+import { lazy, Suspense, useEffect, useState } from "react";
+import { valuation } from "../market";
+import type { ValuationView, Order } from "../market";
+import { useStrategy } from "../valuation/use-strategy";
+import { guideKey } from "../valuation/strategies";
+import { ValuationFields } from "../valuation/display";
+const ValuationMethodology = lazy(() => import("./valuation-methodology"));
 /** One on-demand request returns the unified report; no per-card requests or polling. */
 export function GiftValuations({ order }: { order: Order }) {
   const gift = order.target.kind === "gift" ? order.target.gift : undefined;
@@ -67,10 +16,11 @@ export function GiftValuations({ order }: { order: Order }) {
     order.book.collection_id,
     order.book.currency_id,
   ]);
+  const [guideOpened, setGuideOpened] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<{
     key: string;
-    value?: GiftValuationResponse;
+    value?: ValuationView;
     error?: string;
   }>({ key: "" });
   useEffect(() => {
@@ -94,6 +44,10 @@ export function GiftValuations({ order }: { order: Order }) {
           throw new Error(
             "Gift details changed. Refresh this market and try again.",
           );
+        if (!value.display || !Array.isArray(value.display.fields))
+          throw new Error(
+            "This server did not provide a strategy display. Refresh the app and try again.",
+          );
         setState({ key, value });
       })
       .catch((error) => {
@@ -110,6 +64,11 @@ export function GiftValuations({ order }: { order: Order }) {
   }, [key, attempt]);
   const current = state.key === key ? state : undefined;
   const report = current?.value;
+  const {
+    metadata: strategy,
+    error: strategyError,
+    retry: retryStrategies,
+  } = useStrategy(report?.strategy);
   const loading = !!number && !report && !current?.error;
   return (
     <section
@@ -118,7 +77,7 @@ export function GiftValuations({ order }: { order: Order }) {
       aria-busy={loading}
     >
       <div className="valuation-heading">
-        <h3>Valuation</h3>
+        <h3>{strategy?.name ?? "Valuation"}</h3>
         {number && (
           <button
             onClick={() => setAttempt((n) => n + 1)}
@@ -129,6 +88,7 @@ export function GiftValuations({ order }: { order: Order }) {
           </button>
         )}
       </div>
+      {strategy && <p className="valuation-note">{strategy.description}</p>}
       {!number ? (
         <p className="valuation-note">
           {order.target.kind === "gift"
@@ -147,26 +107,7 @@ export function GiftValuations({ order }: { order: Order }) {
         <>
           {report && (
             <>
-              <div className="valuation-final" data-metric="final_mark">
-                <h4>Final mark</h4>
-                <MetricResult
-                  metric={report.final_mark}
-                  currency={report.currency_id}
-                  rounded
-                />
-              </div>
-              <ul>
-                {metrics.map(([key, label]) => (
-                  <li key={key} data-metric={key}>
-                    <h4>{label}</h4>
-                    <MetricResult
-                      metric={report[key]}
-                      currency={report.currency_id}
-                      ratio={key.endsWith("multiplier")}
-                    />
-                  </li>
-                ))}
-              </ul>
+              <ValuationFields fields={report.display.fields} />
               <p className="valuation-note">
                 {report.sync.state !== "live" && (
                   <span className="valuation-stale">Stale · </span>
@@ -178,15 +119,50 @@ export function GiftValuations({ order }: { order: Order }) {
                     minute: "2-digit",
                   })}
                 </time>
-                {` · ${report.evidence.collection_samples} collection listings`}
+                {report.display.summary && ` · ${report.display.summary}`}
               </p>
             </>
           )}
-          <p className="valuation-note">
-            Min(combined floor, collection floor × unrounded multipliers),
-            rounded to 2 decimals. Current asks, before fees.
-          </p>
+          {report?.display.note && (
+            <p className="valuation-note">{report.display.note}</p>
+          )}
         </>
+      )}
+      {report && (
+        <details
+          className="valuation-guide"
+          onToggle={(event) => {
+            if (event.currentTarget.open) setGuideOpened(true);
+          }}
+        >
+          <summary>How is this calculated?</summary>
+          {guideOpened &&
+            (strategy ? (
+              <Suspense
+                fallback={
+                  <p className="valuation-note" role="status">
+                    Loading calculation guide…
+                  </p>
+                }
+              >
+                <ValuationMethodology
+                  key={guideKey(strategy)}
+                  strategy={strategy}
+                />
+              </Suspense>
+            ) : strategyError ? (
+              <div className="valuation-guide-error" role="alert">
+                <p>{strategyError}</p>
+                <button onClick={retryStrategies}>
+                  Retry strategy information
+                </button>
+              </div>
+            ) : (
+              <p className="valuation-note" role="status">
+                Loading strategy information…
+              </p>
+            ))}
+        </details>
       )}
     </section>
   );

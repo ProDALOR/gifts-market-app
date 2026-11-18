@@ -174,7 +174,7 @@ test("a synchronous player error event cannot re-enable the failed canvas", asyn
   assert.equal(visible, false);
 });
 test("temporary queue saturation retries while active and cancellation prevents later creation", async (t) => {
-  const { QueueFullError } = await import("../src/previews/task-queue.ts");
+  const { QueueFullError } = await import("../src/resources/task-queue.ts");
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let attempts = 0;
   const controller = new AnimationLifecycle(

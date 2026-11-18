@@ -1,105 +1,5 @@
-import { TaskQueue } from "./task-queue.ts";
-/** Shared bounded resources: queued producers, independent consumers, byte-based LRU. */
-export class MediaStore<T> {
-  private entries = new Map<string, Entry<T>>();
-  private bytes = 0;
-  private queue: TaskQueue;
-  constructor(
-    private load: (
-      key: string,
-      signal: AbortSignal,
-      priority: number,
-    ) => Promise<{ value: T; bytes: number }>,
-    private budget = 16 * 1024 * 1024,
-    concurrency = 4,
-  ) {
-    this.queue = new TaskQueue(concurrency);
-  }
-  async get(key: string, signal: AbortSignal, priority = 0): Promise<T> {
-    signal.throwIfAborted();
-    let entry = this.entries.get(key);
-    if (!entry) {
-      const controller = new AbortController();
-      const created: Entry<T> = {
-        controller,
-        users: 0,
-        settled: false,
-        bytes: 0,
-        promise: Promise.resolve(undefined as T),
-      };
-      this.entries.set(key, created);
-      created.promise = this.queue
-        .run(
-          async () => {
-            const timeout = setTimeout(() => controller.abort(), 35000);
-            try {
-              return await this.load(key, controller.signal, priority);
-            } finally {
-              clearTimeout(timeout);
-            }
-          },
-          controller.signal,
-          priority,
-        )
-        .then(({ value, bytes }) => {
-          controller.signal.throwIfAborted();
-          if (this.entries.get(key) === created) {
-            created.bytes = bytes;
-            this.bytes += bytes;
-            created.settled = true;
-            this.trim();
-          }
-          return value;
-        })
-        .catch((error) => {
-          this.remove(key, created);
-          throw error;
-        })
-        .finally(() => {
-          created.settled = true;
-        });
-      entry = created;
-    } else {
-      this.entries.delete(key);
-      this.entries.set(key, entry);
-    }
-    entry.users++;
-    let aborted = () => {};
-    const cancelled = new Promise<never>((_, reject) => {
-      aborted = () => reject(signal.reason);
-      signal.addEventListener("abort", aborted, { once: true });
-      if (signal.aborted) aborted();
-    });
-    try {
-      return await Promise.race([entry.promise, cancelled]);
-    } finally {
-      signal.removeEventListener("abort", aborted);
-      entry.users--;
-      if (!entry.settled && entry.users === 0) {
-        entry.controller.abort();
-        this.remove(key, entry);
-      }
-    }
-  }
-  private remove(key: string, entry: Entry<T>) {
-    if (this.entries.get(key) !== entry) return;
-    this.entries.delete(key);
-    this.bytes -= entry.bytes;
-  }
-  private trim() {
-    for (const [key, entry] of this.entries) {
-      if (this.bytes <= this.budget && this.entries.size <= 64) break;
-      if (entry.settled) this.remove(key, entry);
-    }
-  }
-}
-type Entry<T> = {
-  controller: AbortController;
-  users: number;
-  settled: boolean;
-  bytes: number;
-  promise: Promise<T>;
-};
+import { TaskQueue } from "../resources/task-queue.ts";
+import { ResourceCache } from "../resources/cache.ts";
 export function wait(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const aborted = () => {
@@ -196,7 +96,7 @@ async function download(
 }
 // Native <img loading=lazy> remains the fast path. Failed images use the same
 // status-aware retry policy, warming the HTTP cache before one remount.
-const imageRecovery = new MediaStore(async (url, signal) => {
+const imageRecovery = new ResourceCache(async (url, signal) => {
   await fetchMedia(url, signal, "image");
   return { value: true, bytes: 1 };
 }, 64);

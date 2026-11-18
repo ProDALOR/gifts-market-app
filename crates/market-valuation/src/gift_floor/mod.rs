@@ -1,5 +1,6 @@
 //! One supervised gift strategy. Cached collection statistics are checked against each pinned view.
 mod calculation;
+mod display;
 mod result;
 use crate::source::{BookScope, ValuationSnapshot, ValuationSource};
 use crate::*;
@@ -17,17 +18,20 @@ use std::{
 use tokio::time::Instant;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
-pub const GIFT_STRATEGY: &str = "gift_floor";
+pub const METADATA: crate::StrategyMetadata = crate::StrategyMetadata {
+    id: "gift_floor",
+    name: "Gift floor",
+    description: "Collection and trait floors with a multiplier estimate capped by the matching model-and-backdrop floor.",
+    documentation: include_str!("methodology.md"),
+};
 pub type GiftFloorMark = Mark<GiftFloorValuation>;
 type NativeHandle = Handle<GiftValuationRequest, GiftFloorValuation, ValuationError>;
 #[derive(Clone)]
 pub struct ValuationHandle(NativeHandle);
-impl From<NativeHandle> for ValuationHandle {
-    fn from(handle: NativeHandle) -> Self {
-        Self(handle)
-    }
-}
 impl ValuationHandle {
+    pub fn metadata(&self) -> &'static crate::StrategyMetadata {
+        crate::strategy(self.0.strategy()).expect("gift strategy was registered before startup")
+    }
     pub async fn gift(
         &self,
         request: GiftValuationRequest,
@@ -36,7 +40,7 @@ impl ValuationHandle {
         crate::client::invoke(
             &self.0,
             request,
-            StrategyId::new(GIFT_STRATEGY).unwrap(),
+            StrategyId::new(self.metadata().id).unwrap(),
             currency,
         )
         .await
@@ -45,9 +49,11 @@ impl ValuationHandle {
         arbiter: &actix::ArbiterHandle,
         reads: market_replica::ReadExecutor,
     ) -> Result<(Self, Task), ServiceError> {
+        let metadata = crate::strategy(METADATA.id).ok_or(ServiceError)?;
+        StrategyId::new(metadata.id).map_err(|_| ServiceError)?;
         let service = Service::start_on(
             arbiter,
-            GIFT_STRATEGY,
+            metadata.id,
             move |life| GiftFloorActor::new(ValuationSource::new(reads), life),
             crate::Config {
                 max_requests: 32,
@@ -55,7 +61,7 @@ impl ValuationHandle {
             },
         )
         .await?;
-        Ok((service.handle.into(), service.task))
+        Ok((Self(service.handle), service.task))
     }
 }
 struct CachedBook {
@@ -140,7 +146,7 @@ impl Actor for GiftFloorActor {
                 .into_actor(actor)
                 .map(|result, actor, _| {
                     actor.refreshing = false;
-                    if let Err(error) = result { tracing::warn!(strategy=GIFT_STRATEGY, code=?error.code(), message=error.message(), "Valuation refresh failed"); }
+                    if let Err(error) = result { tracing::warn!(strategy=actor.life.strategy(), code=?error.code(), message=error.message(), "Valuation refresh failed"); }
                 }),
             );
         });
@@ -180,7 +186,7 @@ impl Handler<Evaluate<GiftValuationRequest, GiftFloorValuation, ValuationError>>
             }
         }.into_actor(self).map(|result, actor, _| result.map(|(prepared, scope)| {
             actor.active = Some((scope, Instant::now()));
-            Arc::new(Mark::evaluated(GIFT_STRATEGY, prepared))
+            Arc::new(Mark::evaluated(actor.life.strategy(), prepared))
         })))
     }
 }

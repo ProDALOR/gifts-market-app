@@ -1,8 +1,15 @@
 //! Gift valuation actors, calculations, typed clients and lifecycle ownership.
+mod display;
+pub use display::{DisplayField, DisplayValue, ValuationDisplay};
 mod calculation;
 mod floors;
 pub mod gift_floor;
-pub use gift_floor::*;
+pub use gift_floor::{
+    GiftFloorActor, GiftFloorEvidence, GiftFloorMark, GiftFloorValuation,
+    MINIMUM_MULTIPLIER_SAMPLES, ValuationHandle,
+};
+mod strategy;
+pub use strategy::{StrategyMetadata, strategies, strategy};
 mod client;
 mod portfolio;
 mod runtime;

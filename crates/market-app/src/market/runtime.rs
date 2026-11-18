@@ -35,14 +35,11 @@ impl MarketRuntime {
         let (registry, valuation_task) =
             market_valuation::ValuationHandle::start(&data.arbiter(), reads.handle()).await?;
         let valuation_stop = supervisor.token();
-        supervisor.spawn_critical(
-            TaskKind::Valuation(market_valuation::GIFT_STRATEGY),
-            async move {
-                valuation_task.run(valuation_stop).await.map_err(|error| {
-                    tracing::error!(%error,"gift valuation actor stopped");
-                })
-            },
-        )?;
+        supervisor.spawn_critical(TaskKind::Valuation(registry.metadata().id), async move {
+            valuation_task.run(valuation_stop).await.map_err(|error| {
+                tracing::error!(%error,"gift valuation actor stopped");
+            })
+        })?;
         supervisor.spawn_critical(TaskKind::MarketData, async move {
             if let Err(error) = data.task.run(stop).await {
                 tracing::error!(code=?error.code(),"market data actor stopped");

@@ -1,7 +1,24 @@
 import type { components } from "./gen/api";
+export type ValuationStrategy = components["schemas"]["StrategyResponse"];
+export const valuationStrategies = (
+  signal?: AbortSignal,
+): Promise<ValuationStrategy[]> =>
+  request("/valuations/strategies", undefined, signal);
 export type GiftValuationRequest =
   components["schemas"]["GiftValuationRequest"];
-export type GiftValuationResponse = components["schemas"]["GiftValuationResponse"];
+export type GiftValuationResponse =
+  components["schemas"]["GiftValuationResponse"];
+/** Common GUI envelope; strategy-specific calculation fields stay in the typed API result. */
+export type ValuationView = Pick<
+  GiftValuationResponse,
+  | "strategy"
+  | "revision"
+  | "evaluated_at"
+  | "gift"
+  | "currency_id"
+  | "sync"
+  | "display"
+>;
 export type ValuationErrorDetails =
   components["schemas"]["ValuationErrorDetails"];
 export type Order = components["schemas"]["OrderResponse"];
