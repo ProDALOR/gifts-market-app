@@ -16,6 +16,7 @@ impl CatalogTrait {
     }
 }
 impl ValuationSnapshot {
+    #[cfg(feature = "portfolio")]
     pub fn resolve_models(&self, lookups: Vec<ModelLookup>) -> Result<Vec<ResolvedModel>> {
         self.check_cancelled()?;
         super::resolve::resolve(&self.reader, lookups, &self.cancelled)

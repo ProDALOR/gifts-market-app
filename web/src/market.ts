@@ -22,12 +22,9 @@ export type ValuationView = Pick<
   | "sync"
   | "display"
 >;
-export type ValuationErrorDetails =
-  components["schemas"]["ValuationErrorDetails"];
 export type SyncStatus = components["schemas"]["SyncStatus"];
 export type Order = components["schemas"]["OrderResponse"];
-export type Book = components["schemas"]["GiftBook"];
-export type Query = components["schemas"]["GiftOrdersQuery"];
+export type Sort = components["schemas"]["GiftSort"];
 export type HistoryQuery = components["schemas"]["GiftHistoryQuery"];
 export type FeedQuery =
   | {
@@ -47,12 +44,7 @@ export type Model = components["schemas"]["GiftModel"];
 export type Backdrop = components["schemas"]["GiftBackdrop"];
 export type Pattern = components["schemas"]["GiftPattern"];
 export type BackdropPalette = components["schemas"]["BackdropPalette"];
-export type Page<T> = Omit<
-  components["schemas"]["OrderPageResponse"],
-  "data"
-> & {
-  data: T[];
-};
+export type OrderPage = components["schemas"]["OrderPageResponse"];
 export type TraitKey = "models" | "backdrops" | "patterns";
 export type TraitFilters = Partial<Record<TraitKey, string[]>>;
 export type CatalogOption =

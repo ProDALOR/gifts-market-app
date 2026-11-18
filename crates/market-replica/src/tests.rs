@@ -602,6 +602,26 @@ fn legacy_continuations_keep_their_shape_and_exact_boundaries() {
         );
         assert_eq!(ids(&replica.read(query).unwrap().page), [expected]);
     }
+    // Price and time sorts emit canonical cursors, including after a legacy price cursor.
+    for sort in 1..=4 {
+        let mut request = read(1, false);
+        request.sort = sort;
+        let first = replica.read(request.clone()).unwrap();
+        let mut token: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(&first.page.next_page_token).unwrap())
+                .unwrap();
+        assert!(token["position"].get("Ranked").is_some());
+        if sort <= 2 {
+            token["position"] = json!({"Price":token["position"]["Ranked"]});
+            request.page_token = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&token).unwrap());
+            let next = replica.read(request).unwrap();
+            let token: serde_json::Value =
+                serde_json::from_slice(&URL_SAFE_NO_PAD.decode(next.page.next_page_token).unwrap())
+                    .unwrap();
+            assert!(token["position"].get("Ranked").is_some());
+            assert!(token["position"].get("Price").is_none());
+        }
+    }
     // Inclusive price bounds must retain every identity tied at the same exact price.
     let mut query = read(1, false);
     query.limit = 10;

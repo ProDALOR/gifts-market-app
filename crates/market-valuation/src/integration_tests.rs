@@ -1,7 +1,10 @@
 use crate::ValuationSource;
+#[cfg(feature = "portfolio")]
+use crate::portfolio::calculation;
 use crate::test_support::MarketDataService;
 use crate::*;
 use actix::prelude::*;
+#[cfg(feature = "portfolio")]
 use market_gifts::ModelLookup;
 use market_hub_protocol::wire as w;
 use market_replica::ReplicaWriter;
@@ -28,6 +31,7 @@ pub(crate) fn order(price: &str) -> w::Change {
         ..Default::default()
     }))
 }
+#[cfg(feature = "portfolio")]
 fn query() -> w::ReadRequest {
     w::ReadRequest {
         selection: Some(w::Selection {
@@ -78,9 +82,11 @@ pub(crate) fn fixture() -> (tempfile::TempDir, ReplicaWriter) {
     (directory, writer)
 }
 
+#[cfg(feature = "portfolio")]
 #[tokio::test]
 async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_separately() {
     use crate::{ModelPosition, UnpricedReason, ValuationRequest};
+    #[cfg(feature = "portfolio")]
     use market_gifts::ModelLookup;
     let (_directory, mut writer) = fixture();
     let option = "gift.model.10";
@@ -330,11 +336,13 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
     service.task.run(stop).await.unwrap();
 }
 
+#[cfg(feature = "portfolio")]
 #[tokio::test]
 async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
     use crate::ValuationErrorCode;
     use crate::{FloorActor, PortfolioValuationHandle};
     use crate::{ModelPosition, StrategyId, ValuationRequest};
+    #[cfg(feature = "portfolio")]
     use market_gifts::ModelLookup;
     let (_directory, mut writer) = fixture();
     let data = MarketDataService::start(writer.reader(), 2, 1)
@@ -606,6 +614,7 @@ async fn cancelled_strategy_preparation_retains_its_worker_until_shutdown_drains
         .unwrap();
 }
 
+#[cfg(feature = "portfolio")]
 async fn calculate(
     source: &ValuationSource,
     request: crate::ValuationRequest,
@@ -651,6 +660,7 @@ pub(crate) async fn hold(source: &ValuationSource) -> HeldWorker {
     HeldWorker(Some(release))
 }
 
+#[cfg(feature = "portfolio")]
 pub(crate) fn model_fixture() -> (tempfile::TempDir, ReplicaWriter) {
     let (dir, mut writer) = fixture();
     let predicate = |id: &str| w::AttributePredicate {
@@ -718,6 +728,7 @@ pub(crate) fn model_fixture() -> (tempfile::TempDir, ReplicaWriter) {
     (dir, writer)
 }
 
+#[cfg(feature = "portfolio")]
 #[tokio::test]
 async fn floors_cache_multiple_portfolios_and_only_invalidate_relevant_dependencies() {
     use crate::*;
@@ -837,6 +848,7 @@ async fn floors_cache_multiple_portfolios_and_only_invalidate_relevant_dependenc
     data.task.run(stop).await.unwrap();
 }
 
+#[cfg(feature = "portfolio")]
 #[tokio::test]
 async fn catalog_resolution_and_floor_calculation_share_the_pinned_view() {
     use crate::*;
@@ -888,6 +900,7 @@ async fn catalog_resolution_and_floor_calculation_share_the_pinned_view() {
     data.task.run(stop).await.unwrap();
 }
 
+#[cfg(feature = "portfolio")]
 #[tokio::test]
 async fn ask_projection_skips_unsupported_and_expired_rows_and_preserves_singleton_traits() {
     let (_dir, mut writer) = model_fixture();
@@ -958,6 +971,7 @@ async fn ask_projection_skips_unsupported_and_expired_rows_and_preserves_singlet
     data.task.run(stop).await.unwrap();
 }
 
+#[cfg(feature = "portfolio")]
 #[tokio::test]
 async fn name_lookup_cache_detects_new_ambiguity_without_invalidating_catalog_ids() {
     use crate::*;

@@ -30,7 +30,6 @@ export default defineConfig({
         "/sync",
         "/catalog",
         "/collections",
-        "/portfolio",
         "/valuations",
         "/orders",
         "/history",

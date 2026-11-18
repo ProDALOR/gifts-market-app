@@ -561,6 +561,11 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
     );
 
     for name in [
+        "ValuationErrorContext",
+        "ModelValue",
+        "UnpricedReason",
+        "PortfolioPositions",
+        "ValuationRequest",
         "BookKey",
         "AttributeValue",
         "Predicate",
@@ -2496,4 +2501,76 @@ async fn server_deadline_bounds_json_extraction_without_stopping_the_service() {
     job.await.unwrap().unwrap();
     stop.cancel();
     runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+#[ignore = "requires Node.js 24; runs the same probe as scripts/smoke.py"]
+async fn live_window_smoke_probe_uses_portable_anchors_and_frozen_leases() {
+    let (state, runtime, peer, stop) = setup().await;
+    let mut data = page("1");
+    let original = data
+        .entities
+        .iter()
+        .find_map(|entity| match &entity.entity {
+            Some(w::entity::Entity::Order(order)) => Some(order.clone()),
+            _ => None,
+        })
+        .unwrap();
+    for i in 2..=6 {
+        let mut order = original.clone();
+        order.id = format!("order.{i}");
+        order.price = i.to_string();
+        data.entities.push(w::Entity {
+            entity: Some(w::entity::Entity::Order(order)),
+        });
+    }
+    data.cursor = "probe".into();
+    peer.page.send_replace(data);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if state
+                .orders(serde_json::from_value(query()).unwrap())
+                .await
+                .unwrap()
+                .data
+                .len()
+                == 6
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let api = ApiServer::bind(
+        ApiConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            ..Default::default()
+        },
+        runtime.data.clone(),
+        runtime.valuation.clone(),
+    )
+    .unwrap();
+    let base = format!("http://{}", api.local_addr().unwrap());
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(api.run(api_stop.clone()));
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = tokio::process::Command::new("node")
+        .arg(root.join("scripts/window-probe.mjs"))
+        .env("PUBLIC_URL", base)
+        .env("PUBLIC_QUERY", query().to_string())
+        .output()
+        .await
+        .unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

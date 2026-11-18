@@ -85,7 +85,6 @@ fn borrowed_rows_preserve_page_byte_limits_and_oversized_record_errors() {
         let filter = Filter::compile(&view.state, &request).unwrap();
         let boundary = match sort {
             0 => Boundary::Current(None),
-            1 | 2 => Boundary::Price(None),
             _ => Boundary::Ranked(None),
         };
         let (first, next) = scan(&view, &filter, boundary, 200, &|_| Ok(true), &|| Ok(())).unwrap();
@@ -113,7 +112,7 @@ fn borrowed_rows_preserve_page_byte_limits_and_oversized_record_errors() {
     let error = scan(
         &view,
         &filter,
-        Boundary::Price(None),
+        Boundary::Ranked(None),
         200,
         &|_| Ok(true),
         &|| Ok(()),

@@ -1,10 +1,8 @@
 //! Floor actors own a small bounded portfolio cache and evaluate on demand.
+use super::calculation::{self, FloorKind};
 use crate::source::{ReadDependencies, ValuationSource};
 use crate::*;
-use crate::{
-    Evaluate, Lifecycle, Mark,
-    calculation::{self, FloorKind},
-};
+use crate::{Evaluate, Lifecycle, Mark};
 use crate::{ValuationError, ValuationErrorCode};
 use actix::{Actor, ActorFutureExt, AtomicResponse, Context, Handler, WrapFuture};
 #[cfg(test)]

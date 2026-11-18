@@ -1,85 +1,14 @@
-//! Explicit gift valuation requests, measurements and portfolio estimates.
+//! Shared gift valuation requests and failure metadata.
 mod metric;
-use market_gifts::{
-    Amount, CurrencyId, InvalidValue, ModelIdentity, ModelLookup, SyncStatus, VenueId,
-};
+use market_gifts::{CurrencyId, InvalidValue};
 pub use metric::*;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct ModelPosition {
-    pub model: ModelLookup,
-    pub quantity: u32,
-}
-impl ModelPosition {
-    pub fn validate(&self) -> Result<(), InvalidValue> {
-        if self.quantity == 0 {
-            return Err(InvalidValue("portfolio quantities must be positive"));
-        }
-        self.model.validate()
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct ValuationRequest {
-    pub strategy: StrategyId,
-    pub positions: Vec<ModelPosition>,
-    pub currency_id: CurrencyId,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub enum UnpricedReason {
-    UnknownCollection,
-    AmbiguousCollection,
-    UnknownModel,
-    AmbiguousModel,
-    NoListing,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct ModelValue {
-    /// Stable catalog identity; labels below remain useful for unresolved input.
-    pub identity: Option<ModelIdentity>,
-    pub collection: String,
-    pub model: String,
-    pub quantity: u32,
-    pub floor: Option<Amount>,
-    pub value: Option<Amount>,
-    pub venue_id: Option<VenueId>,
-    pub unpriced: Option<UnpricedReason>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct Valuation {
-    pub rows: Vec<ModelValue>,
-    pub total: Amount,
-    pub priced: u32,
-    pub unpriced: u32,
-    pub currency_id: CurrencyId,
-    pub sync: SyncStatus,
-}
-impl ValuationRequest {
-    pub fn validate(&self) -> Result<(), InvalidValue> {
-        let mut count = 0u32;
-        for position in &self.positions {
-            count = count
-                .checked_add(position.quantity)
-                .ok_or(InvalidValue("portfolio quantity is too large"))?;
-            position.validate()?;
-        }
-        Ok(())
-    }
-}
 
 /// Stable strategy name; unknown valid names are rejected by the running registry.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[cfg_attr(feature="schema",schema(value_type=String,pattern="^[a-z][a-z0-9_]{0,63}$",example="model_floor"))]
+#[cfg_attr(feature="schema",schema(value_type=String,pattern="^[a-z][a-z0-9_]{0,63}$",example="gift_floor"))]
 pub struct StrategyId(String);
 impl StrategyId {
     pub fn new(value: impl Into<String>) -> Result<Self, InvalidValue> {
@@ -99,12 +28,6 @@ impl StrategyId {
     }
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-    pub fn model_floor() -> Self {
-        Self("model_floor".into())
-    }
-    pub fn collection_floor() -> Self {
-        Self("collection_floor".into())
     }
 }
 impl std::fmt::Display for StrategyId {
@@ -136,8 +59,9 @@ pub struct ValuationErrorDetails {
     pub required_samples: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available_samples: Option<u32>,
+    #[cfg(feature = "portfolio")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub context: Option<ValuationErrorContext>,
+    pub context: Option<crate::ValuationErrorContext>,
 }
 impl ValuationErrorDetails {
     pub fn strategy(strategy: StrategyId) -> Self {
@@ -147,6 +71,7 @@ impl ValuationErrorDetails {
             revision: None,
             required_samples: None,
             available_samples: None,
+            #[cfg(feature = "portfolio")]
             context: None,
         }
     }
@@ -161,33 +86,13 @@ pub struct GiftValuationRequest {
     pub currency_id: CurrencyId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PortfolioPositions {
-    pub positions: Vec<ModelPosition>,
-    pub currency_id: CurrencyId,
-}
+#[cfg(feature = "portfolio")]
 impl StrategyId {
-    pub fn is_portfolio_strategy(&self) -> bool {
-        matches!(self.as_str(), "model_floor" | "collection_floor")
+    pub fn model_floor() -> Self {
+        Self("model_floor".into())
     }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub enum ValuationErrorContext {
-    Portfolio { unpriced: Vec<ModelValue> },
-}
-
-impl From<market_gifts::ModelLookupError> for UnpricedReason {
-    fn from(error: market_gifts::ModelLookupError) -> Self {
-        use market_gifts::ModelLookupError;
-        match error {
-            ModelLookupError::UnknownCollection => Self::UnknownCollection,
-            ModelLookupError::AmbiguousCollection => Self::AmbiguousCollection,
-            ModelLookupError::UnknownModel => Self::UnknownModel,
-            ModelLookupError::AmbiguousModel => Self::AmbiguousModel,
-        }
+    pub fn collection_floor() -> Self {
+        Self("collection_floor".into())
     }
 }
 

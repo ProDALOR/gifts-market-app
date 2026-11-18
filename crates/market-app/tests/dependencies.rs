@@ -174,3 +174,41 @@ fn production_dependencies_follow_the_service_boundaries() {
         );
     }
 }
+
+#[test]
+fn portfolio_floor_strategies_are_opt_in_for_portfolio_consumers() {
+    for (package, enabled) in [("market-app", false), ("market-portfolio", true)] {
+        let output = Command::new(env!("CARGO"))
+            .args([
+                "tree",
+                "--locked",
+                "--offline",
+                "-p",
+                package,
+                "--all-features",
+                "--edges",
+                "normal",
+                "--prefix",
+                "none",
+                "--format",
+                "{p} features=[{f}]",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let graph = String::from_utf8(output.stdout).unwrap();
+        let valuation = graph
+            .lines()
+            .find(|line| line.starts_with("market-valuation "))
+            .expect("valuation dependency");
+        assert_eq!(
+            valuation.contains("portfolio"),
+            enabled,
+            "{package}: {valuation}"
+        );
+    }
+}

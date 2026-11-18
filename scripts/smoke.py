@@ -302,23 +302,16 @@ def main():
             )
         )
         assert len(call("/history/query", {"filters": query["filters"]})["data"]) == 1
-        # A SNAPSHOT continuation whose retained root expired is still a valid LIVE boundary.
-        probe = r"""
-    const q=JSON.parse(process.env.PUBLIC_QUERY),base=process.env.PUBLIC_URL;
-    const socket=new WebSocket(base.replace('http:','ws:')+'/ws');
-    const page=await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(Error('live boundary timed out')),5000);socket.onopen=()=>socket.send(JSON.stringify({type:'subscribe',id:'token',query:q}));socket.onmessage=e=>{const frame=JSON.parse(e.data);if(frame.type==='error')reject(Error(frame.error.message));if(frame.type==='page'){clearTimeout(timeout);resolve(frame.page);}};socket.onerror=reject;});
-    if(page.data[0].price!=='2.25')throw Error('Snapshot anchor was not reused in live mode');
-    socket.close();const response=await fetch(base+'/orders/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...q,page_token:page.next_page_token})});const next=await response.json();if(!response.ok||next.data[0].price!=='3.25')throw Error('Live anchor was not reused in snapshot mode');
-    """
+        # REST cursors remain reusable as live boundaries after their snapshot root expires.
+        live = call("/orders/query", dict(query, page_token=stale, consistency="live"))
+        assert live["data"][0]["price"] == "2.25"
+        assert call("/orders/query", dict(query, page_token=live["next_page_token"]))["data"][0]["price"] == "3.25"
+        # WebSockets use portable positions, not REST continuation tokens.
         subprocess.run(
-            ["node", "--input-type=module", "-e", probe],
-            env=dict(
-                base_env,
-                PUBLIC_QUERY=json.dumps(dict(query, page_token=stale)),
-                PUBLIC_URL=base,
-            ),
+            ["node", str(root / "scripts/window-probe.mjs")],
+            env=dict(base_env, PUBLIC_QUERY=json.dumps(query), PUBLIC_URL=base),
             check=True,
-            timeout=10,
+            timeout=30,
         )
         # Execution transitions and late backfills are indexed locally and remain durable offline.
         fixture("execute")
@@ -370,7 +363,7 @@ def main():
             )
         )
         print(
-            "Verified local REST/WebSocket reads, snapshot catch-up, price ranking, filters, shared tokens, persisted offline app restart, hub restart rebuild, terminal transitions and late execution backfills."
+            "Verified local REST/WebSocket reads, snapshot catch-up, price ranking, filters, portable window anchors and pause/resume, persisted offline app restart, hub restart rebuild, terminal transitions and late execution backfills."
         )
         print("Preview: " + base if args.keep else "Disposable services stopped.")
     except BaseException:

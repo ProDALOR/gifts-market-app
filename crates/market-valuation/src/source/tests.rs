@@ -152,6 +152,7 @@ async fn valuation_and_data_actor_queries_share_one_admission_budget() {
     data.task.run(stop).await.unwrap();
 }
 
+#[cfg(feature = "portfolio")]
 #[tokio::test]
 async fn exact_collection_lookup_ignores_a_directory_larger_than_the_catalog_response_budget() {
     use market_gifts::ModelLookup;

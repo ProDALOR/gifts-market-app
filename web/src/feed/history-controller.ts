@@ -2,8 +2,7 @@ import {
   request,
   ApiFailure,
   type HistoryQuery,
-  type Order,
-  type Page,
+  type OrderPage,
 } from "../market.ts";
 import { orderKey } from "../orderbook/order-activity.ts";
 import {
@@ -16,7 +15,7 @@ import {
 export class HistoryController implements FeedController {
   private stop = new AbortController();
   private state = emptyFeed();
-  private pages: Page<Order>[] = [];
+  private pages: OrderPage[] = [];
   private working = false;
   private wanted: number;
   ready = false;
@@ -56,7 +55,7 @@ export class HistoryController implements FeedController {
         const token = this.pages.at(-1)?.next_page_token || "";
         if (this.pages.length && !token) break;
         try {
-          const page = await request<Page<Order>>(
+          const page = await request<OrderPage>(
             "/history/query",
             { ...this.query, page_token: token },
             this.stop.signal,

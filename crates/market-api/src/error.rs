@@ -25,7 +25,31 @@ pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<std::sync::Arc<market_valuation::ValuationErrorDetails>>,
+    pub details: Option<std::sync::Arc<ValuationErrorDetails>>,
+}
+/// Gift API failure metadata. Portfolio-only evidence stays with portfolio operations.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ValuationErrorDetails {
+    pub strategy: market_valuation::StrategyId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency_id: Option<market_gifts::CurrencyId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_samples: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_samples: Option<u32>,
+}
+impl From<&market_valuation::ValuationErrorDetails> for ValuationErrorDetails {
+    fn from(value: &market_valuation::ValuationErrorDetails) -> Self {
+        Self {
+            strategy: value.strategy.clone(),
+            currency_id: value.currency_id.clone(),
+            revision: value.revision.clone(),
+            required_samples: value.required_samples,
+            available_samples: value.available_samples,
+        }
+    }
 }
 pub type Result<T> = std::result::Result<T, ApiError>;
 impl ApiError {
@@ -89,7 +113,9 @@ impl From<market_valuation::ValuationError> for ApiError {
         Self {
             code,
             message,
-            details: error.details().cloned(),
+            details: error
+                .details()
+                .map(|details| std::sync::Arc::new(details.as_ref().into())),
         }
     }
 }
@@ -252,4 +278,32 @@ pub(crate) fn normalize<B: 'static>(
         actix_web::dev::ServiceResponse::new(request, builder.json(ErrorResponse { error }))
             .map_into_right_body(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn public_valuation_errors_keep_gift_metadata_without_portfolio_evidence() {
+        // Works with both valuation feature sets, including workspace feature unification.
+        let details: market_valuation::ValuationErrorDetails =
+            serde_json::from_value(serde_json::json!({
+                "strategy":"gift_floor", "currency_id":"GRAM", "revision":"r1",
+                "required_samples":3, "available_samples":1,
+                "context":{"kind":"portfolio","unpriced":[]}
+            }))
+            .unwrap();
+        let error: super::ApiError = market_valuation::ValuationError::with_details(
+            market_valuation::ValuationErrorCode::NotEnoughData,
+            "Not enough data",
+            details,
+        )
+        .into();
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({
+                "code":"not_enough_data", "message":"Not enough data",
+                "details":{"strategy":"gift_floor", "currency_id":"GRAM", "revision":"r1", "required_samples":3, "available_samples":1}
+            })
+        );
+    }
 }

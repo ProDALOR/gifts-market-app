@@ -3,6 +3,8 @@ name = "market-valuation"
 version.workspace = true
 edition.workspace = true
 [features]
+default = []
+portfolio = []
 schema = ["dep:utoipa", "market-gifts/schema"]
 [dependencies]
 market-replica.workspace = true

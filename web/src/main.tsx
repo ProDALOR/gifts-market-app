@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { Order, TraitFilters, TraitKey, Query, FeedQuery } from "./market";
+import type { Order, TraitFilters, TraitKey, Sort, FeedQuery } from "./market";
 import { useCatalog } from "./catalog/use-catalog";
 import { useOrderFeed } from "./use-order-feed";
 import { useBackgroundPlaybackSuspension } from "./previews/use-playback";
@@ -23,7 +23,7 @@ type Choice = {
   currency: string;
   venue: string;
   mode: "ask" | "bid" | "executed";
-  sort: Exclude<NonNullable<Query["sort"]>, "identity">;
+  sort: Exclude<Sort, "identity">;
   min: string;
   max: string;
   from: string;

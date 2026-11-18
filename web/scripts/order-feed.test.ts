@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { createOrderFeed, type FeedState } from "../src/order-feed.ts";
 import { liveSocket } from "../src/live-socket.ts";
-import type { Order, Page, Query } from "../src/market.ts";
+import type { Order, OrderPage, FeedQuery } from "../src/market.ts";
 const sync = { ready: true, state: "live" as const, updated_at: null };
 const order = (id: string): Order => ({
   id,
@@ -16,18 +16,16 @@ const order = (id: string): Order => ({
     criteria: { models: [], backdrops: [], patterns: [], number: null },
   },
 });
-const page = (ids: string[], next = ""): Page<Order> => ({
+const page = (ids: string[], next = ""): OrderPage => ({
   data: ids.map(order),
   next_page_token: next,
   cursor: "r",
   sync,
 });
-const query: Query = {
+const query: Extract<FeedQuery, { kind: "orders" }>["query"] = {
   filters: { collection_id: "gift", currency_id: "GRAM" },
   side: "ask",
   sort: "price_asc",
-  limit: 50,
-  page_token: "",
 };
 const window = (ids: string[], before = false, after = true) => ({
   data: ids.map((id) => ({ ...order(id), position: `p.${id}` })),

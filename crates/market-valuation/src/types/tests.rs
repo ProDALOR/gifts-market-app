@@ -39,6 +39,7 @@ fn gift_valuation_lookup_accepts_slugs_or_catalog_identity_without_client_suppli
     }
 }
 
+#[cfg(feature = "portfolio")]
 #[test]
 fn valuation_validates_positive_positions_names_and_total_overflow() {
     use crate::{ModelPosition, ValuationRequest};
@@ -71,6 +72,7 @@ fn valuation_validates_positive_positions_names_and_total_overflow() {
     assert!(request.validate().is_err());
 }
 
+#[cfg(feature = "portfolio")]
 #[test]
 fn named_lookups_and_portfolios_share_the_same_name_validation() {
     use crate::{ModelPosition, ValuationRequest};
@@ -114,14 +116,20 @@ fn named_lookups_and_portfolios_share_the_same_name_validation() {
 
 #[test]
 fn valuation_strategy_ids_are_stable_validated_and_selection_is_required() {
-    use crate::{StrategyId, ValuationRequest};
+    use crate::StrategyId;
+    #[cfg(feature = "portfolio")]
     assert!(
-        serde_json::from_value::<ValuationRequest>(
+        serde_json::from_value::<crate::ValuationRequest>(
             serde_json::json!({"positions":[],"currency_id":"GRAM"})
         )
         .is_err()
     );
-    for id in ["model_floor", "collection_floor", "strategy_v2"] {
+    for id in [
+        "gift_floor",
+        "model_floor",
+        "collection_floor",
+        "strategy_v2",
+    ] {
         let parsed = StrategyId::new(id).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), id);
     }

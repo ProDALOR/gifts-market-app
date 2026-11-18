@@ -22,6 +22,7 @@ pub struct ValuationError {
     details: Option<Arc<ValuationErrorDetails>>,
     source: Option<Status>,
 }
+#[cfg(feature = "portfolio")]
 pub type Result<T> = std::result::Result<T, ValuationError>;
 impl ValuationError {
     fn new(code: ValuationErrorCode, message: impl Into<String>) -> Self {
@@ -112,7 +113,10 @@ mod tests {
     #[test]
     fn data_failures_keep_their_source_and_valuation_context() {
         let error = ValuationError::from(Status::resource_exhausted("read budget full"))
-            .with_context(StrategyId::model_floor(), "GRAM".into());
+            .with_context(
+                StrategyId::new(crate::gift_floor::METADATA.id).unwrap(),
+                "GRAM".into(),
+            );
         assert_eq!(error.code(), ValuationErrorCode::CapacityExceeded);
         assert_eq!(
             error
@@ -123,7 +127,10 @@ mod tests {
                 .code(),
             Code::ResourceExhausted
         );
-        assert_eq!(error.details().unwrap().strategy, StrategyId::model_floor());
+        assert_eq!(
+            error.details().unwrap().strategy,
+            StrategyId::new(crate::gift_floor::METADATA.id).unwrap()
+        );
         assert_eq!(
             error
                 .details()

@@ -10,7 +10,8 @@ use std::ops::Bound::{Excluded, Unbounded};
 enum Boundary {
     Current(Option<Key>),
     History(Option<Position>),
-    Price(Option<(String, Key)>),
+    // Accept pre-window price cursors while emitting one canonical ranked format.
+    #[serde(alias = "Price")]
     Ranked(Option<(String, Key)>),
     SortedHistory(Option<(String, Position)>),
 }
@@ -113,8 +114,6 @@ impl ReplicaReader {
                     } else {
                         Boundary::SortedHistory(None)
                     }
-                } else if filter.sort.is_price() {
-                    Boundary::Price(None)
                 } else if filter.sort != Sort::Identity {
                     Boundary::Ranked(None)
                 } else {
@@ -213,7 +212,7 @@ fn scan(
     let mut data = Vec::new();
     let mut bytes = 0;
     let rows: Box<dyn Iterator<Item = ScanRow<'_>> + '_> = match &boundary {
-        Boundary::Price(after) | Boundary::Ranked(after) if filter.sort != Sort::Identity => {
+        Boundary::Ranked(after) if filter.sort != Sort::Identity => {
             let after: Option<RankKey> = after
                 .as_ref()
                 .map(|(p, k)| Ok::<_, Status>(RankKey::new(state::decimal(p)?, k.clone())))
@@ -302,9 +301,6 @@ fn scan(
             data.push(entity.as_ref().clone());
         }
         boundary = match rank {
-            Some(price) if filter.sort.is_price() => {
-                Boundary::Price(Some((price.to_string(), key.clone())))
-            }
             Some(value) => Boundary::Ranked(Some((value.to_string(), key.clone()))),
             None => Boundary::Current(Some(key.clone())),
         };

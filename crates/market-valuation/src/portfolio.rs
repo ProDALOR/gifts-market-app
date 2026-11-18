@@ -1,5 +1,10 @@
 //! Explicit quantity-based portfolio floors, independent of the gift strategy.
+pub(crate) mod calculation;
+mod floors;
+mod types;
 use crate::{ValuationError, ValuationErrorCode, client::invoke};
+pub use floors::FloorActor;
+pub use types::*;
 
 use crate::*;
 use crate::{Handle, Mark};
