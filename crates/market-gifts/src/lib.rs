@@ -1,6 +1,7 @@
 //! Gift-market language shared by actors and transports. No hub, storage, HTTP or Telegram client dependencies.
 pub mod catalog;
 mod ids;
+pub mod inventory;
 pub mod media;
 mod money;
 pub mod orders;

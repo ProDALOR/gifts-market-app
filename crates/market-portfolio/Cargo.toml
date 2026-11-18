@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 description = "Queued portfolio actor with shared inventory and market valuation"
 [dependencies]
+market-valuation.workspace = true
 market-invocations.workspace = true
 market-gifts.workspace = true
 market-actors.workspace = true

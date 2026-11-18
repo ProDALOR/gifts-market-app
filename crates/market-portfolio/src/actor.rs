@@ -457,7 +457,6 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 actor.value = None;
                 let job = actor.values.remove(&completed_key).unwrap();
                 actor.queue.remove(&Work::Value(completed_key.clone()));
-                let result = result.map(Arc::new);
                 for id in job.waiters {
                     actor.finish(
                         id,

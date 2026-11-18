@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     runtime.start_replication(hub)?;
     #[cfg(feature = "bot")]
     if let Some(bot) = bot {
-        runtime.start_bot(market_telegram_bot::BotService::new(bot, runtime.handle()))?;
+        runtime.start_bot(bot)?;
     }
     runtime.start_api(api)?;
     let signal = tokio::select! {

@@ -106,6 +106,7 @@ impl MarketDataService {
                     )
                     .start();
                     MarketDataHandle {
+                        changes: reader.changes(),
                         orderbooks,
                         catalog,
                         subscriptions,

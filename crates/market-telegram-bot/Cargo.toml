@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 description = "Telegram command application over the market actor layer"
 [dependencies]
+market-portfolio.workspace = true
+market-valuation.workspace = true
 market-invocations.workspace = true
 market-telegram.workspace = true
 market-gifts.workspace = true
@@ -11,6 +13,7 @@ market-actors.workspace = true
 anyhow.workspace = true
 tokio-util.workspace = true
 [dev-dependencies]
+jiff.workspace = true
 market-replica.workspace = true
 tokio.workspace = true
 tempfile = "3"

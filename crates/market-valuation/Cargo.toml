@@ -1,0 +1,12 @@
+[package]
+name = "market-valuation"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+jiff.workspace = true
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+[lints]
+workspace = true

@@ -1954,6 +1954,7 @@ dependencies = [
  "market-gifts-hub",
  "market-hub-protocol",
  "market-replica",
+ "market-valuation",
  "prost",
  "rust_decimal",
  "serde",
@@ -2015,9 +2016,11 @@ dependencies = [
  "market-invocations",
  "market-media",
  "market-miniapp",
+ "market-portfolio",
  "market-replica",
  "market-telegram",
  "market-telegram-bot",
+ "market-valuation",
  "serde_json",
  "tempfile",
  "tokio",
@@ -2128,6 +2131,7 @@ dependencies = [
  "market-hub-protocol",
  "market-invocations",
  "market-replica",
+ "market-valuation",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -2180,11 +2184,14 @@ name = "market-telegram-bot"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "jiff",
  "market-actors",
  "market-gifts",
  "market-invocations",
+ "market-portfolio",
  "market-replica",
  "market-telegram",
+ "market-valuation",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -2206,6 +2213,15 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "market-valuation"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

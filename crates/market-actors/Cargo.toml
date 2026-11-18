@@ -3,6 +3,7 @@ name = "market-actors"
 version.workspace = true
 edition.workspace = true
 [dependencies]
+market-valuation.workspace = true
 market-gifts.workspace = true
 market-gifts-hub.workspace = true
 serde.workspace = true

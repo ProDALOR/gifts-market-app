@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 /// Process owner. Never construct this inside the HTTP-worker factory.
 pub struct MarketRuntime {
     handle: MarketDataHandle,
+    valuation: market_actors::valuation::ValuationHandle,
     supervisor: Arc<TaskSupervisor>,
     replication: Mutex<Option<market_replica::ReplicationWorker>>,
 }
@@ -30,6 +31,16 @@ impl MarketRuntime {
             stop.clone(),
         )
         .await?;
+        let valuation = market_valuation::Service::start(
+            market_actors::valuation::ModelFloorStrategy::new(data.handle.clone()),
+            Default::default(),
+        )?;
+        let valuation_stop = supervisor.token();
+        supervisor.spawn_critical(TaskKind::Valuation, async move {
+            valuation.task.run(valuation_stop).await.map_err(|error| {
+                tracing::error!(%error,"valuation actor stopped");
+            })
+        })?;
         supervisor.spawn_critical(TaskKind::MarketData, async move {
             if let Err(error) = data.task.run(stop).await {
                 tracing::error!(code=?error.code(),"market data actor stopped");
@@ -39,12 +50,16 @@ impl MarketRuntime {
         })?;
         Ok(Self {
             handle: data.handle,
+            valuation: valuation.handle,
             supervisor,
             replication: Mutex::new(Some(market.replication)),
         })
     }
     pub fn handle(&self) -> MarketDataHandle {
         self.handle.clone()
+    }
+    pub fn valuation(&self) -> market_actors::valuation::ValuationHandle {
+        self.valuation.clone()
     }
     pub fn start_replication(&self, hub: market_hub_client::HubClient) -> Result<()> {
         let replication = self
@@ -64,22 +79,59 @@ impl MarketRuntime {
             })
     }
     #[cfg(feature = "bot")]
-    pub fn start_bot(&self, bot: market_telegram_bot::BotService) -> Result<()> {
+    pub fn start_bot(&self, worker: market_telegram::TelegramWorker) -> Result<()> {
         let stop = self.supervisor.token();
+        let data = self.handle();
+        let valuation = self.valuation();
         self.supervisor.spawn_optional(TaskKind::Bot, async move {
+            use futures_util::FutureExt;
+            use std::panic::AssertUnwindSafe;
             let invocations =
                 market_invocations::Runtime::start(Default::default()).map_err(|error| {
-                    tracing::error!(%error,"invocation scheduler failed to start");
+                    tracing::error!(%error, "invocation runtime failed");
                 })?;
-            let result = bot.run_with_invocations(stop, invocations.handle()).await;
+            let portfolio = market_portfolio::PortfolioService::start(
+                crate::portfolio::TelegramInventoryProvider(worker.inventory()),
+                valuation.clone(),
+                Default::default(),
+                invocations.handle(),
+            )
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "portfolio actor failed to start");
+            })?;
+            let bot =
+                market_telegram_bot::BotService::new(worker, data, portfolio.handle, valuation);
+            let group = stop.child_token();
+            let bot_work =
+                AssertUnwindSafe(bot.run_with_invocations(group.clone(), invocations.handle()))
+                    .catch_unwind();
+            let portfolio_work = AssertUnwindSafe(portfolio.task.run(group.clone())).catch_unwind();
+            tokio::pin!(bot_work, portfolio_work);
+            // Stop and join both consumers before the shared invocation runtime, including panics.
+            let (bot_result, portfolio_result) = tokio::select! {
+                result = &mut bot_work => { group.cancel(); (result, portfolio_work.await) },
+                result = &mut portfolio_work => { group.cancel(); (bot_work.await, result) },
+            };
             invocations.shutdown().await;
-            if let Err(error) = result {
-                tracing::error!(%error, "bot worker stopped");
-                return Err(());
-            }
-            Ok(())
+            let bot_result = bot_result
+                .map_err(|_| {
+                    tracing::error!("bot worker panicked");
+                })?
+                .map_err(|error| {
+                    tracing::error!(%error, "bot worker stopped");
+                });
+            let portfolio_result = portfolio_result
+                .map_err(|_| {
+                    tracing::error!("portfolio supervisor panicked");
+                })?
+                .map_err(|error| {
+                    tracing::error!(%error, "portfolio actor stopped");
+                });
+            bot_result.and(portfolio_result)
         })
     }
+
     #[cfg(feature = "bot")]
     pub fn start_media_warmup(&self, cache: market_media::MediaCache) -> Result<()> {
         let data = self.handle();
@@ -136,5 +188,31 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+    #[cfg(feature = "bot")]
+    #[tokio::test]
+    async fn shutdown_joins_bot_and_portfolio_before_opening_cancelled_transport() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = MarketRuntime::open(&directory.path().join("replica"), "test", 1, 1)
+            .await
+            .unwrap();
+        let worker = market_telegram::TelegramWorker::new(market_telegram::BotConfig {
+            credentials: market_telegram::BotCredentials::new(
+                "42:private_test_secret".into(),
+                12345,
+                "0123456789abcdef0123456789abcdef".into(),
+            )
+            .unwrap(),
+            public_url: None,
+            data_dir: directory.path().join("telegram"),
+        })
+        .unwrap();
+        runtime.start_bot(worker).unwrap();
+        runtime.begin_shutdown().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), runtime.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!directory.path().join("telegram").exists());
     }
 }

@@ -36,6 +36,7 @@ pub struct MtProtoActions {
     exited: CancellationToken,
     invocations: Executor,
     documents: super::media::Documents,
+    inventory: Option<(super::gifts::InventoryClient, Arc<super::gifts::Live>)>,
 }
 pub struct MtProtoTransport {
     actions: MtProtoActions,
@@ -76,6 +77,7 @@ impl MtProtoTransport {
                 credentials,
                 exited,
                 documents: super::media::Documents::default(),
+                inventory: None,
             },
             updates: Some(pool.updates),
             stream: None,
@@ -83,11 +85,27 @@ impl MtProtoTransport {
             runner: Some(runner),
         }
     }
+    pub fn bind_inventory(
+        &mut self,
+        inventory: super::gifts::InventoryClient,
+    ) -> Result<(), BotError> {
+        inventory.bind(self.actions.credentials.bot_id())?;
+        let live = Arc::new(super::gifts::Live {
+            client: self.actions.client.clone(),
+            session: self.actions.session.clone(),
+            executor: self.actions.invocations.clone(),
+        });
+        self.actions.inventory = Some((inventory, live));
+        Ok(())
+    }
     pub fn stopped(&self) -> CancellationToken {
         self.actions.exited.clone()
     }
     pub async fn close(mut self) -> Result<(), BotError> {
         self.actions.exited.cancel();
+        if let Some((client, live)) = &self.actions.inventory {
+            client.clear(live);
+        }
         self.handle.quit();
         let runner = self.runner.as_mut().ok_or(BotError::Runner)?;
         match tokio::time::timeout(std::time::Duration::from_secs(5), &mut *runner).await {
@@ -112,6 +130,9 @@ impl MtProtoActions {
 impl Drop for MtProtoTransport {
     fn drop(&mut self) {
         self.actions.exited.cancel();
+        if let Some((client, live)) = &self.actions.inventory {
+            client.clear(live);
+        }
         self.handle.quit();
         if let Some(runner) = self.runner.take() {
             runner.abort();
@@ -119,7 +140,6 @@ impl Drop for MtProtoTransport {
     }
 }
 impl TelegramActions for MtProtoActions {
-    type GiftSource = super::gifts::TelegramGifts;
     async fn media(
         &self,
         key: market_media::MediaKey,
@@ -128,13 +148,6 @@ impl TelegramActions for MtProtoActions {
             return Err(market_media::MediaError::Unavailable);
         }
         super::media::get(&self.client, &self.invocations, &self.documents, key).await
-    }
-    fn gift_source(&self, message: &Message) -> Self::GiftSource {
-        super::gifts::TelegramGifts {
-            client: self.client.clone(),
-            peer: message.peer,
-            invocations: self.invocations.clone(),
-        }
     }
     async fn identity(&self) -> Result<BotUser, BotError> {
         let client = self.client.clone();
@@ -191,7 +204,11 @@ impl TelegramActions for MtProtoActions {
                 .await
                 .map_err(CallError::bot)?
         };
-        identity(user, self.credentials.bot_id())
+        let identity = identity(user, self.credentials.bot_id())?;
+        if let Some((client, live)) = &self.inventory {
+            client.publish(live.clone());
+        }
+        Ok(identity)
     }
     async fn configure(
         &self,

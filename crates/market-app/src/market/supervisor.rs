@@ -8,6 +8,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum TaskKind {
     MarketData,
+    Valuation,
     Replication,
     #[cfg(feature = "bot")]
     Bot,

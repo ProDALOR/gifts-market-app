@@ -1,125 +1,190 @@
-//! TL profile-gift mapping. No market catalog or actor types cross this adapter.
-use super::client::rpc;
-use super::invocations::CallError;
-use super::invocations::{Executor, Group};
-use crate::{
-    GiftRelation, GiftSource, InventoryError, ProfileGift, SkipReason, VisibleInventory,
-    inventory::{InventoryPage, collect},
+//! One-page Telegram inventory operations. Pagination and caching belong to the portfolio actor.
+use super::{
+    client::rpc,
+    invocations::{Executor, Group, policy},
+    session_store::DurableSession,
 };
+use crate::BotCredentials;
 use grammers_client::{Client, tl};
-use grammers_session::types::PeerRef;
+use grammers_session::{Session, types::PeerId};
+use market_gifts::inventory::*;
 use market_gifts::{TelegramDocumentId, TelegramGiftId};
-use market_invocations::{Error, Invocation, InvocationExt, Options, Priority, Replay};
-use std::collections::BTreeMap;
-use std::time::Duration;
+use market_invocations::{AttemptError, Invocation, Policy, Replay, Retry};
+use std::{collections::BTreeMap, sync::Arc};
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
-pub struct TelegramGifts {
-    pub(super) client: Client,
-    pub(super) peer: PeerRef,
-    pub(super) invocations: Executor,
+pub(super) struct Live {
+    pub client: Client,
+    pub session: Arc<DurableSession>,
+    pub executor: Executor,
 }
-impl GiftSource for TelegramGifts {
-    async fn inventory(&self) -> Result<VisibleInventory, InventoryError> {
-        collect(|offset| async move {
-            let operation = self.page_operation(offset, 100)?;
-            self.invocations
-                .handle
-                .submit(
-                    operation,
-                    Options {
-                        priority: Priority::Normal,
-                        timeout: Duration::from_secs(30),
-                        cancellation: self.invocations.stopped.clone(),
-                    },
-                )
-                .map_err(|_| InventoryError::Unavailable)?
-                .await
-                .map_err(|e| match e {
-                    Error::Operation(error) => error,
-                    Error::Runtime(error) => inventory_error(CallError::Runtime(error).bot()),
-                })
-        })
-        .await
+/// Stable capability for the authenticated bot's cached peers, refreshed after every login.
+/// Callers must authorize the subject before requesting pages; this does not resolve usernames.
+#[derive(Clone)]
+pub struct InventoryClient {
+    account: u64,
+    live: Arc<watch::Sender<Option<Arc<Live>>>>,
+}
+impl InventoryClient {
+    pub fn new(credentials: &BotCredentials) -> Self {
+        Self {
+            account: credentials.bot_id(),
+            live: Arc::new(watch::channel(None).0),
+        }
     }
-}
-impl TelegramGifts {
-    /// An unsubmitted, replayable page operation. Submit it to the shared invocation handle.
-    /// Adapters can map native page data with `InvocationExt` while preserving rate policy.
+    pub(super) fn bind(&self, account: u64) -> Result<(), crate::BotError> {
+        if self.account == account {
+            Ok(())
+        } else {
+            Err(crate::BotError::Configuration(
+                "Inventory client belongs to another bot",
+            ))
+        }
+    }
+    pub(super) fn publish(&self, live: Arc<Live>) {
+        self.live.send_replace(Some(live));
+    }
+    pub(super) fn clear(&self, live: &Arc<Live>) {
+        self.live.send_if_modified(|current| {
+            if current
+                .as_ref()
+                .is_some_and(|value| Arc::ptr_eq(value, live))
+            {
+                *current = None;
+                true
+            } else {
+                false
+            }
+        });
+    }
     pub fn page_operation(
         &self,
+        user: u64,
         offset: String,
-        limit: u8,
-    ) -> Result<
-        impl Invocation<Output = InventoryPage, Error = InventoryError> + use<>,
-        InventoryError,
-    > {
-        if !(1..=100).contains(&limit) || offset.len() > 4096 {
-            return Err(InventoryError::Unavailable);
-        }
-        let request = tl::functions::payments::GetSavedStarGifts {
-            exclude_unsaved: false,
-            exclude_saved: false,
-            exclude_unlimited: false,
-            exclude_unique: false,
-            sort_by_value: false,
-            exclude_upgradable: false,
-            exclude_unupgradable: false,
-            peer_color_available: false,
-            exclude_hosted: false,
-            peer: self.peer.into(),
-            collection_id: None,
+        limit: usize,
+    ) -> impl Invocation<Output = InventoryPage, Error = InventoryError> + use<> {
+        Page {
+            live: self.live.borrow().clone(),
+            user,
             offset,
-            limit: i32::from(limit),
+            limit,
+            policy: policy(self.account, Group::Gifts(user), Replay::Safe),
+        }
+    }
+}
+struct Page {
+    live: Option<Arc<Live>>,
+    user: u64,
+    offset: String,
+    limit: usize,
+    policy: Policy,
+}
+impl Invocation for Page {
+    type Output = InventoryPage;
+    type Error = InventoryError;
+    fn policy(&self) -> Policy {
+        self.policy.clone()
+    }
+    fn cancellation(&self) -> Option<CancellationToken> {
+        self.live.as_ref().map(|live| live.executor.stopped.clone())
+    }
+    async fn execute(&self) -> Result<InventoryPage, AttemptError<InventoryError>> {
+        let permanent = |error| AttemptError {
+            error,
+            retry: Retry::Never,
         };
-        let client = self.client.clone();
-        let request = std::sync::Arc::new(request);
-        let owner = self.peer.id.bare_id();
-        Ok(self
-            .invocations
-            .operation(Group::Gifts, Replay::Safe, move || {
-                let client = client.clone();
-                let request = request.clone();
-                async move { client.invoke(&*request).await }
-            })
-            .map(
-                move |response| map_page(response, owner),
-                |error| inventory_error(rpc(error)),
+        if self.limit == 0
+            || self.limit > 100
+            || self.offset.len() > 4096
+            || self.user == 0
+            || self.user > i64::MAX as u64
+        {
+            return Err(permanent(InventoryError::InvalidData(
+                "invalid inventory page request".into(),
+            )));
+        }
+        let live = self
+            .live
+            .as_ref()
+            .ok_or_else(|| permanent(InventoryError::Unavailable))?;
+        let user = PeerId::user(self.user as i64).ok_or_else(|| {
+            permanent(InventoryError::InvalidData(
+                "invalid Telegram user ID".into(),
             ))
-    }
-}
-fn inventory_error(error: crate::BotError) -> InventoryError {
-    match error {
-        crate::BotError::Authorization => InventoryError::Authorization,
-        crate::BotError::RetryAfter(seconds) => InventoryError::RetryAfter(seconds),
-        crate::BotError::Rpc(400 | 403) | crate::BotError::PeerUnavailable => {
-            InventoryError::Forbidden
+        })?;
+        let peer = live
+            .session
+            .peer_ref(user)
+            .await
+            .map_err(|_| permanent(InventoryError::Unavailable))?
+            .ok_or_else(|| permanent(InventoryError::Forbidden))?;
+        let client = live.client.clone();
+        let offset = self.offset.clone();
+        let limit = self.limit as i32;
+        let response = live
+            .executor
+            .operation(Group::Gifts(self.user), Replay::Safe, move || {
+                let client = client.clone();
+                let offset = offset.clone();
+                async move {
+                    client
+                        .invoke(&tl::functions::payments::GetSavedStarGifts {
+                            exclude_unsaved: false,
+                            exclude_saved: false,
+                            exclude_unlimited: false,
+                            exclude_unique: false,
+                            sort_by_value: false,
+                            exclude_upgradable: false,
+                            exclude_unupgradable: false,
+                            peer_color_available: false,
+                            exclude_hosted: false,
+                            peer: peer.into(),
+                            collection_id: None,
+                            offset,
+                            limit,
+                        })
+                        .await
+                }
+            })
+            .execute()
+            .await
+            .map_err(|failure| AttemptError {
+                retry: failure.retry,
+                error: match rpc(failure.error) {
+                    crate::BotError::Authorization => InventoryError::Authorization,
+                    crate::BotError::RetryAfter(seconds) => {
+                        InventoryError::RetryAfter(std::time::Duration::from_secs(seconds))
+                    }
+                    crate::BotError::Rpc(400 | 403) | crate::BotError::PeerUnavailable => {
+                        InventoryError::Forbidden
+                    }
+                    _ => InventoryError::Unavailable,
+                },
+            })?;
+        let tl::enums::payments::SavedStarGifts::Gifts(response) = response;
+        let mut page = InventoryPage {
+            gifts: vec![],
+            regular_gifts: 0,
+            skipped: BTreeMap::new(),
+            scanned: response.gifts.len(),
+            reported_total: usize::try_from(response.count).ok(),
+            next_cursor: response.next_offset,
+        };
+        for gift in response.gifts {
+            match map_gift(gift, Some(self.user as i64)) {
+                Ok(Some(gift)) => page.gifts.push(gift),
+                Ok(None) => page.regular_gifts += 1,
+                Err(reason) => *page.skipped.entry(reason).or_default() += 1,
+            }
         }
-        _ => InventoryError::Unavailable,
+        Ok(page)
     }
-}
-fn map_page(response: tl::enums::payments::SavedStarGifts, owner: Option<i64>) -> InventoryPage {
-    let tl::enums::payments::SavedStarGifts::Gifts(response) = response;
-    let mut page = InventoryPage {
-        gifts: vec![],
-        regular: 0,
-        skipped: BTreeMap::new(),
-        scanned: response.gifts.len(),
-        total: usize::try_from(response.count).ok(),
-        next: response.next_offset,
-    };
-    for saved in response.gifts {
-        match map_gift(saved, owner) {
-            Ok(Some(gift)) => page.gifts.push(gift),
-            Ok(None) => page.regular += 1,
-            Err(reason) => *page.skipped.entry(reason).or_default() += 1,
-        }
-    }
-    page
 }
 fn map_gift(
     saved: tl::enums::SavedStarGift,
     user_id: Option<i64>,
-) -> Result<Option<ProfileGift>, SkipReason> {
+) -> Result<Option<InventoryGift>, SkipReason> {
     let tl::enums::SavedStarGift::Gift(saved) = saved;
     if saved.refunded {
         return Err(SkipReason::Refunded);
@@ -150,8 +215,12 @@ fn map_gift(
         })
         .and_then(|id| TelegramDocumentId::new(id).ok())
         .ok_or(SkipReason::MissingModel)?;
-    Ok(Some(ProfileGift {
-        id: gift.id,
+    Ok(Some(InventoryGift {
+        id: gift
+            .id
+            .to_string()
+            .try_into()
+            .map_err(|_| SkipReason::MissingGiftId)?,
         collection_id,
         model_document_id: model,
         relation,
@@ -291,5 +360,90 @@ mod tests {
             profile_relation(None, None, true, Some(7)),
             Err(SkipReason::OtherProfile)
         );
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+    use grammers_client::sender::SenderPool;
+    use tokio_util::task::TaskTracker;
+    #[tokio::test]
+    async fn reconnect_replaces_the_inventory_capability_and_old_cleanup_cannot_remove_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let jobs = TaskTracker::new();
+        let store =
+            super::super::session_store::SessionStore::open(directory.path(), 42, 12345, &jobs)
+                .await
+                .unwrap();
+        let runtime = market_invocations::Runtime::start(Default::default()).unwrap();
+        let credentials = crate::tests::credentials();
+        let inventory = InventoryClient::new(&credentials);
+        let live = || {
+            let pool = SenderPool::new(store.session.clone(), 12345);
+            Arc::new(Live {
+                client: Client::new(pool.handle),
+                session: store.session.clone(),
+                executor: Executor {
+                    handle: runtime.handle(),
+                    account: 42,
+                    stopped: CancellationToken::new(),
+                },
+            })
+        };
+        assert!(matches!(
+            inventory
+                .page_operation(7, String::new(), 100)
+                .execute()
+                .await
+                .unwrap_err()
+                .error,
+            InventoryError::Unavailable
+        ));
+        let first = live();
+        inventory.publish(first.clone());
+        let old = inventory.page_operation(7, String::new(), 100);
+        let second = live();
+        inventory.publish(second.clone());
+        first.executor.stopped.cancel();
+        inventory.clear(&first);
+        assert!(old.cancellation().unwrap().is_cancelled());
+        assert!(Arc::ptr_eq(
+            inventory.live.borrow().as_ref().unwrap(),
+            &second
+        ));
+        let page = inventory.page_operation(7, String::new(), 100);
+        // Unknown subjects fail locally; no peer resolution or RPC is performed.
+        assert_eq!(
+            page.execute().await.unwrap_err().error,
+            InventoryError::Forbidden
+        );
+        assert_eq!(
+            inventory
+                .page_operation(0, String::new(), 100)
+                .execute()
+                .await
+                .unwrap_err()
+                .error,
+            InventoryError::InvalidData("invalid inventory page request".into())
+        );
+        assert_eq!(
+            inventory
+                .page_operation(i64::MAX as u64, String::new(), 100)
+                .execute()
+                .await
+                .unwrap_err()
+                .error,
+            InventoryError::InvalidData("invalid Telegram user ID".into())
+        );
+        inventory.clear(&second);
+        assert!(inventory.live.borrow().is_none());
+        drop(page);
+        drop(old);
+        drop(first);
+        drop(second);
+        runtime.shutdown().await;
+        jobs.close();
+        jobs.wait().await;
     }
 }

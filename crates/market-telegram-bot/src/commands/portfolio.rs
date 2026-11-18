@@ -1,63 +1,39 @@
 use super::{Reply, render};
-use market_actors::MarketDataHandle;
-use market_gifts::{
-    CurrencyId,
-    valuation::{ModelLookup, ModelPosition, ValuationRequest},
+use market_portfolio::{
+    InventoryError, PortfolioError, PortfolioHandle, PortfolioRequest, Priority, UserId,
 };
-use market_telegram::{BotError, GiftSource, InventoryError, ProfileGift};
-fn position(gift: &ProfileGift) -> ModelPosition {
-    ModelPosition {
-        model: ModelLookup::Telegram {
-            gift_id: gift.collection_id,
-            document_id: gift.model_document_id,
-        },
-        quantity: 1,
-    }
-}
-pub(super) async fn execute<S: GiftSource>(
-    market: &MarketDataHandle,
-    source: &S,
-    currency: CurrencyId,
+use market_telegram::BotError;
+pub(super) async fn execute(
+    service: &PortfolioHandle,
+    user: u64,
+    currency: market_gifts::CurrencyId,
 ) -> Result<Reply, BotError> {
-    let inventory = match source.inventory().await {
-        Ok(inventory) => inventory,
-        Err(InventoryError::Authorization) => return Err(BotError::Authorization),
-        Err(error) => return Ok(render::inventory_error(error)),
-    };
-    let positions = inventory.gifts.iter().map(position).collect();
-    Ok(
-        match market
-            .value_models(ValuationRequest {
-                positions,
-                currency_id: currency,
-            })
-            .await
-        {
-            Ok(value) => render::portfolio(value, &inventory),
-            Err(error) => render::error_reply(error),
-        },
-    )
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use market_gifts::{TelegramDocumentId, TelegramGiftId};
-    use market_telegram::GiftRelation;
-    #[test]
-    fn telegram_identifiers_become_explicit_catalog_aliases_only_in_the_service() {
-        let position = position(&ProfileGift {
-            id: 1,
-            collection_id: TelegramGiftId::new(42).unwrap(),
-            model_document_id: TelegramDocumentId::new(99).unwrap(),
-            relation: GiftRelation::Hosted,
-        });
-        assert_eq!(
-            position.model,
-            ModelLookup::Telegram {
-                gift_id: TelegramGiftId::new(42).unwrap(),
-                document_id: TelegramDocumentId::new(99).unwrap()
-            }
-        );
-        assert_eq!(position.quantity, 1);
+    let user = UserId::new(user).map_err(|_| BotError::InvalidResponse)?;
+    match service
+        .request(PortfolioRequest {
+            user,
+            currency_id: currency,
+            priority: Priority::Interactive,
+        })
+        .await
+    {
+        Ok(portfolio) => Ok(render::portfolio(
+            &portfolio.valuation,
+            &portfolio.inventory,
+        )),
+        Err(PortfolioError::Inventory(InventoryError::Authorization)) => {
+            Err(BotError::Authorization)
+        }
+        Err(PortfolioError::Inventory(error)) => Ok(render::inventory_error(error)),
+        Err(PortfolioError::Valuation(error)) => Ok(render::error_reply(error)),
+        Err(PortfolioError::Busy) => Ok(Reply {
+            text: "Portfolio requests are busy. Please try again shortly.".into(),
+        }),
+        Err(PortfolioError::TimedOut) => Ok(Reply {
+            text: "Your portfolio read timed out. Please try again shortly.".into(),
+        }),
+        Err(_) => Ok(Reply {
+            text: "Portfolio service is unavailable. Please try again shortly.".into(),
+        }),
     }
 }

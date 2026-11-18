@@ -1,9 +1,9 @@
 use super::{FloorQuery, Reply, render};
-use market_actors::MarketDataHandle;
+use market_actors::valuation::ValuationHandle;
 use market_gifts::valuation::{ModelPosition, ValuationRequest};
-pub(super) async fn execute(market: &MarketDataHandle, query: FloorQuery) -> Reply {
+pub(super) async fn execute(market: &ValuationHandle, query: FloorQuery) -> Reply {
     match market
-        .value_models(ValuationRequest {
+        .mark(ValuationRequest {
             positions: vec![ModelPosition {
                 model: query.model,
                 quantity: 1,
@@ -12,7 +12,7 @@ pub(super) async fn execute(market: &MarketDataHandle, query: FloorQuery) -> Rep
         })
         .await
     {
-        Ok(value) => render::floor(value),
-        Err(error) => render::error_reply(error),
+        Ok(value) => render::floor(&value),
+        Err(error) => render::valuation_error(error),
     }
 }

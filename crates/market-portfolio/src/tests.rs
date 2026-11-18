@@ -104,14 +104,17 @@ struct Quotes {
     errors: Arc<Mutex<VecDeque<DataError>>>,
 }
 impl ValuationProvider for Quotes {
-    async fn value_models(&self, request: ValuationRequest) -> Result<Valuation, DataError> {
+    async fn value_models(
+        &self,
+        request: ValuationRequest,
+    ) -> Result<Arc<market_valuation::Mark<Valuation>>, DataError> {
         let mut calls = self.calls.lock().unwrap();
         calls.push(request.clone());
         if let Some(error) = self.errors.lock().unwrap().pop_front() {
             return Err(error);
         }
         let count: u32 = request.positions.iter().map(|p| p.quantity).sum();
-        Ok(Valuation {
+        let value = Valuation {
             rows: request
                 .positions
                 .iter()
@@ -136,7 +139,17 @@ impl ValuationProvider for Quotes {
                 state: SyncState::Live,
                 updated_at: None,
             },
-        })
+        };
+        Ok(Arc::new(market_valuation::Mark::evaluated(
+            market_valuation::Evaluation {
+                revision: value.cursor.clone(),
+                coverage: market_valuation::Coverage {
+                    priced: value.priced,
+                    unpriced: value.unpriced,
+                },
+                value,
+            },
+        )))
     }
 }
 fn user(id: u64) -> UserId {
@@ -834,7 +847,10 @@ async fn coalesces_same_currency_valuation_and_keeps_hanging_reads_bounded() {
         release: Arc<tokio::sync::Notify>,
     }
     impl ValuationProvider for Slow {
-        async fn value_models(&self, request: ValuationRequest) -> Result<Valuation, DataError> {
+        async fn value_models(
+            &self,
+            request: ValuationRequest,
+        ) -> Result<Arc<market_valuation::Mark<Valuation>>, DataError> {
             self.calls.lock().unwrap().push(request.clone());
             self.release.notified().await;
             Quotes::default().value_models(request).await
@@ -968,9 +984,14 @@ async fn real_market_actors_supply_exact_model_floor_values() {
         .await
         .unwrap();
     let source = Source::default();
+    let valuation = market_valuation::Service::start(
+        market_actors::valuation::ModelFloorStrategy::new(market.handle.clone()),
+        Default::default(),
+    )
+    .unwrap();
     let portfolio = PortfolioService::start(
         source.clone(),
-        market.handle.clone(),
+        valuation.handle.clone(),
         PortfolioConfig::default(),
         invocations.handle(),
     )
@@ -993,7 +1014,10 @@ async fn real_market_actors_supply_exact_model_floor_values() {
     );
     assert_eq!(value.valuation.cursor, "portfolio-view");
     assert_eq!(value.inventory.gifts.len(), 2);
+    assert_eq!(value.valuation.revision, "portfolio-view");
+    assert_eq!(value.valuation.coverage.priced, 2);
     portfolio.task.shutdown().await.unwrap();
+    valuation.task.shutdown().await.unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
     market.task.run(stop).await.unwrap();
@@ -1085,7 +1109,10 @@ async fn refreshed_inventory_does_not_join_valuation_of_an_expired_snapshot() {
         release: Arc<tokio::sync::Notify>,
     }
     impl ValuationProvider for Slow {
-        async fn value_models(&self, request: ValuationRequest) -> Result<Valuation, DataError> {
+        async fn value_models(
+            &self,
+            request: ValuationRequest,
+        ) -> Result<Arc<market_valuation::Mark<Valuation>>, DataError> {
             self.calls.lock().unwrap().push(request.clone());
             self.release.notified().await;
             Quotes::default().value_models(request).await

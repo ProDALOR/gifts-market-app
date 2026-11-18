@@ -65,6 +65,8 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-telegram",
                 "market-telegram-bot",
                 "market-invocations",
+                "market-portfolio",
+                "market-valuation",
             ],
         ),
         (
@@ -89,9 +91,15 @@ fn production_dependencies_follow_the_service_boundaries() {
             &["market-gifts", "market-media", "market-invocations"],
         ),
         ("market-invocations", &[]),
+        ("market-valuation", &[]),
         (
             "market-portfolio",
-            &["market-gifts", "market-actors", "market-invocations"],
+            &[
+                "market-gifts",
+                "market-actors",
+                "market-invocations",
+                "market-valuation",
+            ],
         ),
         (
             "market-telegram-bot",
@@ -100,6 +108,8 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-actors",
                 "market-gifts",
                 "market-invocations",
+                "market-portfolio",
+                "market-valuation",
             ],
         ),
         ("market-media", &[]),
@@ -111,6 +121,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-gifts-hub",
                 "market-replica",
                 "market-hub-protocol",
+                "market-valuation",
             ],
         ),
         ("market-gifts", &[]),
@@ -129,7 +140,10 @@ fn production_dependencies_follow_the_service_boundaries() {
             .iter()
             .find(|package| package["name"] == *name)
             .unwrap();
-        if matches!(*name, "market-telegram-bot" | "market-invocations") {
+        if matches!(
+            *name,
+            "market-telegram-bot" | "market-invocations" | "market-valuation"
+        ) {
             assert!(
                 !package["dependencies"]
                     .as_array()
@@ -141,7 +155,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                                 .as_str()
                                 .is_some_and(|name| name.starts_with("grammers-"))
                     }),
-                "bot application must use native Telegram contracts instead of grammers"
+                "{name} must remain independent of grammers"
             );
         }
         let dependencies: BTreeSet<_> = package["dependencies"]

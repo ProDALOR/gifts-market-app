@@ -17,11 +17,16 @@ use tokio::sync::watch;
 use tonic::Status;
 #[derive(Clone)]
 pub struct MarketDataHandle {
+    pub(crate) changes: watch::Receiver<u64>,
     pub(crate) orderbooks: OrderbooksHandle,
     pub(crate) catalog: CatalogHandle,
     pub(crate) subscriptions: Addr<UserSubscriptionsActor>,
 }
 impl MarketDataHandle {
+    pub fn changes(&self) -> watch::Receiver<u64> {
+        self.changes.clone()
+    }
+
     pub async fn value_models(
         &self,
         request: market_gifts::valuation::ValuationRequest,

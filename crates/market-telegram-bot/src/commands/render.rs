@@ -1,11 +1,11 @@
 use super::{CommandKind, Reply};
 use market_actors::error::DataError;
+use market_gifts::inventory::{
+    GiftRelation, InventoryCompletion, InventoryError, InventorySnapshot, PartialReason,
+};
 use market_gifts::{
     SyncState,
     valuation::{UnpricedReason, Valuation},
-};
-use market_telegram::{
-    GiftRelation, InventoryCompletion, InventoryError, PartialReason, VisibleInventory,
 };
 pub(super) fn error_reply(error: DataError) -> Reply {
     use market_actors::error::DataErrorCode;
@@ -34,17 +34,18 @@ fn label(value: &str) -> String {
         text
     }
 }
-pub(super) fn floor(value: Valuation) -> Reply {
+pub(super) fn floor(mark: &market_valuation::Mark<Valuation>) -> Reply {
+    let value = &mark.value;
     let row = &value.rows[0];
     let text = if let Some(price) = &row.floor {
         format!(
-            "{} · {}\nModel floor: {} {}\nLowest current ask across loaded venues ({}).{}",
+            "{} · {}\nModel floor: {} {}\nLowest ask at valuation across loaded venues ({}).{}",
             label(&row.collection),
             label(&row.model),
             price,
             label(&value.currency_id),
             label(row.venue_id.as_deref().unwrap_or("market")),
-            freshness(&value)
+            freshness(value)
         )
     } else {
         let detail = match row.unpriced {
@@ -65,12 +66,21 @@ pub(super) fn floor(value: Valuation) -> Reply {
             label(&row.collection),
             label(&row.model),
             detail,
-            freshness(&value)
+            freshness(value)
         )
     };
-    Reply { text }
+    Reply {
+        text: format!(
+            "{text}\nValued at: {}",
+            mark.evaluated_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        ),
+    }
 }
-pub(super) fn portfolio(value: Valuation, inventory: &VisibleInventory) -> Reply {
+pub(super) fn portfolio(
+    mark: &market_valuation::Mark<Valuation>,
+    inventory: &InventorySnapshot,
+) -> Reply {
+    let value = &mark.value;
     let regular = inventory.regular_gifts;
     let unsupported = inventory.skipped_count();
     let mut text = format!(
@@ -117,9 +127,7 @@ pub(super) fn portfolio(value: Valuation, inventory: &VisibleInventory) -> Reply
     }
     if let InventoryCompletion::Partial(reason) = &inventory.completion {
         let detail = match reason {
-            PartialReason::NotRead => "inventory was not read",
             PartialReason::LimitReached => "read limit reached",
-            PartialReason::TimedOut => "Telegram read timed out",
             PartialReason::MissingCursor => {
                 "Telegram returned fewer gifts than advertised without a continuation cursor"
             }
@@ -146,9 +154,13 @@ pub(super) fn portfolio(value: Valuation, inventory: &VisibleInventory) -> Reply
         text.push_str("\nUnpriced gifts are excluded from the estimate.");
     }
     text.push_str(
-        "\nBased on current asks, without fees. Only gifts Telegram makes visible to this bot are included.",
+        "\nBased on asks at valuation time, without fees. Only gifts Telegram makes visible to this bot are included.",
     );
-    text.push_str(freshness(&value));
+    text.push_str(&format!(
+        "\nValued at: {}",
+        mark.evaluated_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+    ));
+    text.push_str(freshness(value));
     Reply { text }
 }
 
@@ -170,8 +182,8 @@ pub(super) fn inventory_error(error: InventoryError) -> Reply {
     Reply{text:match error {
         InventoryError::Authorization=>"Telegram authorization failed.".into(),
         InventoryError::Forbidden=>"Telegram did not allow this bot to read your profile gifts. Your portfolio could not be valued.".into(),
-        InventoryError::RetryAfter(seconds)=>format!("Telegram requested a wait. Please try /portfolio again in {seconds} seconds."),
-        InventoryError::Unavailable=>"Your visible gifts could not be read from Telegram. Please try again shortly.".into(),
+        InventoryError::RetryAfter(delay)=>format!("Telegram requested a wait. Please try /portfolio again in {} seconds.", delay.as_secs().saturating_add(u64::from(delay.subsec_nanos()>0))),
+        InventoryError::InvalidData(_)|InventoryError::Unavailable=>"Your visible gifts could not be read from Telegram. Please try again shortly.".into(),
     }}
 }
 pub(super) fn status_reply(status: market_gifts::SyncStatus) -> Reply {
@@ -193,10 +205,19 @@ pub(super) fn status_reply(status: market_gifts::SyncStatus) -> Reply {
     }
 }
 
+pub(super) fn valuation_error(error: market_valuation::Error<DataError>) -> Reply {
+    match error {
+        market_valuation::Error::Strategy(error) => error_reply(error),
+        _ => Reply {
+            text: "Market valuation is unavailable. Please try again shortly.".into(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use market_telegram::SkipReason;
+    use market_gifts::inventory::SkipReason;
     #[test]
     fn portfolio_reports_precise_totals_skip_reasons_partial_reads_and_freshness() {
         let value = market_gifts::valuation::Valuation {
@@ -221,9 +242,9 @@ mod tests {
                 updated_at: None,
             },
         };
-        let inventory = VisibleInventory {
-            gifts: vec![market_telegram::ProfileGift {
-                id: 1,
+        let inventory = InventorySnapshot {
+            gifts: vec![market_gifts::inventory::InventoryGift {
+                id: "1".into(),
                 collection_id: market_gifts::TelegramGiftId::new(2).unwrap(),
                 model_document_id: market_gifts::TelegramDocumentId::new(3).unwrap(),
                 relation: GiftRelation::Hosted,
@@ -233,9 +254,20 @@ mod tests {
             pages_read: 1,
             gifts_scanned: 100,
             reported_total: Some(700),
-            completion: InventoryCompletion::Partial(PartialReason::TimedOut),
+            completion: InventoryCompletion::Partial(PartialReason::ReadFailed(
+                InventoryError::Unavailable,
+            )),
+            fetched_at: jiff::Timestamp::now(),
         };
-        let reply = portfolio(value, &inventory);
+        let mark = market_valuation::Mark::evaluated(market_valuation::Evaluation {
+            revision: value.cursor.clone(),
+            coverage: market_valuation::Coverage {
+                priced: value.priced,
+                unpriced: value.unpriced,
+            },
+            value,
+        });
+        let reply = portfolio(&mark, &inventory);
         for text in [
             "4.000000000000000002 GRAM",
             "100 of 700",
@@ -243,7 +275,7 @@ mod tests {
             "Skipped missing model document: 129",
             "Hosted collectibles included: 1",
             "wallet ownership is not verified",
-            "Partial inventory: Telegram read timed out",
+            "Partial inventory: a later Telegram page could not be read",
             "Market data is not live",
             "Unpriced gifts are excluded",
         ] {

@@ -6,13 +6,14 @@ use super::{
 };
 use futures_util::FutureExt;
 use market_invocations::{Handle as InvocationHandle, Runtime as InvocationRuntime};
-use market_telegram_client::{Connection, app_url};
+use market_telegram_client::{Connection, InventoryClient, app_url};
 use std::{panic::AssertUnwindSafe, path::PathBuf};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 type IdentityObserver = Box<dyn Fn(&BotUser) + Send + Sync>;
 
 pub struct TelegramWorker {
+    inventory: InventoryClient,
     credentials: BotCredentials,
     url: Option<Url>,
     data_dir: PathBuf,
@@ -45,6 +46,7 @@ pub async fn inspect(
 impl TelegramWorker {
     pub fn new(config: BotConfig) -> anyhow::Result<Self> {
         Ok(Self {
+            inventory: InventoryClient::new(&config.credentials),
             credentials: config.credentials,
             url: config
                 .public_url
@@ -55,6 +57,9 @@ impl TelegramWorker {
             identity_observer: None,
             media: None,
         })
+    }
+    pub fn inventory(&self) -> InventoryClient {
+        self.inventory.clone()
     }
     /// Observe the authenticated profile after each login or session reconnect.
     /// Runs before command configuration; observers must be quick and nonblocking.
@@ -130,6 +135,9 @@ impl TelegramWorker {
         // Finish opening storage before cancellation may release the worker lock.
         let mut connection =
             Connection::open(self.credentials.clone(), &self.data_dir, invocations).await?;
+        connection
+            .transport
+            .bind_inventory(self.inventory.clone())?;
         let exited = connection.transport.stopped();
         let result = AssertUnwindSafe(async {
             tokio::select! {

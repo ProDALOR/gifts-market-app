@@ -1,6 +1,6 @@
 use market_actors::error::DataError;
-use market_gifts::{CurrencyId, GiftId, TelegramDocumentId, TelegramGiftId, valuation::Valuation};
-use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
+use market_gifts::{CurrencyId, valuation::Valuation};
+use std::{fmt, sync::Arc};
 
 /// Canonical source user identity. Authorization belongs to the calling application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -18,81 +18,19 @@ impl UserId {
         self.0
     }
 }
+pub use market_gifts::inventory::*;
 pub use market_invocations::Priority;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GiftRelation {
-    Owned,
-    Hosted,
-    Unverified,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InventoryGift {
-    pub id: GiftId,
-    pub collection_id: TelegramGiftId,
-    pub model_document_id: TelegramDocumentId,
-    pub relation: GiftRelation,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SkipReason {
-    Refunded,
-    Burned,
-    OtherProfile,
-    MissingGiftId,
-    MissingCollection,
-    MissingModel,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InventoryError {
-    Authorization,
-    Forbidden,
-    Unavailable,
-    RetryAfter(Duration),
-    InvalidData(String),
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PartialReason {
-    LimitReached,
-    MissingCursor,
-    RepeatedCursor,
-    ReadFailed(InventoryError),
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InventoryCompletion {
-    Complete,
-    Partial(PartialReason),
-}
-/// One bounded provider operation. The actor owns pagination and request pacing.
 #[derive(Debug, Clone)]
 pub struct InventoryPageRequest {
     pub user: UserId,
     pub cursor: Option<String>,
     pub limit: usize,
 }
-#[derive(Debug, Clone, Default)]
-pub struct InventoryPage {
-    pub gifts: Vec<InventoryGift>,
-    pub regular_gifts: usize,
-    pub skipped: BTreeMap<SkipReason, usize>,
-    pub scanned: usize,
-    pub reported_total: Option<usize>,
-    pub next_cursor: Option<String>,
-}
-#[derive(Debug, Clone)]
-pub struct InventorySnapshot {
-    pub gifts: Vec<InventoryGift>,
-    pub regular_gifts: usize,
-    pub skipped: BTreeMap<SkipReason, usize>,
-    pub pages_read: usize,
-    pub gifts_scanned: usize,
-    pub reported_total: Option<usize>,
-    pub completion: InventoryCompletion,
-    pub fetched_at: jiff::Timestamp,
-}
 #[derive(Debug, Clone)]
 pub struct Portfolio {
     pub user: UserId,
     pub inventory: Arc<InventorySnapshot>,
-    pub valuation: Arc<Valuation>,
+    pub valuation: Arc<market_valuation::Mark<Valuation>>,
 }
 #[derive(Debug, Clone)]
 pub struct PortfolioRequest {

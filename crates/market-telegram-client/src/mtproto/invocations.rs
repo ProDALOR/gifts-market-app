@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Copy)]
 pub(super) enum Group {
     Control,
-    Gifts,
+    Gifts(u64),
     Media,
     Reply(i64),
 }
@@ -28,47 +28,6 @@ impl Executor {
             owner: self.account,
             group: "account",
             resource: None,
-        }
-    }
-    fn policy(&self, group: Group, replay: Replay) -> Policy {
-        let (name, interval, concurrency) = match group {
-            Group::Control => ("control", 100, 1),
-            Group::Gifts => ("gifts", 300, 1),
-            Group::Media => ("media", 100, 2),
-            Group::Reply(_) => ("replies", 50, 4),
-        };
-        let mut limits = vec![
-            RateLimit {
-                key: self.account_key(),
-                interval: Duration::ZERO,
-                concurrency: 8,
-            },
-            RateLimit {
-                key: RateKey {
-                    owner: self.account,
-                    group: name,
-                    resource: None,
-                },
-                interval: Duration::from_millis(interval),
-                concurrency,
-            },
-        ];
-        if let Group::Reply(peer) = group {
-            limits.push(RateLimit {
-                key: RateKey {
-                    owner: self.account,
-                    group: "reply-peer",
-                    resource: Some(peer),
-                },
-                interval: Duration::from_secs(1),
-                concurrency: 1,
-            });
-        }
-        Policy {
-            limits,
-            replay,
-            attempt_timeout: Duration::from_secs(10),
-            max_attempts: 3,
         }
     }
     pub fn operation<T, F, Fut>(
@@ -92,7 +51,7 @@ impl Executor {
         };
         Call {
             stopped: self.stopped.clone(),
-            policy: self.policy(group, replay),
+            policy: policy(self.account, group, replay),
             account: self.account_key(),
             slow_scope: scope,
             call,
@@ -147,6 +106,62 @@ impl Executor {
         })
         .await
         .map_err(CallError::bot)
+    }
+}
+pub(super) fn policy(account: u64, group: Group, replay: Replay) -> Policy {
+    let (name, interval, concurrency) = match group {
+        Group::Control => ("control", 100, 1),
+        Group::Gifts(_) => ("gifts", 300, 2),
+        Group::Media => ("media", 100, 2),
+        Group::Reply(_) => ("replies", 50, 4),
+    };
+    let mut limits = vec![
+        RateLimit {
+            key: RateKey {
+                owner: account,
+                group: "account",
+                resource: None,
+            },
+            interval: Duration::ZERO,
+            concurrency: 8,
+        },
+        RateLimit {
+            key: RateKey {
+                owner: account,
+                group: name,
+                resource: None,
+            },
+            interval: Duration::from_millis(interval),
+            concurrency,
+        },
+    ];
+    if let Group::Reply(peer) = group {
+        limits.push(RateLimit {
+            key: RateKey {
+                owner: account,
+                group: "reply-peer",
+                resource: Some(peer),
+            },
+            interval: Duration::from_secs(1),
+            concurrency: 1,
+        });
+    }
+    if let Group::Gifts(user) = group {
+        limits.push(RateLimit {
+            key: RateKey {
+                owner: account,
+                group: "inventory-user",
+                resource: Some(user as i64),
+            },
+            interval: Duration::ZERO,
+            concurrency: 1,
+        });
+    }
+    Policy {
+        limits,
+        replay,
+        attempt_timeout: Duration::from_secs(10),
+        max_attempts: 3,
     }
 }
 struct Call<F> {
@@ -262,7 +277,7 @@ mod tests {
                 assert_eq!(actual.resource, Some(7));
             }
         }
-        let call = executor.operation(Group::Gifts, Replay::Safe, || async {
+        let call = executor.operation(Group::Gifts(7), Replay::Safe, || async {
             Err::<(), _>(error(403, "PRIVATE"))
         });
         assert!(matches!(
@@ -271,7 +286,7 @@ mod tests {
         ));
         let called = Arc::new(AtomicUsize::new(0));
         let count = called.clone();
-        let operation = executor.operation(Group::Gifts, Replay::Safe, move || {
+        let operation = executor.operation(Group::Gifts(7), Replay::Safe, move || {
             count.fetch_add(1, Ordering::Relaxed);
             async { Ok(()) }
         });
@@ -349,6 +364,72 @@ mod tests {
                 .is_err()
         );
         assert_eq!(count.load(Ordering::Relaxed), 1);
+        runtime.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod inventory_scheduling_tests {
+    use super::*;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    async fn flush() {
+        for _ in 0..40 {
+            tokio::task::yield_now().await;
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn overlaps_two_users_but_never_two_pages_of_the_same_user() {
+        let runtime = market_invocations::Runtime::start(Default::default()).unwrap();
+        let handle = runtime.handle();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gates: Vec<_> = (0..3)
+            .map(|_| Arc::new(tokio::sync::Notify::new()))
+            .collect();
+        let order = Arc::new(Mutex::new(vec![]));
+        let mut tasks = vec![];
+        for (index, user) in [7, 8, 7].into_iter().enumerate() {
+            let calls = calls.clone();
+            let gate = gates[index].clone();
+            let order = order.clone();
+            let operation = market_invocations::operation(
+                policy(42, Group::Gifts(user), Replay::Safe),
+                move || {
+                    let calls = calls.clone();
+                    let gate = gate.clone();
+                    let order = order.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        order.lock().unwrap().push(user);
+                        gate.notified().await;
+                        Ok::<_, AttemptError<()>>(())
+                    }
+                },
+            );
+            tasks.push(tokio::spawn(
+                handle.submit(operation, Options::default()).unwrap(),
+            ));
+        }
+        flush().await;
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        tokio::time::advance(Duration::from_millis(300)).await;
+        flush().await;
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        gates[1].notify_one();
+        flush().await;
+        tokio::time::advance(Duration::from_millis(300)).await;
+        flush().await;
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        gates[0].notify_one();
+        flush().await;
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+        assert_eq!(*order.lock().unwrap(), [7, 8, 7]);
+        gates[2].notify_one();
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
         runtime.shutdown().await;
     }
 }

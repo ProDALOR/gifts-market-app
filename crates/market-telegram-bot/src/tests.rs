@@ -74,12 +74,62 @@ fn floor_commands_reuse_domain_name_limits_and_keep_currency_shorthand_local() {
     }
 }
 
-use market_telegram::{BotError, GiftSource, InventoryError, MessageHandler, VisibleInventory};
-struct ForbiddenGifts;
-impl GiftSource for ForbiddenGifts {
-    async fn inventory(&self) -> Result<VisibleInventory, InventoryError> {
-        Err(InventoryError::Forbidden)
+use market_portfolio::{InventoryError, InventoryPage, InventoryPageRequest, InventoryProvider};
+use market_telegram::{BotError, MessageHandler};
+#[derive(Clone)]
+struct Source(InventoryError);
+impl InventoryProvider for Source {
+    fn page(
+        &self,
+        _: InventoryPageRequest,
+    ) -> impl market_invocations::Invocation<Output = InventoryPage, Error = InventoryError> {
+        let error = self.0.clone();
+        market_invocations::operation(
+            market_invocations::Policy {
+                limits: vec![],
+                replay: market_invocations::Replay::Never,
+                attempt_timeout: std::time::Duration::from_secs(1),
+                max_attempts: 1,
+            },
+            move || {
+                let error = error.clone();
+                async move {
+                    Err(market_invocations::AttemptError {
+                        error,
+                        retry: market_invocations::Retry::Never,
+                    })
+                }
+            },
+        )
     }
+}
+async fn services(
+    data: market_actors::MarketDataHandle,
+    error: InventoryError,
+) -> (
+    market_invocations::Runtime,
+    market_valuation::Service<
+        market_gifts::valuation::ValuationRequest,
+        market_gifts::valuation::Valuation,
+        market_actors::error::DataError,
+    >,
+    market_portfolio::PortfolioService,
+) {
+    let invocations = market_invocations::Runtime::start(Default::default()).unwrap();
+    let valuation = market_valuation::Service::start(
+        market_actors::valuation::ModelFloorStrategy::new(data),
+        Default::default(),
+    )
+    .unwrap();
+    let portfolio = market_portfolio::PortfolioService::start(
+        Source(error),
+        valuation.handle.clone(),
+        Default::default(),
+        invocations.handle(),
+    )
+    .await
+    .unwrap();
+    (invocations, valuation, portfolio)
 }
 #[tokio::test]
 async fn bot_status_reads_the_shared_actor_and_portfolio_permission_failure_is_a_user_reply() {
@@ -88,21 +138,30 @@ async fn bot_status_reads_the_shared_actor_and_portfolio_permission_failure_is_a
     let data = market_actors::MarketDataService::start(writer.reader(), 1, 1)
         .await
         .unwrap();
-    let handler = MarketCommands::new(data.handle.clone());
+    let (_invocations, _valuation, portfolio) =
+        services(data.handle.clone(), InventoryError::Forbidden).await;
+    let handler = MarketCommands::new(
+        data.handle.clone(),
+        portfolio.handle.clone(),
+        _valuation.handle.clone(),
+    );
     let names = vec!["market_bot".to_owned(), "market_alias".to_owned()];
     let request = handler
         .parse(message(1, "/portfolio@MARKET_ALIAS"), &names)
         .unwrap();
-    let reply = handler.handle(request, &ForbiddenGifts).await.unwrap();
+    let reply = handler.handle(request).await.unwrap();
     assert!(reply.text.contains("Telegram did not allow"));
     assert!(!reply.text.contains("estimate: 0"));
     let request = handler.parse(message(2, "/status"), &names).unwrap();
     assert_eq!(
-        handler.handle(request, &ForbiddenGifts).await.unwrap().text,
+        handler.handle(request).await.unwrap().text,
         "Market data: starting. Preparing market data. Please check again shortly."
     );
     let stop = tokio_util::sync::CancellationToken::new();
     stop.cancel();
+    portfolio.task.shutdown().await.unwrap();
+    _valuation.task.shutdown().await.unwrap();
+    _invocations.shutdown().await;
     data.task.run(stop).await.unwrap();
 }
 #[tokio::test]
@@ -126,14 +185,7 @@ async fn application_handler_owns_menu_alias_routing_launch_and_usage_without_mt
     let names = vec!["market_bot".to_owned(), "second_bot".to_owned()];
     for text in ["/start payload", "/market@SECOND_BOT", "/help"] {
         let request = handler.parse(message(1, text), &names).unwrap();
-        assert!(
-            !handler
-                .handle(request, &ForbiddenGifts)
-                .await
-                .unwrap()
-                .text
-                .is_empty()
-        );
+        assert!(!handler.handle(request).await.unwrap().text.is_empty());
     }
     for text in ["/start@inactive_bot", "hello"] {
         assert!(handler.parse(message(1, text), &names).is_none());
@@ -147,7 +199,7 @@ async fn application_handler_owns_menu_alias_routing_launch_and_usage_without_mt
     let request = handler.parse(message(1, "/floor bad"), &names).unwrap();
     assert!(
         handler
-            .handle(request, &ForbiddenGifts)
+            .handle(request)
             .await
             .unwrap()
             .text
@@ -175,20 +227,166 @@ async fn bot_service_cancellation_opens_no_telegram_storage_and_keeps_market_dat
     .unwrap();
     let stop = tokio_util::sync::CancellationToken::new();
     stop.cancel();
-    BotService::new(worker, data.handle.clone())
-        .run(stop.clone())
-        .await
-        .unwrap();
+    let (_invocations, _valuation, portfolio) =
+        services(data.handle.clone(), InventoryError::Forbidden).await;
+    BotService::new(
+        worker,
+        data.handle.clone(),
+        portfolio.handle.clone(),
+        _valuation.handle.clone(),
+    )
+    .run(stop.clone())
+    .await
+    .unwrap();
     assert!(!directory.path().join("telegram").exists());
     assert!(data.handle.status().await.is_ok());
+    portfolio.task.shutdown().await.unwrap();
+    _valuation.task.shutdown().await.unwrap();
+    _invocations.shutdown().await;
     data.task.run(stop).await.unwrap();
 }
 #[tokio::test]
 async fn portfolio_authorization_failure_remains_fatal_for_the_transport() {
-    struct Revoked;
-    impl GiftSource for Revoked {
-        async fn inventory(&self) -> Result<VisibleInventory, InventoryError> {
-            Err(InventoryError::Authorization)
+    let directory = tempfile::tempdir().unwrap();
+    let writer = market_replica::ReplicaWriter::open(directory.path(), "test").unwrap();
+    let data = market_actors::MarketDataService::start(writer.reader(), 1, 1)
+        .await
+        .unwrap();
+    let (_invocations, _valuation, portfolio) =
+        services(data.handle.clone(), InventoryError::Authorization).await;
+    let handler = MarketCommands::new(
+        data.handle.clone(),
+        portfolio.handle.clone(),
+        _valuation.handle.clone(),
+    );
+    let request = handler
+        .parse(message(1, "/portfolio"), &["market_bot".into()])
+        .unwrap();
+    assert_eq!(handler.handle(request).await, Err(BotError::Authorization));
+    let stop = tokio_util::sync::CancellationToken::new();
+    stop.cancel();
+    portfolio.task.shutdown().await.unwrap();
+    _valuation.task.shutdown().await.unwrap();
+    _invocations.shutdown().await;
+    data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks() {
+    use market_gifts::{SyncState, SyncStatus, inventory::*, valuation::*};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    #[derive(Clone, Default)]
+    struct Pages(Arc<AtomicUsize>);
+    impl InventoryProvider for Pages {
+        fn page(
+            &self,
+            request: InventoryPageRequest,
+        ) -> impl market_invocations::Invocation<Output = InventoryPage, Error = InventoryError>
+        {
+            let calls = self.0.clone();
+            market_invocations::operation(
+                market_invocations::Policy {
+                    limits: vec![],
+                    replay: market_invocations::Replay::Safe,
+                    attempt_timeout: std::time::Duration::from_secs(1),
+                    max_attempts: 1,
+                },
+                move || {
+                    let calls = calls.clone();
+                    let request = request.clone();
+                    async move {
+                        assert_eq!(request.user.get(), 7);
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        let start = request
+                            .cursor
+                            .as_deref()
+                            .map(|s| s.strip_prefix("offset:").unwrap().parse::<usize>().unwrap())
+                            .unwrap_or(0);
+                        let end = (start + request.limit).min(745);
+                        let gifts = (start..end)
+                            .filter(|id| *id >= 45)
+                            .map(|id| InventoryGift {
+                                id: format!("gift-{id}").try_into().unwrap(),
+                                collection_id: market_gifts::TelegramGiftId::new(1).unwrap(),
+                                model_document_id: market_gifts::TelegramDocumentId::new(2)
+                                    .unwrap(),
+                                relation: GiftRelation::Owned,
+                            })
+                            .collect::<Vec<_>>();
+                        Ok(InventoryPage {
+                            regular_gifts: end - start - gifts.len(),
+                            gifts,
+                            scanned: end - start,
+                            reported_total: Some(745),
+                            next_cursor: (end < 745).then(|| format!("offset:{end}")),
+                            ..Default::default()
+                        })
+                    }
+                },
+            )
+        }
+    }
+    struct Floors {
+        changes: tokio::sync::watch::Receiver<u64>,
+        calls: Arc<AtomicUsize>,
+    }
+    impl market_valuation::Strategy for Floors {
+        type Key = ValuationRequest;
+        type Value = Valuation;
+        type Error = market_actors::error::DataError;
+        fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.changes.clone()
+        }
+        async fn evaluate(
+            &self,
+            request: ValuationRequest,
+        ) -> Result<market_valuation::Evaluation<Valuation>, Self::Error> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let revision = *self.changes.borrow();
+            let price = revision + 2;
+            let count: u32 = request.positions.iter().map(|p| p.quantity).sum();
+            let value = Valuation {
+                rows: request
+                    .positions
+                    .into_iter()
+                    .map(|p| ModelValue {
+                        identity: None,
+                        collection: "Gift".into(),
+                        model: "Model".into(),
+                        quantity: p.quantity,
+                        floor: Some(price.to_string().try_into().unwrap()),
+                        value: Some(
+                            (u64::from(p.quantity) * price)
+                                .to_string()
+                                .try_into()
+                                .unwrap(),
+                        ),
+                        venue_id: None,
+                        unpriced: None,
+                    })
+                    .collect(),
+                total: (u64::from(count) * price).to_string().try_into().unwrap(),
+                priced: count,
+                unpriced: 0,
+                currency_id: request.currency_id,
+                cursor: revision.to_string(),
+                sync: SyncStatus {
+                    ready: true,
+                    state: SyncState::Live,
+                    updated_at: None,
+                },
+            };
+            Ok(market_valuation::Evaluation {
+                revision: value.cursor.clone(),
+                coverage: market_valuation::Coverage {
+                    priced: count,
+                    unpriced: 0,
+                },
+                value,
+            })
         }
     }
     let directory = tempfile::tempdir().unwrap();
@@ -196,14 +394,57 @@ async fn portfolio_authorization_failure_remains_fatal_for_the_transport() {
     let data = market_actors::MarketDataService::start(writer.reader(), 1, 1)
         .await
         .unwrap();
-    let handler = MarketCommands::new(data.handle.clone());
+    let invocations = market_invocations::Runtime::start(Default::default()).unwrap();
+    let (changed, changes) = tokio::sync::watch::channel(0);
+    let quotes = Arc::new(AtomicUsize::new(0));
+    let valuation = market_valuation::Service::start(
+        Floors {
+            changes,
+            calls: quotes.clone(),
+        },
+        Default::default(),
+    )
+    .unwrap();
+    let pages = Pages::default();
+    let portfolio = market_portfolio::PortfolioService::start(
+        pages.clone(),
+        valuation.handle.clone(),
+        Default::default(),
+        invocations.handle(),
+    )
+    .await
+    .unwrap();
+    let handler = MarketCommands::new(
+        data.handle.clone(),
+        portfolio.handle.clone(),
+        valuation.handle.clone(),
+    );
     let request = handler
         .parse(message(1, "/portfolio"), &["market_bot".into()])
         .unwrap();
-    assert_eq!(
-        handler.handle(request, &Revoked).await,
-        Err(BotError::Authorization)
+    let (first, duplicate) = tokio::join!(
+        handler.handle(request.clone()),
+        handler.handle(request.clone())
     );
+    for reply in [first.unwrap(), duplicate.unwrap()] {
+        assert!(reply.text.contains("745 of 745 across 8 page(s)"));
+        assert!(reply.text.contains("Model-floor estimate: 1400 GRAM"));
+        assert!(reply.text.contains("Priced collectibles: 700"));
+        assert!(
+            reply
+                .text
+                .contains("Regular, non-collectible gifts skipped: 45")
+        );
+    }
+    assert_eq!(pages.0.load(Ordering::Relaxed), 8);
+    assert_eq!(quotes.load(Ordering::Relaxed), 1);
+    changed.send_replace(1);
+    let updated = handler.handle(request).await.unwrap();
+    assert!(updated.text.contains("Model-floor estimate: 2100 GRAM"));
+    assert_eq!(pages.0.load(Ordering::Relaxed), 8);
+    portfolio.task.shutdown().await.unwrap();
+    valuation.task.shutdown().await.unwrap();
+    invocations.shutdown().await;
     let stop = tokio_util::sync::CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();

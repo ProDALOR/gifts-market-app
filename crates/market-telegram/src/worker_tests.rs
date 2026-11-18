@@ -55,20 +55,7 @@ impl Fake {
         }
     }
 }
-struct FakeGifts;
-impl super::super::GiftSource for FakeGifts {
-    async fn inventory(
-        &self,
-    ) -> Result<super::super::VisibleInventory, super::super::InventoryError> {
-        Err(super::super::InventoryError::Forbidden)
-    }
-}
 impl TelegramActions for FakeActions {
-    type GiftSource = FakeGifts;
-    fn gift_source(&self, _: &Message) -> Self::GiftSource {
-        FakeGifts
-    }
-
     async fn identity(&self) -> Result<BotUser, BotError> {
         Ok(BotUser {
             id: 42,
@@ -168,11 +155,7 @@ async fn generic_handler_receives_peer_identity_and_failure_keeps_pending_update
         ) -> Option<TestRequest> {
             request(message, usernames)
         }
-        async fn handle<S: super::super::GiftSource>(
-            &self,
-            request: TestRequest,
-            _: &S,
-        ) -> Result<Reply, BotError> {
+        async fn handle(&self, request: TestRequest) -> Result<Reply, BotError> {
             self.0.lock().unwrap().push(request.clone());
             match request.command.as_str() {
                 "status" => Ok(Reply {
@@ -314,11 +297,7 @@ impl MessageHandler for BlockingHandler {
     ) -> Option<TestRequest> {
         request(message, usernames)
     }
-    async fn handle<S: super::super::GiftSource>(
-        &self,
-        request: TestRequest,
-        _: &S,
-    ) -> Result<Reply, BotError> {
+    async fn handle(&self, request: TestRequest) -> Result<Reply, BotError> {
         if request.message_id == 1 {
             self.release.notified().await;
         }
@@ -484,11 +463,7 @@ async fn handler_panics_and_exhausted_transient_errors_are_isolated() {
         ) -> Option<TestRequest> {
             request(message, usernames)
         }
-        async fn handle<S: super::super::GiftSource>(
-            &self,
-            request: TestRequest,
-            _: &S,
-        ) -> Result<Reply, BotError> {
+        async fn handle(&self, request: TestRequest) -> Result<Reply, BotError> {
             match request.message_id {
                 1 => panic!("simulated command failure"),
                 2 => Err(BotError::Rpc(500)),
@@ -654,12 +629,8 @@ async fn request_fields_cannot_override_transport_peer_scheduling() {
             request.user_id = 0;
             Some(request)
         }
-        async fn handle<S: crate::GiftSource>(
-            &self,
-            request: TestRequest,
-            gifts: &S,
-        ) -> Result<Reply, BotError> {
-            self.0.handle(request, gifts).await
+        async fn handle(&self, request: TestRequest) -> Result<Reply, BotError> {
+            self.0.handle(request).await
         }
     }
     let release = Arc::new(tokio::sync::Notify::new());

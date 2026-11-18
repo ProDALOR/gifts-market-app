@@ -1,5 +1,5 @@
 use crate::{InventoryError, InventoryPage, InventoryPageRequest};
-use market_actors::{MarketDataHandle, error::DataError};
+use market_actors::error::DataError;
 use market_gifts::valuation::{Valuation, ValuationRequest};
 use std::future::Future;
 
@@ -15,10 +15,16 @@ pub trait ValuationProvider: Send + Sync + 'static {
     fn value_models(
         &self,
         request: ValuationRequest,
-    ) -> impl Future<Output = Result<Valuation, DataError>> + Send;
+    ) -> impl Future<Output = Result<std::sync::Arc<market_valuation::Mark<Valuation>>, DataError>> + Send;
 }
-impl ValuationProvider for MarketDataHandle {
-    async fn value_models(&self, request: ValuationRequest) -> Result<Valuation, DataError> {
-        MarketDataHandle::value_models(self, request).await
+impl ValuationProvider for market_actors::valuation::ValuationHandle {
+    async fn value_models(
+        &self,
+        request: ValuationRequest,
+    ) -> Result<std::sync::Arc<market_valuation::Mark<Valuation>>, DataError> {
+        self.mark(request).await.map_err(|error| match error {
+            market_valuation::Error::Strategy(error) => error,
+            _ => DataError::unavailable("valuation mark unavailable"),
+        })
     }
 }

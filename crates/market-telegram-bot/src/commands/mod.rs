@@ -4,7 +4,7 @@ mod parse;
 mod portfolio;
 mod render;
 use market_actors::MarketDataHandle;
-use market_telegram::{BotError, GiftSource, IncomingMessage, MenuCommand, MessageHandler, Reply};
+use market_telegram::{BotError, IncomingMessage, MenuCommand, MessageHandler, Reply};
 pub use parse::CommandKind;
 pub(crate) use parse::parse;
 pub(super) use render::launch_reply;
@@ -46,10 +46,20 @@ pub struct CommandRequest {
 }
 pub struct MarketCommands {
     market: MarketDataHandle,
+    portfolio: market_portfolio::PortfolioHandle,
+    valuation: market_actors::valuation::ValuationHandle,
 }
 impl MarketCommands {
-    pub fn new(market: MarketDataHandle) -> Self {
-        Self { market }
+    pub fn new(
+        market: MarketDataHandle,
+        portfolio: market_portfolio::PortfolioHandle,
+        valuation: market_actors::valuation::ValuationHandle,
+    ) -> Self {
+        Self {
+            market,
+            portfolio,
+            valuation,
+        }
     }
 }
 impl MessageHandler for MarketCommands {
@@ -63,21 +73,19 @@ impl MessageHandler for MarketCommands {
     fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<CommandRequest> {
         parse(message, usernames)
     }
-    async fn handle<S: GiftSource>(
-        &self,
-        request: CommandRequest,
-        gifts: &S,
-    ) -> Result<Reply, BotError> {
+    async fn handle(&self, request: CommandRequest) -> Result<Reply, BotError> {
         match request.command {
             Command::Status => Ok(match self.market.status().await {
                 Ok(status) => render::status_reply(status),
                 Err(error) => render::error_reply(error),
             }),
-            Command::Floor(query) => Ok(floor::execute(&self.market, query).await),
-            Command::Portfolio(currency) => portfolio::execute(&self.market, gifts, currency).await,
+            Command::Floor(query) => Ok(floor::execute(&self.valuation, query).await),
+            Command::Portfolio(currency) => {
+                portfolio::execute(&self.portfolio, request.user_id, currency).await
+            }
             command => {
                 LaunchCommands
-                    .handle(CommandRequest { command, ..request }, gifts)
+                    .handle(CommandRequest { command, ..request })
                     .await
             }
         }
@@ -95,11 +103,7 @@ impl MessageHandler for LaunchCommands {
     fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<CommandRequest> {
         parse(message, usernames)
     }
-    async fn handle<S: GiftSource>(
-        &self,
-        request: CommandRequest,
-        _: &S,
-    ) -> Result<Reply, BotError> {
+    async fn handle(&self, request: CommandRequest) -> Result<Reply, BotError> {
         if matches!(request.command, Command::Invalid(_)) {
             return Ok(render::usage(request.command.kind()));
         }

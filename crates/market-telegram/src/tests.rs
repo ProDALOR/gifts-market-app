@@ -54,7 +54,7 @@ impl MessageHandler for TestHandler {
     fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<TestRequest> {
         request(message, usernames)
     }
-    async fn handle<S: GiftSource>(&self, request: TestRequest, _: &S) -> Result<Reply, BotError> {
+    async fn handle(&self, request: TestRequest) -> Result<Reply, BotError> {
         Ok(Reply {
             text: request.command,
         })

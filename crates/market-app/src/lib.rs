@@ -7,3 +7,6 @@ pub mod market;
 #[cfg(feature = "bot")]
 mod media;
 pub use market::MarketRuntime;
+
+#[cfg(feature = "bot")]
+mod portfolio;

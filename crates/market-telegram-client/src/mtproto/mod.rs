@@ -7,6 +7,6 @@ mod media;
 mod requests;
 mod session_store;
 pub use connection::Connection;
-pub use gifts::TelegramGifts;
+pub use gifts::InventoryClient;
 #[cfg(test)]
 mod tests;

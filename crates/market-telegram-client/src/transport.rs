@@ -26,7 +26,6 @@ pub struct Delivery {
 }
 /// Named Telegram operations; callers never construct TL requests.
 pub trait TelegramActions: Clone + Send + Sync {
-    type GiftSource: super::GiftSource + Send;
     fn media(
         &self,
         _: market_media::MediaKey,
@@ -34,7 +33,6 @@ pub trait TelegramActions: Clone + Send + Sync {
     {
         async { Err(market_media::MediaError::Unavailable) }
     }
-    fn gift_source(&self, message: &Message) -> Self::GiftSource;
     fn identity(&self) -> impl Future<Output = Result<BotUser, BotError>> + Send;
     fn configure(
         &self,

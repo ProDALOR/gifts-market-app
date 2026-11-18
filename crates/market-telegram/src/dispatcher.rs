@@ -146,11 +146,10 @@ async fn process<A: TelegramActions, H: MessageHandler>(
     url: Option<&LaunchButton>,
     limits: Limits,
 ) -> Result<(), BotError> {
-    let gifts = actions.gift_source(&message);
     let work = async move {
         let mut backoff = 1;
         for attempt in 0..limits.handler_attempts {
-            match handler.handle(request.clone(), &gifts).await {
+            match handler.handle(request.clone()).await {
                 Ok(reply) => return Ok(reply),
                 Err(error) if error.fatal() => return Err(error),
                 Err(error)
