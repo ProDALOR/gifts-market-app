@@ -1883,6 +1883,7 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
     for (case, aliases, duplicate, expected) in [
         ("renamed", vec!["Gift"], false, 200),
         ("missing", vec![], false, 404),
+        ("backfilled", vec!["Gift"], false, 200),
         ("ambiguous", vec!["Gift"], true, 400),
         ("conflicting", vec!["Gift", "Other"], false, 503),
         ("malformed", vec!["Gift Name"], false, 503),
@@ -1981,7 +1982,7 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
                 assert_eq!(response.status(), 404);
             }
         }
-        if case == "renamed" {
+        if matches!(case, "renamed" | "backfilled") {
             let report: serde_json::Value = test::read_body_json(response).await;
             assert_eq!(report["gift"]["number"], 123);
             assert_eq!(report["gift"]["collection_id"], "tg.gift.123");
