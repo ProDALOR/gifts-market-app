@@ -36,7 +36,21 @@ impl MarketRuntime {
             Default::default(),
         )?;
         let valuation_stop = supervisor.token();
-        supervisor.spawn_critical(TaskKind::Valuation, async move {
+        let collection = market_valuation::Service::start(
+            market_actors::valuation::CollectionFloorStrategy::new(data.handle.clone()),
+            Default::default(),
+        )?;
+        let registry = market_actors::valuation::ValuationHandle::new([
+            valuation.handle.clone(),
+            collection.handle.clone(),
+        ])?;
+        let collection_stop = supervisor.token();
+        supervisor.spawn_critical(TaskKind::CollectionValuation, async move {
+            collection.task.run(collection_stop).await.map_err(|error| {
+                tracing::error!(%error,"collection valuation actor stopped");
+            })
+        })?;
+        supervisor.spawn_critical(TaskKind::ModelValuation, async move {
             valuation.task.run(valuation_stop).await.map_err(|error| {
                 tracing::error!(%error,"valuation actor stopped");
             })
@@ -50,7 +64,7 @@ impl MarketRuntime {
         })?;
         Ok(Self {
             handle: data.handle,
-            valuation: valuation.handle,
+            valuation: registry,
             supervisor,
             replication: Mutex::new(Some(market.replication)),
         })

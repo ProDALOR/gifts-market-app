@@ -11,6 +11,7 @@ pub(super) use render::launch_reply;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FloorQuery {
+    pub strategy: market_gifts::valuation::StrategyId,
     pub model: market_gifts::valuation::ModelLookup,
     pub currency: market_gifts::CurrencyId,
 }
@@ -21,7 +22,10 @@ pub enum Command {
     Help,
     Status,
     Floor(FloorQuery),
-    Portfolio(market_gifts::CurrencyId),
+    Portfolio {
+        currency: market_gifts::CurrencyId,
+        strategy: market_gifts::valuation::StrategyId,
+    },
     Invalid(CommandKind),
 }
 impl Command {
@@ -32,7 +36,7 @@ impl Command {
             Self::Help => CommandKind::Help,
             Self::Status => CommandKind::Status,
             Self::Floor(_) => CommandKind::Floor,
-            Self::Portfolio(_) => CommandKind::Portfolio,
+            Self::Portfolio { .. } => CommandKind::Portfolio,
             Self::Invalid(kind) => *kind,
         }
     }
@@ -80,8 +84,8 @@ impl MessageHandler for MarketCommands {
                 Err(error) => render::error_reply(error),
             }),
             Command::Floor(query) => Ok(floor::execute(&self.valuation, query).await),
-            Command::Portfolio(currency) => {
-                portfolio::execute(&self.portfolio, request.user_id, currency).await
+            Command::Portfolio { currency, strategy } => {
+                portfolio::execute(&self.portfolio, request.user_id, currency, strategy).await
             }
             command => {
                 LaunchCommands

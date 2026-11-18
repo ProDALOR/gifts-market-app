@@ -10,6 +10,39 @@ use market_gifts::{
 pub(super) fn error_reply(error: DataError) -> Reply {
     use market_actors::error::DataErrorCode;
     let text = match error.code() {
+        DataErrorCode::NotEnoughData => {
+            let detail = error
+                .valuation_details()
+                .map(|d| {
+                    format!(
+                        "Strategy: {}. Eligible quotes: {} of {} required. {}",
+                        d.strategy,
+                        d.available_samples.unwrap_or(0),
+                        d.required_samples.unwrap_or(1),
+                        d.unpriced
+                            .first()
+                            .map(|row| format!(
+                                "{} · {}: {}",
+                                label(&row.collection),
+                                label(&row.model),
+                                match row.unpriced {
+                                    Some(UnpricedReason::UnknownCollection) =>
+                                        "collection not found",
+                                    Some(UnpricedReason::AmbiguousCollection) =>
+                                        "collection is ambiguous",
+                                    Some(UnpricedReason::UnknownModel) => "model not found",
+                                    Some(UnpricedReason::AmbiguousModel) => "model is ambiguous",
+                                    _ => "no eligible asks in this currency",
+                                }
+                            ))
+                            .unwrap_or_default()
+                    )
+                })
+                .unwrap_or_default();
+            format!("Not enough market data to value these gifts. {detail}")
+        }
+        DataErrorCode::UnsupportedStrategy => error.message().to_owned(),
+        DataErrorCode::TimedOut => "Valuation timed out. Please try again shortly.".into(),
         DataErrorCode::InvalidQuery => error.message().to_owned(),
         DataErrorCode::CapacityExceeded => {
             "Market queries are busy. Please try again shortly.".into()
@@ -39,9 +72,10 @@ pub(super) fn floor(mark: &market_valuation::Mark<Valuation>) -> Reply {
     let row = &value.rows[0];
     let text = if let Some(price) = &row.floor {
         format!(
-            "{} · {}\nModel floor: {} {}\nLowest ask at valuation across loaded venues ({}).{}",
+            "{} · {}\n{}: {} {}\nLowest eligible ask across loaded venues ({}).{}",
             label(&row.collection),
             label(&row.model),
+            strategy_label(mark.strategy),
             price,
             label(&value.currency_id),
             label(row.venue_id.as_deref().unwrap_or("market")),
@@ -71,7 +105,8 @@ pub(super) fn floor(mark: &market_valuation::Mark<Valuation>) -> Reply {
     };
     Reply {
         text: format!(
-            "{text}\nValued at: {}",
+            "{text}\nStrategy: {}\nValued at: {}",
+            mark.strategy,
             mark.evaluated_at.strftime("%Y-%m-%d %H:%M:%S UTC")
         ),
     }
@@ -84,13 +119,14 @@ pub(super) fn portfolio(
     let regular = inventory.regular_gifts;
     let unsupported = inventory.skipped_count();
     let mut text = format!(
-        "Your visible gift portfolio\nTelegram gifts read: {}{} across {} page(s)\nModel-floor estimate: {} {}\nPriced collectibles: {}\nWithout a model floor: {}",
+        "Your visible gift portfolio\nTelegram gifts read: {}{} across {} page(s)\n{} estimate: {} {}\nPriced collectibles: {}\nWithout a floor: {}",
         inventory.gifts_scanned,
         inventory
             .reported_total
             .map(|total| format!(" of {total}"))
             .unwrap_or_default(),
         inventory.pages_read,
+        strategy_label(mark.strategy),
         value.total,
         value.currency_id,
         value.priced,
@@ -156,6 +192,7 @@ pub(super) fn portfolio(
     text.push_str(
         "\nBased on asks at valuation time, without fees. Only gifts Telegram makes visible to this bot are included.",
     );
+    text.push_str(&format!("\nStrategy: {}", mark.strategy));
     text.push_str(&format!(
         "\nValued at: {}",
         mark.evaluated_at.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -166,15 +203,15 @@ pub(super) fn portfolio(
 
 pub(super) fn usage(kind: CommandKind) -> Reply {
     Reply{text:match kind {
-        CommandKind::Floor=>"Use /floor Collection | Model\nExample: /floor Bunny Muffin | Red Alert\nOptional: /floor Collection | Model | GRAM",
-        CommandKind::Portfolio=>"Use /portfolio or /portfolio GRAM to value your Telegram-visible collectibles.",
+        CommandKind::Floor=>"Use /floor Collection | Model\nExample: /floor Bunny Muffin | Red Alert\nOptional: /floor Collection | Model | GRAM | collection_floor",
+        CommandKind::Portfolio=>"Use /portfolio or /portfolio GRAM | collection_floor to value your Telegram-visible collectibles.",
         _=>"Use /help to see available commands.",
     }.into()}
 }
 pub(crate) fn launch_reply(command: CommandKind) -> Option<Reply> {
     Some(Reply{text:match command {
         CommandKind::Start|CommandKind::Market=>"Browse live gift markets, compare venues and filter offers in one place.",
-        CommandKind::Help=>"/floor Collection | Model — lowest current model ask. Add | GRAM for a quote currency.\n/portfolio — floor estimate of your Telegram-visible collectibles.\n/status — market synchronization status.\n/market — open the market when a launch URL is configured.",
+        CommandKind::Help=>"/floor Collection | Model — lowest current model ask. Add | GRAM for a quote currency.\n/portfolio — floor estimate of your Telegram-visible collectibles. Add | collection_floor after the currency for collection floors.\n/status — market synchronization status.\n/market — open the market when a launch URL is configured.",
         _=>return None,
     }.into()})
 }
@@ -205,12 +242,11 @@ pub(super) fn status_reply(status: market_gifts::SyncStatus) -> Reply {
     }
 }
 
-pub(super) fn valuation_error(error: market_valuation::Error<DataError>) -> Reply {
-    match error {
-        market_valuation::Error::Strategy(error) => error_reply(error),
-        _ => Reply {
-            text: "Market valuation is unavailable. Please try again shortly.".into(),
-        },
+fn strategy_label(strategy: &str) -> &str {
+    match strategy {
+        "model_floor" => "Model-floor",
+        "collection_floor" => "Collection-floor",
+        _ => strategy,
     }
 }
 
@@ -259,19 +295,22 @@ mod tests {
             )),
             fetched_at: jiff::Timestamp::now(),
         };
-        let mark = market_valuation::Mark::evaluated(market_valuation::Evaluation {
-            revision: value.cursor.clone(),
-            coverage: market_valuation::Coverage {
-                priced: value.priced,
-                unpriced: value.unpriced,
+        let mark = market_valuation::Mark::evaluated(
+            "model_floor",
+            market_valuation::Evaluation {
+                revision: value.cursor.clone(),
+                coverage: market_valuation::Coverage {
+                    priced: value.priced,
+                    unpriced: value.unpriced,
+                },
+                value,
             },
-            value,
-        });
+        );
         let reply = portfolio(&mark, &inventory);
         for text in [
             "4.000000000000000002 GRAM",
             "100 of 700",
-            "Without a model floor: 1",
+            "Without a floor: 1",
             "Skipped missing model document: 129",
             "Hosted collectibles included: 1",
             "wallet ownership is not verified",

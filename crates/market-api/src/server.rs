@@ -21,13 +21,18 @@ pub struct ApiServer {
     config: ApiConfig,
     listener: TcpListener,
     data: MarketDataHandle,
+    valuation: market_actors::valuation::ValuationHandle,
     origins: OriginPolicy,
     media: Option<crate::media::MediaApi>,
     #[cfg(feature = "miniapp")]
     miniapp: Option<MiniAppApi>,
 }
 impl ApiServer {
-    pub fn bind(config: ApiConfig, data: MarketDataHandle) -> anyhow::Result<Self> {
+    pub fn bind(
+        config: ApiConfig,
+        data: MarketDataHandle,
+        valuation: market_actors::valuation::ValuationHandle,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(config.workers > 0, "API worker count must be positive");
         config.limits.validate()?;
         let origins = OriginPolicy::new(&config.cors_origins)?;
@@ -43,6 +48,7 @@ impl ApiServer {
             config,
             listener,
             data,
+            valuation,
             origins,
             media: None,
             #[cfg(feature = "miniapp")]
@@ -72,6 +78,7 @@ impl ApiServer {
             config,
             listener,
             data,
+            valuation,
             origins,
             media,
             #[cfg(feature = "miniapp")]
@@ -81,7 +88,8 @@ impl ApiServer {
             stop.child_token(),
             config.limits.websocket.connections,
         );
-        let market = MarketApi::with_page_limit(data, config.limits.websocket.page_bytes);
+        let market =
+            MarketApi::with_page_limit(data, valuation, config.limits.websocket.page_bytes);
         let ws = web::Data::new(WebSocketService {
             market: market.clone(),
             connections: connections.clone(),

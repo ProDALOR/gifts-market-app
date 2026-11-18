@@ -85,7 +85,7 @@ pub struct FloorQuote {
     pub venue_id: VenueId,
 }
 /// Apply the same quantity and trait rules as order projection to an active ask.
-pub fn floor_quote(value: w::Order, now_ms: i64) -> Result<Option<FloorQuote>> {
+fn active_floor_order(value: w::Order, now_ms: i64) -> Result<Option<GiftOrder>> {
     if value.mode != w::OrderMode::Ask as i32
         || value.expires_at_ms.is_some_and(|expiry| expiry <= now_ms)
     {
@@ -98,6 +98,23 @@ pub fn floor_quote(value: w::Order, now_ms: i64) -> Result<Option<FloorQuote>> {
         return Ok(None);
     }
     let order = order(value)?;
+    if order.price.decimal() <= rust_decimal::Decimal::ZERO {
+        return Ok(None);
+    }
+    if matches!(order.target, GiftTarget::Unsupported { .. }) {
+        return Ok(None);
+    }
+    Ok(Some(order))
+}
+
+/// Lowest eligible ask independent of model identity.
+pub fn collection_floor_quote(value: w::Order, now_ms: i64) -> Result<Option<(Amount, VenueId)>> {
+    Ok(active_floor_order(value, now_ms)?.map(|order| (order.price, order.book.venue_id)))
+}
+pub fn floor_quote(value: w::Order, now_ms: i64) -> Result<Option<FloorQuote>> {
+    let Some(order) = active_floor_order(value, now_ms)? else {
+        return Ok(None);
+    };
     let model_id = match order.target {
         GiftTarget::Gift { gift } => gift.traits.model,
         GiftTarget::Criteria { mut criteria } if criteria.models.len() == 1 => {

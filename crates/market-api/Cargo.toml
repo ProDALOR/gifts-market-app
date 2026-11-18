@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+market-valuation.workspace = true
 market-gifts = { workspace = true, features = ["schema"] }
 market-media.workspace = true
 market-actors.workspace = true

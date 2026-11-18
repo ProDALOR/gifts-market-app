@@ -34,6 +34,7 @@ pub struct Portfolio {
 }
 #[derive(Debug, Clone)]
 pub struct PortfolioRequest {
+    pub strategy: market_gifts::valuation::StrategyId,
     pub user: UserId,
     pub currency_id: CurrencyId,
     pub priority: Priority,

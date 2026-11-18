@@ -1987,6 +1987,7 @@ dependencies = [
  "market-media",
  "market-miniapp",
  "market-replica",
+ "market-valuation",
  "percent-encoding",
  "serde",
  "serde_json",

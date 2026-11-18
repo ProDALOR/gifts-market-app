@@ -6,15 +6,28 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub struct MarketApi {
     data: MarketDataHandle,
+    valuation: market_actors::valuation::ValuationHandle,
     encoder: Arc<crate::encoding::PageEncoder>,
 }
 impl MarketApi {
-    pub fn new(data: MarketDataHandle) -> Self {
-        Self::with_page_limit(data, crate::config::WebSocketLimits::default().page_bytes)
+    pub fn new(
+        data: MarketDataHandle,
+        valuation: market_actors::valuation::ValuationHandle,
+    ) -> Self {
+        Self::with_page_limit(
+            data,
+            valuation,
+            crate::config::WebSocketLimits::default().page_bytes,
+        )
     }
-    pub(crate) fn with_page_limit(data: MarketDataHandle, limit: usize) -> Self {
+    pub(crate) fn with_page_limit(
+        data: MarketDataHandle,
+        valuation: market_actors::valuation::ValuationHandle,
+        limit: usize,
+    ) -> Self {
         Self {
             data,
+            valuation,
             encoder: Arc::new(crate::encoding::PageEncoder::new(limit)),
         }
     }
@@ -72,11 +85,11 @@ impl MarketApi {
     pub async fn executions(&self, query: GiftHistoryQuery) -> Result<Page<GiftOrder>> {
         Ok(self.data.executions(query).await?)
     }
-    pub async fn value_models(
+    pub async fn valuation_mark(
         &self,
         query: market_gifts::valuation::ValuationRequest,
-    ) -> Result<market_gifts::valuation::Valuation> {
-        Ok(self.data.value_models(query).await?)
+    ) -> Result<Arc<market_valuation::Mark<market_gifts::valuation::Valuation>>> {
+        Ok(self.valuation.mark(query).await?)
     }
     pub async fn subscribe(
         &self,

@@ -18,6 +18,7 @@ pub struct Evaluation<V> {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct Mark<V> {
+    pub strategy: &'static str,
     pub value: V,
     pub revision: String,
     pub evaluated_at: jiff::Timestamp,
@@ -30,8 +31,9 @@ impl<V> Deref for Mark<V> {
     }
 }
 impl<V> Mark<V> {
-    pub fn evaluated(result: Evaluation<V>) -> Self {
+    pub fn evaluated(strategy: &'static str, result: Evaluation<V>) -> Self {
         Self {
+            strategy,
             value: result.value,
             revision: result.revision,
             coverage: result.coverage,
@@ -40,6 +42,7 @@ impl<V> Mark<V> {
     }
 }
 pub trait Strategy: Send + Sync + 'static {
+    const ID: &'static str;
     type Key: Clone + Eq + Hash + Send + 'static;
     type Value: Send + Sync + 'static;
     type Error: Clone + Send + 'static;
@@ -92,6 +95,7 @@ impl std::fmt::Display for ServiceError {
 }
 impl std::error::Error for ServiceError {}
 pub struct Handle<K, V, E> {
+    strategy: &'static str,
     tx: mpsc::Sender<actor::Request<K, V, E>>,
     slots: Arc<Semaphore>,
     closed: CancellationToken,
@@ -102,6 +106,7 @@ pub struct Handle<K, V, E> {
 impl<K, V, E> Clone for Handle<K, V, E> {
     fn clone(&self) -> Self {
         Self {
+            strategy: self.strategy,
             tx: self.tx.clone(),
             slots: self.slots.clone(),
             closed: self.closed.clone(),
@@ -112,6 +117,9 @@ impl<K, V, E> Clone for Handle<K, V, E> {
     }
 }
 impl<K: Send + 'static, V: Send + Sync + 'static, E: Send + 'static> Handle<K, V, E> {
+    pub fn strategy(&self) -> &'static str {
+        self.strategy
+    }
     pub async fn mark(&self, key: K) -> Result<Arc<Mark<V>>, Error<E>> {
         if self.closed.is_cancelled() || self.stop.is_cancelled() {
             return Err(Error::Stopped);
@@ -155,7 +163,9 @@ impl<K: Clone + Eq + Hash + Send + 'static, V: Send + Sync + 'static, E: Clone +
         strategy: S,
         config: Config,
     ) -> Result<Self, ServiceError> {
-        if config.max_requests == 0
+        if S::ID.is_empty()
+            || S::ID.len() > 64
+            || config.max_requests == 0
             || config.max_requests > 4096
             || config.max_entries == 0
             || config.max_entries > 4096
@@ -182,6 +192,7 @@ impl<K: Clone + Eq + Hash + Send + 'static, V: Send + Sync + 'static, E: Clone +
         let wake = Arc::new(tokio::sync::Notify::new());
         let notify = wake.clone();
         let handle = Handle {
+            strategy: S::ID,
             tx,
             slots: Arc::new(Semaphore::new(config.max_requests)),
             closed: closed.clone(),

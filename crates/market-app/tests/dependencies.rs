@@ -76,6 +76,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-gifts",
                 "market-miniapp",
                 "market-media",
+                "market-valuation",
             ],
         ),
         (

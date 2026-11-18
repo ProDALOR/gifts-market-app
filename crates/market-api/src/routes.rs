@@ -74,13 +74,17 @@ pub(crate) async fn executions(
 ) -> Result<web::Json<Page<GiftOrder>>> {
     Ok(web::Json(state.executions(query.into_inner()).await?))
 }
-#[utoipa::path(post,path="/portfolio/value",tag="Portfolio",summary="Value a model portfolio at current ask floors",request_body=market_gifts::valuation::ValuationRequest,responses((status=200,body=market_gifts::valuation::Valuation),(status=400,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/portfolio/value",tag="Portfolio",summary="Get a shared named valuation mark",description="Select model_floor (default) or collection_floor. Each strategy uses its own shared actor and cached marks keyed by normalized positions and currency. No automatic strategy fallback or currency conversion. Nonempty requests with no priced gifts return 422 not_enough_data with per-position reasons; partial coverage remains a successful mark. Source changes invalidate marks, and periodic reconciliation covers time-dependent listing expiry. The nested value contains exact decimal prices and synchronization status; evaluated_at is the original UTC evaluation time, including on cache hits. Does not fetch Telegram inventory.",request_body=market_gifts::valuation::ValuationRequest,responses((status=200,body=ValuationMark),(status=400,body=ErrorResponse),(status=422,body=ErrorResponse,description="No requested gifts could be priced; error details include strategy, currency, revision and unpriced reasons"),(status=429,body=ErrorResponse,description="Valuation admission or market query capacity exhausted"),(status=503,body=ErrorResponse,description="Valuation unavailable, stopped or timed out")))]
 pub(crate) async fn portfolio(
     state: web::Data<MarketApi>,
     query: web::Json<market_gifts::valuation::ValuationRequest>,
-) -> Result<web::Json<market_gifts::valuation::Valuation>> {
-    Ok(web::Json(state.value_models(query.into_inner()).await?))
+) -> Result<HttpResponse> {
+    let mark = state.valuation_mark(query.into_inner()).await?;
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CACHE_CONTROL, "no-store"))
+        .json(ValuationMark::from(mark.as_ref())))
 }
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     configure_with_limit(cfg, crate::config::ApiLimits::default().json_bytes);
 }

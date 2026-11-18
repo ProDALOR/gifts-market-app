@@ -14,6 +14,7 @@ fn server(runtime: &MarketRuntime, web_dir: &Path) -> ApiServer {
             limits: Default::default(),
         },
         runtime.handle(),
+        runtime.valuation(),
     )
     .unwrap()
 }

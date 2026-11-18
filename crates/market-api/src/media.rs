@@ -91,6 +91,7 @@ async fn catalog_media(
                 }
             };
             let error = ApiError {
+                details: None,
                 code,
                 message: message.into(),
             };
@@ -181,6 +182,11 @@ mod tests {
         let data = market_actors::MarketDataService::start(writer.reader(), 2, 2)
             .await
             .unwrap();
+        let valuation = market_valuation::Service::start(
+            market_actors::valuation::ModelFloorStrategy::new(data.handle.clone()),
+            Default::default(),
+        )
+        .unwrap();
         let media_path = directory.path().join("media");
         let (cache, downloads) = MediaCache::open(&media_path).await.unwrap();
         drop(downloads);
@@ -199,7 +205,11 @@ mod tests {
         let app = test::init_service(
             App::new()
                 .wrap(crate::security_headers())
-                .app_data(web::Data::new(MarketApi::new(data.handle.clone())))
+                .app_data(web::Data::new(MarketApi::new(
+                    data.handle.clone(),
+                    market_actors::valuation::ValuationHandle::new([valuation.handle.clone()])
+                        .unwrap(),
+                )))
                 .app_data(web::Data::new(MediaApi::new(cache.clone())))
                 .configure(crate::configure),
         )
@@ -373,6 +383,7 @@ mod tests {
             "Cache-only API nodes do not enqueue downloads"
         );
         cache.shutdown().await;
+        valuation.task.shutdown().await.unwrap();
         let stop = tokio_util::sync::CancellationToken::new();
         stop.cancel();
         data.task.run(stop).await.unwrap();

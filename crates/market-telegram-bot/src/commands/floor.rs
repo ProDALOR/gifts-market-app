@@ -4,6 +4,7 @@ use market_gifts::valuation::{ModelPosition, ValuationRequest};
 pub(super) async fn execute(market: &ValuationHandle, query: FloorQuery) -> Reply {
     match market
         .mark(ValuationRequest {
+            strategy: query.strategy,
             positions: vec![ModelPosition {
                 model: query.model,
                 quantity: 1,
@@ -13,6 +14,6 @@ pub(super) async fn execute(market: &ValuationHandle, query: FloorQuery) -> Repl
         .await
     {
         Ok(value) => render::floor(&value),
-        Err(error) => render::valuation_error(error),
+        Err(error) => render::error_reply(error),
     }
 }

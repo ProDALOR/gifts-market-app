@@ -121,7 +121,7 @@ pub(crate) async fn run<S: Strategy>(
                 entry.dirty = false;
                 match result {
                     Ok(result) => {
-                        let mark = Arc::new(Mark::evaluated(result));
+                        let mark = Arc::new(Mark::evaluated(S::ID,result));
                         entry.mark = Some(mark.clone());
                         for waiter in entry.waiters.drain(..) {
                             let _ = waiter.reply.send(Ok(mark.clone()));

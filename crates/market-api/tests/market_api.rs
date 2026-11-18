@@ -150,6 +150,7 @@ fn page(price: &str) -> w::Page {
 }
 struct TestMarket {
     data: MarketDataHandle,
+    valuation: market_actors::valuation::ValuationHandle,
     stop: CancellationToken,
     jobs: Vec<tokio::task::JoinHandle<Result<(), Status>>>,
     _cancel_on_drop: tokio_util::sync::DropGuard,
@@ -163,12 +164,44 @@ impl TestMarket {
         let data = MarketDataService::start_with_shutdown(replica.reader, 8, 8, stop.child_token())
             .await
             .unwrap();
+        let valuation = market_valuation::Service::start(
+            market_actors::valuation::ModelFloorStrategy::new(data.handle.clone()),
+            Default::default(),
+        )
+        .unwrap();
+        let collection = market_valuation::Service::start(
+            market_actors::valuation::CollectionFloorStrategy::new(data.handle.clone()),
+            Default::default(),
+        )
+        .unwrap();
+        let registry = market_actors::valuation::ValuationHandle::new([
+            valuation.handle.clone(),
+            collection.handle.clone(),
+        ])
+        .unwrap();
+        let collection_stop = stop.child_token();
+        let valuation_stop = stop.child_token();
         let jobs = vec![
             tokio::spawn(data.task.run(stop.child_token())),
+            tokio::spawn(async move {
+                valuation
+                    .task
+                    .run(valuation_stop)
+                    .await
+                    .map_err(|error| Status::unavailable(error.to_string()))
+            }),
+            tokio::spawn(async move {
+                collection
+                    .task
+                    .run(collection_stop)
+                    .await
+                    .map_err(|error| Status::unavailable(error.to_string()))
+            }),
             tokio::spawn(replica.replication.run(hub, stop.child_token())),
         ];
         Self {
             data: data.handle,
+            valuation: registry,
             stop: stop.clone(),
             jobs,
             _cancel_on_drop: stop.drop_guard(),
@@ -192,6 +225,7 @@ fn api_server(market: &TestMarket, web_dir: std::path::PathBuf) -> ApiServer {
             limits: Default::default(),
         },
         market.data.clone(),
+        market.valuation.clone(),
     )
     .unwrap()
 }
@@ -224,7 +258,7 @@ async fn setup() -> (MarketApi, TestMarket, Peer, CancellationToken) {
             .unwrap()
     });
     let runtime = TestMarket::open(peer._directory.path(), node).await;
-    let api = MarketApi::new(runtime.data.clone());
+    let api = MarketApi::new(runtime.data.clone(), runtime.valuation.clone());
     tokio::time::timeout(Duration::from_secs(5), async {
         while api.ready().await.is_err() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -251,8 +285,8 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
         (" \t".to_owned(), 400),
         ("x".repeat(257), 400),
         ("💎".repeat(65), 400),
-        ("x".repeat(256), 200),
-        ("💎".repeat(64), 200),
+        ("x".repeat(256), 422),
+        ("💎".repeat(64), 422),
     ] {
         let response = test::call_service(&app, test::TestRequest::post()
             .uri("/portfolio/value")
@@ -743,7 +777,7 @@ async fn headless_server_normalizes_extractors_framework_errors_and_origin_polic
         },
         ..Default::default()
     };
-    let server = ApiServer::bind(config, runtime.data.clone()).unwrap();
+    let server = ApiServer::bind(config, runtime.data.clone(), runtime.valuation.clone()).unwrap();
     let address = server.local_addr().unwrap();
     let api_stop = CancellationToken::new();
     let job = tokio::spawn(server.run(api_stop.child_token()));
@@ -886,6 +920,7 @@ async fn oversized_subscription_pages_report_terminal_errors_and_release_the_id(
             ..Default::default()
         },
         runtime.data.clone(),
+        runtime.valuation.clone(),
     )
     .unwrap();
     let address = server.local_addr().unwrap();
@@ -972,9 +1007,17 @@ async fn live_rest_continuations_do_not_consume_retained_snapshot_capacity() {
     let service = MarketDataService::start(writer.reader(), 2, 2)
         .await
         .unwrap();
+    let valuation = market_valuation::Service::start(
+        market_actors::valuation::ModelFloorStrategy::new(service.handle.clone()),
+        Default::default(),
+    )
+    .unwrap();
     let app = test::init_service(
         App::new()
-            .app_data(web::Data::new(MarketApi::new(service.handle)))
+            .app_data(web::Data::new(MarketApi::new(
+                service.handle,
+                market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+            )))
             .configure(configure),
     )
     .await;
@@ -1035,6 +1078,7 @@ async fn live_rest_continuations_do_not_consume_retained_snapshot_capacity() {
         token_json(response["next_page_token"].as_str().unwrap())["snapshot"].is_string(),
         "REST defaults still pin snapshots"
     );
+    valuation.task.shutdown().await.unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
@@ -1302,6 +1346,444 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
     socket.close(None).await.unwrap();
     api_stop.cancel();
     job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+fn valuation_page(price: &str) -> w::Page {
+    let mut page = page(price);
+    page.entities.push(w::Entity {
+        entity: Some(w::entity::Entity::AttributeOption(w::AttributeOption {
+            id: "model".into(),
+            attribute_id: "tg.model".into(),
+            name: "Model".into(),
+            ..Default::default()
+        })),
+    });
+    for entity in &mut page.entities {
+        match entity.entity.as_mut() {
+            Some(w::entity::Entity::ItemType(collection)) => {
+                collection.attributes.insert(
+                    "tg.model".into(),
+                    w::AttributeRule {
+                        required: true,
+                        allowed_values: Some(w::AllowedAttributeValues {
+                            ids: vec!["model".into()],
+                        }),
+                    },
+                );
+            }
+            Some(w::entity::Entity::Order(order)) => {
+                order.attributes.insert(
+                    "tg.model".into(),
+                    w::AttributePredicate {
+                        predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                            value: Some(w::attribute_value::Value::OptionId("model".into())),
+                        })),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    page
+}
+#[actix_web::test]
+async fn valuation_http_returns_the_shared_mark_and_refreshes_after_market_changes() {
+    use market_gifts::valuation::{ModelLookup, ModelPosition, ValuationRequest};
+    let (state, runtime, peer, stop) = setup().await;
+    let price = "1.000000000000000001";
+    peer.page.send_replace(valuation_page(price));
+    let request = ValuationRequest {
+        strategy: Default::default(),
+        positions: vec![ModelPosition {
+            model: ModelLookup::Catalog {
+                collection: "tg.gift.123".into(),
+                model: "model".into(),
+            },
+            quantity: 3,
+        }],
+        currency_id: "GRAM".into(),
+    };
+    let original = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(mark) = state.valuation_mark(request.clone()).await
+                && mark.revision == format!("checkpoint.{price}")
+            {
+                break mark;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(original.total.as_str(), "3.000000000000000003");
+    // Another API instance and a direct actor caller use the same normalized key and immutable mark.
+    let other = MarketApi::new(runtime.data.clone(), runtime.valuation.clone());
+    assert!(Arc::ptr_eq(
+        &original,
+        &other.valuation_mark(request.clone()).await.unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &original,
+        &runtime.valuation.mark(request.clone()).await.unwrap()
+    ));
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(other))
+            .configure(configure),
+    )
+    .await;
+    let mut duplicate = request.clone();
+    duplicate.positions[0].quantity = 1;
+    let mut extra = duplicate.positions[0].clone();
+    extra.quantity = 2;
+    duplicate.positions.push(extra);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/portfolio/value")
+            .set_json(&duplicate)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let json: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(json.as_object().unwrap().len(), 5);
+    assert_eq!(json["value"]["total"], "3.000000000000000003");
+    assert!(json.get("total").is_none());
+    assert_eq!(json["revision"], original.revision);
+    assert_eq!(json["value"]["cursor"], json["revision"]);
+    assert_eq!(json["coverage"]["priced"], 3);
+    assert_eq!(json["coverage"]["unpriced"], 0);
+    assert_eq!(json["value"]["currency_id"], "GRAM");
+    assert_eq!(json["value"]["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json["evaluated_at"]
+            .as_str()
+            .unwrap()
+            .parse::<jiff::Timestamp>()
+            .unwrap(),
+        original.evaluated_at
+    );
+    peer.page
+        .send_replace(valuation_page("2.000000000000000001"));
+    let refreshed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri("/portfolio/value")
+                    .set_json(&request)
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), 200);
+            let mark: serde_json::Value = test::read_body_json(response).await;
+            if mark["revision"] != "checkpoint.1.000000000000000001" {
+                break mark;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(refreshed["value"]["total"], "6.000000000000000003");
+    assert_eq!(refreshed["value"]["cursor"], refreshed["revision"]);
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+#[actix_web::test]
+async fn valuation_schema_describes_mark_metadata_and_http_errors() {
+    let schema = serde_json::to_value(ApiDoc::openapi()).unwrap();
+    let response = &schema["paths"]["/portfolio/value"]["post"]["responses"];
+    assert_eq!(
+        response["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ValuationMark"
+    );
+    for code in ["400", "422", "429", "503"] {
+        assert!(response[code].is_object());
+    }
+    let mark = &schema["components"]["schemas"]["ValuationMark"];
+    for field in ["strategy", "value", "revision", "evaluated_at", "coverage"] {
+        assert!(
+            mark["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == field)
+        );
+    }
+    assert_eq!(mark["properties"]["evaluated_at"]["format"], "date-time");
+    assert_eq!(mark["properties"]["evaluated_at"]["type"], "string");
+    assert_eq!(
+        mark["properties"]["value"]["$ref"],
+        "#/components/schemas/Valuation"
+    );
+    assert!(schema["components"]["schemas"]["ApiError"]["properties"]["details"].is_object());
+    assert!(
+        schema["components"]["schemas"]["ValuationErrorDetails"]["properties"]["unpriced"]
+            .is_object()
+    );
+    assert!(
+        schema["components"]["schemas"]["ValuationRequest"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v != "strategy")
+    );
+    let coverage = &schema["components"]["schemas"]["ValuationCoverage"];
+    assert_eq!(coverage["required"].as_array().unwrap().len(), 2);
+}
+#[actix_web::test]
+async fn valuation_admission_timeout_and_shutdown_are_http_errors_without_affecting_other_reads() {
+    use market_gifts::valuation::{Valuation, ValuationRequest};
+    struct Blocked {
+        changes: tokio::sync::watch::Receiver<u64>,
+        started: Arc<AtomicUsize>,
+    }
+    impl market_valuation::Strategy for Blocked {
+        const ID: &'static str = "model_floor";
+        type Key = ValuationRequest;
+        type Value = Valuation;
+        type Error = market_actors::error::DataError;
+        fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.changes.clone()
+        }
+        async fn evaluate(
+            &self,
+            _: ValuationRequest,
+        ) -> Result<market_valuation::Evaluation<Valuation>, Self::Error> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            std::future::pending().await
+        }
+    }
+    let (_, runtime, _, stop) = setup().await;
+    let (_sender, changes) = tokio::sync::watch::channel(0);
+    let started = Arc::new(AtomicUsize::new(0));
+    let valuation = market_valuation::Service::start(
+        Blocked {
+            changes,
+            started: started.clone(),
+        },
+        market_valuation::Config {
+            max_requests: 1,
+            attempt_timeout: Duration::from_millis(150),
+            request_timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(MarketApi::new(
+                runtime.data.clone(),
+                market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
+            )))
+            .configure(configure),
+    )
+    .await;
+    let body = serde_json::json!({"positions":[],"currency_id":"GRAM"});
+    let (timed_out, busy) = tokio::join!(
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/portfolio/value")
+                .set_json(&body)
+                .to_request()
+        ),
+        async {
+            while started.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri("/portfolio/value")
+                    .set_json(&body)
+                    .to_request(),
+            )
+            .await
+        }
+    );
+    assert_eq!(busy.status(), 429);
+    let json: serde_json::Value = test::read_body_json(busy).await;
+    assert_eq!(json["error"]["code"], "capacity_exceeded");
+    assert_eq!(timed_out.status(), 503);
+    let json: serde_json::Value = test::read_body_json(timed_out).await;
+    assert_eq!(json["error"]["code"], "timed_out");
+    assert_eq!(json["error"]["message"], "Valuation request timed out");
+    valuation.task.shutdown().await.unwrap();
+    let stopped = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/portfolio/value")
+            .set_json(body)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(stopped.status(), 503);
+    assert_eq!(
+        test::call_service(&app, test::TestRequest::get().uri("/sync").to_request())
+            .await
+            .status(),
+        200
+    );
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+async fn named_strategies_keep_independent_marks_and_explain_missing_data() {
+    use market_gifts::valuation::{ModelLookup, ModelPosition, ValuationRequest};
+    let (state, runtime, peer, stop) = setup().await;
+    let mut data = valuation_page("10");
+    data.cursor = "strategies".into();
+    let mut cheap = data
+        .entities
+        .iter()
+        .find_map(|e| match &e.entity {
+            Some(w::entity::Entity::Order(o)) => Some(o.clone()),
+            _ => None,
+        })
+        .unwrap();
+    cheap.id = "cheap".into();
+    cheap.price = "3".into();
+    cheap.attributes.clear(); // A valid collection-wide ask, not a model-specific quote.
+    data.entities.push(w::Entity {
+        entity: Some(w::entity::Entity::Order(cheap)),
+    });
+    peer.page.send_replace(data);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while runtime
+            .data
+            .orders(market_gifts::GiftOrdersQuery::new(
+                market_gifts::GiftFilters::new("tg.gift.123".into(), "GRAM".into()),
+            ))
+            .await
+            .unwrap()
+            .cursor
+            != "strategies"
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let request = ValuationRequest {
+        strategy: Default::default(),
+        currency_id: "GRAM".into(),
+        positions: vec![ModelPosition {
+            model: ModelLookup::named("Gift", "Model").unwrap(),
+            quantity: 2,
+        }],
+    };
+    let mut collection = request.clone();
+    collection.strategy = market_gifts::valuation::StrategyId::collection_floor();
+    let (model, broad) = tokio::join!(
+        runtime.valuation.mark(request.clone()),
+        runtime.valuation.mark(collection.clone()),
+    );
+    let model = model.unwrap();
+    let broad = broad.unwrap();
+    assert_eq!(model.strategy, "model_floor");
+    assert_eq!(broad.strategy, "collection_floor");
+    assert_eq!(model.total.as_str(), "20");
+    assert_eq!(broad.total.as_str(), "6");
+    assert!(Arc::ptr_eq(
+        &model,
+        &runtime.valuation.mark(request.clone()).await.unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &broad,
+        &runtime.valuation.mark(collection.clone()).await.unwrap()
+    ));
+
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let missing = ModelPosition {
+        model: ModelLookup::named("Gift", "Missing").unwrap(),
+        quantity: 1,
+    };
+    let mut no_data = request.clone();
+    no_data.positions = vec![missing.clone()];
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/portfolio/value")
+            .set_json(&no_data)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 422);
+    let body: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(body["error"]["code"], "not_enough_data");
+    let detail = &body["error"]["details"];
+    assert_eq!(detail["strategy"], "model_floor");
+    assert_eq!(detail["currency_id"], "GRAM");
+    assert_eq!(detail["revision"], "strategies");
+    assert_eq!(detail["required_samples"], 1);
+    assert_eq!(detail["available_samples"], 0);
+    assert_eq!(detail["unpriced"][0]["unpriced"], "unknown_model");
+    no_data.strategy = collection.strategy.clone();
+    assert_eq!(
+        runtime
+            .valuation
+            .mark(no_data)
+            .await
+            .unwrap()
+            .total
+            .as_str(),
+        "3"
+    );
+
+    let mut partial = request.clone();
+    partial.positions.push(missing);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/portfolio/value")
+            .set_json(partial)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(body["strategy"], "model_floor");
+    assert_eq!(
+        body["coverage"],
+        serde_json::json!({"priced":2,"unpriced":1})
+    );
+    for (strategy, status, code) in [
+        ("unknown", 400, "unsupported_strategy"),
+        ("Invalid!", 400, "invalid_query"),
+    ] {
+        let body = serde_json::json!({"strategy":strategy,"positions":[],"currency_id":"GRAM"});
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/portfolio/value")
+                .set_json(body)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), status);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["error"]["code"], code);
+    }
+    let empty = ValuationRequest {
+        positions: vec![],
+        ..request
+    };
+    assert_eq!(
+        runtime.valuation.mark(empty).await.unwrap().total.as_str(),
+        "0"
+    );
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }

@@ -82,6 +82,7 @@ mod tests {
             quantity: 1,
         };
         let mut request = ValuationRequest {
+            strategy: Default::default(),
             positions: vec![position.clone(); 1001],
             currency_id: "GRAM".into(),
         };

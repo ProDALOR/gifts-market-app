@@ -7,10 +7,12 @@ pub(super) async fn execute(
     service: &PortfolioHandle,
     user: u64,
     currency: market_gifts::CurrencyId,
+    strategy: market_gifts::valuation::StrategyId,
 ) -> Result<Reply, BotError> {
     let user = UserId::new(user).map_err(|_| BotError::InvalidResponse)?;
     match service
         .request(PortfolioRequest {
+            strategy,
             user,
             currency_id: currency,
             priority: Priority::Interactive,

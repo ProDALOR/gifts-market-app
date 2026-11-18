@@ -32,6 +32,7 @@ impl Source {
     }
 }
 impl Strategy for Source {
+    const ID: &'static str = "test";
     type Key = u8;
     type Value = u32;
     type Error = &'static str;
@@ -79,6 +80,8 @@ async fn normalizes_coalesces_and_serves_the_same_cached_mark() {
     let c = service.handle.mark(1).await.unwrap();
     assert!(Arc::ptr_eq(&a, &c));
     assert_eq!(a.revision, "42");
+    assert_eq!(a.strategy, "test");
+    assert_eq!(service.handle.strategy(), "test");
     assert_eq!(a.coverage.priced, 1);
     assert_eq!(
         service.handle.mark(255).await,
@@ -232,6 +235,7 @@ async fn dropped_lifecycle_owner_closes_handles_and_aborts_active_work() {
 async fn strategy_panics_are_reported_and_never_leave_waiters_hanging() {
     struct Broken(tokio::sync::watch::Receiver<u64>);
     impl Strategy for Broken {
+        const ID: &'static str = "test";
         type Key = u8;
         type Value = u32;
         type Error = &'static str;

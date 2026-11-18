@@ -12,19 +12,16 @@ pub trait InventoryProvider: Send + Sync + 'static {
     ) -> impl market_invocations::Invocation<Output = InventoryPage, Error = InventoryError>;
 }
 pub trait ValuationProvider: Send + Sync + 'static {
-    fn value_models(
+    fn mark(
         &self,
         request: ValuationRequest,
     ) -> impl Future<Output = Result<std::sync::Arc<market_valuation::Mark<Valuation>>, DataError>> + Send;
 }
 impl ValuationProvider for market_actors::valuation::ValuationHandle {
-    async fn value_models(
+    async fn mark(
         &self,
         request: ValuationRequest,
     ) -> Result<std::sync::Arc<market_valuation::Mark<Valuation>>, DataError> {
-        self.mark(request).await.map_err(|error| match error {
-            market_valuation::Error::Strategy(error) => error,
-            _ => DataError::unavailable("valuation mark unavailable"),
-        })
+        self.mark(request).await
     }
 }

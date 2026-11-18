@@ -5,7 +5,7 @@ mod orders;
 pub mod query;
 pub use catalog::*;
 pub use lookup::{find_collection, find_model, model_identity};
-pub use orders::{FloorQuote, book, concrete_model, floor_quote, order};
+pub use orders::{FloorQuote, book, collection_floor_quote, concrete_model, floor_quote, order};
 #[derive(Debug)]
 pub struct ProjectionError(String);
 impl std::fmt::Display for ProjectionError {

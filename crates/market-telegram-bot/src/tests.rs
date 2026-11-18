@@ -27,7 +27,7 @@ fn floor_and_portfolio_arguments_are_typed_without_overriding_caller_identity() 
     assert_eq!(query.currency.as_str(), "GRAM");
     let request = commands::parse(message(22, "/portfolio TON"), &["market_bot"]).unwrap();
     assert_eq!(request.user_id, 7);
-    let Command::Portfolio(currency) = request.command else {
+    let Command::Portfolio { currency, .. } = request.command else {
         panic!("expected portfolio")
     };
     assert_eq!(currency.as_str(), "GRAM");
@@ -123,7 +123,7 @@ async fn services(
     .unwrap();
     let portfolio = market_portfolio::PortfolioService::start(
         Source(error),
-        valuation.handle.clone(),
+        market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
         Default::default(),
         invocations.handle(),
     )
@@ -143,7 +143,7 @@ async fn bot_status_reads_the_shared_actor_and_portfolio_permission_failure_is_a
     let handler = MarketCommands::new(
         data.handle.clone(),
         portfolio.handle.clone(),
-        _valuation.handle.clone(),
+        market_actors::valuation::ValuationHandle::new([_valuation.handle.clone()]).unwrap(),
     );
     let names = vec!["market_bot".to_owned(), "market_alias".to_owned()];
     let request = handler
@@ -233,7 +233,7 @@ async fn bot_service_cancellation_opens_no_telegram_storage_and_keeps_market_dat
         worker,
         data.handle.clone(),
         portfolio.handle.clone(),
-        _valuation.handle.clone(),
+        market_actors::valuation::ValuationHandle::new([_valuation.handle.clone()]).unwrap(),
     )
     .run(stop.clone())
     .await
@@ -257,7 +257,7 @@ async fn portfolio_authorization_failure_remains_fatal_for_the_transport() {
     let handler = MarketCommands::new(
         data.handle.clone(),
         portfolio.handle.clone(),
-        _valuation.handle.clone(),
+        market_actors::valuation::ValuationHandle::new([_valuation.handle.clone()]).unwrap(),
     );
     let request = handler
         .parse(message(1, "/portfolio"), &["market_bot".into()])
@@ -334,6 +334,7 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
         calls: Arc<AtomicUsize>,
     }
     impl market_valuation::Strategy for Floors {
+        const ID: &'static str = "model_floor";
         type Key = ValuationRequest;
         type Value = Valuation;
         type Error = market_actors::error::DataError;
@@ -408,7 +409,7 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
     let pages = Pages::default();
     let portfolio = market_portfolio::PortfolioService::start(
         pages.clone(),
-        valuation.handle.clone(),
+        market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
         Default::default(),
         invocations.handle(),
     )
@@ -417,7 +418,7 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
     let handler = MarketCommands::new(
         data.handle.clone(),
         portfolio.handle.clone(),
-        valuation.handle.clone(),
+        market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
     );
     let request = handler
         .parse(message(1, "/portfolio"), &["market_bot".into()])
@@ -448,4 +449,32 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
     let stop = tokio_util::sync::CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();
+}
+
+#[test]
+fn commands_accept_explicit_valuation_strategy_without_changing_defaults() {
+    let names = ["market_bot".to_owned()];
+    for (text, expected) in [
+        ("/portfolio", "model_floor"),
+        ("/portfolio GRAM | collection_floor", "collection_floor"),
+        ("/floor Gift | Model", "model_floor"),
+        (
+            "/floor Gift | Model | GRAM | collection_floor",
+            "collection_floor",
+        ),
+    ] {
+        let parsed = commands::LaunchCommands
+            .parse(message(1, text), &names)
+            .unwrap();
+        let strategy = match parsed.command {
+            commands::Command::Portfolio { strategy, .. } => strategy,
+            commands::Command::Floor(query) => query.strategy,
+            _ => panic!("unexpected command"),
+        };
+        assert_eq!(strategy.as_str(), expected);
+    }
+    let parsed = commands::LaunchCommands
+        .parse(message(1, "/portfolio GRAM | Invalid!"), &names)
+        .unwrap();
+    assert!(matches!(parsed.command, commands::Command::Invalid(_)));
 }

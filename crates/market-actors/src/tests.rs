@@ -712,6 +712,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
     let value = service
         .handle
         .value_models(ValuationRequest {
+            strategy: Default::default(),
             positions: vec![
                 ModelPosition {
                     model: lookup.clone(),
@@ -764,6 +765,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
     let stars = service
         .handle
         .value_models(ValuationRequest {
+            strategy: Default::default(),
             positions: vec![ModelPosition {
                 model: lookup.clone(),
                 quantity: 2,
@@ -777,6 +779,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
         service
             .handle
             .value_models(ValuationRequest {
+                strategy: Default::default(),
                 positions: vec![ModelPosition {
                     model: lookup,
                     quantity: 0
@@ -881,6 +884,7 @@ async fn saturated_valuation_capacity_leaves_normal_reads_available() {
         .handle
         .orderbooks
         .value_models(market_gifts::valuation::ValuationRequest {
+            strategy: Default::default(),
             currency_id: "GRAM".into(),
             positions: vec![],
         })
@@ -930,6 +934,7 @@ async fn freshness_does_not_wait_for_query_capacity_and_valuation_admission_is_i
     let valuation = handle
         .orderbooks
         .value_models(market_gifts::valuation::ValuationRequest {
+            strategy: Default::default(),
             positions: vec![],
             currency_id: "GRAM".into(),
         })
@@ -944,4 +949,117 @@ async fn freshness_does_not_wait_for_query_capacity_and_valuation_admission_is_i
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
+    use crate::error::DataErrorCode;
+    use crate::valuation::{CollectionFloorStrategy, ModelFloorStrategy, ValuationHandle};
+    use market_gifts::valuation::{ModelLookup, ModelPosition, StrategyId, ValuationRequest};
+    let (_directory, mut writer) = fixture();
+    let data = MarketDataService::start(writer.reader(), 2, 1)
+        .await
+        .unwrap();
+    let model = market_valuation::Service::start(
+        ModelFloorStrategy::new(data.handle.clone()),
+        Default::default(),
+    )
+    .unwrap();
+    let collection = market_valuation::Service::start(
+        CollectionFloorStrategy::new(data.handle.clone()),
+        Default::default(),
+    )
+    .unwrap();
+    assert!(ValuationHandle::new([]).is_err());
+    assert!(ValuationHandle::new([model.handle.clone(), model.handle.clone()]).is_err());
+    let registry = ValuationHandle::new([model.handle.clone(), collection.handle.clone()]).unwrap();
+    assert_eq!(registry.strategies().count(), 2);
+    let request = ValuationRequest {
+        strategy: StrategyId::model_floor(),
+        currency_id: "GRAM".into(),
+        positions: vec![ModelPosition {
+            model: ModelLookup::named("Gift", "Missing").unwrap(),
+            quantity: 2,
+        }],
+    };
+    let broad = ValuationRequest {
+        strategy: StrategyId::collection_floor(),
+        ..request.clone()
+    };
+    let permit = data
+        .handle
+        .orderbooks
+        .valuations
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+    let jobs = async { tokio::join!(registry.mark(request.clone()), registry.mark(broad.clone())) };
+    tokio::pin!(jobs);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut jobs)
+            .await
+            .is_err()
+    );
+    assert!(data.handle.status().await.unwrap().ready);
+    drop(permit);
+    let (missing, priced) = jobs.await;
+    let error = missing.unwrap_err();
+    assert_eq!(error.code(), DataErrorCode::NotEnoughData);
+    assert_eq!(
+        error.valuation_details().unwrap().strategy,
+        StrategyId::model_floor()
+    );
+    let priced = priced.unwrap();
+    assert_eq!(priced.strategy, "collection_floor");
+    assert_eq!(priced.total.as_str(), "6");
+    assert!(Arc::ptr_eq(
+        &priced,
+        &registry.mark(broad.clone()).await.unwrap()
+    ));
+    let unknown = ValuationRequest {
+        strategy: StrategyId::new("unknown").unwrap(),
+        ..request.clone()
+    };
+    let error = registry.mark(unknown).await.unwrap_err();
+    assert_eq!(error.code(), DataErrorCode::UnsupportedStrategy);
+    assert_eq!(
+        error.valuation_details().unwrap().strategy.as_str(),
+        "unknown"
+    );
+    // No eligible asks is an explicit reason, never a cached zero estimate.
+    let mut exhausted = order("0");
+    if let Some(w::change::Change::Upsert(w::Entity {
+        entity: Some(w::entity::Entity::Order(o)),
+    })) = exhausted.change.as_mut()
+    {
+        o.quantity = "0".into();
+    }
+    writer
+        .apply(w::Batch {
+            cursor: "empty".into(),
+            changes: vec![exhausted],
+        })
+        .unwrap();
+    let error = registry.mark(broad.clone()).await.unwrap_err();
+    assert_eq!(error.code(), DataErrorCode::NotEnoughData);
+    assert_eq!(
+        error.valuation_details().unwrap().unpriced[0].unpriced,
+        Some(market_gifts::valuation::UnpricedReason::NoListing)
+    );
+    writer
+        .apply(w::Batch {
+            cursor: "recovered".into(),
+            changes: vec![order("4")],
+        })
+        .unwrap();
+    assert_eq!(
+        registry.mark(broad.clone()).await.unwrap().total.as_str(),
+        "8"
+    );
+    model.task.shutdown().await.unwrap();
+    collection.task.shutdown().await.unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
 }

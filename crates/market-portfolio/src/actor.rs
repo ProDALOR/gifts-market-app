@@ -23,6 +23,7 @@ struct QuoteKey {
     user: UserId,
     currency: CurrencyId,
     snapshot: u64,
+    strategy: market_gifts::valuation::StrategyId,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Work {
@@ -234,6 +235,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
             user: pending.submit.request.user,
             currency: pending.submit.request.currency_id.clone(),
             snapshot: snapshot.id,
+            strategy: pending.submit.request.strategy.clone(),
         };
         pending.work = Work::Value(key.clone());
         self.values
@@ -435,21 +437,25 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 .or_default() += 1;
         }
         let request = ValuationRequest {
+            strategy: key.strategy.clone(),
             positions: positions
                 .into_iter()
                 .map(|(model, quantity)| ModelPosition { model, quantity })
                 .collect(),
             currency_id: key.currency.clone(),
         };
+        let strategy = request.strategy.clone();
+        let currency = request.currency_id.clone();
         let completed_key = key.clone();
         let handle = ctx.spawn(
             async move {
-                tokio::time::timeout(timeout, backend.value_models(request))
+                tokio::time::timeout(timeout, backend.mark(request))
                     .await
                     .unwrap_or_else(|_| {
-                        Err(market_actors::error::DataError::unavailable(
+                        Err(market_actors::error::DataError::timed_out(
                             "portfolio valuation timed out",
-                        ))
+                        )
+                        .with_valuation(strategy, currency))
                     })
             }
             .into_actor(self)

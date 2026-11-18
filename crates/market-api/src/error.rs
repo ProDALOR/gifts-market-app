@@ -15,11 +15,16 @@ pub enum ErrorCode {
     CapacityExceeded,
     Unavailable,
     NotFound,
+    NotEnoughData,
+    UnsupportedStrategy,
+    TimedOut,
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<std::sync::Arc<market_gifts::valuation::ValuationErrorDetails>>,
 }
 pub type Result<T> = std::result::Result<T, ApiError>;
 impl ApiError {
@@ -27,6 +32,7 @@ impl ApiError {
         Self {
             code: ErrorCode::InvalidQuery,
             message: message.into(),
+            details: None,
         }
     }
 }
@@ -39,13 +45,20 @@ impl From<market_actors::error::DataError> for ApiError {
             DataErrorCode::RestartRead => ErrorCode::RestartRead,
             DataErrorCode::CapacityExceeded => ErrorCode::CapacityExceeded,
             DataErrorCode::Unavailable => ErrorCode::Unavailable,
+            DataErrorCode::NotEnoughData => ErrorCode::NotEnoughData,
+            DataErrorCode::UnsupportedStrategy => ErrorCode::UnsupportedStrategy,
+            DataErrorCode::TimedOut => ErrorCode::TimedOut,
         };
         let message = if matches!(code, ErrorCode::Unavailable) {
             "Market data service is unavailable".into()
         } else {
             error.message().to_owned()
         };
-        Self { code, message }
+        Self {
+            code,
+            message,
+            details: error.valuation_details().cloned(),
+        }
     }
 }
 impl std::fmt::Display for ApiError {
@@ -68,6 +81,9 @@ impl ResponseError for ApiError {
             ErrorCode::CapacityExceeded => StatusCode::TOO_MANY_REQUESTS,
             ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
+            ErrorCode::NotEnoughData => StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::UnsupportedStrategy => StatusCode::BAD_REQUEST,
+            ErrorCode::TimedOut => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
     fn error_response(&self) -> HttpResponse {
@@ -86,6 +102,7 @@ pub struct ErrorResponse {
 impl From<market_miniapp::auth::AuthError> for ApiError {
     fn from(error: market_miniapp::auth::AuthError) -> Self {
         Self {
+            details: None,
             code: ErrorCode::Unauthorized,
             message: error.to_string(),
         }
@@ -97,22 +114,26 @@ impl ApiError {
         Self {
             code: ErrorCode::Unavailable,
             message: message.into(),
+            details: None,
         }
     }
     pub fn capacity(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::CapacityExceeded,
             message: message.into(),
+            details: None,
         }
     }
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::Forbidden,
             message: message.into(),
+            details: None,
         }
     }
     pub fn not_found() -> Self {
         Self {
+            details: None,
             code: ErrorCode::NotFound,
             message: "Route not found".into(),
         }
@@ -127,10 +148,12 @@ pub(crate) fn configure_extractors(cfg: &mut actix_web::web::ServiceConfig, limi
                 match error {
                     JsonPayloadError::Overflow { .. }
                     | JsonPayloadError::OverflowKnownLength { .. } => ApiError {
+                        details: None,
                         code: ErrorCode::PayloadTooLarge,
                         message: "JSON payload exceeds the request limit".into(),
                     },
                     JsonPayloadError::ContentType => ApiError {
+                        details: None,
                         code: ErrorCode::UnsupportedMediaType,
                         message: "Expected application/json".into(),
                     },
@@ -177,6 +200,7 @@ pub(crate) fn normalize<B: 'static>(
         _ => ErrorCode::InvalidQuery,
     };
     let error = ApiError {
+        details: None,
         code,
         message: status.canonical_reason().unwrap_or("Request failed").into(),
     };

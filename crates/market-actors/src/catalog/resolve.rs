@@ -6,10 +6,15 @@ use std::collections::BTreeMap;
 use tonic::Status;
 
 use market_gifts_hub::{CollectionChoices, find_collection, find_model, model_identity};
+pub(crate) struct ResolvedModel {
+    pub row: ModelValue,
+    pub collection: Option<market_gifts::CollectionId>,
+}
+
 pub(crate) fn resolve(
     reader: &ReplicaReader,
     positions: Vec<ModelPosition>,
-) -> Result<Vec<ModelValue>, Status> {
+) -> Result<Vec<ResolvedModel>, Status> {
     let items = super::projection::entities(reader, w::EntityKind::ItemType, None)?;
     let mut options = BTreeMap::new();
     let mut result = Vec::with_capacity(positions.len());
@@ -44,7 +49,10 @@ pub(crate) fn resolve(
             Ok(item) => item,
             Err(reason) => {
                 row.unpriced = Some(reason);
-                result.push(row);
+                result.push(ResolvedModel {
+                    row,
+                    collection: None,
+                });
                 continue;
             }
         };
@@ -73,14 +81,30 @@ pub(crate) fn resolve(
             Ok(option) => option,
             Err(reason) => {
                 row.unpriced = Some(reason);
-                result.push(row);
+                result.push(ResolvedModel {
+                    row,
+                    collection: Some(
+                        item.id
+                            .clone()
+                            .try_into()
+                            .map_err(|e| Status::data_loss(format!("{e}")))?,
+                    ),
+                });
                 continue;
             }
         };
         row.model = option.name.clone();
         row.identity =
             Some(model_identity(item, option).map_err(|e| Status::data_loss(e.to_string()))?);
-        result.push(row);
+        result.push(ResolvedModel {
+            row,
+            collection: Some(
+                item.id
+                    .clone()
+                    .try_into()
+                    .map_err(|e| Status::data_loss(format!("{e}")))?,
+            ),
+        });
     }
     Ok(result)
 }

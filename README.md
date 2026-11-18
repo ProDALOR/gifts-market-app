@@ -139,13 +139,15 @@ Enable the **Main Mini App** in BotFather for this bot and set its URL to `MARKE
 /floor Bunny Muffin | Red Alert | GRAM
 /portfolio
 /portfolio GRAM
+/portfolio GRAM | collection_floor
+/floor Bunny Muffin | Red Alert | GRAM | collection_floor
 ```
 
 `/floor` resolves exact collection/model names (case-insensitive) or catalog IDs, then returns the lowest non-expired, positive-quantity ask across loaded venues. Bids and executions are excluded. Quote currency defaults to `GRAM`; `TON` is accepted as its alias. A missing listing is reported explicitly.
 
 `/portfolio` reads the command sender's Telegram-visible profile gifts through [payments.getSavedStarGifts](https://core.telegram.org/method/payments.getSavedStarGifts). It never accepts another user's ID as its target. The model document and original gift IDs are matched to catalog aliases, then the actors value each supported collectible at its model floor in one quote currency. Regular gifts and refunded or burned gifts are not valued. Hosted collectibles linked from TON wallets are included when their host matches the sender, and counted separately; linking to a profile does not prove wallet ownership. On-chain holdings not linked to the profile are outside this estimate. Saved and unsaved gifts are requested; Telegram decides which gifts this bot may see. Gifts hidden from the bot remain outside the result. Telegram permission errors produce a per-command explanation instead of a zero balance. Reads are bounded to 1000 saved gifts or 20 pages and the bot’s 40-second command deadline, deduplicate collectible IDs across pages, and label truncated inventories with the reason. If a later page times out or fails, the estimate retains successfully read gifts and is explicitly partial; authorization failures are never hidden. Skipped gifts report separate reasons for refunds, burns, ownership/hosting mismatches and missing IDs or models. Telegram flood waits are shared across inventory requests, and shorter waits never shorten an existing cooldown.
 
-Portfolio output reports Telegram's returned gift count, advertised total and pages read, alongside priced and unpriced gift counts. A missing continuation cursor before the advertised total is reached is marked partial. Only priced gifts contribute to the estimate; no collection-floor fallback or currency conversion is used. Decimal multiplication and addition are exact and checked for overflow. Model resolution and quotes within one valuation use one pinned replica view, and stale market data is marked. Results are ask-based estimates before fees, not sale proceeds; bot replies show the valuation time in UTC. Only the first ten model groups are displayed; additional priced groups remain included in the total.
+Portfolio output reports Telegram's returned gift count, advertised total and pages read, alongside priced and unpriced gift counts. A missing continuation cursor before the advertised total is reached is marked partial. Only priced gifts contribute to the estimate. The default `model_floor` strategy uses each model’s cheapest eligible ask. Explicitly select `collection_floor` to use the cheapest eligible ask in each collection, regardless of model. There is no automatic fallback or currency conversion. Decimal multiplication and addition are exact and checked for overflow. Model resolution and quotes within one valuation use one pinned replica view, and stale market data is marked. Results are ask-based estimates before fees, not sale proceeds; bot replies show the valuation time in UTC. Only the first ten model groups are displayed; additional priced groups remain included in the total.
 
 ```sh
 # Log in/resume the local session and inspect identity; no updates consumed or messages sent.
@@ -162,7 +164,7 @@ Bot commands use `CommandKind` for menu metadata and a typed `Command` request e
 
 The application starts one invocation runtime under the supervised bot task, outside HTTP workers and the reconnect loop. Explicit application operations (authorization/profile checks, configuration, replies, gift pages, document resolution and bounded media downloads) share its 256-job admission bound and eight execution slots. Each operation declares account/group/peer rate scopes and replay safety; all required scopes are acquired atomically. Queue priority is Interactive/Normal/Background with four/two/one turns, FIFO within a class and queued-work promotion. Local group pacing is conservative rather than a claimed Telegram quota. Telegram flood waits conservatively block the account; slow-mode waits block the destination peer. Full cooldowns survive caller cancellation, deadlines and connection replacement. Only safe reads/idempotent configuration or messages with stable random IDs are replayed; token authorization is not automatically replayed by the scheduler. Transient failures have at most three attempts, attempts time out after 10 seconds and queue-plus-execution after 30 seconds. Workflow/delivery retries begin only after an operation has finished; they cannot bypass shared rate gates. Expired file references are refreshed once, and transient asset retries create fresh bounded download iterators. Grammers still owns protocol maintenance, DC migration and update catch-up. `InventoryClient::page_operation(user, offset, limit)` returns an unsubmitted operation over shared `market-gifts::inventory` types. The application adapter supplies it to `PortfolioService` without double scheduling. The inventory capability is published only after authentication, points to the current connection and clears on disconnect; cleanup from an older generation cannot remove its replacement. Peers must already be known to the authenticated session; this path performs no username resolution. Inventory pacing permits two different users in flight with 300 ms between starts, plus one active page per user.
 
-`market-app` starts the valuation actor once alongside market-data actors. `ModelFloorStrategy` normalizes positions/currency and evaluates each mark from one pinned replica view. A mark carries its exact valuation, quote currency, source revision, evaluation timestamp and priced/unpriced coverage. Cached marks are invalidated by local market changes, including source replacement and sync freshness, and refreshed after a 100 ms coalescing window. A 30-second reconciliation interval also covers listing expiry without incoming updates. The actor retains at most 128 recently requested keys, expires idle keys after five minutes and runs one evaluation at a time; it does not scan every possible portfolio. In-flight results invalidated by a newer source revision are discarded. Errors never become zero-valued or silently reused stale marks. `/floor` and portfolio valuation share this actor. Portfolio inventory snapshots remain independently cached for 30 seconds, so market changes revalue cached gifts without another Telegram read. Bot and portfolio tasks stop together, drain consumers before the invocation runtime, and retain rate state across Telegram reconnects. API and GUI portfolio endpoints remain outside this change.
+`market-app` starts a valuation actor for each registered strategy once alongside market-data actors. `ModelFloorStrategy` (`model_floor`) and `CollectionFloorStrategy` (`collection_floor`) normalize positions/currency and evaluate each mark from one pinned replica view. A typed registry routes requests, rejects unknown strategies, and keeps their caches and admission independent; both share the existing heavy-read budget. A mark carries its strategy ID, exact valuation, quote currency, source revision, evaluation timestamp and priced/unpriced coverage. Cached marks are invalidated by local market changes, including source replacement and sync freshness, and refreshed after a 100 ms coalescing window. A 30-second reconciliation interval also covers listing expiry without incoming updates. Each strategy actor retains at most 128 recently requested keys, expires idle keys after five minutes and runs one evaluation at a time; it does not scan every possible portfolio. In-flight results invalidated by a newer source revision are discarded. Errors never become zero-valued or silently reused stale marks. `POST /portfolio/value`, `/floor` and portfolio valuation share this registry. Portfolio inventory snapshots remain independently cached for 30 seconds, so market changes revalue cached gifts without another Telegram read. Bot and portfolio tasks stop together, drain consumers before the invocation runtime, and retain rate state across Telegram reconnects. Telegram-inventory API endpoints and GUI portfolio screens remain outside this change; the public valuation route accepts supplied positions without Telegram configuration.
 
 The dispatcher runs up to eight commands concurrently across private chats, with one active command per chat and at most 64 received, uncheckpointed deliveries. Commands in the same chat retain their order. Checkpoints advance only through the completed prefix of received updates, so a later fast command cannot skip an earlier unfinished command after restart. Backpressure stops receiving when that window is full. In-progress receive futures survive other command completions. Command handlers have a 40-second deadline and at most three attempts; failures and panics produce a command-level response. Permanent reply rejections finish only that delivery. Transient sends retry with a 15-second timeout per attempt and honor full flood waits; cancellation leaves unfinished deliveries uncheckpointed. Replies retain stable random IDs and are bounded to Telegram's text limit without splitting characters.
 
@@ -202,11 +204,11 @@ The public contract uses gift-domain types from `market-gifts`. Hub attributes a
 
 | Route | Purpose |
 | --- | --- |
-| `GET /catalog` | Gift collections, venues, currencies, available books and sync status in one pinned view |
+| `GET /catalog` | Gift collections, venues, currencies and available books in one pinned view |
 | `GET /collections/{id}` | One collection with its models, backdrops, patterns and validated media/color metadata |
 | `POST /orders/query` | A page of current gift asks/bids |
 | `POST /history/query` | A page of confirmed gift executions |
-| `POST /portfolio/value` | Model-floor valuation of supplied gift positions |
+| `POST /portfolio/value` | Named valuation mark for supplied gift positions |
 | `GET /ws` | Live gift-order pages from the local replica |
 | `GET /sync` | Replica readiness and synchronization status |
 | `GET /media/models/{id}` | Cached model thumbnail |
@@ -228,6 +230,64 @@ curl http://localhost:8080/orders/query \
 ```
 
 Pages contain `{data, next_page_token, cursor, sync}`. `GiftOrder` carries a `GiftBook` (venue, collection and currency), an exact decimal-string `price`, an integer gift `quantity`, timestamps and a typed `target`. A `gift` target identifies a concrete collectible with its number and optional model/backdrop/pattern IDs. A `criteria` target describes a selection, such as a bid for any model in a collection. An `unsupported` target explicitly marks hub constraints the gift domain cannot represent; it is never rendered as an unrestricted bid or an invented collectible. Only a dedicated market link is exposed, rather than arbitrary order metadata. Valuation rows include a resolved `identity: {collection_id, model_id}` when known, alongside display labels; catalog resolution and pricing use the same pinned view.
+
+`POST /portfolio/value` accepts `{positions, currency_id, strategy?}` (`model_floor` by default; `collection_floor` is also available) and returns a **valuation mark**. The response shape is `{strategy, value, revision, evaluated_at, coverage}`: previous valuation fields now live inside `value` (for example, `value.total`, `value.rows`, `value.currency_id` and `value.sync`). `revision` identifies the source snapshot; `evaluated_at` is the UTC evaluation timestamp, retained on cache hits. `coverage` counts priced and unpriced collectible quantities. For the model-floor strategy, `revision` matches `value.cursor`. Time-based reconciliation can produce a new mark at the same source revision, so revision alone is not a cache key for the complete valuation.
+
+```sh
+curl http://localhost:8080/portfolio/value \
+  -H 'Content-Type: application/json' \
+  -d '{"positions":[{"model":{"kind":"name","collection":"Gift","model":"Model"},"quantity":3}],"currency_id":"GRAM"}'
+```
+
+Example response (illustrative prices and revision):
+
+```json
+{
+  "strategy": "model_floor",
+  "value": {
+    "rows": [{
+      "identity": {"collection_id": "collection", "model_id": "model"},
+      "collection": "Gift", "model": "Model", "quantity": 3,
+      "floor": "1.000000000000000001", "value": "3.000000000000000003",
+      "venue_id": "venue", "unpriced": null
+    }],
+    "total": "3.000000000000000003", "priced": 3, "unpriced": 0,
+    "currency_id": "GRAM", "cursor": "checkpoint.example",
+    "sync": {"ready": true, "state": "live", "updated_at": null}
+  },
+  "revision": "checkpoint.example",
+  "evaluated_at": "2026-11-18T12:00:00Z",
+  "coverage": {"priced": 3, "unpriced": 0}
+}
+```
+
+HTTP and bot consumers use the same application-owned strategy registry. Equivalent normalized positions/currency within the same strategy share a mark. Market changes invalidate cached marks; 30-second reconciliation covers listing expiry even without updates. The API borrows the cached value while serializing, preserving exact prices and the original mark metadata without copying valuation rows. Successful responses use `Cache-Control: no-store`, leaving cache policy with the actor. Invalid requests return 400; an unknown strategy returns 400 `unsupported_strategy`; nonempty requests with zero priced positions return 422 `not_enough_data`. Partial coverage is a successful mark; an empty inventory is a successful zero estimate. Valuation admission, cache saturation or market query capacity return 429 `capacity_exceeded`; timeouts return 503 `timed_out` and stopped/unavailable services return 503 `unavailable`. Valuation errors include `error.details` with strategy and currency. Insufficient-data details additionally include the source revision, required/available sample counts (one eligible quote is required) and unpriced rows with reasons (`unknown_collection`, `ambiguous_collection`, `unknown_model`, `ambiguous_model`, `no_listing`). No error is converted into a zero estimate or an old mark.
+
+
+Valuation errors use the standard envelope and add `error.details` when a strategy has been selected. For example, HTTP 422 can return:
+
+```json
+{
+  "error": {
+    "code": "not_enough_data",
+    "message": "No requested positions could be valued with this strategy and currency",
+    "details": {
+      "strategy": "model_floor",
+      "currency_id": "GRAM",
+      "revision": "checkpoint.example",
+      "required_samples": 1,
+      "available_samples": 0,
+      "unpriced": [{
+        "identity": null, "collection": "Gift", "model": "Unknown", "quantity": 1,
+        "floor": null, "value": null, "venue_id": null, "unpriced": "unknown_model"
+      }]
+    }
+  }
+}
+```
+
+`required_samples` is the strategy’s minimum eligible quote count for an estimate (one for these floor strategies). Unpriced rows distinguish unknown/ambiguous collections or models from `no_listing`. Timeouts use `timed_out`; temporary service failures use `unavailable`. Failures are never cached as successful marks.
+
 
 Catalog responses (`GET /catalog` and `GET /collections/{id}`) contain catalog data without `cursor` or `sync`. Read `GET /sync` for replica readiness, connection state and last checkpoint time. The frontend uses freshness from order responses and WebSocket updates while browsing, so loading catalog choices requires no extra status polling.
 
@@ -307,11 +367,11 @@ The API and bot use `MarketDataHandle` directly; `market-api::MarketApi` forward
 
 Actor implementations live under `market-actors/src/orderbooks/`, `catalog/` and `subscriptions/`. `market-gifts/src` groups contracts into `catalog`, `orders`, `query`, `media`, `read` and `valuation` modules, with root re-exports preserving existing imports. Actors import those domain contracts and wire interpretation from `market-gifts-hub`; `error.rs` defines actor errors, `query.rs` applies service limits before calling the pure query compiler, and `protocol.rs` wraps projected orders with replica paging and freshness metadata. `handle.rs` routes requests to the responsible actor, `runtime.rs` shares lifecycle and query-worker support, and `service.rs` starts and drains the actor group. All three use the same published replica views and coordinated shutdown; failure of any actor stops the group and is reported to the application supervisor. Synchronization stays in `market-replica/src/replication.rs` and writes storage directly, without actor messages.
 
-The data path is `hub → synchronization worker → replica views → responsibility-specific actors → API / bot`. Production dependencies are `market-actors → market-replica → market-hub-client`, `market-api → market-gifts + market-actors + market-media + market-miniapp`, `market-telegram-bot → market-telegram + market-portfolio + market-valuation + market-gifts + market-actors + market-invocations` and `market-telegram → market-telegram-client + market-invocations + market-media`, `market-telegram-client → market-invocations + market-gifts + market-media`, and `market-portfolio → market-invocations + market-valuation + market-actors + market-gifts`. The API and bot have no direct production dependency on replica storage, the hub client or protocol, or one another. `market-app` wires settings, constructs these services and supervises their lifecycles. Interface tests may use replica writers and fake hub servers to build fixtures; the dependency-boundary test checks production dependencies separately.
+The data path is `hub → synchronization worker → replica views → responsibility-specific actors → API / bot`. Production dependencies are `market-actors → market-replica → market-hub-client`, `market-api → market-gifts + market-actors + market-valuation + market-media + market-miniapp`, `market-telegram-bot → market-telegram + market-portfolio + market-valuation + market-gifts + market-actors + market-invocations` and `market-telegram → market-telegram-client + market-invocations + market-media`, `market-telegram-client → market-invocations + market-gifts + market-media`, and `market-portfolio → market-invocations + market-valuation + market-actors + market-gifts`. The API and bot have no direct production dependency on replica storage, the hub client or protocol, or one another. `market-app` wires settings, constructs these services and supervises their lifecycles. Interface tests may use replica writers and fake hub servers to build fixtures; the dependency-boundary test checks production dependencies separately.
 
 Crate folders match their Cargo package names. `market-hub-*` contains upstream transport and protocol code; `market-replica` owns local state, `market-actors` owns the data-serving interface and actors; `market-api` serves HTTP/WebSocket clients; `market-miniapp` contains Mini App authentication and launch support; `market-telegram` provides Telegram transport; `market-telegram-bot` serves market commands; `market-app` assembles them.
 
-Within `market-app/src`, `market/` contains `runtime.rs` and the private `supervisor.rs`. `api_config.rs` and `bot_config.rs` translate application settings into the API service and Telegram worker. `MarketRuntime` owns their lifecycles and returns the shared `MarketDataHandle`. The API crate separates public models, REST routes, schema generation, browser policy and optional frontend hosting. Static files use streamed file responses with ETags, last-modified checks, byte ranges and compression; index pages revalidate while hashed assets retain immutable caching. `encoding.rs` shares bounded live-page encodings, `server.rs` owns the service, and `connections.rs` admits and drains WebSocket tasks. The `websocket/` modules own handshake, session, generation registry, outgoing queue and cancellable subscription work. `config.rs` centralizes validated limits. `ApiServer::bind` validates configuration and reserves the listener without starting HTTP workers; `ApiServer::run` starts them under application supervision and drains them on cancellation. `ReplicaReader` and `ReplicationWorker` separate read access from synchronization; `MarketDataHandle` and `MarketDataTask` separate actor access from lifecycle. Public DTOs use the gift domain; generic hub and persisted-data formats remain unchanged. OpenAPI uses an explicit `telegram` tag so documentation groups remain independent of Rust module paths. The `market-app schema` command delegates to `market-api` for frontend type generation. Frontend market helpers live in `web/src/market.ts`; Telegram hooks and controls live in `web/src/telegram-ui.tsx`.
+Within `market-app/src`, `market/` contains `runtime.rs` and the private `supervisor.rs`. `api_config.rs` and `bot_config.rs` translate application settings into the API service and Telegram worker. `MarketRuntime` owns their lifecycles and returns shared market-data and valuation handles. The API crate separates public models, REST routes, schema generation, browser policy and optional frontend hosting. Static files use streamed file responses with ETags, last-modified checks, byte ranges and compression; index pages revalidate while hashed assets retain immutable caching. `encoding.rs` shares bounded live-page encodings, `server.rs` owns the service, and `connections.rs` admits and drains WebSocket tasks. The `websocket/` modules own handshake, session, generation registry, outgoing queue and cancellable subscription work. `config.rs` centralizes validated limits. `ApiServer::bind(config, data_handle, valuation_handle)` accepts application-owned capabilities, validates configuration and reserves the listener without starting HTTP workers or another valuation actor; `ApiServer::run` starts them under application supervision and drains them on cancellation. `ReplicaReader` and `ReplicationWorker` separate read access from synchronization; `MarketDataHandle` and `MarketDataTask` separate actor access from lifecycle. Public DTOs use the gift domain; generic hub and persisted-data formats remain unchanged. OpenAPI uses an explicit `telegram` tag so documentation groups remain independent of Rust module paths. The `market-app schema` command delegates to `market-api` for frontend type generation. Frontend market helpers live in `web/src/market.ts`; Telegram hooks and controls live in `web/src/telegram-ui.tsx`.
 
 ```sh
 cargo fmt --all -- --check

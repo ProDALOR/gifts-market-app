@@ -1,5 +1,5 @@
 use market_gifts::valuation::{
-    ModelIdentity, ModelPosition, ModelValue, UnpricedReason, Valuation, ValuationRequest,
+    ModelIdentity, ModelPosition, UnpricedReason, Valuation, ValuationRequest,
 };
 use market_gifts::{CurrencyId, VenueId};
 use market_hub_protocol::wire as w;
@@ -103,12 +103,13 @@ pub(super) fn value(reader: ReplicaReader, request: ValuationRequest) -> Result<
         .map(|(model, quantity)| ModelPosition { model, quantity })
         .collect();
     let rows = crate::catalog::resolve_models(&reader, positions)?;
-    value_resolved(&reader, rows, request.currency_id)
+    value_resolved(&reader, rows, request.currency_id, request.strategy)
 }
 fn value_resolved(
     reader: &ReplicaReader,
-    positions: Vec<ModelValue>,
+    positions: Vec<crate::catalog::ResolvedModel>,
     currency: CurrencyId,
+    strategy: market_gifts::valuation::StrategyId,
 ) -> Result<Valuation, Status> {
     let currency_page = reader.read(w::ReadRequest {
         selection: Some(w::Selection {
@@ -132,35 +133,66 @@ fn value_resolved(
     let mut unpriced = 0;
     let mut rows = Vec::new();
     let now = jiff::Timestamp::now().as_millisecond();
-    let quotes = floors(
-        reader,
-        positions.iter().filter_map(|row| row.identity.clone()),
-        &currency,
-        now,
-    )?;
-    for mut row in positions {
-        if let Some(key) = &row.identity {
-            if let Some((price, venue)) = quotes.get(key) {
-                let value = price
-                    .checked_mul(Decimal::from(row.quantity))
-                    .ok_or_else(|| Status::data_loss("portfolio value overflow"))?;
-                total = total
-                    .checked_add(value)
-                    .ok_or_else(|| Status::data_loss("portfolio value overflow"))?;
-                row.floor = Some(
-                    (*price)
-                        .try_into()
-                        .map_err(|error| Status::data_loss(format!("{error}")))?,
-                );
-                row.value = Some(
-                    value
-                        .try_into()
-                        .map_err(|error| Status::data_loss(format!("{error}")))?,
-                );
-                row.venue_id = Some(venue.clone());
-            } else {
-                row.unpriced = Some(UnpricedReason::NoListing);
-            }
+    let models = if strategy.as_str() == "model_floor" {
+        Some(floors(
+            reader,
+            positions.iter().filter_map(|p| p.row.identity.clone()),
+            &currency,
+            now,
+        )?)
+    } else {
+        None
+    };
+    let collections = if strategy.as_str() == "collection_floor" {
+        Some(collection_floors(
+            reader,
+            positions
+                .iter()
+                .filter_map(|p| p.collection.clone())
+                .collect(),
+            &currency,
+            now,
+        )?)
+    } else {
+        None
+    };
+    if models.is_none() && collections.is_none() {
+        return Err(Status::invalid_argument("unsupported valuation strategy"));
+    }
+    for position in positions {
+        let mut row = position.row;
+        let quote = if let Some(models) = &models {
+            row.identity.as_ref().and_then(|key| models.get(key))
+        } else {
+            position
+                .collection
+                .as_ref()
+                .and_then(|key| collections.as_ref()?.get(key))
+        };
+        if models.is_none() && position.collection.is_some() {
+            row.unpriced = None;
+        }
+        if let Some((price, venue)) = quote {
+            let value = price
+                .checked_mul(Decimal::from(row.quantity))
+                .ok_or_else(|| Status::data_loss("portfolio value overflow"))?;
+            total = total
+                .checked_add(value)
+                .ok_or_else(|| Status::data_loss("portfolio value overflow"))?;
+            row.floor = Some(
+                (*price)
+                    .try_into()
+                    .map_err(|error| Status::data_loss(format!("{error}")))?,
+            );
+            row.value = Some(
+                value
+                    .try_into()
+                    .map_err(|error| Status::data_loss(format!("{error}")))?,
+            );
+            row.venue_id = Some(venue.clone());
+            row.unpriced = None;
+        } else if row.unpriced.is_none() {
+            row.unpriced = Some(UnpricedReason::NoListing);
         }
         if row.floor.is_some() {
             priced += row.quantity;
@@ -181,6 +213,56 @@ fn value_resolved(
         sync: crate::protocol::sync(reader.status())
             .map_err(|error| Status::data_loss(error.to_string()))?,
     })
+}
+
+fn collection_floors(
+    reader: &ReplicaReader,
+    keys: Vec<market_gifts::CollectionId>,
+    currency: &CurrencyId,
+    now: i64,
+) -> Result<BTreeMap<market_gifts::CollectionId, (Decimal, VenueId)>, Status> {
+    let groups: BTreeSet<_> = keys.into_iter().collect();
+    let mut result = BTreeMap::new();
+    let mut budget = 2560;
+    for collection in groups {
+        let mut request = w::ReadRequest {
+            selection: Some(w::Selection {
+                source: Some(w::selection::Source::Scope(w::Scope {
+                    item_type_id: Some(collection.to_string()),
+                    currency_id: Some(currency.to_string()),
+                    modes: vec![w::OrderMode::Ask as i32],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            mode: w::ReadMode::Live as i32,
+            sort: w::ReadSort::PriceAsc as i32,
+            limit: 500,
+            ..Default::default()
+        };
+        'pages: loop {
+            if budget == 0 {
+                return Err(Status::resource_exhausted("floor scan limit exceeded"));
+            }
+            budget -= 1;
+            let page = reader.read(request.clone())?.page;
+            for entity in page.entities {
+                if let Some(w::entity::Entity::Order(order)) = entity.entity
+                    && let Some((price, venue)) =
+                        market_gifts_hub::collection_floor_quote(order, now)
+                            .map_err(|e| Status::data_loss(e.to_string()))?
+                {
+                    result.insert(collection.clone(), (price.decimal(), venue));
+                    break 'pages;
+                }
+            }
+            if page.next_page_token.is_empty() {
+                break;
+            }
+            request.page_token = page.next_page_token;
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -457,7 +539,7 @@ mod tests {
                 changes: vec![option("Replacement", "20"), ask("9")],
             })
             .unwrap();
-        let result = value_resolved(&view, resolved, "GRAM".into()).unwrap();
+        let result = value_resolved(&view, resolved, "GRAM".into(), Default::default()).unwrap();
         assert_eq!(result.cursor, "original");
         assert_eq!(result.rows[0].model, "Original");
         assert_eq!(
@@ -468,6 +550,7 @@ mod tests {
         let current = value(
             writer.reader(),
             ValuationRequest {
+                strategy: Default::default(),
                 positions: vec![position],
                 currency_id: "GRAM".into(),
             },

@@ -113,6 +113,7 @@ fn domain_ranges_reject_reversed_bounds_and_zero_gift_numbers() {
 fn valuation_validates_positive_positions_names_and_total_overflow() {
     use crate::valuation::{ModelLookup, ModelPosition, ValuationRequest};
     let mut request = ValuationRequest {
+        strategy: Default::default(),
         positions: vec![ModelPosition {
             model: ModelLookup::Name {
                 collection: "Gift".into(),
@@ -156,6 +157,7 @@ fn named_lookups_and_portfolios_share_the_same_name_validation() {
         };
         assert!(raw.validate().is_err());
         let request = ValuationRequest {
+            strategy: Default::default(),
             positions: vec![ModelPosition {
                 model: raw,
                 quantity: 1,
@@ -168,11 +170,27 @@ fn named_lookups_and_portfolios_share_the_same_name_validation() {
         let model = ModelLookup::named("Collection", name).unwrap();
         assert!(
             ValuationRequest {
+                strategy: Default::default(),
                 positions: vec![ModelPosition { model, quantity: 1 }],
                 currency_id: "GRAM".into()
             }
             .validate()
             .is_ok()
         );
+    }
+}
+
+#[test]
+fn valuation_strategy_ids_are_stable_validated_and_default_to_model_floor() {
+    use crate::valuation::{StrategyId, ValuationRequest};
+    let request: ValuationRequest =
+        serde_json::from_value(serde_json::json!({"positions":[],"currency_id":"GRAM"})).unwrap();
+    assert_eq!(request.strategy, StrategyId::model_floor());
+    for id in ["model_floor", "collection_floor", "strategy_v2"] {
+        let parsed = StrategyId::new(id).unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), id);
+    }
+    for id in ["", "ModelFloor", "1floor", "a-b", "a/b", &"x".repeat(65)] {
+        assert!(StrategyId::new(id).is_err());
     }
 }

@@ -82,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
     let api = market_app::api_config::server(
         &args,
         runtime.handle(),
+        runtime.valuation(),
         #[cfg(feature = "bot")]
         bot.as_mut(),
     )

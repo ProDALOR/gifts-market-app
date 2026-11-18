@@ -14,7 +14,7 @@ use market_replica::ReadResult;
 use market_replica::ReplicaReader;
 #[cfg(test)]
 use messages::ReadCatalog;
-pub(crate) use resolve::resolve as resolve_models;
+pub(crate) use resolve::{ResolvedModel, resolve as resolve_models};
 use tonic::Status;
 pub use version::CatalogSnapshot;
 pub(crate) struct CatalogActor {

@@ -34,6 +34,13 @@ impl MarketDataHandle {
         crate::query::valuation(&request)?;
         Ok(self.orderbooks.value_models(request).await?)
     }
+    pub(crate) async fn valuation_wait(
+        &self,
+        request: market_gifts::valuation::ValuationRequest,
+    ) -> error::Result<market_gifts::valuation::Valuation> {
+        crate::query::valuation(&request)?;
+        Ok(self.orderbooks.valuation(request, true).await?)
+    }
     pub(crate) async fn orders_raw(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         self.orderbooks.read(request).await
     }

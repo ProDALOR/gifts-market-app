@@ -16,6 +16,7 @@ mod routes;
 mod schema;
 mod security;
 mod server;
+mod valuation;
 mod websocket;
 pub use config::{ApiConfig, ApiLimits, WebSocketLimits};
 pub use market::MarketApi;

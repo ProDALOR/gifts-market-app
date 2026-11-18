@@ -170,3 +170,25 @@ fn floors_exclude_unsupported_expired_and_nonconcrete_listings() {
         assert!(floor_quote(invalid, 0).is_err());
     }
 }
+
+#[test]
+fn collection_and_model_floors_share_eligibility_but_differ_on_model_scope() {
+    let mut broad = fixture();
+    broad.attributes.remove(MODEL);
+    assert!(floor_quote(broad.clone(), 0).unwrap().is_none());
+    assert!(collection_floor_quote(broad, 0).unwrap().is_some());
+    for (price, quantity, expiry) in [("0", "1", None), ("1", "0", None), ("1", "1", Some(10))] {
+        let mut raw = fixture();
+        raw.price = price.into();
+        raw.quantity = quantity.into();
+        raw.expires_at_ms = expiry;
+        assert!(floor_quote(raw.clone(), 10).unwrap().is_none());
+        assert!(collection_floor_quote(raw, 10).unwrap().is_none());
+    }
+    let mut unknown = fixture();
+    unknown.attributes.insert(
+        "future.condition".into(),
+        eq(w::attribute_value::Value::Boolean(true)),
+    );
+    assert!(collection_floor_quote(unknown, 0).unwrap().is_none());
+}

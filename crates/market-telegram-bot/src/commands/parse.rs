@@ -1,5 +1,8 @@
 use super::{Command, CommandRequest, FloorQuery};
-use market_gifts::{CurrencyId, valuation::ModelLookup};
+use market_gifts::{
+    CurrencyId,
+    valuation::{ModelLookup, StrategyId},
+};
 use market_telegram::IncomingMessage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,9 +73,7 @@ pub(crate) fn parse<S: AsRef<str>>(
         CommandKind::Market => Command::Market,
         CommandKind::Help => Command::Help,
         CommandKind::Status => Command::Status,
-        CommandKind::Portfolio => quote_currency(arguments)
-            .map(Command::Portfolio)
-            .unwrap_or(Command::Invalid(kind)),
+        CommandKind::Portfolio => portfolio(arguments).unwrap_or(Command::Invalid(kind)),
         CommandKind::Floor => floor(arguments)
             .map(Command::Floor)
             .unwrap_or(Command::Invalid(kind)),
@@ -103,8 +104,26 @@ fn floor(arguments: &str) -> Option<FloorQuery> {
     let mut parts = arguments.split('|').map(str::trim);
     let model = ModelLookup::named(parts.next()?, parts.next()?).ok()?;
     let currency = quote_currency(parts.next().unwrap_or(""))?;
+    let strategy = StrategyId::new(parts.next().unwrap_or("model_floor")).ok()?;
     if parts.next().is_some() {
         return None;
     }
-    Some(FloorQuery { model, currency })
+    Some(FloorQuery {
+        model,
+        currency,
+        strategy,
+    })
+}
+
+fn portfolio(arguments: &str) -> Option<Command> {
+    if arguments.len() > 256 {
+        return None;
+    }
+    let mut parts = arguments.split('|').map(str::trim);
+    let currency = quote_currency(parts.next().unwrap_or(""))?;
+    let strategy = StrategyId::new(parts.next().unwrap_or("model_floor")).ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(Command::Portfolio { currency, strategy })
 }

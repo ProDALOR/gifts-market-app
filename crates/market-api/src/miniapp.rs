@@ -82,6 +82,7 @@ pub struct SignIn {
 }
 fn unavailable() -> ApiError {
     ApiError {
+        details: None,
         code: ErrorCode::Unavailable,
         message: "Telegram sign-in is not configured".into(),
     }
@@ -114,6 +115,7 @@ pub async fn sign_in(
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError {
+            details: None,
             code: ErrorCode::CapacityExceeded,
             message: "Sign-in is busy. Please try again".into(),
         })?;

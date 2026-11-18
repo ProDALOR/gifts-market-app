@@ -104,7 +104,7 @@ struct Quotes {
     errors: Arc<Mutex<VecDeque<DataError>>>,
 }
 impl ValuationProvider for Quotes {
-    async fn value_models(
+    async fn mark(
         &self,
         request: ValuationRequest,
     ) -> Result<Arc<market_valuation::Mark<Valuation>>, DataError> {
@@ -141,6 +141,7 @@ impl ValuationProvider for Quotes {
             },
         };
         Ok(Arc::new(market_valuation::Mark::evaluated(
+            "model_floor",
             market_valuation::Evaluation {
                 revision: value.cursor.clone(),
                 coverage: market_valuation::Coverage {
@@ -174,6 +175,7 @@ fn page(ids: &[&str], next: Option<&str>, total: usize) -> InventoryPage {
 }
 fn request(id: u64, currency: &str, priority: Priority) -> PortfolioRequest {
     PortfolioRequest {
+        strategy: Default::default(),
         user: user(id),
         currency_id: currency.to_owned().try_into().unwrap(),
         priority,
@@ -847,13 +849,13 @@ async fn coalesces_same_currency_valuation_and_keeps_hanging_reads_bounded() {
         release: Arc<tokio::sync::Notify>,
     }
     impl ValuationProvider for Slow {
-        async fn value_models(
+        async fn mark(
             &self,
             request: ValuationRequest,
         ) -> Result<Arc<market_valuation::Mark<Valuation>>, DataError> {
             self.calls.lock().unwrap().push(request.clone());
             self.release.notified().await;
-            Quotes::default().value_models(request).await
+            Quotes::default().mark(request).await
         }
     }
     let source = Source::default();
@@ -991,7 +993,7 @@ async fn real_market_actors_supply_exact_model_floor_values() {
     .unwrap();
     let portfolio = PortfolioService::start(
         source.clone(),
-        valuation.handle.clone(),
+        market_actors::valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
         PortfolioConfig::default(),
         invocations.handle(),
     )
@@ -1109,13 +1111,13 @@ async fn refreshed_inventory_does_not_join_valuation_of_an_expired_snapshot() {
         release: Arc<tokio::sync::Notify>,
     }
     impl ValuationProvider for Slow {
-        async fn value_models(
+        async fn mark(
             &self,
             request: ValuationRequest,
         ) -> Result<Arc<market_valuation::Mark<Valuation>>, DataError> {
             self.calls.lock().unwrap().push(request.clone());
             self.release.notified().await;
-            Quotes::default().value_models(request).await
+            Quotes::default().mark(request).await
         }
     }
     let source = Source::default();
@@ -1198,4 +1200,34 @@ async fn shared_invocation_shutdown_stops_portfolio_supervision_and_cancels_acti
         Err(PortfolioError::Stopped)
     ));
     assert!(source.cancelled(0));
+}
+
+#[actix::test]
+async fn strategies_share_inventory_but_never_coalesce_valuation_jobs() {
+    tokio::time::pause();
+    let source = Source::default();
+    let quotes = Quotes::default();
+    let (handle, stop, closed, _invocations) =
+        setup(source.clone(), quotes.clone(), Default::default());
+    let model = ask(&handle, 1, "GRAM", Priority::Normal);
+    let second = handle.clone();
+    let mut broad = request(1, "GRAM", Priority::Interactive);
+    broad.strategy = market_gifts::valuation::StrategyId::collection_floor();
+    let collection = tokio::spawn(async move { second.request(broad).await });
+    next(&source, 1).await;
+    flush().await;
+    source.reply(0, Ok(page(&["one", "two"], None, 2)));
+    let a = model.await.unwrap().unwrap();
+    let b = collection.await.unwrap().unwrap();
+    assert!(Arc::ptr_eq(&a.inventory, &b.inventory));
+    assert_eq!(source.count(), 1);
+    let strategies: std::collections::BTreeSet<_> = quotes
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.strategy.clone())
+        .collect();
+    assert_eq!(strategies.len(), 2);
+    shutdown(stop, closed).await;
 }
