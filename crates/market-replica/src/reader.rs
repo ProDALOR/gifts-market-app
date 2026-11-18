@@ -5,7 +5,7 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use prost::Message;
-use std::ops::Bound::{Excluded, Included, Unbounded};
+use std::ops::Bound::{Excluded, Unbounded};
 #[derive(Serialize, Deserialize, Clone)]
 enum Boundary {
     Current(Option<Key>),
@@ -165,6 +165,12 @@ impl ReplicaReader {
         })
     }
 }
+struct ScanRow<'a> {
+    rank: Option<rust_decimal::Decimal>,
+    key: &'a Key,
+    entity: Option<&'a Arc<w::Entity>>,
+}
+
 fn scan(
     view: &ReplicaView,
     filter: &Filter,
@@ -187,8 +193,7 @@ fn scan(
     }
     let mut data = Vec::new();
     let mut bytes = 0;
-    let keys: Box<dyn Iterator<Item = (Option<rust_decimal::Decimal>, Key)> + '_> = match &boundary
-    {
+    let rows: Box<dyn Iterator<Item = ScanRow<'_>> + '_> = match &boundary {
         Boundary::Price(after) | Boundary::Ranked(after) if filter.sort != Sort::Identity => {
             let after: Option<RankKey> = after
                 .as_ref()
@@ -196,7 +201,7 @@ fn scan(
                 .transpose()?;
             Box::new(
                 view.state
-                    .books
+                    .books()
                     .ranked(
                         filter
                             .scope
@@ -205,9 +210,13 @@ fn scan(
                         after,
                         filter.sort,
                     )
-                    .map(|key| {
-                        let (price, key) = key.into_entity();
-                        (Some(price), key)
+                    .map(|(rank, entity)| {
+                        let (value, key) = rank.entity();
+                        ScanRow {
+                            rank: Some(value),
+                            key,
+                            entity: Some(entity),
+                        }
                     }),
             )
         }
@@ -217,8 +226,11 @@ fn scan(
                     filter
                         .keys
                         .range((after.as_ref().map_or(Unbounded, Excluded), Unbounded))
-                        .cloned()
-                        .map(|k| (None, k)),
+                        .map(|key| ScanRow {
+                            rank: None,
+                            key,
+                            entity: view.state.entity(key),
+                        }),
                 )
             } else {
                 let kind = if filter.scope.is_some() {
@@ -233,29 +245,24 @@ fn scan(
                 {
                     return Err(Status::invalid_argument("invalid entity boundary"));
                 }
-                let lo = after.clone().map(Excluded).unwrap_or_else(|| {
-                    kind.map(|kind| Included(Key::first(kind)))
-                        .unwrap_or(Unbounded)
-                });
-                let hi = kind
-                    .and_then(EntityKind::next)
-                    .map(|kind| Excluded(Key::first(kind)))
-                    .unwrap_or(Unbounded);
                 Box::new(
                     view.state
-                        .entities
-                        .range((lo, hi))
-                        .map(|(key, _)| (None, key.clone())),
+                        .range(after.as_ref(), kind)
+                        .map(|(key, entity)| ScanRow {
+                            rank: None,
+                            key,
+                            entity: Some(entity),
+                        }),
                 )
             }
         }
         _ => return Err(Status::invalid_argument("invalid page boundary")),
     };
-    for (count, (price, key)) in keys.enumerate() {
+    for (count, ScanRow { rank, key, entity }) in rows.enumerate() {
         if data.len() == limit || count == 10_000 {
             return Ok((data, Some(boundary)));
         }
-        if let Some(entity) = view.state.entities.get(&key)
+        if let Some(entity) = entity
             && filter.matches(entity)?
         {
             let size = entity.encoded_len() + 8;
@@ -268,13 +275,16 @@ fn scan(
             bytes += size;
             data.push(entity.as_ref().clone());
         }
-        boundary = match price {
+        boundary = match rank {
             Some(price) if filter.sort.is_price() => {
-                Boundary::Price(Some((price.to_string(), key)))
+                Boundary::Price(Some((price.to_string(), key.clone())))
             }
-            Some(value) => Boundary::Ranked(Some((value.to_string(), key))),
-            None => Boundary::Current(Some(key)),
+            Some(value) => Boundary::Ranked(Some((value.to_string(), key.clone()))),
+            None => Boundary::Current(Some(key.clone())),
         };
     }
     Ok((data, None))
 }
+
+#[cfg(test)]
+mod tests;

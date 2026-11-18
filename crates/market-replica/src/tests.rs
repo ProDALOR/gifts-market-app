@@ -623,9 +623,8 @@ fn legacy_continuations_keep_their_shape_and_exact_boundaries() {
         .view()
         .unwrap()
         .state
-        .entities
-        .keys()
-        .cloned()
+        .range(None, None)
+        .map(|(key, _)| key.clone())
         .collect::<Vec<_>>();
     keys.sort();
     assert_eq!(keys.first().unwrap().kind, EntityKind::Venue);
@@ -963,4 +962,257 @@ fn metadata_revisions_track_selected_kinds_deletions_and_dataset_identity() {
     replica.install(store).unwrap();
     assert_ne!(before, replica.reader.metadata_revision(&kinds).unwrap());
     assert_ne!(directory, replica.reader.directory_revision().unwrap());
+}
+
+#[test]
+fn ranked_snapshot_continuations_keep_old_payloads_after_same_rank_updates() {
+    let (_dir, replica) = setup();
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Order(order("a", "1", None)))),
+            upsert(entity(E::Order(order("b", "2", None)))),
+        ],
+        "shared1",
+    );
+    let mut continuations = Vec::new();
+    for sort in 1..=6 {
+        let mut request = read(0, false);
+        request.sort = sort;
+        let first = replica.read(request.clone()).unwrap().page;
+        assert!(!first.next_page_token.is_empty());
+        request.page_token = first.next_page_token;
+        continuations.push(request);
+    }
+    let mut a = order("a", "1", None);
+    let mut b = order("b", "2", None);
+    a.meta.insert("label".into(), "updated".into());
+    b.meta.insert("label".into(), "updated".into());
+    apply(
+        &replica,
+        vec![upsert(entity(E::Order(a))), upsert(entity(E::Order(b)))],
+        "shared2",
+    );
+    for request in continuations {
+        let pinned = replica.read(request.clone()).unwrap().page;
+        assert_eq!(pinned.entities.len(), 1);
+        assert!(state::order(&pinned.entities[0]).unwrap().meta.is_empty());
+        let mut live = request;
+        live.mode = 1;
+        let current = replica.read(live).unwrap().page;
+        assert_eq!(current.entities.len(), 1);
+        assert_eq!(
+            state::order(&current.entities[0]).unwrap().meta["label"],
+            "updated"
+        );
+    }
+}
+
+fn collect_current_rows(replica: &Fixture, mut request: w::ReadRequest) -> Vec<w::Entity> {
+    let mut result = Vec::new();
+    for _ in 0..100 {
+        let page = replica.read(request.clone()).unwrap().page;
+        result.extend(page.entities);
+        if page.next_page_token.is_empty() {
+            return result;
+        }
+        request.page_token = page.next_page_token;
+    }
+    panic!("identity pagination did not terminate");
+}
+
+#[test]
+fn partition_owned_identity_pages_keep_mixed_snapshots_legacy_cursors_and_restart_order() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let (dir, replica) = setup();
+    let mut a = order("same", "1", None);
+    a.book.as_mut().unwrap().venue_id = "a".into();
+    let mut b = order("same", "2", None);
+    b.book.as_mut().unwrap().venue_id = "b".into();
+    b.book.as_mut().unwrap().currency_id = "XTR".into();
+    b.mode = 2;
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Venue(w::Venue {
+                id: "a".into(),
+                name: "A".into(),
+            }))),
+            upsert(entity(E::Venue(w::Venue {
+                id: "b".into(),
+                name: "B".into(),
+            }))),
+            upsert(entity(E::Feed(w::Feed {
+                id: "feed".into(),
+                books: vec![a.book.clone().unwrap(), b.book.clone().unwrap()],
+                ..Default::default()
+            }))),
+            upsert(entity(E::Order(a.clone()))),
+            upsert(entity(E::Order(b.clone()))),
+        ],
+        "owned1",
+    );
+    let mixed = w::ReadRequest {
+        selection: Some(w::Selection::default()),
+        limit: 2,
+        sort: 0,
+        mode: 0,
+        ..Default::default()
+    };
+    let initial = collect_current_rows(&replica, mixed.clone());
+    let first = replica.read(mixed.clone()).unwrap().page;
+    let mut pinned_request = mixed.clone();
+    pinned_request.page_token = first.next_page_token;
+    let mut order_request = w::ReadRequest {
+        selection: Some(w::Selection {
+            kinds: vec![w::EntityKind::Order as i32],
+            ..Default::default()
+        }),
+        limit: 1,
+        sort: 0,
+        mode: 1,
+        ..Default::default()
+    };
+    let first_order = replica.read(order_request.clone()).unwrap().page;
+    assert_eq!(
+        state::entity_key(&first_order.entities[0]).unwrap(),
+        state::entity_key(&entity(E::Order(a.clone()))).unwrap()
+    );
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(first_order.next_page_token).unwrap())
+            .unwrap();
+    assert_eq!(
+        legacy["position"],
+        serde_json::json!({"Current": [7, "a", "same"]})
+    );
+    legacy["snapshot"] = serde_json::Value::Null;
+    order_request.page_token = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&legacy).unwrap());
+    a.mode = 2;
+    a.price = "9".into();
+    a.book.as_mut().unwrap().currency_id = "XTR".into();
+    let mut c = order("new", "3", None);
+    c.book.as_mut().unwrap().venue_id = "c".into();
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Order(a.clone()))),
+            w::Change {
+                change: Some(w::change::Change::Remove(w::Removal {
+                    key: Some(w::Key {
+                        kind: 7,
+                        venue_id: "b".into(),
+                        id: "same".into(),
+                    }),
+                    ..Default::default()
+                })),
+            },
+            upsert(entity(E::Order(c))),
+            upsert(entity(E::Venue(w::Venue {
+                id: "a".into(),
+                name: "Changed A".into(),
+            }))),
+        ],
+        "owned2",
+    );
+    let mut pinned_rows = first.entities;
+    pinned_rows.extend(collect_current_rows(&replica, pinned_request));
+    assert_eq!(pinned_rows, initial);
+    let resumed = collect_current_rows(&replica, order_request);
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(state::order(&resumed[0]).unwrap().id, "new");
+    let mut live = mixed;
+    live.mode = 1;
+    let current = collect_current_rows(&replica, live.clone());
+    let keys: Vec<_> = current
+        .iter()
+        .map(|e| state::entity_key(e).unwrap())
+        .collect();
+    assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(current.contains(&entity(E::Order(a))));
+    assert!(!current.contains(&entity(E::Order(b))));
+    drop(replica);
+    let reopened = Fixture::open(dir.path(), "test-source").unwrap();
+    assert_eq!(collect_current_rows(&reopened, live), current);
+}
+
+#[test]
+fn explicit_identity_keys_keep_snapshot_payloads_and_skip_missing_orders_after_moves() {
+    let (_dir, replica) = setup();
+    let mut a = order("a", "1", None);
+    let b = order("b", "2", None);
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Order(a.clone()))),
+            upsert(entity(E::Order(b.clone()))),
+        ],
+        "keys1",
+    );
+    let mut request = w::ReadRequest {
+        selection: Some(w::Selection {
+            keys: vec![
+                w::Key {
+                    kind: 7,
+                    venue_id: "venue".into(),
+                    id: "missing".into(),
+                },
+                w::Key {
+                    kind: 7,
+                    venue_id: "venue".into(),
+                    id: "b".into(),
+                },
+                w::Key {
+                    kind: 1,
+                    id: "venue".into(),
+                    ..Default::default()
+                },
+                w::Key {
+                    kind: 7,
+                    venue_id: "venue".into(),
+                    id: "a".into(),
+                },
+                w::Key {
+                    kind: 7,
+                    venue_id: "venue".into(),
+                    id: "a".into(),
+                },
+            ],
+            ..Default::default()
+        }),
+        sort: 0,
+        mode: 0,
+        limit: 1,
+        ..Default::default()
+    };
+    let expected = collect_current_rows(&replica, request.clone());
+    assert_eq!(expected.len(), 3);
+    let first = replica.read(request.clone()).unwrap().page;
+    request.page_token = first.next_page_token;
+    a.mode = 2;
+    a.book.as_mut().unwrap().currency_id = "XTR".into();
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Order(a.clone()))),
+            w::Change {
+                change: Some(w::change::Change::Remove(w::Removal {
+                    key: Some(w::Key {
+                        kind: 7,
+                        venue_id: "venue".into(),
+                        id: "b".into(),
+                    }),
+                    ..Default::default()
+                })),
+            },
+        ],
+        "keys2",
+    );
+    let mut pinned = first.entities;
+    pinned.extend(collect_current_rows(&replica, request.clone()));
+    assert_eq!(pinned, expected);
+    request.mode = 1;
+    request.page_token.clear();
+    let live = collect_current_rows(&replica, request);
+    assert_eq!(live.len(), 2);
+    assert_eq!(live[1], entity(E::Order(a)));
 }

@@ -9,6 +9,8 @@ Adapters → Market Hub ── snapshot + Watch ──→ App replica → REST /
 
 Each app process shares one replica across its HTTP workers. Current catalog, feeds and active-order indexes live in RAM. Execution payloads remain in local redb, with chronological, book and typed attribute indexes. Current entities are also persisted so a saved checkpoint always describes fully restorable state. There is no sibling Rust dependency: the copied `market-hub.proto` is the service boundary and the replica stores its generated messages directly.
 
+Active orders belong to venue/collection/currency/side partitions, alongside their price, time and gift-number indexes. Ranked indexes share each partition's immutable order records. A global ordered location directory routes venue/order IDs to their current partition and preserves identity cursor ordering; catalog and feed records remain in a separate metadata map. Readers and revision tracking access both through `State` lookup and iteration methods. Same-partition replacements preserve location entries and remove only changed ranks. Snapshot views share unchanged partitions through copy-on-write. See the [partition-owned orders benchmark](docs/partition-owned-orders-benchmark.md) for measured read, update, allocation and memory tradeoffs. The database and cursor formats are unchanged.
+
 ## Run
 
 Issue a service token on the hub with `market-hub token --id market-app`, then configure this application:

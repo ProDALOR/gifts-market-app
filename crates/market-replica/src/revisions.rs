@@ -96,10 +96,7 @@ impl Revisions {
     pub fn replaced(previous: Option<&ReplicaView>, state: &State) -> Self {
         let sequence = previous.map_or(1, |view| view.revisions.sequence + 1);
         let mut option_groups = OrdMap::<String, OptionGroup>::new();
-        for (_, entity) in state
-            .entities
-            .range(Key::first(EntityKind::AttributeOption)..Key::first(EntityKind::Feed))
-        {
+        for (_, entity) in state.range(None, Some(EntityKind::AttributeOption)) {
             if let Some(attribute) = option_group(entity) {
                 let group = option_groups
                     .entry(attribute.to_owned())
@@ -146,8 +143,8 @@ impl Revisions {
             if key.kind == EntityKind::AttributeOption && !changed_options.insert(key.id.clone()) {
                 continue;
             }
-            let old = before.entities.get(&key);
-            let new = after.entities.get(&key);
+            let old = before.entity(&key);
+            let new = after.entity(&key);
             // Immutable execution retries and identical observations need no active-book invalidation.
             if old == new {
                 continue;
@@ -197,20 +194,20 @@ impl Revisions {
                 currency_id: currency.clone(),
                 venue_id: venue.clone(),
             };
-            if before.books.contains(&key) != after.books.contains(&key) {
+            if before.books().contains(&key) != after.books().contains(&key) {
                 next.directory = next.sequence;
             }
             if !orders.contains(&(item.clone(), currency.clone(), venue.clone())) {
                 continue;
             }
             let specific = (item.clone(), currency.clone(), Some(venue));
-            if after.books.has_orders(&key) {
+            if after.books().has_orders(&key) {
                 next.books.insert(specific, next.sequence);
             } else {
                 next.books.remove(&specific);
             }
             let group = (item.clone(), currency.clone(), None);
-            if after.books.has_group(&item, &currency) {
+            if after.books().has_group(&item, &currency) {
                 next.books.insert(group, next.sequence);
             } else {
                 next.books.remove(&group);
@@ -250,9 +247,9 @@ impl ReplicaReader {
                         .copied()
                         .unwrap_or_else(|| {
                             let present = scope.venue_id.as_ref().map_or_else(
-                                || view.state.books.has_group(item, currency),
+                                || view.state.books().has_group(item, currency),
                                 |venue| {
-                                    view.state.books.has_orders(&w::BookKey {
+                                    view.state.books().has_orders(&w::BookKey {
                                         item_type_id: item.clone(),
                                         currency_id: currency.clone(),
                                         venue_id: venue.clone(),
@@ -323,7 +320,7 @@ impl ReplicaReader {
             entities: keys
                 .into_iter()
                 .map(|key| {
-                    let entity = view.state.entities.get(&key).cloned();
+                    let entity = view.state.entity(&key).cloned();
                     (key, entity)
                 })
                 .collect(),
@@ -372,7 +369,7 @@ impl ReplicaReader {
                     if index % 64 == 0 {
                         check()?;
                     }
-                    let actual = view.state.entities.get(key);
+                    let actual = view.state.entity(key);
                     if !match (actual, expected) {
                         (None, None) => true,
                         (Some(actual), Some(expected)) => {

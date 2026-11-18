@@ -1,12 +1,13 @@
-//! Derived book directory and active-order price indexes, published with the entity snapshot.
+//! Partition-owned active orders, covering indexes and a shared book directory.
 use crate::{
     query::Scope,
-    state::{Key, decimal, order},
+    state::{Key, order},
     types::{ActiveMode, RankKey, Sort},
 };
 use im::{OrdMap, OrdSet};
 use market_hub_protocol::wire as w;
-use std::{cmp::Reverse, collections::BinaryHeap};
+use rust_decimal::Decimal;
+use std::{cmp::Reverse, collections::BinaryHeap, ops::Bound, sync::Arc};
 use tonic::Status;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -52,11 +53,118 @@ impl From<Book> for w::BookKey {
     }
 }
 
+/// Rank keys cover the authoritative record without duplicating its payload.
+type RankedOrders = OrdMap<RankKey, Arc<w::Entity>>;
+type RankedOrder<'a> = (&'a RankKey, &'a Arc<w::Entity>);
+type RankedIterator<'a> = Box<dyn Iterator<Item = RankedOrder<'a>> + 'a>;
+
+/// The three indexes of one venue/collection/currency/side share immutable payloads.
+#[derive(Clone, Default)]
+struct PartitionState {
+    orders: OrdMap<String, Arc<w::Entity>>,
+    prices: RankedOrders,
+    times: RankedOrders,
+    numbers: RankedOrders,
+}
+impl PartitionState {
+    fn index(&self, sort: Sort) -> &RankedOrders {
+        match sort {
+            Sort::TimeAsc | Sort::TimeDesc => &self.times,
+            Sort::NumberAsc | Sort::NumberDesc => &self.numbers,
+            _ => &self.prices,
+        }
+    }
+    fn indexes_mut(&mut self) -> [&mut RankedOrders; 3] {
+        [&mut self.prices, &mut self.times, &mut self.numbers]
+    }
+    fn replace(
+        &mut self,
+        key: &Key,
+        previous: Option<[Decimal; 3]>,
+        next: [Decimal; 3],
+        entity: &Arc<w::Entity>,
+    ) {
+        for (i, (index, rank)) in self.indexes_mut().into_iter().zip(next).enumerate() {
+            if let Some(previous) = previous
+                && previous[i] != rank
+            {
+                index.remove(&RankKey::new(previous[i], key.clone()));
+            }
+            // Equal ranks still need the new record, including metadata-only updates.
+            index.insert(RankKey::new(rank, key.clone()), Arc::clone(entity));
+        }
+        self.orders.insert(key.id.clone(), Arc::clone(entity));
+    }
+    fn remove(&mut self, key: &Key, ranks: [Decimal; 3]) {
+        for (index, rank) in self.indexes_mut().into_iter().zip(ranks) {
+            index.remove(&RankKey::new(rank, key.clone()));
+        }
+        self.orders.remove(&key.id);
+    }
+    fn is_empty(&self) -> bool {
+        self.orders.is_empty()
+    }
+}
+
+/// Validate all placement/rank data before mutating any index.
+struct OrderPlacement {
+    partition: BookPartition,
+    ranks: [Decimal; 3],
+}
+impl OrderPlacement {
+    fn new(order: &w::Order) -> Result<Self, Status> {
+        Ok(Self {
+            partition: BookPartition {
+                book: Book::from(
+                    order
+                        .book
+                        .as_ref()
+                        .ok_or_else(|| Status::data_loss("missing book"))?,
+                ),
+                mode: ActiveMode::try_from(order.mode)?,
+            },
+            ranks: ranks(order)?,
+        })
+    }
+}
+
+fn ranks(order: &w::Order) -> Result<[Decimal; 3], Status> {
+    Ok([
+        Sort::PriceAsc.rank(order, false)?,
+        Sort::TimeAsc.rank(order, false)?,
+        Sort::NumberAsc.rank(order, false)?,
+    ])
+}
+
+// Only rank and source position participate in heap ordering; records stay borrowed.
+fn merge<'a, K: Ord + 'a>(
+    mut iterators: Vec<RankedIterator<'a>>,
+    priority: impl Fn(&'a RankKey) -> K + 'a,
+) -> RankedIterator<'a> {
+    let mut heads: Vec<_> = iterators.iter_mut().map(Iterator::next).collect();
+    let mut heap = BinaryHeap::new();
+    for (i, head) in heads.iter().enumerate() {
+        if let Some((rank, _)) = head {
+            heap.push((priority(rank), i));
+        }
+    }
+    Box::new(std::iter::from_fn(move || {
+        let (_, i) = heap.pop()?;
+        let row = heads[i].take()?;
+        heads[i] = iterators[i].next();
+        if let Some((rank, _)) = heads[i] {
+            heap.push((priority(rank), i));
+        }
+        Some(row)
+    }))
+}
+
 #[derive(Clone, Default)]
 pub struct BookIndex {
-    prices: OrdMap<BookPartition, OrdSet<RankKey>>,
-    times: OrdMap<BookPartition, OrdSet<RankKey>>,
-    numbers: OrdMap<BookPartition, OrdSet<RankKey>>,
+    // Copy-on-write at the partition boundary keeps unrelated index roots shared.
+    partitions: OrdMap<Arc<BookPartition>, Arc<PartitionState>>,
+    // Location keys preserve the legacy global identity order. Partition keys are interned.
+    locations: OrdMap<Key, Arc<BookPartition>>,
     groups: OrdMap<BookGroup, OrdSet<Book>>,
     declared: OrdMap<Key, OrdSet<Book>>,
     references: OrdMap<Book, usize>,
@@ -88,97 +196,121 @@ impl BookIndex {
     }
     fn active(&self, book: &Book) -> bool {
         [ActiveMode::Ask, ActiveMode::Bid].into_iter().any(|mode| {
-            self.prices.contains_key(&BookPartition {
+            self.partitions.contains_key(&BookPartition {
                 book: book.clone(),
                 mode,
             })
         })
     }
-    pub fn insert(&mut self, key: &Key, entity: &w::Entity) -> Result<(), Status> {
-        if let Some(order) = order(entity) {
-            let book = Book::from(
-                order
-                    .book
-                    .as_ref()
-                    .ok_or_else(|| Status::data_loss("missing book"))?,
+    fn record(&self, partition: &BookPartition, key: &Key) -> Option<&Arc<w::Entity>> {
+        self.partitions.get(partition)?.orders.get(&key.id)
+    }
+    pub fn get(&self, key: &Key) -> Option<&Arc<w::Entity>> {
+        self.record(self.locations.get(key)?, key)
+    }
+    pub fn range(
+        &self,
+        bounds: (Bound<Key>, Bound<Key>),
+    ) -> impl Iterator<Item = (&Key, &Arc<w::Entity>)> {
+        self.locations.range(bounds).map(|(key, partition)| {
+            (
+                key,
+                self.record(partition, key)
+                    .expect("order location must reference a stored order"),
+            )
+        })
+    }
+    pub fn upsert_order(&mut self, key: &Key, entity: &Arc<w::Entity>) -> Result<(), Status> {
+        let value = order(entity).ok_or_else(|| Status::data_loss("missing order"))?;
+        let next = OrderPlacement::new(value)?;
+        let previous = self.locations.get(key).cloned();
+        let previous_ranks = previous
+            .as_ref()
+            .map(|location| {
+                let stored = self
+                    .record(location, key)
+                    .ok_or_else(|| Status::data_loss("missing located order"))?;
+                ranks(order(stored).ok_or_else(|| Status::data_loss("missing order"))?)
+            })
+            .transpose()?;
+        if previous
+            .as_ref()
+            .is_some_and(|location| location.as_ref() == &next.partition)
+        {
+            let partition = self
+                .partitions
+                .get_mut(&next.partition)
+                .ok_or_else(|| Status::data_loss("missing order partition"))?;
+            Arc::make_mut(partition).replace(key, previous_ranks, next.ranks, entity);
+            return Ok(());
+        }
+        if let Some(previous) = previous {
+            self.remove_order(
+                key,
+                &previous,
+                previous_ranks.expect("located order has ranks"),
             );
-            if !self.active(&book) {
-                self.add_book(book.clone());
-            }
-            self.prices
-                .entry(BookPartition {
-                    book: book.clone(),
-                    mode: ActiveMode::try_from(order.mode)?,
-                })
+        }
+        let book = &next.partition.book;
+        if !self.active(book) {
+            self.add_book(book.clone());
+            self.groups
+                .entry(book.group())
                 .or_default()
-                .insert(RankKey::new(decimal(&order.price)?, key.clone()));
-            for (index, sort) in [
-                (&mut self.times, Sort::TimeAsc),
-                (&mut self.numbers, Sort::NumberAsc),
-            ] {
-                index
-                    .entry(BookPartition {
-                        book: book.clone(),
-                        mode: ActiveMode::try_from(order.mode)?,
-                    })
-                    .or_default()
-                    .insert(RankKey::new(sort.rank(order, false)?, key.clone()));
-            }
-            self.groups.entry(book.group()).or_default().insert(book);
+                .insert(book.clone());
         }
-        if let Some(w::entity::Entity::Feed(feed)) = &entity.entity {
-            let books: OrdSet<Book> = feed.books.iter().map(Book::from).collect();
-            for book in &books {
-                self.add_book(book.clone());
-            }
-            self.declared.insert(key.clone(), books);
-        }
+        let location = self
+            .partitions
+            .get_key_value(&next.partition)
+            .map(|(location, _)| Arc::clone(location))
+            .unwrap_or_else(|| Arc::new(next.partition));
+        let partition = self.partitions.entry(Arc::clone(&location)).or_default();
+        Arc::make_mut(partition).replace(key, None, next.ranks, entity);
+        self.locations.insert(key.clone(), location);
         Ok(())
     }
-    pub fn remove(&mut self, key: &Key, entity: &w::Entity) -> Result<(), Status> {
-        if let Some(order) = order(entity) {
-            let book = Book::from(
-                order
-                    .book
-                    .as_ref()
-                    .ok_or_else(|| Status::data_loss("missing book"))?,
-            );
-            let partition = BookPartition {
-                book: book.clone(),
-                mode: ActiveMode::try_from(order.mode)?,
-            };
-            if let Some(keys) = self.prices.get_mut(&partition) {
-                keys.remove(&RankKey::new(decimal(&order.price)?, key.clone()));
-                if keys.is_empty() {
-                    self.prices.remove(&partition);
-                }
+    pub fn upsert_feed(&mut self, key: &Key, feed: &w::Feed) {
+        self.remove_feed(key);
+        let books: OrdSet<Book> = feed.books.iter().map(Book::from).collect();
+        for book in &books {
+            self.add_book(book.clone());
+        }
+        self.declared.insert(key.clone(), books);
+    }
+    fn remove_order(&mut self, key: &Key, previous: &BookPartition, ranks: [Decimal; 3]) {
+        if let Some(partition) = self.partitions.get_mut(previous) {
+            Arc::make_mut(partition).remove(key, ranks);
+            if partition.is_empty() {
+                self.partitions.remove(previous);
             }
-            for (index, sort) in [
-                (&mut self.times, Sort::TimeAsc),
-                (&mut self.numbers, Sort::NumberAsc),
-            ] {
-                if let Some(keys) = index.get_mut(&partition) {
-                    keys.remove(&RankKey::new(sort.rank(order, false)?, key.clone()));
-                    if keys.is_empty() {
-                        index.remove(&partition);
-                    }
-                }
-            }
-            if !self.active(&book) {
-                self.drop_book(&book);
-                let group = book.group();
-                if let Some(books) = self.groups.get_mut(&group) {
-                    books.remove(&book);
-                    if books.is_empty() {
-                        self.groups.remove(&group);
-                    }
+        }
+        let book = &previous.book;
+        if !self.active(book) {
+            self.drop_book(book);
+            let group = book.group();
+            if let Some(books) = self.groups.get_mut(&group) {
+                books.remove(book);
+                if books.is_empty() {
+                    self.groups.remove(&group);
                 }
             }
         }
+    }
+    pub fn remove_feed(&mut self, key: &Key) {
         if let Some(books) = self.declared.remove(key) {
             for book in &books {
                 self.drop_book(book);
             }
+        }
+    }
+    pub fn remove(&mut self, key: &Key) -> Result<(), Status> {
+        if let Some(location) = self.locations.get(key).cloned() {
+            let stored = self
+                .record(&location, key)
+                .ok_or_else(|| Status::data_loss("missing located order"))?;
+            let ranks = ranks(order(stored).ok_or_else(|| Status::data_loss("missing order"))?)?;
+            self.remove_order(key, &location, ranks);
+            self.locations.remove(key);
         }
         Ok(())
     }
@@ -198,24 +330,20 @@ impl BookIndex {
             books,
         }
     }
+    /// Borrow records from the pinned index; merging never copies payloads or clones their Arcs.
     pub fn ranked<'a>(
         &'a self,
         scope: &Scope,
         after: Option<RankKey>,
         sort: Sort,
-    ) -> Box<dyn Iterator<Item = RankKey> + 'a> {
+    ) -> RankedIterator<'a> {
         use std::ops::Bound::{Excluded, Included, Unbounded};
         let descending = sort.descending();
-        let index = match sort {
-            Sort::TimeAsc | Sort::TimeDesc => &self.times,
-            Sort::NumberAsc | Sort::NumberDesc => &self.numbers,
-            _ => &self.prices,
-        };
         let pair = BookGroup {
             item_type_id: scope.item_type_id.clone().unwrap_or_default(),
             currency_id: scope.currency_id.clone().unwrap_or_default(),
         };
-        let mut iterators: Vec<Box<dyn Iterator<Item = &RankKey> + 'a>> = Vec::new();
+        let mut iterators = Vec::new();
         for b in self.groups.get(&pair).into_iter().flatten() {
             if scope
                 .venue_id
@@ -228,7 +356,7 @@ impl BookIndex {
                 .into_iter()
                 .filter(|m| scope.modes.is_empty() || scope.modes.contains(&(*m).into()))
             {
-                if let Some(keys) = index.get(&BookPartition {
+                if let Some(partition) = self.partitions.get(&BookPartition {
                     book: b.clone(),
                     mode,
                 }) {
@@ -267,47 +395,26 @@ impl BookIndex {
                     {
                         continue;
                     }
-                    let range = keys.range((low, high));
-                    let iter: Box<dyn Iterator<Item = &RankKey> + 'a> = if descending {
+                    let range = partition.index(sort).range((low, high));
+                    let iter: RankedIterator<'a> = if descending {
                         Box::new(range.rev())
                     } else {
                         Box::new(range)
                     };
-                    let iter = iter.filter(move |key| {
+                    let iter = iter.filter(move |(key, _)| {
                         min.is_none_or(|v| key.value >= v) && max.is_none_or(|v| key.value <= v)
                     });
-                    iterators.push(Box::new(iter));
+                    iterators.push(Box::new(iter) as RankedIterator<'a>);
                 }
             }
         }
         if descending {
-            let mut heap = BinaryHeap::new();
-            for (i, it) in iterators.iter_mut().enumerate() {
-                if let Some(value) = it.next() {
-                    heap.push((value.clone(), i));
-                }
-            }
-            Box::new(std::iter::from_fn(move || {
-                let (value, i) = heap.pop()?;
-                if let Some(next) = iterators[i].next() {
-                    heap.push((next.clone(), i));
-                }
-                Some(value)
-            }))
+            merge(iterators, |rank| rank)
         } else {
-            let mut heap = BinaryHeap::new();
-            for (i, it) in iterators.iter_mut().enumerate() {
-                if let Some(value) = it.next() {
-                    heap.push(Reverse((value.clone(), i)));
-                }
-            }
-            Box::new(std::iter::from_fn(move || {
-                let Reverse((value, i)) = heap.pop()?;
-                if let Some(next) = iterators[i].next() {
-                    heap.push(Reverse((next.clone(), i)));
-                }
-                Some(value)
-            }))
+            merge(iterators, Reverse)
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

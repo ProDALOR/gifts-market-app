@@ -166,7 +166,7 @@ impl ReplicaReader {
         if limit == 0 || limit > 500 {
             return Err(Status::invalid_argument("invalid page size"));
         }
-        Ok(self.view()?.state.books.page(after, limit))
+        Ok(self.view()?.state.books().page(after, limit))
     }
 }
 
@@ -287,3 +287,6 @@ impl ReplicaWriter {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod benchmarks;

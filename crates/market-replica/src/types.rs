@@ -223,8 +223,8 @@ impl RankKey {
             identity: RankIdentity::Last,
         }
     }
-    pub fn into_entity(self) -> (Decimal, Key) {
-        match self.identity {
+    pub fn entity(&self) -> (Decimal, &Key) {
+        match &self.identity {
             RankIdentity::Entity(key) => (self.value, key),
             _ => unreachable!("range boundary cannot be inserted into a rank index"),
         }
