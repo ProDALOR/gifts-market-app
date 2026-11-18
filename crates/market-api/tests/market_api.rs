@@ -372,7 +372,7 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
         test::TestRequest::post().uri("/orders/query")
             .set_json(serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"}}))
             .to_request()).await).await;
-    assert_eq!(defaults["data"][0]["mode"], "ask");
+    assert_eq!(defaults["data"][0]["kind"], "ask");
     let directory: serde_json::Value = test::read_body_json(
         test::call_service(&app, test::TestRequest::get().uri("/catalog").to_request()).await,
     )
@@ -459,7 +459,7 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     .await;
     let schema: serde_json::Value = test::read_body_json(schema).await;
     assert!(schema["components"]["schemas"]["Command"].is_object());
-    assert!(schema["components"]["schemas"]["GiftTarget"].is_object());
+    assert!(schema["components"]["schemas"]["OrderTargetResponse"].is_object());
     assert!(
         schema["components"]["schemas"]
             .get("AttributeValue")
@@ -560,12 +560,35 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
     let value = ApiDoc::openapi();
     let json = value.to_json().unwrap();
     assert!(json.contains("GiftBook"));
+    let schema: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let properties = &schema["components"]["schemas"]["OrderResponse"]["properties"];
+    assert!(properties.get("mode").is_none());
+    assert!(properties.get("parent_order_id").is_none());
+    assert!(properties.get("kind").is_some());
+    assert_eq!(properties["quantity"]["minimum"], 1);
+    let page_ref = serde_json::json!({"$ref":"#/components/schemas/OrderPageResponse"});
+    for path in ["/orders/query", "/history/query"] {
+        assert_eq!(
+            schema["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"],
+            page_ref
+        );
+    }
+    let frame = schema["components"]["schemas"]["ServerFrame"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["properties"]["type"]["enum"][0] == "page")
+        .unwrap();
+    assert_eq!(frame["properties"]["page"], page_ref);
+
     for name in [
         "BookKey",
         "AttributeValue",
         "Predicate",
         "Scope",
         "CatalogEntry",
+        "GiftOrder",
+        "GiftTarget",
     ] {
         assert!(
             !value
@@ -1956,6 +1979,190 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
         schema["components"]["schemas"]["GiftSlug"]["type"],
         "string"
     );
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validation() {
+    let (state, runtime, peer, stop) = setup().await;
+    let mut source = page("1.000000001");
+    source.cursor = "order-presentation".into();
+    let mut history = None;
+    let mut additional = None;
+    for row in &mut source.entities {
+        if let Some(w::entity::Entity::Order(order)) = row.entity.as_mut() {
+            order.parent_order_id = Some("internal-parent-id".into());
+            order
+                .meta
+                .insert("url".into(), "javascript:private_source_diagnostic".into());
+            let mut concrete = order.clone();
+            concrete.id = "concrete".into();
+            concrete.price = "2".into();
+            concrete.meta.insert(
+                "url".into(),
+                "https://t.me/market/app?startapp=gift42".into(),
+            );
+            let mut execution = concrete.clone();
+            execution.id = "execution".into();
+            execution.mode = w::OrderMode::Executed as i32;
+            execution.executed_at_ms = Some(1800000000123);
+            execution.meta.insert(
+                "url".into(),
+                "https://private:password@example.com/secret".into(),
+            );
+            history = Some(execution);
+            additional = Some(concrete);
+            order.attributes.insert(
+                "private.source.constraint".into(),
+                w::AttributePredicate {
+                    predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                        value: Some(w::attribute_value::Value::Boolean(true)),
+                    })),
+                },
+            );
+        }
+    }
+    for order in [additional.unwrap(), history.unwrap()] {
+        source.entities.push(w::Entity {
+            entity: Some(w::entity::Entity::Order(order)),
+        });
+    }
+    peer.page.send_replace(source);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let result = state
+                .orders(market_gifts::GiftOrdersQuery::new(
+                    market_gifts::GiftFilters::new("tg.gift.123".into(), "GRAM".into()),
+                ))
+                .await
+                .unwrap();
+            if result.cursor == "order-presentation" {
+                // Internal lineage remains available to the domain layer.
+                assert_eq!(
+                    result.data[0].parent_order_id.as_deref(),
+                    Some("internal-parent-id")
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure),
+    )
+    .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/orders/query")
+            .set_json(query())
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let rest: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(rest["data"].as_array().unwrap().len(), 2);
+    assert_eq!(rest["data"][0]["kind"], "ask");
+    assert_eq!(
+        rest["data"][0]["target"]["reason"]["code"],
+        "unsupported_constraints"
+    );
+    assert!(rest["data"][0]["target"]["reason"]["message"].is_string());
+    assert!(rest["data"][0]["market_url"].is_null());
+    assert_eq!(
+        rest["data"][1]["market_url"],
+        "https://t.me/market/app?startapp=gift42"
+    );
+    for row in rest["data"].as_array().unwrap() {
+        assert!(row.get("mode").is_none());
+        assert!(row.get("parent_order_id").is_none());
+        assert!(row.get("observed_at").is_some());
+    }
+    for hidden in [
+        "private.source.constraint",
+        "private_source_diagnostic",
+        "internal-parent-id",
+    ] {
+        assert!(!rest.to_string().contains(hidden));
+    }
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/history/query")
+            .set_json(
+                serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"}}),
+            )
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let history: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(history["data"][0]["kind"], "executed");
+    assert!(history["data"][0]["executed_at"].is_string());
+    assert!(history["data"][0]["market_url"].is_null());
+    assert!(!history.to_string().contains("password"));
+    assert!(history["data"][0].get("parent_order_id").is_none());
+
+    let web_dir = peer._directory.path().join("web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "<html></html>").unwrap();
+    let server = api_server(&runtime, web_dir);
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(server.run(api_stop.child_token()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::json!({"type":"subscribe","id":"orders","query":query()})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let socket_page = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                socket.next().await
+            {
+                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_ne!(frame["type"], "error", "{frame}");
+                if frame["type"] == "page" {
+                    break frame["page"].clone();
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(socket_page["data"], rest["data"]);
+    let schema: serde_json::Value =
+        serde_json::from_str(&market_api::schema_json().unwrap()).unwrap();
+    let schemas = &schema["components"]["schemas"];
+    assert!(schemas.get("GiftOrder").is_none());
+    assert!(schemas.get("GiftTarget").is_none());
+    assert!(schemas["OrderResponse"]["properties"].get("mode").is_none());
+    assert!(
+        schemas["OrderResponse"]["properties"]
+            .get("parent_order_id")
+            .is_none()
+    );
+    for path in ["/orders/query", "/history/query"] {
+        assert_eq!(
+            schema["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+                ["$ref"],
+            "#/components/schemas/OrderPageResponse"
+        );
+    }
+    socket.close(None).await.unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }

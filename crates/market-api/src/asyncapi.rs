@@ -155,17 +155,20 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             id: "offers".into(),
             state: SubscriptionStatus::Connecting,
         })?,
-        "page" => serde_json::to_value(ServerFrame::Page {
-            id: "offers".into(),
-            page: std::sync::Arc::new(Page {
+        "page" => {
+            let page = Page::<GiftOrder> {
                 data: vec![],
                 next_page_token: String::new(),
                 cursor: "checkpoint".into(),
                 sync: sync.clone(),
-            }),
-            sync,
-            revision: "opaque-book-revision".into(),
-        })?,
+            };
+            serde_json::to_value(ServerFrame::Page {
+                id: "offers".into(),
+                page: OrderPageResponse::from(&page),
+                sync,
+                revision: "opaque-book-revision".into(),
+            })?
+        }
         "sync" => serde_json::to_value(ServerFrame::Sync {
             id: "offers".into(),
             sync,

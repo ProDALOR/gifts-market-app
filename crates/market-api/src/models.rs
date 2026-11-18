@@ -2,6 +2,9 @@
 pub use crate::catalog::{
     GiftCatalog, GiftCollection, GiftCollectionCatalog, GiftMedia, GiftModel, GiftPattern,
 };
+pub use crate::orders::{
+    OrderPageResponse, OrderResponse, OrderTargetResponse, UnsupportedTargetReason,
+};
 pub use market_gifts::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -20,16 +23,16 @@ pub enum Command {
         id: String,
     },
 }
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ServerFrame {
+pub enum ServerFrame<'a> {
     Status {
         id: String,
         state: SubscriptionStatus,
     },
     Page {
         id: String,
-        page: std::sync::Arc<Page<GiftOrder>>,
+        page: OrderPageResponse<'a>,
         /// Current replica freshness; authoritative over the cached page envelope.
         sync: SyncStatus,
         /// Opaque equality key for relevant data, independent of freshness.

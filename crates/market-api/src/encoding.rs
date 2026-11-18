@@ -1,5 +1,8 @@
 //! Bounded page encoding shared by subscribers to the same actor page.
-use crate::error::{ApiError, Result};
+use crate::{
+    error::{ApiError, Result},
+    models::OrderPageResponse,
+};
 use market_gifts::{GiftOrder, Page};
 use std::{
     collections::VecDeque,
@@ -96,7 +99,7 @@ fn encode(page: &NativePage, limit: usize) -> Result<Arc<str>> {
         limit,
         overflow: false,
     };
-    if serde_json::to_writer(&mut writer, page).is_err() {
+    if serde_json::to_writer(&mut writer, &OrderPageResponse::from(page)).is_err() {
         return Err(if writer.overflow {
             ApiError::capacity("Subscription page is too large; reduce the page limit")
         } else {
@@ -131,7 +134,7 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &b));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&a).unwrap(),
-            serde_json::to_value(&*page).unwrap()
+            serde_json::to_value(OrderPageResponse::from(&*page)).unwrap()
         );
         encoder.shutdown().await;
     }

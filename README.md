@@ -203,7 +203,7 @@ The official [Mini App documentation](https://core.telegram.org/bots/webapps) de
 
 ## Public API
 
-The public contract uses gift-domain types from `market-gifts`. Hub attributes and predicates remain inside the replica and the `market-gifts-hub` mapping boundary. REST and WebSocket consumers use the same `GiftOrdersQuery`, `GiftOrder` and typed IDs; generated TypeScript is built directly from that contract.
+The public contract uses gift-domain types from `market-gifts`. Hub attributes and predicates remain inside the replica and the `market-gifts-hub` mapping boundary. REST and WebSocket consumers use the same `GiftOrdersQuery`, public `OrderResponse`/`OrderPageResponse` and typed IDs; generated TypeScript is built directly from that contract. The internal `GiftOrder` stays in the domain layer.
 
 | Route | Purpose |
 | --- | --- |
@@ -232,7 +232,9 @@ curl http://localhost:8080/orders/query \
   -d '{"filters":{"collection_id":"tg.gift.5167939598143193218","currency_id":"GRAM","models":[],"number":{"min":1,"max":100},"price":{"max":"20"}},"side":"ask","sort":"price_asc","limit":25}'
 ```
 
-Pages contain `{data, next_page_token, cursor, sync}`. `GiftOrder` carries a `GiftBook` (venue, collection and currency), an exact decimal-string `price`, an integer gift `quantity`, timestamps and a typed `target`. A `gift` target identifies a concrete collectible with its number and optional model/backdrop/pattern IDs. A `criteria` target describes a selection, such as a bid for any model in a collection. An `unsupported` target explicitly marks hub constraints the gift domain cannot represent; it is never rendered as an unrestricted bid or an invented collectible. Only a dedicated market link is exposed, rather than arbitrary order metadata. Valuation rows include a resolved `identity: {collection_id, model_id}` when known, alongside display labels; catalog resolution and pricing use the same pinned view.
+Pages contain `{data, next_page_token, cursor, sync}`. Public `OrderResponse` carries a `GiftBook` (venue, collection and currency), an exact decimal-string `price`, an integer gift `quantity`, timestamps and a typed `target`. A `gift` target identifies a concrete collectible with its number and optional model/backdrop/pattern IDs. A `criteria` target describes a selection, such as a bid for any model in a collection. An `unsupported` target explicitly marks hub constraints the gift domain cannot represent; it is never rendered as an unrestricted bid or an invented collectible. The public field is `kind: "ask" | "bid" | "executed"`; the old `mode` field and internal `parent_order_id` are omitted. The pair `(book.venue_id, id)` identifies an order; IDs remain available for client reconciliation without appearing in normal GUI details. `observed_at` means the source's last observation, never listing creation time. The GUI shows execution time for history, last-observed time otherwise, and expiry for active orders when available. Quantities are shown only for bulk criteria orders; concrete gifts always have quantity one.
+
+Unsupported targets carry `reason: {code, message}`. Codes are `unsupported_constraints`, `invalid_attributes`, `non_concrete_gift` and `invalid_gift_id`; clients should branch on codes and treat the friendly message as presentation text. Source diagnostics and arbitrary metadata never appear in public responses. Only a dedicated `market_url` is exposed: absolute HTTP(S) links with a host and no embedded credentials or control characters. Invalid or unavailable links become null without dropping the order. REST, history and WebSocket encoding use the same borrowed presentation adapter; WebSocket subscribers retain shared bounded encodings per native actor page. This changes the public order representation; clients must update from `mode` and string unsupported reasons. Valuation rows include a resolved `identity: {collection_id, model_id}` when known, alongside display labels; catalog resolution and pricing use the same pinned view.
 
 `POST /valuations/gift` replaces `/portfolio/value` and `/valuations/query`; both old routes are removed. Supply a slug/URL and an explicit currency, without a strategy selector:
 
@@ -346,7 +348,8 @@ cargo test -p market-app -p market-api --no-default-features --features market-a
 npm --prefix web test
 # Isolated real React/Lottie browser regression; needs Playwright Chromium:
 npm --prefix web run test:previews
-# Isolated orderbook interactions, filters, exact prices and responsive layout:
+# Orderbook interactions and Mini App catalog updates require its schema:
+MARKET_SCHEMA_FEATURES=miniapp npm --prefix web run generate
 npm --prefix web run test:orderbook
 # Preview row balance, fixed symbol tiling, model spacing and footer placement:
 npm --prefix web run test:traits

@@ -60,19 +60,21 @@ fn catalog_response<T: serde::Serialize>(
         response.json(snapshot.data)
     }
 }
-#[utoipa::path(post,path="/orders/query",tag="Orders",summary="Query current asks or bids",request_body=GiftOrdersQuery,responses((status=200,body=Page<GiftOrder>),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/orders/query",tag="Orders",summary="Query current asks or bids",request_body=GiftOrdersQuery,responses((status=200,body=OrderPageResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn orders(
     state: web::Data<MarketApi>,
     query: web::Json<GiftOrdersQuery>,
-) -> Result<web::Json<Page<GiftOrder>>> {
-    Ok(web::Json(state.orders(query.into_inner()).await?))
+) -> Result<HttpResponse> {
+    let page = state.orders(query.into_inner()).await?;
+    Ok(HttpResponse::Ok().json(OrderPageResponse::from(&page)))
 }
-#[utoipa::path(post,path="/history/query",tag="History",summary="Query confirmed executions",request_body=GiftHistoryQuery,responses((status=200,body=Page<GiftOrder>),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/history/query",tag="History",summary="Query confirmed executions",request_body=GiftHistoryQuery,responses((status=200,body=OrderPageResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn executions(
     state: web::Data<MarketApi>,
     query: web::Json<GiftHistoryQuery>,
-) -> Result<web::Json<Page<GiftOrder>>> {
-    Ok(web::Json(state.executions(query.into_inner()).await?))
+) -> Result<HttpResponse> {
+    let page = state.executions(query.into_inner()).await?;
+    Ok(HttpResponse::Ok().json(OrderPageResponse::from(&page)))
 }
 #[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift slug with every registered strategy",description="Accepts a Telegram gift URL or collection-number slug and an explicit currency. Resolves concrete gifts from synchronized concrete active asks across quote currencies; unlisted/unknown gifts return 404. Each strategy returns its own typed data, revision and evaluation time, or a structured error. Missing evidence for one strategy does not discard others; all-strategy failures still return 200 for a resolved gift. Multiplier results are dimensionless ratios, not price estimates. Marks can have different revisions because actors cache and prepare independently. No Telegram account or external lookup is used.",request_body=market_gifts::valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn gift_valuation(

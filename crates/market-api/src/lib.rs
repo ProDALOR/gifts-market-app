@@ -11,6 +11,7 @@ mod media;
 #[cfg(feature = "miniapp")]
 pub mod miniapp;
 pub mod models;
+mod orders;
 mod origin;
 mod routes;
 mod schema;

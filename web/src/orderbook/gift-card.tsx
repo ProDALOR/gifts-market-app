@@ -24,7 +24,8 @@ export const GiftCard = memo(function GiftCard({
   selected: boolean;
   open: (order: Order) => void;
 }) {
-  const number = serial(order);
+  const number = serial(order),
+    unsupported = order.target.kind === "unsupported";
   return (
     <li
       className={`gift-card${selected ? " selected" : ""}`}
@@ -38,12 +39,21 @@ export const GiftCard = memo(function GiftCard({
         className="card-preview"
       >
         <div className="card-head">
-          <span className="serial">
-            {number
-              ? `#${number}`
-              : order.quantity !== 1
-                ? `×${order.quantity}`
-                : "Gift"}
+          <span
+            className="serial"
+            title={
+              order.target.kind === "unsupported"
+                ? order.target.reason.message
+                : undefined
+            }
+          >
+            {unsupported
+              ? "Unsupported"
+              : number
+                ? `#${number}`
+                : order.quantity !== 1
+                  ? `×${order.quantity}`
+                  : "Gift"}
           </span>
           <span className="venue-icon" title={venueName}>
             <VenueIcon name={venueName} />
@@ -51,7 +61,7 @@ export const GiftCard = memo(function GiftCard({
         </div>
         <div className="card-copy">
           <strong>{modelName(order, options, collectionName)}</strong>
-          <div className={`quote price${order.mode === "bid" ? " bid" : ""}`}>
+          <div className={`quote price${order.kind === "bid" ? " bid" : ""}`}>
             <Quote price={order.price} currency={order.book.currency_id} />
           </div>
         </div>

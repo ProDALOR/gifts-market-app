@@ -334,7 +334,7 @@ fn slug_equality_ordering_and_hashing_use_normalized_keys_and_preserve_spelling(
 fn order_json() -> serde_json::Value {
     serde_json::json!({
         "id":"listing", "book":{"venue_id":"venue","collection_id":"collection","currency_id":"GRAM"},
-        "mode":"ask", "target":{"kind":"gift","gift":{"id":"gift","collection_id":"collection","number":1,"traits":{"model":null,"backdrop":null,"pattern":null}}},
+        "kind":"ask", "target":{"kind":"gift","gift":{"id":"gift","collection_id":"collection","number":1,"traits":{"model":null,"backdrop":null,"pattern":null}}},
         "price":"10", "quantity":1, "observed_at":"2026-01-01T00:00:00Z",
         "expires_at":null, "executed_at":null, "parent_order_id":null, "market_url":null
     })

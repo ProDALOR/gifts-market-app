@@ -235,3 +235,57 @@ fn concrete_quantities_use_shared_validation_while_criteria_keep_bulk_quantities
         ));
     }
 }
+
+#[test]
+fn unsupported_targets_have_stable_typed_reasons_without_source_diagnostics() {
+    let mut unsupported = fixture();
+    unsupported.attributes.insert(
+        "private.source.constraint".into(),
+        eq(w::attribute_value::Value::Boolean(true)),
+    );
+    assert!(matches!(
+        order(unsupported).unwrap().target,
+        GiftTarget::Unsupported {
+            reason: UnsupportedGiftReason::UnsupportedConstraints
+        }
+    ));
+    let mut invalid = fixture();
+    invalid.attributes.insert(
+        MODEL.into(),
+        eq(w::attribute_value::Value::OptionId("".into())),
+    );
+    assert!(matches!(
+        order(invalid).unwrap().target,
+        GiftTarget::Unsupported {
+            reason: UnsupportedGiftReason::InvalidAttributes
+        }
+    ));
+    let mut number = fixture();
+    number
+        .attributes
+        .insert(NUMBER.into(), eq(w::attribute_value::Value::Integer(0)));
+    assert!(matches!(
+        order(number).unwrap().target,
+        GiftTarget::Unsupported {
+            reason: UnsupportedGiftReason::InvalidAttributes
+        }
+    ));
+    let mut nonconcrete = fixture();
+    nonconcrete
+        .attributes
+        .insert(MODEL.into(), models(&["a", "b"]));
+    assert!(matches!(
+        order(nonconcrete).unwrap().target,
+        GiftTarget::Unsupported {
+            reason: UnsupportedGiftReason::NonConcreteGift
+        }
+    ));
+    let mut id = fixture();
+    id.item_id = Some("".into());
+    assert!(matches!(
+        order(id).unwrap().target,
+        GiftTarget::Unsupported {
+            reason: UnsupportedGiftReason::InvalidGiftId
+        }
+    ));
+}

@@ -59,3 +59,117 @@ test("market buttons require a public HTTP(S) source link", () => {
     "https://t.me/market/app?startapp=gift42",
   );
 });
+
+test("order details hide technical fields and show meaningful quantities and timestamps", async () => {
+  const { orderDetails } = await import("../src/orderbook.ts");
+  const base: Order = {
+    id: "private-source-listing",
+    book: { venue_id: "venue", collection_id: "gift", currency_id: "GRAM" },
+    kind: "ask",
+    price: "1",
+    quantity: 1,
+    observed_at: "2026-11-18T12:00:00Z",
+    executed_at: null,
+    expires_at: "2026-11-19T12:00:00Z",
+    market_url: null,
+    target: {
+      kind: "gift",
+      gift: {
+        id: "source-gift-id",
+        collection_id: "gift",
+        number: 42,
+        traits: { model: "model", backdrop: null, pattern: null },
+      },
+    },
+  };
+  const names = new Map([
+    ["venue", "Market"],
+    ["model", "Gold"],
+  ]);
+  const rows = orderDetails(base, names),
+    labels = rows.map(([label]) => label);
+  assert.ok(labels.includes("Last observed"));
+  assert.ok(labels.includes("Expires"));
+  assert.ok(!labels.includes("Quantity"));
+  for (const label of [
+    "Mode",
+    "Order ID",
+    "Gift ID",
+    "Parent order",
+    "Currency",
+    "Gift #",
+  ])
+    assert.ok(!labels.includes(label));
+  assert.ok(!JSON.stringify(rows).includes("source-"));
+  assert.deepEqual(
+    rows.find(([label]) => label === "Model"),
+    ["Model", "Gold"],
+  );
+  assert.deepEqual(
+    rows.find(([label]) => label === "Backdrop"),
+    ["Backdrop", "Unknown"],
+  );
+
+  const bid: Order = {
+    ...base,
+    kind: "bid",
+    quantity: 5,
+    target: {
+      kind: "criteria",
+      criteria: {
+        models: [],
+        backdrops: [],
+        patterns: [],
+        number: { min: 1, max: 10 },
+      },
+    },
+  };
+  const bidRows = orderDetails(bid, names);
+  assert.deepEqual(
+    bidRows.find(([label]) => label === "Quantity"),
+    ["Quantity", "5"],
+  );
+  assert.deepEqual(
+    bidRows.find(([label]) => label === "Model"),
+    ["Model", "Any"],
+  );
+  assert.deepEqual(
+    bidRows.find(([label]) => label === "Gift #"),
+    ["Gift #", "1 – 10"],
+  );
+  const executedRows = orderDetails(
+    { ...base, kind: "executed", executed_at: "2026-11-18T13:00:00Z" },
+    names,
+  );
+  assert.ok(executedRows.some(([label]) => label === "Executed"));
+  assert.ok(
+    !executedRows.some(
+      ([label]) => label === "Expires" || label === "Last observed",
+    ),
+  );
+});
+
+test("unsupported conditions remain distinct from unrestricted criteria in cards and details", async () => {
+  const { orderDetails } = await import("../src/orderbook.ts");
+  const order = {
+    book: { venue_id: "venue" },
+    kind: "bid",
+    quantity: 1,
+    observed_at: "2026-11-18T12:00:00Z",
+    target: {
+      kind: "unsupported",
+      reason: {
+        code: "unsupported_constraints",
+        message: "Some conditions cannot be displayed yet.",
+      },
+    },
+  } as Order;
+  assert.equal(serial(order), undefined);
+  assert.equal(modelName(order, new Map(), "Any"), "Unsupported conditions");
+  const rows = orderDetails(order, new Map());
+  assert.deepEqual(rows[0], [
+    "Conditions",
+    order.target.kind === "unsupported" && order.target.reason.message,
+  ]);
+  assert.ok(!rows.some(([, value]) => value === "Any"));
+});

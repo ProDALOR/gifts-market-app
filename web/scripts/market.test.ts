@@ -53,7 +53,7 @@ test("concrete previews use supplied media, never guessed paths or hypothetical 
   );
   assert.equal(
     modelMedia(
-      { target: { kind: "unsupported", reason: "unsupported" } },
+      { target: { kind: "unsupported", reason: { code: "unsupported_constraints", message: "Unsupported conditions" } } },
       options,
     ),
     undefined,

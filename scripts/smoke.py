@@ -227,7 +227,7 @@ def main():
         assert stars["data"][0]["price"] == "1250"
         executions = call("/history/query", {"filters": query["filters"]})
         assert (
-            len(executions["data"]) == 1 and executions["data"][0]["mode"] == "executed"
+            len(executions["data"]) == 1 and executions["data"][0]["kind"] == "executed"
         )
         for old in ["/items", "/trades", "/status", "/market.MarketWrite/Publish"]:
             call(old, expected=404)

@@ -16,40 +16,58 @@ pub fn book(value: w::BookKey) -> Result<GiftBook> {
         currency_id: value.currency_id.try_into().map_err(invalid)?,
     })
 }
-fn required_option(value: &w::AttributeValue) -> Result<&str> {
-    match required(value.value.as_ref())? {
-        w::attribute_value::Value::OptionId(id) => Ok(id),
-        _ => Err(invalid("gift trait must reference a catalog option")),
+type TargetResult<T> = std::result::Result<T, UnsupportedGiftReason>;
+fn required_option(value: &w::AttributeValue) -> TargetResult<&str> {
+    match value.value.as_ref() {
+        Some(w::attribute_value::Value::OptionId(id)) => Ok(id),
+        _ => Err(UnsupportedGiftReason::InvalidAttributes),
     }
 }
-fn option_values(value: &w::AttributePredicate) -> Result<&[w::AttributeValue]> {
+fn option_values(value: &w::AttributePredicate) -> TargetResult<&[w::AttributeValue]> {
     use w::attribute_predicate::Predicate as P;
-    match required(value.predicate.as_ref())? {
+    match value
+        .predicate
+        .as_ref()
+        .ok_or(UnsupportedGiftReason::InvalidAttributes)?
+    {
         P::Eq(value) => Ok(std::slice::from_ref(value)),
         P::OneOf(values) if !values.values.is_empty() => Ok(&values.values),
-        _ => Err(invalid("unsupported gift trait constraint")),
+        P::OneOf(_) => Err(UnsupportedGiftReason::InvalidAttributes),
+        _ => Err(UnsupportedGiftReason::UnsupportedConstraints),
     }
 }
-fn options(value: w::AttributePredicate) -> Result<Vec<String>> {
+fn options<T: TryFrom<String>>(value: w::AttributePredicate) -> TargetResult<Vec<T>> {
     let mut ids = option_values(&value)?
         .iter()
         .map(required_option)
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<TargetResult<Vec<_>>>()?;
     ids.sort();
     ids.dedup();
-    Ok(ids.into_iter().map(str::to_owned).collect())
+    ids.into_iter()
+        .map(|id| {
+            id.to_owned()
+                .try_into()
+                .map_err(|_| UnsupportedGiftReason::InvalidAttributes)
+        })
+        .collect()
 }
-fn number(value: w::AttributeValue) -> Result<GiftNumber> {
-    match required(value.value)? {
+fn number(value: w::AttributeValue) -> TargetResult<GiftNumber> {
+    match value
+        .value
+        .ok_or(UnsupportedGiftReason::InvalidAttributes)?
+    {
         w::attribute_value::Value::Integer(value) => u32::try_from(value)
-            .map_err(invalid)
-            .and_then(|n| GiftNumber::new(n).map_err(invalid)),
-        _ => Err(invalid("gift number must be an integer")),
+            .map_err(|_| UnsupportedGiftReason::InvalidAttributes)
+            .and_then(|n| GiftNumber::new(n).map_err(|_| UnsupportedGiftReason::InvalidAttributes)),
+        _ => Err(UnsupportedGiftReason::InvalidAttributes),
     }
 }
-fn number_range(value: w::AttributePredicate) -> Result<GiftNumberRange> {
+fn number_range(value: w::AttributePredicate) -> TargetResult<GiftNumberRange> {
     use w::attribute_predicate::Predicate as P;
-    let range = match required(value.predicate)? {
+    let range = match value
+        .predicate
+        .ok_or(UnsupportedGiftReason::InvalidAttributes)?
+    {
         P::Eq(value) => {
             let n = number(value)?;
             GiftNumberRange {
@@ -61,9 +79,11 @@ fn number_range(value: w::AttributePredicate) -> Result<GiftNumberRange> {
             min: value.min.map(number).transpose()?,
             max: value.max.map(number).transpose()?,
         },
-        _ => return Err(invalid("unsupported gift number constraint")),
+        _ => return Err(UnsupportedGiftReason::UnsupportedConstraints),
     };
-    range.validate().map_err(invalid)?;
+    range
+        .validate()
+        .map_err(|_| UnsupportedGiftReason::InvalidAttributes)?;
     Ok(range)
 }
 
@@ -114,30 +134,15 @@ pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
     }))
 }
 
-fn criteria(attributes: BTreeMap<String, w::AttributePredicate>) -> Result<GiftCriteria> {
+fn criteria(attributes: BTreeMap<String, w::AttributePredicate>) -> TargetResult<GiftCriteria> {
     let mut result = GiftCriteria::default();
     for (key, value) in attributes {
         match key.as_str() {
-            MODEL => {
-                result.models = options(value)?
-                    .into_iter()
-                    .map(|v| v.try_into().map_err(invalid))
-                    .collect::<Result<_>>()?
-            }
-            BACKDROP => {
-                result.backdrops = options(value)?
-                    .into_iter()
-                    .map(|v| v.try_into().map_err(invalid))
-                    .collect::<Result<_>>()?
-            }
-            PATTERN => {
-                result.patterns = options(value)?
-                    .into_iter()
-                    .map(|v| v.try_into().map_err(invalid))
-                    .collect::<Result<_>>()?
-            }
+            MODEL => result.models = options(value)?,
+            BACKDROP => result.backdrops = options(value)?,
+            PATTERN => result.patterns = options(value)?,
             NUMBER => result.number = Some(number_range(value)?),
-            _ => return Err(invalid("gift has additional unsupported constraints")),
+            _ => return Err(UnsupportedGiftReason::UnsupportedConstraints),
         }
     }
     Ok(result)
@@ -149,11 +154,7 @@ fn target(
 ) -> GiftTarget {
     let criteria = match criteria(attributes) {
         Ok(value) => value,
-        Err(error) => {
-            return GiftTarget::Unsupported {
-                reason: error.to_string(),
-            };
-        }
+        Err(reason) => return GiftTarget::Unsupported { reason },
     };
     match id {
         None => GiftTarget::Criteria { criteria },
@@ -170,7 +171,7 @@ fn target(
                 || (criteria.number.is_some() && number.is_none())
             {
                 return GiftTarget::Unsupported {
-                    reason: "identified gift has non-concrete traits".into(),
+                    reason: UnsupportedGiftReason::NonConcreteGift,
                 };
             }
             match id.try_into() {
@@ -187,7 +188,7 @@ fn target(
                     },
                 },
                 Err(_) => GiftTarget::Unsupported {
-                    reason: "invalid collectible gift ID".into(),
+                    reason: UnsupportedGiftReason::InvalidGiftId,
                 },
             }
         }
@@ -209,7 +210,7 @@ pub fn order(value: w::Order) -> Result<GiftOrder> {
         id: value.id.try_into().map_err(invalid)?,
         target: target(value.item_id, book.collection_id.clone(), value.attributes),
         book,
-        mode: match w::OrderMode::try_from(value.mode) {
+        kind: match w::OrderMode::try_from(value.mode) {
             Ok(w::OrderMode::Ask) => GiftOrderKind::Ask,
             Ok(w::OrderMode::Bid) => GiftOrderKind::Bid,
             Ok(w::OrderMode::Executed) => GiftOrderKind::Executed,

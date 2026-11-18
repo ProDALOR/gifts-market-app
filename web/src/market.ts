@@ -1,11 +1,12 @@
 import type { components } from "./gen/api";
-export type GiftValuationRequest = components["schemas"]["GiftValuationRequest"];
+export type GiftValuationRequest =
+  components["schemas"]["GiftValuationRequest"];
 export type GiftValuation = components["schemas"]["GiftValuationResponse"];
 export type ModelMultiplier = components["schemas"]["ModelMultiplier"];
 export type BackdropMultiplier = components["schemas"]["BackdropMultiplier"];
 export type ValuationErrorDetails =
   components["schemas"]["ValuationErrorDetails"];
-export type Order = components["schemas"]["GiftOrder"];
+export type Order = components["schemas"]["OrderResponse"];
 export type Book = components["schemas"]["GiftBook"];
 export type Query = components["schemas"]["GiftOrdersQuery"];
 export type HistoryQuery = components["schemas"]["GiftHistoryQuery"];
@@ -20,7 +21,10 @@ export type Model = components["schemas"]["GiftModel"];
 export type Backdrop = components["schemas"]["GiftBackdrop"];
 export type Pattern = components["schemas"]["GiftPattern"];
 export type BackdropPalette = components["schemas"]["BackdropPalette"];
-export type Page<T> = Omit<components["schemas"]["Page_GiftOrder"], "data"> & {
+export type Page<T> = Omit<
+  components["schemas"]["OrderPageResponse"],
+  "data"
+> & {
   data: T[];
 };
 export type TraitKey = "models" | "backdrops" | "patterns";

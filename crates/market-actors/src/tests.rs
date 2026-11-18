@@ -109,7 +109,7 @@ async fn public_actor_contract_serves_typed_queries_results_and_subscription_err
     let page = service.handle.orders(query.clone()).await.unwrap();
     assert_eq!(page.cursor, "c1");
     assert_eq!(page.data[0].price.as_str(), "3");
-    assert_eq!(page.data[0].mode, m::GiftOrderKind::Ask);
+    assert_eq!(page.data[0].kind, m::GiftOrderKind::Ask);
     let catalog = service.handle.catalog().await.unwrap();
     assert!(service.handle.model_documents(1).await.unwrap().is_empty());
     for limit in [0, 1001] {

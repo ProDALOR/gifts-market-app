@@ -86,8 +86,8 @@ function result(query, executed = false) {
         currency_id: filters.currency_id,
         venue_id: venues[index % 3].id,
       },
-      mode,
-      quantity: 1,
+      kind: mode,
+      quantity: mode === "bid" && index === 1 ? 5 : 1,
       price:
         filters.currency_id === "XTR"
           ? String(850 + index)
@@ -99,36 +99,47 @@ function result(query, executed = false) {
               ? "10000000000000000.000000001"
               : String(index + 10),
       target:
-        mode === "bid"
+        mode === "bid" && index === 0
           ? {
-              kind: "criteria",
-              criteria: {
-                models: [],
-                backdrops: [],
-                patterns: [],
-                number: null,
+              kind: "unsupported",
+              reason: {
+                code: "unsupported_constraints",
+                message:
+                  "This listing has conditions that cannot be displayed yet.",
               },
             }
-          : {
-              kind: "gift",
-              gift: {
-                id: `gift-${1000 + index}`,
-                collection_id: filters.collection_id,
-                number: 2000 - index,
-                traits: {
-                  model: models[index % models.length].id,
-                  backdrop: backdrops[index % backdrops.length].id,
-                  pattern: patterns[index % patterns.length].id,
+          : mode === "bid"
+            ? {
+                kind: "criteria",
+                criteria: {
+                  models: [],
+                  backdrops: [],
+                  patterns: [],
+                  number: null,
+                },
+              }
+            : {
+                kind: "gift",
+                gift: {
+                  id: `gift-${1000 + index}`,
+                  collection_id: filters.collection_id,
+                  number: 2000 - index,
+                  traits: {
+                    model: models[index % models.length].id,
+                    backdrop: backdrops[index % backdrops.length].id,
+                    pattern: patterns[index % patterns.length].id,
+                  },
                 },
               },
-            },
       observed_at: new Date(1700000000000 + index * 1000).toISOString(),
       executed_at: executed
         ? new Date(1700000000000 + index * 1000).toISOString()
         : null,
-      parent_order_id: null,
       expires_at: null,
-      market_url: "https://t.me/market/app?startapp=gift42",
+      market_url:
+        mode === "bid" && index === 0
+          ? null
+          : "https://t.me/market/app?startapp=gift42",
     }),
   );
   rows = rows.filter(
@@ -709,15 +720,77 @@ try {
     "Short books keep the footer at the viewport bottom",
   );
   assert.equal(await button("Model").isDisabled(), true);
+  assert.equal(
+    await page
+      .locator(".gift-card")
+      .first()
+      .getByText("Unsupported conditions", { exact: true })
+      .count(),
+    1,
+  );
+  await page.locator(".card-open").first().click();
+  await page
+    .locator(".detail")
+    .getByText("This listing has conditions that cannot be displayed yet.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await page.locator(".detail-market").count(), 0);
+  assert.equal(
+    await page
+      .locator(".detail dt")
+      .getByText("Model", { exact: true })
+      .count(),
+    0,
+  );
+  await page.keyboard.press("Escape");
+  await page.locator(".card-open").nth(1).click();
+  await page
+    .locator(".detail dt")
+    .getByText("Quantity", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.locator(".detail dd").getByText("5", { exact: true }).count(),
+    1,
+  );
+  await page.keyboard.press("Escape");
   await button("History").click();
   await cards(50);
   await page.getByText("Snapshot", { exact: true }).waitFor();
   await scrollMore(75);
+  await page.locator(".card-open").first().click();
+  await page
+    .locator(".detail dt")
+    .getByText("Executed", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page
+      .locator(".detail dt")
+      .getByText("Last observed", { exact: true })
+      .count(),
+    0,
+  );
+  await page.keyboard.press("Escape");
   await button("Asks").click();
   await cards(50);
   const opener = page.locator(".card-open").first();
   await opener.click();
   await page.getByRole("dialog", { name: "Order details" }).waitFor();
+  await page
+    .locator(".detail dt")
+    .getByText("Last observed", { exact: true })
+    .waitFor();
+  const labels = await page.locator(".detail dt").allTextContents();
+  for (const hidden of [
+    "Order ID",
+    "Gift ID",
+    "Parent order",
+    "Mode",
+    "Quantity",
+    "Gift #",
+  ])
+    assert.ok(!labels.includes(hidden), hidden);
+  assert.equal(await page.locator(".source-details").count(), 0);
   assert.equal(
     await button("Close details").evaluate(
       (el) => el === document.activeElement,

@@ -53,6 +53,17 @@ pub enum GiftSide {
     Bid,
 }
 
+/// Stable reasons an order target cannot be represented as gift facts or criteria.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum UnsupportedGiftReason {
+    UnsupportedConstraints,
+    InvalidAttributes,
+    NonConcreteGift,
+    InvalidGiftId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -65,7 +76,7 @@ pub enum GiftTarget {
     },
     /// Unsupported hub constraints must never be displayed as unrestricted bids.
     Unsupported {
-        reason: String,
+        reason: UnsupportedGiftReason,
     },
 }
 
@@ -75,7 +86,7 @@ pub enum GiftTarget {
 pub struct GiftOrder {
     pub id: OrderId,
     pub book: GiftBook,
-    pub mode: GiftOrderKind,
+    pub kind: GiftOrderKind,
     pub target: GiftTarget,
     pub price: Amount,
     pub quantity: u32,
