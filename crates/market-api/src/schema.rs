@@ -21,7 +21,7 @@ use utoipa::OpenApi;
         (name="Catalog",description="Discover gift collections and their traits."),
         (name="Orders",description="Current asks and bids with exact prices and keyset pagination."),
         (name="History",description="Confirmed executions. Disappearing listings do not imply sales."),
-        (name="Valuations",description="All registered strategy outcomes for a concrete gift URL or slug, with typed evidence and errors."),
+        (name="Valuations",description="All registered strategy outcomes for a concrete gift URL, slug or catalog identity, with typed evidence and errors."),
         (name="Media",description="Cached Telegram gift thumbnails, animations and patterns."),
         (name="Health",description="Process health, replica readiness and freshness."),
         (name="WebSocket",description="See /docs/ws for live-message documentation and a test console.")

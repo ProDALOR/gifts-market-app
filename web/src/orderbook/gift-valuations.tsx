@@ -2,15 +2,6 @@ import { useEffect, useState } from "react";
 import { amount, valuation } from "../market";
 import type { GiftValuation, Order } from "../market";
 import { Quote } from "../ui/market-controls";
-export function valuationSlug(order: Order, collectionSlug?: string) {
-  if (
-    order.target.kind !== "gift" ||
-    !order.target.gift.number ||
-    !collectionSlug
-  )
-    return;
-  return `${collectionSlug}-${order.target.gift.number}`;
-}
 export const strategyLabel = (id: string) =>
   id.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 type Outcome = GiftValuation["strategies"][number];
@@ -66,18 +57,13 @@ function StrategyResult({ result }: { result: Outcome }) {
   );
 }
 /** One on-demand request returns every registered strategy; no per-card requests or polling. */
-export function GiftValuations({
-  order,
-  collectionSlug,
-}: {
-  order: Order;
-  collectionSlug?: string;
-}) {
-  const slug = valuationSlug(order, collectionSlug);
+export function GiftValuations({ order }: { order: Order }) {
+  const gift = order.target.kind === "gift" ? order.target.gift : undefined;
+  const number = gift?.number;
   const giftId =
     order.target.kind === "gift" ? order.target.gift.id : undefined;
   const key = JSON.stringify([
-    slug,
+    number,
     giftId,
     order.book.collection_id,
     order.book.currency_id,
@@ -89,11 +75,14 @@ export function GiftValuations({
     error?: string;
   }>({ key: "" });
   useEffect(() => {
-    if (!slug || !giftId) return;
+    if (!number || !giftId) return;
     const stop = new AbortController();
     setState({ key });
     void valuation(
-      { gift: slug, currency_id: order.book.currency_id },
+      {
+        gift: { collection_id: order.book.collection_id, number },
+        currency_id: order.book.currency_id,
+      },
       stop.signal,
     )
       .then((value) => {
@@ -121,7 +110,7 @@ export function GiftValuations({
     return () => stop.abort();
   }, [key, attempt]);
   const current = state.key === key ? state : undefined;
-  const loading = !!slug && !current?.value && !current?.error;
+  const loading = !!number && !current?.value && !current?.error;
   return (
     <section
       className="gift-valuations"
@@ -130,7 +119,7 @@ export function GiftValuations({
     >
       <div className="valuation-heading">
         <h3>Valuations</h3>
-        {slug && (
+        {number && (
           <button
             onClick={() => setAttempt((n) => n + 1)}
             disabled={loading}
@@ -140,10 +129,10 @@ export function GiftValuations({
           </button>
         )}
       </div>
-      {!slug ? (
+      {!number ? (
         <p className="valuation-note">
           {order.target.kind === "gift"
-            ? "Valuation isn’t available for this gift yet."
+            ? "This listing has no gift number; valuation is unavailable."
             : "Choose a collectible gift to see valuations."}
         </p>
       ) : loading ? (

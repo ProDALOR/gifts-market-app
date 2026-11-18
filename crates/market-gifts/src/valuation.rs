@@ -211,6 +211,6 @@ impl ValuationErrorDetails {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftValuationRequest {
-    pub gift: crate::GiftSlug,
+    pub gift: crate::GiftLookup,
     pub currency_id: CurrencyId,
 }

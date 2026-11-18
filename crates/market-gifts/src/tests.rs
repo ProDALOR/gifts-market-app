@@ -1,6 +1,46 @@
 use crate::*;
 
 #[test]
+fn gift_valuation_lookup_accepts_slugs_or_catalog_identity_without_client_supplied_traits() {
+    use valuation::GiftValuationRequest;
+    let request: GiftValuationRequest = serde_json::from_value(serde_json::json!({
+        "gift": { "collection_id": "collection", "number": 123 }, "currency_id": "GRAM"
+    }))
+    .unwrap();
+    assert_eq!(
+        request.gift,
+        GiftLookup::Catalog {
+            collection_id: "collection".into(),
+            number: GiftNumber::new(123).unwrap()
+        }
+    );
+    let slug: GiftValuationRequest = serde_json::from_value(serde_json::json!({
+        "gift": "https://t.me/nft/Gift-00123", "currency_id": "GRAM"
+    }))
+    .unwrap();
+    assert_eq!(
+        slug.gift,
+        GiftLookup::Slug(GiftSlug::new("Gift-123").unwrap())
+    );
+    assert_eq!(serde_json::to_value(slug).unwrap()["gift"], "Gift-123");
+    for gift in [
+        serde_json::json!({"collection_id":"collection","number":0}),
+        serde_json::json!({"collection_id":"","number":123}),
+        serde_json::json!({"collection_id":"collection","number":1.5}),
+        serde_json::json!({"collection_id":"collection"}),
+        serde_json::json!({"collection_id":"collection","number":123,"traits":{"model":"forged"}}),
+        serde_json::json!({"collection_id":"collection","number":123,"slug":"Gift-999"}),
+    ] {
+        assert!(
+            serde_json::from_value::<GiftValuationRequest>(serde_json::json!({
+                "gift": gift, "currency_id": "GRAM"
+            }))
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn identifiers_and_exact_amounts_are_validated_at_the_json_boundary() {
     for invalid in ["", " bad", "bad\n", &"x".repeat(257)] {
         assert!(CollectionId::new(invalid).is_err());

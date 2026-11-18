@@ -8,7 +8,7 @@ pub struct GiftStrategyResult {
 }
 #[derive(Debug, Clone)]
 pub struct GiftValuationResult {
-    pub slug: GiftSlug,
+    pub slug: Option<GiftSlug>,
     pub gift: CollectibleGift,
     pub currency_id: CurrencyId,
     pub gift_revision: String,
@@ -29,12 +29,12 @@ impl ValuationHandle {
             .as_ref()
             .ok_or_else(|| ValuationError::unavailable("Gift lookup is unavailable"))?;
         let work = async {
-            let slug = request.gift.clone();
+            let lookup = request.gift.clone();
             let currency = request.currency_id.clone();
             let lookup = reader.prepare(
                 move |snapshot| -> Result<_, market_actors::error::DataError> {
                     snapshot.require_currency(&currency)?;
-                    Ok((snapshot.gift_by_slug(&slug)?, snapshot.revision()?))
+                    Ok((snapshot.gift(&lookup)?, snapshot.revision()?))
                 },
             );
             let (gift, gift_revision) =
@@ -66,7 +66,10 @@ impl ValuationHandle {
                 }))
                 .await;
             Ok(GiftValuationResult {
-                slug: request.gift,
+                slug: match request.gift {
+                    GiftLookup::Slug(slug) => Some(slug),
+                    GiftLookup::Catalog { .. } => None,
+                },
                 gift,
                 currency_id: request.currency_id,
                 gift_revision,

@@ -51,7 +51,7 @@ pub enum StrategyReport<'a> {
 }
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GiftValuationResponse<'a> {
-    pub slug: &'a market_gifts::GiftSlug,
+    pub slug: Option<&'a market_gifts::GiftSlug>,
     pub gift: &'a market_gifts::CollectibleGift,
     pub currency_id: &'a market_gifts::CurrencyId,
     pub gift_revision: &'a str,
@@ -60,7 +60,7 @@ pub struct GiftValuationResponse<'a> {
 impl<'a> From<&'a market_valuation::GiftValuationResult> for GiftValuationResponse<'a> {
     fn from(value: &'a market_valuation::GiftValuationResult) -> Self {
         Self {
-            slug: &value.slug,
+            slug: value.slug.as_ref(),
             gift: &value.gift,
             currency_id: &value.currency_id,
             gift_revision: &value.gift_revision,

@@ -23,7 +23,10 @@ fn gift_commands_and_bare_links_share_slug_validation_and_currency_shorthand() {
         let Command::Value(query) = request.command else {
             panic!("expected gift valuation");
         };
-        assert_eq!(query.gift.to_string(), "Gift-123");
+        let market_gifts::GiftLookup::Slug(slug) = query.gift else {
+            panic!("expected slug lookup");
+        };
+        assert_eq!(slug.to_string(), "Gift-123");
         assert_eq!(query.currency_id.as_str(), "GRAM");
     }
     let request = commands::parse(message("/value Gift-123 xtr"), &["market_bot"]).unwrap();

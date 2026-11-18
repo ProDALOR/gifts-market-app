@@ -1,9 +1,32 @@
-//! Resolve a public collection/number slug from concrete, synchronized orders.
+//! Resolve public slugs or stable collection/number identities from synchronized orders.
 use super::*;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
 impl MarketSnapshot {
-    pub fn gift_by_slug(&self, slug: &GiftSlug) -> Result<CollectibleGift> {
+    pub fn gift(&self, lookup: &GiftLookup) -> Result<CollectibleGift> {
+        match lookup {
+            GiftLookup::Slug(slug) => self.gift_by_slug(slug),
+            GiftLookup::Catalog {
+                collection_id,
+                number,
+            } => {
+                let Some(w::entity::Entity::ItemType(item)) =
+                    self.entity(w::EntityKind::ItemType, collection_id)?
+                else {
+                    return Err(DataError::not_found(
+                        "Gift collection is not in synchronized market data",
+                    ));
+                };
+                if !market_gifts_hub::is_gift(&item) {
+                    return Err(DataError::not_found(
+                        "Gift collection is not in synchronized market data",
+                    ));
+                }
+                self.gift_by_number(&item, *number)
+            }
+        }
+    }
+    fn gift_by_slug(&self, slug: &GiftSlug) -> Result<CollectibleGift> {
         self.check_cancelled()?;
         let items = crate::catalog::projection::entities_cancellable(
             &self.reader,
@@ -33,6 +56,9 @@ impl MarketSnapshot {
                 "Canonical gift collection slug is not in synchronized market data",
             )
         })?;
+        self.gift_by_number(item, slug.number())
+    }
+    fn gift_by_number(&self, item: &w::ItemType, number: GiftNumber) -> Result<CollectibleGift> {
         if !item.attributes.contains_key(market_gifts_hub::NUMBER) {
             return Err(DataError::not_found(
                 "Gift number is unavailable in synchronized market data",
@@ -55,8 +81,8 @@ impl MarketSnapshot {
                 CurrencyId::new(currency.id).map_err(|e| DataError::unavailable(e.to_string()))?,
             );
             filters.number = Some(GiftNumberRange {
-                min: Some(slug.number()),
-                max: Some(slug.number()),
+                min: Some(number),
+                max: Some(number),
             });
             let mut query = GiftOrdersQuery::new(filters);
             query.sort = GiftSort::NumberAsc;
@@ -68,7 +94,7 @@ impl MarketSnapshot {
                     let GiftTarget::Gift { gift } = projected.into_data().target else {
                         continue;
                     };
-                    if gift.number != Some(slug.number()) {
+                    if gift.number != Some(number) {
                         continue;
                     }
                     match &mut found {
@@ -76,7 +102,7 @@ impl MarketSnapshot {
                         Some(current) => {
                             if current.id != gift.id {
                                 return Err(DataError::unavailable(
-                                    "Conflicting gift identities for this slug",
+                                    "Conflicting gift identities for this collection and number",
                                 ));
                             }
                             merge(&mut current.traits.model, gift.traits.model)?;

@@ -95,5 +95,8 @@ fn value(arguments: &str) -> Option<GiftValuationRequest> {
     if parts.next().is_some() {
         return None;
     }
-    Some(GiftValuationRequest { gift, currency_id })
+    Some(GiftValuationRequest {
+        gift: gift.into(),
+        currency_id,
+    })
 }

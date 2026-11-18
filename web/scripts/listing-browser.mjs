@@ -26,7 +26,7 @@ useEffect(()=>{select(old=>old ? feed.displayOrders.find(row=>orderKey(row)===or
 return React.createElement('main',{className:'workspace'},React.createElement('div',{className:'orderbook'},
 React.createElement('h2',{style:{margin:'14px 0'}},'Live gift market'),
 React.createElement(GiftGrid,{orders:feed.displayOrders,busy:feed.loadingMore,visible:feed.setVisibleRange,card:order=>({options,collectionName:'Gift',venueName:'MRKT',selected:selected?.id===order.id,open:select,activity:feed.activity.get(orderKey(order))})})),
-selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Gift',collectionSlug:'Gift',removed:!feed.page.data.some(row=>orderKey(row)===orderKey(selected)),close:()=>select(undefined)}));}
+selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Gift',removed:!feed.page.data.some(row=>orderKey(row)===orderKey(selected)),close:()=>select(undefined)}));}
 const app=createRoot(document.getElementById('fixture'));app.render(React.createElement(App));window.unmount=()=>app.unmount();
 </script></body></html>`;
 const cacheDir = await mkdtemp(join(tmpdir(), "market-listings-"));
@@ -82,10 +82,10 @@ const frame = (rows) => ({
   page: { data: rows, next_page_token: "", cursor: "view", sync },
 });
 function report(body) {
-  const number = Number(body.gift.split("-").at(-1));
+  const number = body.gift.number;
   const mark = { revision: "r", evaluated_at: "2026-11-18T12:00:00Z" };
   return {
-    slug: body.gift,
+    slug: null,
     gift: order("gift", number).target.gift,
     currency_id: body.currency_id,
     gift_revision: "view",
@@ -222,6 +222,10 @@ try {
     .locator('[data-strategy="model_floor"] .valuation-value')
     .waitFor();
   assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0], {
+    gift: { collection_id: "gift", number: 1 },
+    currency_id: "GRAM",
+  });
   assert.equal(await page.locator(".gift-valuations li").count(), 4);
   assert.equal(
     await page

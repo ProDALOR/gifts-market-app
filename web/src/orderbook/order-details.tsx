@@ -10,7 +10,6 @@ export function OrderDetails({
   options,
   names,
   collectionName,
-  collectionSlug,
   removed = false,
   close,
 }: {
@@ -18,7 +17,6 @@ export function OrderDetails({
   options: ReadonlyMap<string, CatalogOption>;
   names: Map<string, string>;
   collectionName: string;
-  collectionSlug?: string;
   removed?: boolean;
   close: () => void;
 }) {
@@ -69,7 +67,7 @@ export function OrderDetails({
             confirm a sale.
           </p>
         )}
-        <GiftValuations order={selected} collectionSlug={collectionSlug} />
+        <GiftValuations order={selected} />
         {marketLink && !removed && (
           <a
             className="detail-market"

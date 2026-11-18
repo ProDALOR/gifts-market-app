@@ -1556,7 +1556,7 @@ async fn wait_slug(state: &MarketApi) -> market_valuation::GiftValuationResult {
         loop {
             if let Ok(value) = state
                 .gift_valuation(market_gifts::valuation::GiftValuationRequest {
-                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap(),
+                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap().into(),
                     currency_id: "GRAM".into(),
                 })
                 .await
@@ -1746,7 +1746,7 @@ async fn gift_valuation_validates_links_reports_unknown_and_conflicting_gifts_an
         loop {
             let result = state
                 .gift_valuation(market_gifts::valuation::GiftValuationRequest {
-                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap(),
+                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap().into(),
                     currency_id: "GRAM".into(),
                 })
                 .await;
@@ -1854,7 +1854,7 @@ async fn gift_lookup_is_currency_independent_and_all_strategy_failures_remain_su
         loop {
             let result = state
                 .gift_valuation(market_gifts::valuation::GiftValuationRequest {
-                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap(),
+                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap().into(),
                     currency_id: "GRAM".into(),
                 })
                 .await;
@@ -1946,6 +1946,41 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
         )
         .await;
         assert_eq!(response.status(), expected, "{case}");
+        if case == "missing" {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri("/valuations/gift")
+                    .set_json(serde_json::json!({
+                        "gift": { "collection_id": "tg.gift.123", "number": 123 },
+                        "currency_id": "GRAM"
+                    }))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), 200);
+            let report: serde_json::Value = test::read_body_json(response).await;
+            assert!(report["slug"].is_null());
+            assert_eq!(report["gift"]["id"], "gift-123");
+            assert_eq!(report["strategies"].as_array().unwrap().len(), 4);
+            assert!(
+                report["strategies"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row.get("data").is_some())
+            );
+            for (collection, number) in [("tg.gift.123", 789), ("missing", 123)] {
+                let response = test::call_service(
+                    &app,
+                    test::TestRequest::post().uri("/valuations/gift")
+                        .set_json(serde_json::json!({
+                            "gift": { "collection_id": collection, "number": number }, "currency_id": "GRAM"
+                        })).to_request(),
+                ).await;
+                assert_eq!(response.status(), 404);
+            }
+        }
         if case == "renamed" {
             let report: serde_json::Value = test::read_body_json(response).await;
             assert_eq!(report["gift"]["number"], 123);
@@ -1967,6 +2002,7 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
     let schema: serde_json::Value =
         serde_json::from_str(&market_api::schema_json().unwrap()).unwrap();
     assert_eq!(schema["components"]["schemas"]["GiftNumber"]["minimum"], 1);
+    assert!(schema["components"]["schemas"]["GiftLookup"]["oneOf"].is_array());
     assert_eq!(
         schema["components"]["schemas"]["GiftNumber"]["type"],
         "integer"

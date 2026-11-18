@@ -240,7 +240,7 @@ The live GUI marks newly seen head listings with a green New ribbon and a 60-sec
 
 Unsupported targets carry `reason: {code, message}`. Codes are `unsupported_constraints`, `invalid_attributes`, `non_concrete_gift` and `invalid_gift_id`; clients should branch on codes and treat the friendly message as presentation text. Source diagnostics and arbitrary metadata never appear in public responses. Only a dedicated `market_url` is exposed: absolute HTTP(S) links with a host and no embedded credentials or control characters. Invalid or unavailable links become null without dropping the order. REST, history and WebSocket encoding use the same borrowed presentation adapter; WebSocket subscribers retain shared bounded encodings per native actor page. This changes the public order representation; clients must update from `mode` and string unsupported reasons. Valuation rows include a resolved `identity: {collection_id, model_id}` when known, alongside display labels; catalog resolution and pricing use the same pinned view.
 
-`POST /valuations/gift` replaces `/portfolio/value` and `/valuations/query`; both old routes are removed. Supply a slug/URL and an explicit currency, without a strategy selector:
+`POST /valuations/gift` replaces `/portfolio/value` and `/valuations/query`; both old routes are removed. Supply a slug/URL or a catalog collection ID and gift number, plus an explicit currency, without a strategy selector:
 
 ```sh
 curl http://localhost:8080/valuations/gift \
@@ -248,9 +248,17 @@ curl http://localhost:8080/valuations/gift \
   -d '{"gift":"https://t.me/nft/PlushPepe-123","currency_id":"GRAM"}'
 ```
 
-The response is `{slug, gift, currency_id, gift_revision, strategies}`. `gift` is a concrete collectible with catalog collection/trait IDs and number. `gift_revision` identifies the pinned view that resolved those facts. Each strategy contributes either `{strategy, data, revision, evaluated_at}` or `{strategy, error}`. Floor strategies price one gift; model/backdrop multipliers return a dimensionless `factor` and sample evidence. Strategies cache independently, so their revisions/timestamps can differ. Cached marks retain their original evaluation time.
+For GUI listings, the same endpoint accepts a stable catalog reference without requiring a collection slug:
 
-Opening a concrete gift preview requests all registered valuation strategies once, using its canonical collection slug, number and quote currency. Each strategy shows its own price or dimensionless multiplier, freshness and any error such as insufficient samples. Refresh is manual; switching or closing the preview cancels its request. There are no valuation requests for cards in the market list. Gifts without a canonical slug/known number and criteria bids show an unavailable message.
+```json
+{"gift":{"collection_id":"tg.gift.5832279504491381684","number":3227},"currency_id":"GRAM"}
+```
+
+The server resolves gift identity and traits from synchronized orders; clients cannot supply valuation traits. Unknown collections and numbers return 404.
+
+The response is `{slug, gift, currency_id, gift_revision, strategies}`. `slug` is the normalized input for URL/slug requests and null for catalog references. `gift` is a concrete collectible with catalog collection/trait IDs and number. `gift_revision` identifies the pinned view that resolved those facts. Each strategy contributes either `{strategy, data, revision, evaluated_at}` or `{strategy, error}`. Floor strategies price one gift; model/backdrop multipliers return a dimensionless `factor` and sample evidence. Strategies cache independently, so their revisions/timestamps can differ. Cached marks retain their original evaluation time.
+
+Opening a concrete gift preview requests all registered valuation strategies once, using its collection ID, number and quote currency. Missing catalog slugs do not block valuation requests. Each strategy shows its own price or dimensionless multiplier, freshness and any error such as insufficient samples. Refresh is manual; switching or closing the preview cancels its request. There are no valuation requests for cards in the market list. Gifts without a known number and criteria bids show an unavailable message.
 
 Lookup seeks exact number-index bounds across loaded quote currencies. Same-gift listings can fill missing traits, but contradictory identities or traits are rejected. Collections advertising the same canonical slug are ambiguous and rejected. Display names do not participate in slug resolution. Metadata may resolve from a retained expired ask; expired asks never supply valuation evidence. Criteria bids are excluded from gift lookup. Edition numbers and range bounds are positive JSON integers (`GiftNumber`); unknown gift numbers and traits remain nullable. Concrete gift orders must have quantity one and their collection must match the order book; criteria orders may have larger positive quantities. `GiftOrder` is an immutable domain value, built with `TryFrom<GiftOrderData>`; drafts can be edited, but consumers only receive checked orders. Construction requires execution time exactly for `executed` orders. The hub adapter also rejects execution lineage on active asks/bids. Observation can follow execution for historical backfills, so these timestamps are not forced into creation-time ordering. Native orders have no JSON/OpenAPI representation: presentation belongs to `OrderResponse`, shared by REST and WebSocket.
 

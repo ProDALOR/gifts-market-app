@@ -63,7 +63,7 @@ const patterns = [
 const collections = ["Jelly Bunny", "Plush Pepe"].map((name, index) => ({
   id: index ? "pepe" : "bunny",
   name,
-  slug: index ? "PlushPepe" : "JellyBunny",
+  slug: null,
   preview: models[0].media,
   model_ids: models.map((o) => o.id),
   backdrop_ids: backdrops.map((o) => o.id),
@@ -298,15 +298,15 @@ try {
   };
   await page.route("**/valuations/gift", (route) => {
     const body = route.request().postDataJSON(),
-      number = Number(body.gift.split("-").at(-1));
-    const collection = body.gift.startsWith("PlushPepe") ? "pepe" : "bunny";
+      number = body.gift.number;
+    const collection = body.gift.collection_id;
     const mark = {
       revision: "valuation",
       evaluated_at: "2026-11-18T12:00:00Z",
     };
     return route.fulfill({
       json: {
-        slug: body.gift,
+        slug: null,
         gift: {
           id: `gift-${3000 - number}`,
           collection_id: collection,

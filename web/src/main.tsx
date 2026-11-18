@@ -502,7 +502,6 @@ function App({ context }: { context: TelegramContext }) {
           options={options}
           names={names}
           collectionName={item?.name || ""}
-          collectionSlug={item?.slug || undefined}
           removed={
             !page.data.some((order) => orderKey(order) === orderKey(selected))
           }

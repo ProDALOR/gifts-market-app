@@ -8,7 +8,12 @@ pub(super) fn error_reply(error: impl Into<ValuationError>) -> Reply {
     }
 }
 pub(super) fn valuation(value: &GiftValuationResult) -> Reply {
-    let mut text = format!("{}\nCurrency: {}", value.slug, value.currency_id);
+    let label = value
+        .slug
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "Gift valuation".into());
+    let mut text = format!("{label}\nCurrency: {}", value.currency_id);
     let mut stale = false;
     for row in &value.strategies {
         text.push_str(&format!("\n\n{}", row.strategy));
