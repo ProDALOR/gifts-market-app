@@ -11,14 +11,14 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
-fn entity(value: w::entity::Entity) -> w::Change {
+pub(crate) fn entity(value: w::entity::Entity) -> w::Change {
     w::Change {
         change: Some(w::change::Change::Upsert(w::Entity {
             entity: Some(value),
         })),
     }
 }
-fn order(price: &str) -> w::Change {
+pub(crate) fn order(price: &str) -> w::Change {
     entity(w::entity::Entity::Order(w::Order {
         id: "order".into(),
         book: Some(w::BookKey {
@@ -48,7 +48,7 @@ fn query() -> w::ReadRequest {
         ..Default::default()
     }
 }
-fn fixture() -> (tempfile::TempDir, ReplicaWriter) {
+pub(crate) fn fixture() -> (tempfile::TempDir, ReplicaWriter) {
     let directory = tempfile::tempdir().unwrap();
     let mut writer = ReplicaWriter::open(directory.path(), "test").unwrap();
     let mut builder = writer.begin_snapshot().unwrap();
@@ -625,13 +625,13 @@ async fn saturated_snapshot_capacity_leaves_normal_reads_available() {
         .await
         .unwrap();
     let busy = service
-        .orderbooks
+        .reader
         .workers
         .clone()
         .acquire_owned()
         .await
         .unwrap();
-    let reader = service.orderbooks.clone();
+    let reader = service.reader.clone();
     let mut work =
         tokio::spawn(async move { reader.prepare(|snapshot| snapshot.revision()).await });
     assert!(
@@ -642,7 +642,7 @@ async fn saturated_snapshot_capacity_leaves_normal_reads_available() {
     assert!(service.handle.orders_raw(query()).await.is_ok());
     assert!(service.handle.catalog().await.is_ok());
     drop(busy);
-    work.await.unwrap().unwrap();
+    work.await.unwrap().unwrap().unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
@@ -675,13 +675,8 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
     assert!(Arc::ptr_eq(&original, &same));
     assert!(sync.ready);
     drop((query_a, query_b));
-    let heavy = service
-        .orderbooks
-        .workers
-        .clone()
-        .try_acquire_owned()
-        .unwrap();
-    let reader = service.orderbooks.clone();
+    let heavy = service.reader.workers.clone().try_acquire_owned().unwrap();
+    let reader = service.reader.clone();
     let mut work =
         tokio::spawn(async move { reader.prepare(|snapshot| snapshot.revision()).await });
     assert!(
@@ -691,7 +686,7 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
     );
     assert_eq!(handle.orders_raw(query()).await.unwrap().page.cursor, "c0");
     drop(heavy);
-    work.await.unwrap().unwrap();
+    work.await.unwrap().unwrap().unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();

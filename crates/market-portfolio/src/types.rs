@@ -1,5 +1,5 @@
-use market_actors::error::DataError;
 use market_gifts::{CurrencyId, valuation::Valuation};
+use market_valuation::ValuationError;
 use std::{fmt, sync::Arc};
 
 /// Canonical source user identity. Authorization belongs to the calling application.
@@ -47,7 +47,7 @@ pub enum PortfolioError {
     InvalidConfig(&'static str),
     InvalidData(String),
     Inventory(InventoryError),
-    Valuation(DataError),
+    Valuation(ValuationError),
 }
 impl fmt::Display for PortfolioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

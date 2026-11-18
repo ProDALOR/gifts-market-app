@@ -72,8 +72,8 @@ impl PortfolioHandle {
                 market_gifts::valuation::ValuationErrorDetails::strategy(request.strategy);
             details.currency_id = Some(request.currency_id);
             return Err(PortfolioError::Valuation(
-                market_actors::error::DataError::valuation(
-                    market_actors::error::DataErrorCode::UnsupportedStrategy,
+                market_valuation::ValuationError::with_details(
+                    market_valuation::ValuationErrorCode::UnsupportedStrategy,
                     "Portfolio valuation requires model_floor or collection_floor",
                     details,
                 ),

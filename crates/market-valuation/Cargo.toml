@@ -16,6 +16,5 @@ market-hub-protocol.workspace = true
 market-gifts-hub.workspace = true
 tempfile = "3"
 tonic.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
 [lints]
 workspace = true

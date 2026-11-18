@@ -46,9 +46,6 @@ impl From<market_actors::error::DataError> for ApiError {
             DataErrorCode::RestartRead => ErrorCode::RestartRead,
             DataErrorCode::CapacityExceeded => ErrorCode::CapacityExceeded,
             DataErrorCode::Unavailable => ErrorCode::Unavailable,
-            DataErrorCode::NotEnoughData => ErrorCode::NotEnoughData,
-            DataErrorCode::InvalidBaseline => ErrorCode::InvalidBaseline,
-            DataErrorCode::UnsupportedStrategy => ErrorCode::UnsupportedStrategy,
             DataErrorCode::TimedOut => ErrorCode::TimedOut,
         };
         let message = if matches!(code, ErrorCode::Unavailable) {
@@ -59,7 +56,33 @@ impl From<market_actors::error::DataError> for ApiError {
         Self {
             code,
             message,
-            details: error.valuation_details().cloned(),
+            details: None,
+        }
+    }
+}
+impl From<market_valuation::ValuationError> for ApiError {
+    fn from(error: market_valuation::ValuationError) -> Self {
+        use market_valuation::ValuationErrorCode as V;
+        let code = match error.code() {
+            V::InvalidQuery => ErrorCode::InvalidQuery,
+            V::NotFound => ErrorCode::NotFound,
+            V::RestartRead => ErrorCode::RestartRead,
+            V::CapacityExceeded => ErrorCode::CapacityExceeded,
+            V::Unavailable => ErrorCode::Unavailable,
+            V::TimedOut => ErrorCode::TimedOut,
+            V::NotEnoughData => ErrorCode::NotEnoughData,
+            V::InvalidBaseline => ErrorCode::InvalidBaseline,
+            V::UnsupportedStrategy => ErrorCode::UnsupportedStrategy,
+        };
+        let message = if matches!(code, ErrorCode::Unavailable) {
+            "Market data service is unavailable".into()
+        } else {
+            error.message().into()
+        };
+        Self {
+            code,
+            message,
+            details: error.details().cloned(),
         }
     }
 }

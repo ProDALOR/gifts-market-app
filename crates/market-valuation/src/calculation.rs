@@ -1,6 +1,6 @@
 //! Portfolio floor calculation over one immutable market snapshot.
-use market_actors::error::{DataError, Result};
-use market_actors::{BookScope, OrderbookSnapshot, ReadDependencies};
+use crate::error::{Result, ValuationError};
+use market_actors::{BookScope, CatalogTrait, MarketSnapshot, ReadDependencies};
 use market_gifts::{valuation::*, *};
 use rust_decimal::Decimal;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,7 +20,7 @@ impl FloorKind {
 }
 pub(crate) fn normalize(input: PortfolioPositions) -> Result<PortfolioPositions> {
     if input.positions.len() > 1000 {
-        return Err(DataError::invalid(
+        return Err(ValuationError::invalid(
             "at most 1000 model positions are allowed",
         ));
     }
@@ -28,11 +28,11 @@ pub(crate) fn normalize(input: PortfolioPositions) -> Result<PortfolioPositions>
     let mut grouped = BTreeMap::new();
     for p in input.positions {
         p.validate()
-            .map_err(|e| DataError::invalid(e.to_string()))?;
+            .map_err(|e| ValuationError::invalid(e.to_string()))?;
         total = total
             .checked_add(p.quantity)
             .filter(|n| *n <= 10_000)
-            .ok_or_else(|| DataError::invalid("portfolio quantity must be 1..10000"))?;
+            .ok_or_else(|| ValuationError::invalid("portfolio quantity must be 1..10000"))?;
         *grouped.entry(p.model).or_insert(0u32) += p.quantity;
     }
     Ok(PortfolioPositions {
@@ -44,15 +44,21 @@ pub(crate) fn normalize(input: PortfolioPositions) -> Result<PortfolioPositions>
     })
 }
 pub(crate) fn portfolio(
-    snapshot: OrderbookSnapshot,
+    snapshot: MarketSnapshot,
     input: PortfolioPositions,
     kind: FloorKind,
 ) -> Result<(crate::Prepared<Valuation>, ReadDependencies)> {
     snapshot.require_currency(&input.currency_id)?;
-    let resolve_names = input
+    let lookups = input
         .positions
         .iter()
-        .any(|p| !matches!(p.model, ModelLookup::Catalog { .. }));
+        .map(|p| p.model.clone())
+        .collect::<Vec<_>>();
+    let quantities = input
+        .positions
+        .iter()
+        .map(|p| p.quantity)
+        .collect::<Vec<_>>();
     let mut collections: BTreeSet<CollectionId> = input
         .positions
         .iter()
@@ -61,7 +67,7 @@ pub(crate) fn portfolio(
             _ => None,
         })
         .collect();
-    let positions = snapshot.resolve_models(input.positions)?;
+    let positions = snapshot.resolve_models(lookups.clone())?;
     collections.extend(positions.iter().filter_map(|p| p.collection.clone()));
     let dependencies = snapshot.dependencies(
         collections.iter().cloned().map(|collection| BookScope {
@@ -69,7 +75,8 @@ pub(crate) fn portfolio(
             currency: input.currency_id.clone(),
         }),
         &input.currency_id,
-        resolve_names,
+        CatalogTrait::Model,
+        &lookups,
     )?;
     let mut missing: BTreeMap<CollectionId, BTreeSet<ModelId>> = BTreeMap::new();
     for p in &positions {
@@ -91,13 +98,13 @@ pub(crate) fn portfolio(
     }
     let now = jiff::Timestamp::now().as_millisecond();
     let (models, broad) = scan(missing, &input.currency_id, kind, |scope, token| {
-        snapshot.asks(scope, now, token)
+        Ok(snapshot.asks(scope, now, token)?)
     })?;
     let mut rows = Vec::with_capacity(positions.len());
     let mut total = Decimal::ZERO;
     let mut priced = 0;
     let mut unpriced = 0;
-    for position in positions {
+    for (position, quantity) in positions.into_iter().zip(quantities) {
         let quote = match kind {
             FloorKind::Model => position.identity.as_ref().and_then(|id| models.get(id)),
             FloorKind::Collection => position.collection.as_ref().and_then(|id| broad.get(id)),
@@ -106,7 +113,7 @@ pub(crate) fn portfolio(
             identity: position.identity,
             collection: position.collection_label,
             model: position.model_label,
-            quantity: position.quantity,
+            quantity,
             floor: None,
             value: None,
             venue_id: None,
@@ -116,15 +123,15 @@ pub(crate) fn portfolio(
             let value = price
                 .decimal()
                 .checked_mul(Decimal::from(row.quantity))
-                .ok_or_else(|| DataError::unavailable("portfolio value overflow"))?;
+                .ok_or_else(|| ValuationError::unavailable("portfolio value overflow"))?;
             total = total
                 .checked_add(value)
-                .ok_or_else(|| DataError::unavailable("portfolio value overflow"))?;
+                .ok_or_else(|| ValuationError::unavailable("portfolio value overflow"))?;
             row.floor = Some(price.clone());
             row.value = Some(
                 value
                     .try_into()
-                    .map_err(|e| DataError::unavailable(format!("{e}")))?,
+                    .map_err(|e| ValuationError::unavailable(format!("{e}")))?,
             );
             row.venue_id = Some(venue.clone());
             row.unpriced = None;
@@ -146,7 +153,7 @@ pub(crate) fn portfolio(
                 rows,
                 total: total
                     .try_into()
-                    .map_err(|e| DataError::unavailable(format!("{e}")))?,
+                    .map_err(|e| ValuationError::unavailable(format!("{e}")))?,
                 priced,
                 unpriced,
                 currency_id: input.currency_id,
@@ -179,7 +186,7 @@ fn scan(
         let mut token = String::new();
         'pages: loop {
             if budget == 0 {
-                return Err(DataError::capacity("floor scan limit exceeded"));
+                return Err(ValuationError::capacity("floor scan limit exceeded"));
             }
             budget -= 1;
             let page = read(&scope, token)?;
@@ -282,7 +289,7 @@ mod tests {
         let service = market_actors::MarketDataService::start(writer.reader(), 2, 1)
             .await
             .unwrap();
-        let snapshot = service.orderbooks.snapshot().unwrap();
+        let snapshot = service.reader.snapshot().unwrap();
         let missing = [(
             "gift".into(),
             (0..100)

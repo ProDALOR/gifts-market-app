@@ -342,6 +342,15 @@ impl ReplicaReader {
     }
     /// Check dependencies without scanning the catalog or retaining removed-key tombstones.
     pub fn metadata_matches(&self, dependencies: &MetadataDependencies) -> Result<bool, Status> {
+        self.metadata_matches_with(dependencies, || Ok(()))
+    }
+    /// Consumers can cooperatively cancel a long reference comparison without owning the replica.
+    pub fn metadata_matches_with(
+        &self,
+        dependencies: &MetadataDependencies,
+        mut check: impl FnMut() -> Result<(), Status>,
+    ) -> Result<bool, Status> {
+        check()?;
         let view = self.view()?;
         if dependencies.instance != view.revisions.instance
             || dependencies.dataset != view.revisions.dataset
@@ -358,17 +367,26 @@ impl ReplicaReader {
                     .map_or(0, |group| group.revision)
                     == *revision
             })
-            && dependencies.entities.iter().all(|(key, expected)| {
-                let actual = view.state.entities.get(key);
-                match (actual, expected) {
-                    (None, None) => true,
-                    (Some(actual), Some(expected)) => {
-                        Arc::ptr_eq(actual, expected) || actual == expected
+            && {
+                for (index, (key, expected)) in dependencies.entities.iter().enumerate() {
+                    if index % 64 == 0 {
+                        check()?;
                     }
-                    _ => false,
+                    let actual = view.state.entities.get(key);
+                    if !match (actual, expected) {
+                        (None, None) => true,
+                        (Some(actual), Some(expected)) => {
+                            Arc::ptr_eq(actual, expected) || actual == expected
+                        }
+                        _ => false,
+                    } {
+                        return Ok(false);
+                    }
                 }
-            }))
+                true
+            })
     }
+
     /// Changes only when available books change or the replica dataset is replaced.
     pub fn directory_revision(&self) -> Result<DirectoryRevision, Status> {
         let view = self.view()?;

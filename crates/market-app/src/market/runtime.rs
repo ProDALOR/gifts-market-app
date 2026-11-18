@@ -206,7 +206,7 @@ where
     I: Send + 'static,
     V: Send + Sync + 'static,
     E: Send + 'static,
-    F: FnOnce(market_actors::OrderbookReader, market_valuation::Lifecycle) -> A + Send + 'static,
+    F: FnOnce(market_actors::MarketReader, market_valuation::Lifecycle) -> A + Send + 'static,
 {
     let service = market_valuation::Service::start_on(data, id, build, Default::default()).await?;
     let stop = supervisor.token();

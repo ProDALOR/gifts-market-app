@@ -1597,20 +1597,20 @@ async fn valuation_admission_timeout_and_shutdown_are_http_errors_without_affect
             market_valuation::Evaluate<
                 PortfolioPositions,
                 Valuation,
-                market_actors::error::DataError,
+                market_valuation::ValuationError,
             >,
         > for Blocked
     {
         type Result = actix::AtomicResponse<
             Self,
-            Result<Arc<market_valuation::Mark<Valuation>>, market_actors::error::DataError>,
+            Result<Arc<market_valuation::Mark<Valuation>>, market_valuation::ValuationError>,
         >;
         fn handle(
             &mut self,
             message: market_valuation::Evaluate<
                 PortfolioPositions,
                 Valuation,
-                market_actors::error::DataError,
+                market_valuation::ValuationError,
             >,
             _: &mut Self::Context,
         ) -> Self::Result {
@@ -1621,7 +1621,7 @@ async fn valuation_admission_timeout_and_shutdown_are_http_errors_without_affect
                 async move {
                     let _request = request;
                     tokio::select! {_=stop.cancelled()=>{},_=_request.cancelled.cancelled()=>{}}
-                    Err(market_actors::error::DataError::unavailable("Cancelled"))
+                    Err(market_valuation::ValuationError::unavailable("Cancelled"))
                 }
                 .into_actor(self)
                 .map(|result, _, _| result),

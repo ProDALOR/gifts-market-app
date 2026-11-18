@@ -1,14 +1,14 @@
-use market_actors::error::{DataError, DataErrorCode};
+use crate::{ValuationError, ValuationErrorCode};
 
 use crate::{Handle, Mark};
 use market_gifts::{CurrencyId, valuation::*};
 
 use std::{collections::BTreeMap, sync::Arc};
 
-pub type FloorStrategyHandle = Handle<PortfolioPositions, Valuation, DataError>;
-pub type ModelMultiplierHandle = Handle<ModelMultiplierRequest, ModelMultiplier, DataError>;
+pub type FloorStrategyHandle = Handle<PortfolioPositions, Valuation, ValuationError>;
+pub type ModelMultiplierHandle = Handle<ModelMultiplierRequest, ModelMultiplier, ValuationError>;
 pub type BackdropMultiplierHandle =
-    Handle<BackdropMultiplierRequest, BackdropMultiplier, DataError>;
+    Handle<BackdropMultiplierRequest, BackdropMultiplier, ValuationError>;
 #[derive(Clone)]
 pub enum RegisteredStrategy {
     Floor(FloorStrategyHandle),
@@ -53,11 +53,12 @@ pub struct ValuationHandle {
 impl ValuationHandle {
     pub fn new<H: Into<RegisteredStrategy>>(
         handles: impl IntoIterator<Item = H>,
-    ) -> Result<Self, DataError> {
+    ) -> Result<Self, ValuationError> {
         let mut strategies = BTreeMap::new();
         for handle in handles {
             let handle = handle.into();
-            let id = StrategyId::new(handle.id()).map_err(|e| DataError::invalid(e.to_string()))?;
+            let id =
+                StrategyId::new(handle.id()).map_err(|e| ValuationError::invalid(e.to_string()))?;
             let valid = match &handle {
                 RegisteredStrategy::Floor(_) => id.is_portfolio_strategy(),
                 RegisteredStrategy::ModelMultiplier(_) => id == StrategyId::model_multiplier(),
@@ -66,18 +67,18 @@ impl ValuationHandle {
                 }
             };
             if !valid {
-                return Err(DataError::invalid(
+                return Err(ValuationError::invalid(
                     "strategy ID does not match its result contract",
                 ));
             }
             if strategies.insert(id, handle).is_some() {
-                return Err(DataError::invalid(
+                return Err(ValuationError::invalid(
                     "valuation strategy is already registered",
                 ));
             }
         }
         if strategies.is_empty() {
-            return Err(DataError::invalid(
+            return Err(ValuationError::invalid(
                 "register at least one valuation strategy",
             ));
         }
@@ -88,11 +89,11 @@ impl ValuationHandle {
     pub fn strategies(&self) -> impl Iterator<Item = &StrategyId> {
         self.strategies.keys()
     }
-    fn unsupported(&self, strategy: StrategyId, currency: CurrencyId) -> DataError {
+    fn unsupported(&self, strategy: StrategyId, currency: CurrencyId) -> ValuationError {
         let mut details = ValuationErrorDetails::strategy(strategy);
         details.currency_id = Some(currency);
-        DataError::valuation(
-            DataErrorCode::UnsupportedStrategy,
+        ValuationError::with_details(
+            ValuationErrorCode::UnsupportedStrategy,
             format!(
                 "Strategy is unavailable for this operation. Registered: {}",
                 self.strategies
@@ -105,7 +106,10 @@ impl ValuationHandle {
         )
     }
     /// Portfolio estimators consume money-valued floor strategies explicitly.
-    pub async fn mark(&self, request: ValuationRequest) -> Result<Arc<Mark<Valuation>>, DataError> {
+    pub async fn mark(
+        &self,
+        request: ValuationRequest,
+    ) -> Result<Arc<Mark<Valuation>>, ValuationError> {
         let id = request.strategy.clone();
         let currency = request.currency_id.clone();
         let Some(RegisteredStrategy::Floor(handle)) = self.strategies.get(&id) else {
@@ -122,7 +126,7 @@ impl ValuationHandle {
         )
         .await
     }
-    pub async fn query(&self, request: ValuationQuery) -> Result<ValuationResult, DataError> {
+    pub async fn query(&self, request: ValuationQuery) -> Result<ValuationResult, ValuationError> {
         match request {
             ValuationQuery::ModelFloor(p) => self
                 .mark(ValuationRequest {
@@ -165,25 +169,27 @@ impl ValuationHandle {
     }
 }
 async fn invoke<K: Send + 'static, V: Send + Sync + 'static>(
-    handle: &Handle<K, V, DataError>,
+    handle: &Handle<K, V, ValuationError>,
     request: K,
     strategy: StrategyId,
     currency: CurrencyId,
-) -> Result<Arc<Mark<V>>, DataError> {
+) -> Result<Arc<Mark<V>>, ValuationError> {
     let mark = handle.evaluate(request).await.map_err(|error| {
         let error = match error {
             crate::Error::Strategy(e) => e,
-            crate::Error::Busy => DataError::capacity("Valuation requests are busy"),
-            crate::Error::Stopped => DataError::unavailable("Valuation service is unavailable"),
-            crate::Error::TimedOut => DataError::timed_out("Valuation request timed out"),
+            crate::Error::Busy => ValuationError::capacity("Valuation requests are busy"),
+            crate::Error::Stopped => {
+                ValuationError::unavailable("Valuation service is unavailable")
+            }
+            crate::Error::TimedOut => ValuationError::timed_out("Valuation request timed out"),
         };
-        error.with_valuation(strategy.clone(), currency.clone())
+        error.with_context(strategy.clone(), currency.clone())
     })?;
     if mark.strategy != strategy.as_str() {
-        return Err(
-            DataError::unavailable("Valuation strategy returned an inconsistent mark")
-                .with_valuation(strategy, currency),
-        );
+        return Err(ValuationError::unavailable(
+            "Valuation strategy returned an inconsistent mark",
+        )
+        .with_context(strategy, currency));
     }
     Ok(mark)
 }

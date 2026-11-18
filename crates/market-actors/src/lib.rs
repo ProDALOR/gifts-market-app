@@ -16,9 +16,9 @@ pub use handle::MarketDataHandle;
 pub use service::{MarketDataService, MarketDataTask};
 pub use subscriptions::{DataSubscription, DataUpdate};
 
-mod reader;
+mod read;
 
-pub use reader::{
-    AskQuote, BookScope, CatalogTraits, OrderbookReader, OrderbookSnapshot, ReadDependencies,
+pub use read::{
+    AskQuote, BookScope, CatalogTrait, MarketReader, MarketSnapshot, ReadDependencies,
     ResolvedModel,
 };

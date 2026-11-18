@@ -1,5 +1,5 @@
 //! Resolve model lookups within the caller's pinned market view.
-use market_gifts::valuation::{ModelIdentity, ModelLookup, ModelPosition, UnpricedReason};
+use market_gifts::valuation::{ModelIdentity, ModelLookup, UnpricedReason};
 use market_hub_protocol::wire as w;
 use market_replica::ReplicaReader;
 use std::collections::BTreeMap;
@@ -11,19 +11,23 @@ pub struct ResolvedModel {
     pub collection: Option<market_gifts::CollectionId>,
     pub collection_label: String,
     pub model_label: String,
-    pub quantity: u32,
     pub unresolved: Option<UnpricedReason>,
 }
 
 pub(crate) fn resolve(
     reader: &ReplicaReader,
-    positions: Vec<ModelPosition>,
+    lookups: Vec<ModelLookup>,
+    cancelled: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<ResolvedModel>, Status> {
-    let items = super::projection::entities(reader, w::EntityKind::ItemType, None)?;
+    let items =
+        super::projection::entities_cancellable(reader, w::EntityKind::ItemType, None, cancelled)?;
     let mut options = BTreeMap::new();
-    let mut result = Vec::with_capacity(positions.len());
-    for position in positions {
-        let (collection, model) = match &position.model {
+    let mut result = Vec::with_capacity(lookups.len());
+    for lookup in lookups {
+        if cancelled.is_cancelled() {
+            return Err(Status::cancelled("Market read cancelled"));
+        }
+        let (collection, model) = match &lookup {
             ModelLookup::Name { collection, model } => (collection.clone(), model.clone()),
             ModelLookup::Catalog { collection, model } => {
                 (collection.to_string(), model.to_string())
@@ -38,11 +42,10 @@ pub(crate) fn resolve(
             collection: None,
             collection_label: collection,
             model_label: model,
-            quantity: position.quantity,
             unresolved: None,
         };
         let item = match find_collection(
-            &position.model,
+            &lookup,
             items.iter().filter_map(|item| match item {
                 w::entity::Entity::ItemType(item) => Some(item),
                 _ => None,
@@ -60,23 +63,15 @@ pub(crate) fn resolve(
             let rules =
                 CollectionChoices::new(item).map_err(|e| Status::data_loss(e.to_string()))?;
             let ids = rules.model_option_ids();
-            let values = super::projection::entities(
+            let values = super::projection::trait_options(
                 reader,
-                w::EntityKind::AttributeOption,
+                market_gifts_hub::MODEL,
                 ids.as_deref(),
+                cancelled,
             )?;
-            options.insert(
-                item.id.clone(),
-                values
-                    .into_iter()
-                    .filter_map(|value| match value {
-                        w::entity::Entity::AttributeOption(option) => Some(option),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            options.insert(item.id.clone(), values);
         }
-        let option = match find_model(&position.model, options[&item.id].iter()) {
+        let option = match find_model(&lookup, options[&item.id].iter()) {
             Ok(option) => option,
             Err(reason) => {
                 row.unresolved = Some(reason);

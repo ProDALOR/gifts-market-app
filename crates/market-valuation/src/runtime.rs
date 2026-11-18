@@ -206,7 +206,7 @@ impl<I: Send + 'static, V: Send + Sync + 'static, E: Send + 'static> Service<I, 
     ) -> Result<Self, ServiceError>
     where
         A: Actor<Context = Context<A>> + Handler<Evaluate<I, V, E>>,
-        F: FnOnce(market_actors::OrderbookReader, Lifecycle) -> A + Send + 'static,
+        F: FnOnce(market_actors::MarketReader, Lifecycle) -> A + Send + 'static,
     {
         data.start_actor(move |source| Self::start(id, config, |life| build(source, life)))
             .await

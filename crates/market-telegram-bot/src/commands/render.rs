@@ -1,5 +1,4 @@
 use super::{CommandKind, Reply};
-use market_actors::error::DataError;
 use market_gifts::inventory::{
     GiftRelation, InventoryCompletion, InventoryError, InventorySnapshot, PartialReason,
 };
@@ -7,12 +6,14 @@ use market_gifts::{
     SyncState,
     valuation::{UnpricedReason, Valuation},
 };
-pub(super) fn error_reply(error: DataError) -> Reply {
-    use market_actors::error::DataErrorCode;
+use market_valuation::ValuationError;
+pub(super) fn error_reply(error: impl Into<ValuationError>) -> Reply {
+    use market_valuation::ValuationErrorCode;
+    let error = error.into();
     let text = match error.code() {
-        DataErrorCode::NotEnoughData => {
+        ValuationErrorCode::NotEnoughData => {
             let detail = error
-                .valuation_details()
+                .details()
                 .map(|d| {
                     format!(
                         "Strategy: {}. Eligible quotes: {} of {} required. {}",
@@ -35,11 +36,11 @@ pub(super) fn error_reply(error: DataError) -> Reply {
                 .unwrap_or_default();
             format!("Not enough market data to value these gifts. {detail}")
         }
-        DataErrorCode::InvalidBaseline => "A valid multiplier baseline is unavailable.".into(),
-        DataErrorCode::UnsupportedStrategy => error.message().to_owned(),
-        DataErrorCode::TimedOut => "Valuation timed out. Please try again shortly.".into(),
-        DataErrorCode::InvalidQuery => error.message().to_owned(),
-        DataErrorCode::CapacityExceeded => {
+        ValuationErrorCode::InvalidBaseline => "A valid multiplier baseline is unavailable.".into(),
+        ValuationErrorCode::UnsupportedStrategy => error.message().to_owned(),
+        ValuationErrorCode::TimedOut => "Valuation timed out. Please try again shortly.".into(),
+        ValuationErrorCode::InvalidQuery => error.message().to_owned(),
+        ValuationErrorCode::CapacityExceeded => {
             "Market queries are busy. Please try again shortly.".into()
         }
         _ => "Market data is unavailable. Please try again shortly.".into(),

@@ -1,9 +1,11 @@
-//! The two typed multiplier actors share one implementation of their common algorithm.
-use crate::{Evaluate, Lifecycle, Mark, Prepared};
+//! Shared multiplier calculation and cache policy; native actors supply typed messages.
+use crate::{
+    Evaluate, Lifecycle, Mark, Prepared, RequestContext, ValuationError, ValuationErrorCode,
+};
 use actix::{Actor, ActorFutureExt, AsyncContext, AtomicResponse, Context, Handler, WrapFuture};
 use market_actors::{
-    AskQuote, BookScope, CatalogTraits, OrderbookReader, OrderbookSnapshot, ReadDependencies,
-    error::{DataError, DataErrorCode},
+    AskQuote, BookScope, CatalogTrait, MarketReader, MarketSnapshot, ReadDependencies,
+    error::DataError,
 };
 use market_gifts::{valuation::*, *};
 use std::{
@@ -12,6 +14,7 @@ use std::{
     time::Duration,
 };
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 const REFRESH: Duration = Duration::from_secs(30);
 const IDLE: Duration = Duration::from_secs(300);
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -23,41 +26,146 @@ struct Statistics<I> {
     traits: BTreeMap<I, AskEvidence>,
     dependencies: ReadDependencies,
     sync: SyncStatus,
+    completed_at: Instant,
 }
 struct Book<I> {
     prepared: Arc<Prepared<Statistics<I>>>,
     used: Instant,
     created: Instant,
 }
-fn remember<I>(books: &mut HashMap<BookScope, Book<I>>, prepared: Arc<Prepared<Statistics<I>>>) {
-    let scope = prepared.data.scope.clone();
-    if books.len() >= BOOK_LIMIT
-        && !books.contains_key(&scope)
-        && let Some(old) = books
-            .iter()
-            .min_by_key(|(_, b)| b.used)
-            .map(|(s, _)| s.clone())
-    {
-        books.remove(&old);
+struct TraitRead<I> {
+    kind: CatalogTrait,
+    known: fn(&MarketSnapshot, &CollectionId) -> Result<BTreeSet<I>, DataError>,
+    selected: fn(AskQuote) -> Option<I>,
+}
+impl<I> Copy for TraitRead<I> {}
+impl<I> Clone for TraitRead<I> {
+    fn clone(&self) -> Self {
+        *self
     }
-    books.insert(
-        scope,
-        Book {
-            prepared,
-            used: Instant::now(),
-            created: Instant::now(),
-        },
-    );
+}
+struct Work<I> {
+    source: MarketReader,
+    scope: BookScope,
+    candidate: Option<(Arc<Prepared<Statistics<I>>>, Instant)>,
+    read: TraitRead<I>,
+    started: Instant,
+}
+struct Outcome<I> {
+    prepared: Arc<Prepared<Statistics<I>>>,
+    fresh: bool,
+    current: bool,
+}
+struct MultiplierBooks<I> {
+    source: MarketReader,
+    read: TraitRead<I>,
+    books: HashMap<BookScope, Book<I>>,
+    active: Option<BookScope>,
+    last_requested: Instant,
+    refreshing: bool,
+}
+impl<I> MultiplierBooks<I> {
+    fn new(source: MarketReader, read: TraitRead<I>) -> Self {
+        Self {
+            source,
+            read,
+            books: HashMap::new(),
+            active: None,
+            last_requested: Instant::now(),
+            refreshing: false,
+        }
+    }
+    fn work(&mut self, scope: BookScope) -> Work<I> {
+        let candidate = self
+            .books
+            .get_mut(&scope)
+            .filter(|book| book.created.elapsed() < REFRESH)
+            .map(|book| {
+                book.used = Instant::now();
+                (book.prepared.clone(), book.created)
+            });
+        Work {
+            source: self.source.clone(),
+            scope,
+            candidate,
+            read: self.read,
+            started: Instant::now(),
+        }
+    }
+    fn request(&mut self, scope: BookScope) -> Work<I> {
+        self.active = Some(scope.clone());
+        self.last_requested = Instant::now();
+        self.work(scope)
+    }
+    fn expire(&mut self) -> bool {
+        if self.last_requested.elapsed() < IDLE {
+            return false;
+        }
+        self.books.clear();
+        self.active = None;
+        true
+    }
+    fn refresh(&mut self) -> Option<Work<I>> {
+        if self.refreshing {
+            return None;
+        }
+        let scope = self.active.clone()?;
+        self.refreshing = true;
+        Some(self.work(scope))
+    }
+    fn discard(&mut self, scope: &BookScope, started: Instant) {
+        if self
+            .books
+            .get(scope)
+            .is_some_and(|book| book.created <= started)
+        {
+            self.books.remove(scope);
+        }
+    }
+    fn accept(&mut self, outcome: &Outcome<I>) -> bool {
+        if !outcome.fresh
+            || !outcome.current
+            || outcome.prepared.data.completed_at.elapsed() >= REFRESH
+        {
+            return false;
+        }
+        let scope = outcome.prepared.data.scope.clone();
+        if self
+            .books
+            .get(&scope)
+            .is_some_and(|book| book.prepared.prepared_at > outcome.prepared.prepared_at)
+        {
+            return false;
+        }
+        if self.books.len() >= BOOK_LIMIT
+            && !self.books.contains_key(&scope)
+            && let Some(old) = self
+                .books
+                .iter()
+                .min_by_key(|(_, b)| b.used)
+                .map(|(scope, _)| scope.clone())
+        {
+            self.books.remove(&old);
+        }
+        self.books.insert(
+            scope,
+            Book {
+                prepared: outcome.prepared.clone(),
+                created: outcome.prepared.data.completed_at,
+                used: Instant::now(),
+            },
+        );
+        true
+    }
 }
 fn statistics<I: Ord>(
-    snapshot: OrderbookSnapshot,
+    snapshot: MarketSnapshot,
     scope: BookScope,
-    known: fn(CatalogTraits) -> BTreeSet<I>,
-    selected: fn(AskQuote) -> Option<I>,
-) -> Result<Prepared<Statistics<I>>, DataError> {
+    read: TraitRead<I>,
+) -> Result<Prepared<Statistics<I>>, ValuationError> {
     snapshot.require_currency(&scope.currency)?;
-    let known = known(snapshot.traits(&scope.collection)?);
-    let dependencies = snapshot.dependencies([scope.clone()], &scope.currency, false)?;
+    let known = (read.known)(&snapshot, &scope.collection)?;
+    let dependencies = snapshot.dependencies([scope.clone()], &scope.currency, read.kind, &[])?;
     let mut data = Statistics {
         scope,
         known,
@@ -65,19 +173,21 @@ fn statistics<I: Ord>(
         traits: BTreeMap::new(),
         dependencies,
         sync: snapshot.sync()?,
+        completed_at: Instant::now(),
     };
     let now = jiff::Timestamp::now().as_millisecond();
     let mut token = String::new();
     for _ in 0..2560 {
         let page = snapshot.asks(&data.scope, now, token)?;
         for quote in page.data {
-            let baseline = data.collection.get_or_insert_with(|| AskEvidence {
-                floor: quote.price.clone(),
-                samples: 0,
-            });
-            baseline.samples += 1;
+            data.collection
+                .get_or_insert_with(|| AskEvidence {
+                    floor: quote.price.clone(),
+                    samples: 0,
+                })
+                .samples += 1;
             let price = quote.price.clone();
-            if let Some(id) = selected(quote) {
+            if let Some(id) = (read.selected)(quote) {
                 data.traits
                     .entry(id)
                     .or_insert(AskEvidence {
@@ -88,35 +198,64 @@ fn statistics<I: Ord>(
             }
         }
         if page.next_page_token.is_empty() {
+            data.completed_at = Instant::now();
             return Ok(Prepared::new(data, page.cursor));
         }
         token = page.next_page_token;
     }
-    Err(DataError::capacity("multiplier scan limit exceeded"))
+    Err(ValuationError::capacity("multiplier scan limit exceeded"))
 }
-async fn prepare<I: Ord + Send + 'static>(
-    source: OrderbookReader,
-    scope: BookScope,
-    known: fn(CatalogTraits) -> BTreeSet<I>,
-    selected: fn(AskQuote) -> Option<I>,
-) -> Result<Arc<Prepared<Statistics<I>>>, DataError> {
-    tokio::time::timeout(
-        PREPARE_TIMEOUT,
-        source.prepare(move |snapshot| statistics(snapshot, scope, known, selected)),
-    )
-    .await
-    .map_err(|_| DataError::timed_out("Multiplier preparation timed out"))?
-    .map(Arc::new)
+async fn resolve<I: Ord + Send + 'static>(work: Work<I>) -> Result<Outcome<I>, ValuationError> {
+    if let Some((prepared, created)) = work.candidate
+        && work.source.is_current(&prepared.data.dependencies).await
+        && created.elapsed() < REFRESH
+    {
+        return Ok(Outcome {
+            prepared,
+            fresh: false,
+            current: true,
+        });
+    }
+    let read = work.read;
+    let scope = work.scope;
+    let prepared = Arc::new(
+        tokio::time::timeout(
+            PREPARE_TIMEOUT,
+            work.source
+                .prepare(move |snapshot| statistics(snapshot, scope, read)),
+        )
+        .await
+        .map_err(|_| ValuationError::timed_out("Multiplier preparation timed out"))???,
+    );
+    let current = work.source.is_current(&prepared.data.dependencies).await;
+    Ok(Outcome {
+        prepared,
+        fresh: true,
+        current,
+    })
+}
+async fn request<I: Ord + Send + 'static>(
+    work: Work<I>,
+    context: RequestContext,
+    stop: CancellationToken,
+) -> Result<Outcome<I>, ValuationError> {
+    let cancelled = context.cancelled.clone();
+    let _context = context;
+    tokio::select! {biased;
+        _=stop.cancelled()=>Err(ValuationError::unavailable("Valuation actor is stopping")),
+        _=cancelled.cancelled()=>Err(ValuationError::unavailable("Valuation request cancelled")),
+        result=resolve(work)=>result,
+    }
 }
 fn measure<I: Ord>(
     prepared: &Prepared<Statistics<I>>,
     id: &I,
     strategy: StrategyId,
     selected_trait: ValuationTrait,
-) -> Result<(Multiplier, MultiplierEvidence), DataError> {
+) -> Result<(Multiplier, MultiplierEvidence), ValuationError> {
     let statistics = &prepared.data;
     if !statistics.known.contains(id) {
-        return Err(DataError::invalid(
+        return Err(ValuationError::invalid(
             "selected trait does not belong to this collection",
         ));
     }
@@ -141,21 +280,21 @@ fn measure<I: Ord>(
     };
     if collection_samples < MINIMUM_MULTIPLIER_SAMPLES || trait_samples < MINIMUM_MULTIPLIER_SAMPLES
     {
-        return Err(DataError::valuation(
-            DataErrorCode::NotEnoughData,
+        return Err(ValuationError::with_details(
+            ValuationErrorCode::NotEnoughData,
             "At least three eligible asks are required for both the collection and selected trait",
             details,
         ));
     }
     let (Some(baseline), Some(trait_floor)) = (collection, selected) else {
-        return Err(DataError::valuation(
-            DataErrorCode::InvalidBaseline,
+        return Err(ValuationError::with_details(
+            ValuationErrorCode::InvalidBaseline,
             "Multiplier floor evidence is missing",
             details,
         ));
     };
     let factor = Multiplier::from_floors(&trait_floor.floor, &baseline.floor).map_err(|e| {
-        DataError::valuation(DataErrorCode::InvalidBaseline, e.to_string(), details)
+        ValuationError::with_details(ValuationErrorCode::InvalidBaseline, e.to_string(), details)
     })?;
     Ok((
         factor,
@@ -167,75 +306,57 @@ fn measure<I: Ord>(
     ))
 }
 
-// Only the selected trait and public request/result types differ. Keep scheduling and
-// freshness policy in one place while exposing ordinary, independently started actors.
+// Only native actor/message boilerplate is generated. Policy lives in MultiplierBooks.
 macro_rules! multiplier_actor {
-    ($actor:ident,$request:ident,$value:ident,$trait_id:ty,$field:ident,$catalog:ident,$strategy:ident,$variant:ident) => {
+    ($actor:ident,$request:ident,$value:ident,$id:ty,$field:ident,$catalog:ident,$kind:ident,$strategy:ident,$variant:ident)=>{
 
         pub struct $actor {
-            source: OrderbookReader,
             life: Lifecycle,
-            books: HashMap<BookScope, Book<$trait_id>>,
+            state: MultiplierBooks<$id>,
             last: Option<($request, Arc<Mark<$value>>)>,
-            active: Option<BookScope>,
-            last_requested: Instant,
-            refreshing: bool,
         }
         impl $actor {
-            pub fn new(source: OrderbookReader, life: Lifecycle) -> Self {
+            pub fn new(source: MarketReader, life: Lifecycle) -> Self {
                 Self {
-                    source,
                     life,
-                    books: HashMap::new(),
+                    state: MultiplierBooks::new(
+                        source,
+                        TraitRead {
+                            kind: CatalogTrait::$kind,
+                            known: MarketSnapshot::$catalog,
+                            selected: |quote| quote.$field,
+                        },
+                    ),
                     last: None,
-                    active: None,
-                    last_requested: Instant::now(),
-                    refreshing: false,
                 }
             }
             fn refresh(&mut self, ctx: &mut Context<Self>) {
-                if self.last_requested.elapsed() >= IDLE {
-                    self.books.clear();
+                if self.state.expire() {
                     self.last = None;
-                    self.active = None;
                     return;
                 }
-                let Some(scope) = self.active.clone() else {
+                let Some(work) = self.state.refresh() else {
                     return;
                 };
-                if self.refreshing
-                    || self.books.get(&scope).is_some_and(|b| {
-                        b.created.elapsed() < REFRESH
-                            && self.source.is_current(&b.prepared.data.dependencies)
-                    })
-                {
-                    return;
-                }
-                self.refreshing = true;
-                let source = self.source.clone();
+                let scope = work.scope.clone();
+                let started = work.started;
                 let stop = self.life.stop_token();
-                let pending = scope.clone();
-                let work = async move {
-                    tokio::select! {biased;
-                        _=stop.cancelled()=>Err(DataError::unavailable("Valuation actor is stopping")),
-                        result=prepare(source,pending,|traits|traits.$catalog,|quote|quote.$field)=>result,
-                    }
+                let task = async move {
+                    tokio::select! {biased;_=stop.cancelled()=>Err(ValuationError::unavailable("Valuation actor is stopping")),result=resolve(work)=>result}
                 };
-                // A timer refresh must not suspend cached requests in this actor.
-                ctx.spawn(work.into_actor(self).map(move |result, actor, _| {
-                    actor.refreshing = false;
-                    if actor.last_requested.elapsed() >= IDLE {
+                ctx.spawn(task.into_actor(self).map(move |result, actor, _| {
+                    actor.state.refreshing = false;
+                    if actor.state.expire() {
+                        actor.last = None;
                         return;
                     }
-                    if let Ok(prepared) = result
-                        && actor.source.is_current(&prepared.data.dependencies)
-                        && actor
-                            .books
-                            .get(&scope)
-                            .is_none_or(|book| book.prepared.prepared_at <= prepared.prepared_at)
-                    {
-                        actor.last = None;
-                        remember(&mut actor.books, prepared);
+                    match result {
+                        Ok(outcome) => {
+                            if actor.state.accept(&outcome) {
+                                actor.last = None;
+                            }
+                        }
+                        Err(_) => actor.state.discard(&scope, started),
                     }
                 }));
             }
@@ -247,86 +368,55 @@ macro_rules! multiplier_actor {
                 ctx.run_interval(REFRESH, |actor, ctx| actor.refresh(ctx));
             }
         }
-        impl Handler<Evaluate<$request, $value, DataError>> for $actor {
-            type Result = AtomicResponse<Self, Result<Arc<Mark<$value>>, DataError>>;
+        impl Handler<Evaluate<$request, $value, ValuationError>> for $actor {
+            type Result = AtomicResponse<Self, Result<Arc<Mark<$value>>, ValuationError>>;
             fn handle(
                 &mut self,
-                message: Evaluate<$request, $value, DataError>,
+                message: Evaluate<$request, $value, ValuationError>,
                 _: &mut Self::Context,
             ) -> Self::Result {
-                let (input, request) = message.into_parts();
+                let (input, context) = message.into_parts();
                 let scope = BookScope {
                     collection: input.collection_id.clone(),
                     currency: input.currency_id.clone(),
                 };
-                self.active = Some(scope.clone());
-                self.last_requested = Instant::now();
-                let source = self.source.clone();
-                let cached = self
-                    .books
-                    .get_mut(&scope)
-                    .filter(|book| {
-                        book.created.elapsed() < REFRESH
-                            && source.is_current(&book.prepared.data.dependencies)
-                    })
-                    .map(|book| {
-                        book.used = Instant::now();
-                        book.prepared.clone()
-                    });
-                let last = cached.as_ref().and_then(|prepared| {
-                    self.last
-                        .as_ref()
-                        .filter(|(key, mark)| key == &input && mark.evaluated_at == prepared.prepared_at)
-                        .map(|(_, mark)| mark.clone())
-                });
-                let stop = self.life.stop_token();
-                let pending = scope.clone();
-                let work = async move {
-                    let _request = request;
-                    if let Some(prepared) = cached {
-                        return Ok((prepared, false));
-                    }
-                    tokio::select! {biased;
-                        _=stop.cancelled()=>Err(DataError::unavailable("Valuation actor is stopping")),
-                        _=_request.cancelled.cancelled()=>Err(DataError::unavailable("Valuation request cancelled")),
-                        result=prepare(source,pending,|traits|traits.$catalog,|quote|quote.$field)=>result.map(|p|(p,true)),
-                    }
-                };
-                AtomicResponse::new(Box::pin(work.into_actor(self).map(
-                    move |result, actor, _| {
-                        let (prepared, fresh) = match result {
-                            Ok(value) => value,
-                            Err(error) => {
-                                actor.books.remove(&scope);
-                                actor.last = None;
-                                return Err(error);
+                let work = self.state.request(scope.clone());
+                let started = work.started;
+                AtomicResponse::new(Box::pin(
+                    request(work, context, self.life.stop_token())
+                        .into_actor(self)
+                        .map(move |result, actor, _| {
+                            let outcome = result.map_err(|error| {
+                                actor.state.discard(&scope, started);
+                                error
+                            })?;
+                            actor.state.accept(&outcome);
+                            let prepared = &outcome.prepared;
+                            if let Some((key, mark)) = &actor.last
+                                && key == &input
+                                && mark.evaluated_at == prepared.prepared_at
+                            {
+                                return Ok(mark.clone());
                             }
-                        };
-                        if fresh && actor.source.is_current(&prepared.data.dependencies) {
-                            remember(&mut actor.books, prepared.clone());
-                        }
-                        if let Some(mark) = last {
-                            return Ok(mark);
-                        }
-                        let (factor, evidence) = measure(
-                            &prepared,
-                            &input.$field,
-                            StrategyId::$strategy(),
-                            ValuationTrait::$variant(input.$field.clone()),
-                        )?;
-                        let data = $value {
-                            collection_id: input.collection_id.clone(),
-                            $field: input.$field.clone(),
-                            currency_id: input.currency_id.clone(),
-                            factor,
-                            evidence,
-                            sync: prepared.data.sync.clone(),
-                        };
-                        let mark = Arc::new(Mark::prepared(actor.life.strategy(), data, &prepared));
-                        actor.last = Some((input, mark.clone()));
-                        Ok(mark)
-                    },
-                )))
+                            let (factor, evidence) = measure(
+                                prepared,
+                                &input.$field,
+                                StrategyId::$strategy(),
+                                ValuationTrait::$variant(input.$field.clone()),
+                            )?;
+                            let data = $value {
+                                collection_id: input.collection_id.clone(),
+                                $field: input.$field.clone(),
+                                currency_id: input.currency_id.clone(),
+                                factor,
+                                evidence,
+                                sync: prepared.data.sync.clone(),
+                            };
+                            let mark = Arc::new(Mark::prepared(actor.life.strategy(), data, prepared));
+                            actor.last = Some((input, mark.clone()));
+                            Ok(mark)
+                        }),
+                ))
             }
         }
 
@@ -338,7 +428,8 @@ multiplier_actor!(
     ModelMultiplier,
     ModelId,
     model_id,
-    models,
+    model_ids,
+    Model,
     model_multiplier,
     Model
 );
@@ -348,11 +439,11 @@ multiplier_actor!(
     BackdropMultiplier,
     BackdropId,
     backdrop_id,
-    backdrops,
+    backdrop_ids,
+    Backdrop,
     backdrop_multiplier,
     Backdrop
 );
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,14 +518,18 @@ mod tests {
         data: &market_actors::MarketDataService,
         currency: &str,
     ) -> Arc<Prepared<Statistics<ModelId>>> {
-        prepare(
-            data.orderbooks.clone(),
-            scope(currency),
-            |traits| traits.models,
-            |quote| quote.model_id,
-        )
-        .await
-        .unwrap()
+        let work = Work {
+            source: data.reader.clone(),
+            scope: scope(currency),
+            candidate: None,
+            read: TraitRead {
+                kind: CatalogTrait::Model,
+                known: MarketSnapshot::model_ids,
+                selected: |quote| quote.model_id,
+            },
+            started: Instant::now(),
+        };
+        resolve(work).await.unwrap().prepared
     }
     async fn ask(addr: &Addr<ModelMultiplierActor>, currency: &str) -> Arc<Mark<ModelMultiplier>> {
         addr.send(test_message(input(currency)))
@@ -447,13 +542,21 @@ mod tests {
         let (_dir, data) = data().await;
         let gram = book(&data, "GRAM").await;
         let stars = book(&data, "XTR").await;
-        let held = crate::integration_tests::hold(&data.orderbooks).await;
+        let held = crate::integration_tests::hold(&data.reader).await;
         let (life, stop, closed) = test_lifecycle("model_multiplier");
-        let mut actor = ModelMultiplierActor::new(data.orderbooks.clone(), life);
-        remember(&mut actor.books, gram);
-        remember(&mut actor.books, stars);
-        actor.books.get_mut(&scope("GRAM")).unwrap().created -= REFRESH;
-        actor.active = Some(scope("GRAM"));
+        let mut actor = ModelMultiplierActor::new(data.reader.clone(), life);
+        actor.state.accept(&Outcome {
+            prepared: gram,
+            fresh: true,
+            current: true,
+        });
+        actor.state.accept(&Outcome {
+            prepared: stars,
+            fresh: true,
+            current: true,
+        });
+        actor.state.books.get_mut(&scope("GRAM")).unwrap().created -= REFRESH;
+        actor.state.active = Some(scope("GRAM"));
         let addr = actor.start();
         addr.send(Refresh).await.unwrap();
         let mark = tokio::time::timeout(Duration::from_secs(1), ask(&addr, "XTR"))
@@ -475,12 +578,16 @@ mod tests {
         let (_dir, data) = data().await;
         let prepared = book(&data, "GRAM").await;
         let (life, stop, closed) = test_lifecycle("model_multiplier");
-        let mut actor = ModelMultiplierActor::new(data.orderbooks.clone(), life);
-        remember(&mut actor.books, prepared);
-        actor.books.get_mut(&scope("GRAM")).unwrap().created -= Duration::from_millis(29_500);
+        let mut actor = ModelMultiplierActor::new(data.reader.clone(), life);
+        actor.state.accept(&Outcome {
+            prepared,
+            fresh: true,
+            current: true,
+        });
+        actor.state.books.get_mut(&scope("GRAM")).unwrap().created -= Duration::from_millis(29_500);
         let addr = actor.start();
         let first = ask(&addr, "GRAM").await;
-        let held = crate::integration_tests::hold(&data.orderbooks).await;
+        let held = crate::integration_tests::hold(&data.reader).await;
         tokio::time::sleep(Duration::from_millis(600)).await;
         let mut pending = Box::pin(ask(&addr, "GRAM"));
         assert!(

@@ -132,6 +132,23 @@ impl CollectionChoices {
             .ids()
             .map(|ids| ids.iter().map(ToString::to_string).collect())
     }
+    pub fn trait_option_ids(&self, attribute: &str) -> Option<Vec<String>> {
+        match attribute {
+            MODEL => self
+                .models
+                .ids()
+                .map(|ids| ids.iter().map(ToString::to_string).collect()),
+            BACKDROP => self
+                .backdrops
+                .ids()
+                .map(|ids| ids.iter().map(ToString::to_string).collect()),
+            PATTERN => self
+                .patterns
+                .ids()
+                .map(|ids| ids.iter().map(ToString::to_string).collect()),
+            _ => Some(Vec::new()),
+        }
+    }
     pub fn unrestricted_attributes(&self) -> Vec<String> {
         [
             (MODEL, self.models.ids().is_none()),

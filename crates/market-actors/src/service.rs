@@ -22,7 +22,7 @@ use tonic::Status;
 pub struct MarketDataService {
     pub handle: MarketDataHandle,
     pub task: MarketDataTask,
-    pub orderbooks: crate::OrderbookReader,
+    pub reader: crate::MarketReader,
     arbiter: actix::ArbiterHandle,
 }
 pub struct MarketDataTask {
@@ -36,9 +36,9 @@ impl MarketDataService {
     /// Run a service factory on the shared data Arbiter with read-only market access.
     pub async fn start_actor<T: Send + 'static>(
         &self,
-        build: impl FnOnce(crate::OrderbookReader) -> T + Send + 'static,
+        build: impl FnOnce(crate::MarketReader) -> T + Send + 'static,
     ) -> Result<T, crate::error::DataError> {
-        let source = self.orderbooks.clone();
+        let source = self.reader.clone();
         let (reply, response) = tokio::sync::oneshot::channel();
         if !self.arbiter.spawn_fn(move || {
             let _ = reply.send(build(source));
@@ -88,8 +88,8 @@ impl MarketDataService {
             slots: query_slots,
             stop: stop.clone(),
         };
-        let orderbook_reader =
-            crate::OrderbookReader::new(reader.clone(), environment.clone(), budget.clone());
+        let market_reader =
+            crate::MarketReader::new(reader.clone(), environment.clone(), budget.clone());
         let exit_guard = exited.clone().drop_guard();
         let (ready, started) = tokio::sync::oneshot::channel();
         let thread = std::thread::Builder::new()
@@ -150,7 +150,7 @@ impl MarketDataService {
                 handle,
                 task,
                 arbiter,
-                orderbooks: orderbook_reader,
+                reader: market_reader,
             }),
             Err(_) => {
                 task.stop.cancel();

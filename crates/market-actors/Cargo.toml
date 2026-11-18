@@ -10,7 +10,6 @@ serde_json.workspace = true
 sha2.workspace = true
 actix.workspace = true
 jiff.workspace = true
-rust_decimal.workspace = true
 market-replica.workspace = true
 market-hub-protocol.workspace = true
 prost.workspace = true

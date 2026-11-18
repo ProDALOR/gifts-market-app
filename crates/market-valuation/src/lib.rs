@@ -11,3 +11,6 @@ pub use runtime::*;
 
 #[cfg(test)]
 mod integration_tests;
+
+mod error;
+pub use error::{ValuationError, ValuationErrorCode};

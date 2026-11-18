@@ -1,6 +1,6 @@
 use crate::*;
 use actix::prelude::*;
-use market_actors::{MarketDataService, OrderbookReader, error::DataError};
+use market_actors::{MarketDataService, MarketReader};
 use market_hub_protocol::wire as w;
 use market_replica::ReplicaWriter;
 use std::{sync::Arc, time::Duration};
@@ -240,7 +240,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
         model: "rare model".into(),
     };
     let value = calculate(
-        &service.orderbooks,
+        &service.reader,
         ValuationRequest {
             strategy: market_gifts::valuation::StrategyId::model_floor(),
             positions: vec![
@@ -294,7 +294,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
             .any(|row| row.unpriced == Some(UnpricedReason::UnknownModel))
     );
     let stars = calculate(
-        &service.orderbooks,
+        &service.reader,
         ValuationRequest {
             strategy: market_gifts::valuation::StrategyId::model_floor(),
             positions: vec![ModelPosition {
@@ -309,7 +309,7 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
     assert_eq!(stars.total.as_str(), "0.0002");
     assert!(
         calculate(
-            &service.orderbooks,
+            &service.reader,
             ValuationRequest {
                 strategy: market_gifts::valuation::StrategyId::model_floor(),
                 positions: vec![ModelPosition {
@@ -329,8 +329,8 @@ async fn model_valuation_uses_exact_current_asks_and_reports_unpriced_gifts_sepa
 
 #[tokio::test]
 async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
+    use crate::ValuationErrorCode;
     use crate::{FloorActor, ValuationHandle};
-    use market_actors::error::DataErrorCode;
     use market_gifts::valuation::{ModelLookup, ModelPosition, StrategyId, ValuationRequest};
     let (_directory, mut writer) = fixture();
     let data = MarketDataService::start(writer.reader(), 2, 1)
@@ -364,7 +364,7 @@ async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
         strategy: StrategyId::collection_floor(),
         ..request.clone()
     };
-    let permit = hold(&data.orderbooks).await;
+    let permit = hold(&data.reader).await;
     let jobs = async { tokio::join!(registry.mark(request.clone()), registry.mark(broad.clone())) };
     tokio::pin!(jobs);
     assert!(
@@ -376,11 +376,8 @@ async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
     drop(permit);
     let (missing, priced) = jobs.await;
     let error = missing.unwrap_err();
-    assert_eq!(error.code(), DataErrorCode::NotEnoughData);
-    assert_eq!(
-        error.valuation_details().unwrap().strategy,
-        StrategyId::model_floor()
-    );
+    assert_eq!(error.code(), ValuationErrorCode::NotEnoughData);
+    assert_eq!(error.details().unwrap().strategy, StrategyId::model_floor());
     let priced = priced.unwrap();
     assert_eq!(priced.strategy, "collection_floor");
     assert_eq!(priced.total.as_str(), "6");
@@ -393,11 +390,8 @@ async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
         ..request.clone()
     };
     let error = registry.mark(unknown).await.unwrap_err();
-    assert_eq!(error.code(), DataErrorCode::UnsupportedStrategy);
-    assert_eq!(
-        error.valuation_details().unwrap().strategy.as_str(),
-        "unknown"
-    );
+    assert_eq!(error.code(), ValuationErrorCode::UnsupportedStrategy);
+    assert_eq!(error.details().unwrap().strategy.as_str(), "unknown");
     // No eligible asks is an explicit reason, never a cached zero estimate.
     let mut exhausted = order("0");
     if let Some(w::change::Change::Upsert(w::Entity {
@@ -413,9 +407,9 @@ async fn strategy_registry_shares_read_budget_and_preserves_typed_failures() {
         })
         .unwrap();
     let error = registry.mark(broad.clone()).await.unwrap_err();
-    assert_eq!(error.code(), DataErrorCode::NotEnoughData);
+    assert_eq!(error.code(), ValuationErrorCode::NotEnoughData);
     let Some(market_gifts::valuation::ValuationErrorContext::Portfolio { unpriced }) =
-        &error.valuation_details().unwrap().context
+        &error.details().unwrap().context
     else {
         panic!("portfolio context required");
     };
@@ -622,7 +616,7 @@ async fn typed_multipliers_enforce_evidence_and_recover_without_stale_marks() {
         &model.handle.evaluate(request.clone()).await.unwrap()
     ));
     // Another model uses this actor's prepared collection state without acquiring a read worker.
-    let occupied = hold(&data.orderbooks).await;
+    let occupied = hold(&data.reader).await;
     let another = ModelMultiplierRequest {
         model_id: "other".into(),
         ..request.clone()
@@ -671,7 +665,7 @@ async fn typed_multipliers_enforce_evidence_and_recover_without_stale_marks() {
             .await
             .unwrap_err()
             .code(),
-        market_actors::error::DataErrorCode::InvalidQuery
+        crate::ValuationErrorCode::InvalidQuery
     );
     let mut exhausted = ask("trait0", "6", "m", "b");
     exhausted.quantity = "0".into();
@@ -685,11 +679,8 @@ async fn typed_multipliers_enforce_evidence_and_recover_without_stale_marks() {
         .query(ValuationQuery::ModelMultiplier(request.clone()))
         .await
         .unwrap_err();
-    assert_eq!(
-        error.code(),
-        market_actors::error::DataErrorCode::NotEnoughData
-    );
-    let details = error.valuation_details().unwrap();
+    assert_eq!(error.code(), crate::ValuationErrorCode::NotEnoughData);
+    let details = error.details().unwrap();
     assert_eq!(details.available_samples, Some(2));
     assert_eq!(details.required_samples, Some(3));
     assert_eq!(details.revision.as_deref(), Some("insufficient"));
@@ -724,7 +715,7 @@ async fn typed_multipliers_enforce_evidence_and_recover_without_stale_marks() {
 }
 
 struct SnapshotProbe {
-    source: OrderbookReader,
+    source: MarketReader,
     life: crate::Lifecycle,
     entered: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     release: Arc<std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
@@ -735,17 +726,14 @@ impl Actor for SnapshotProbe {
         self.life.started(ctx);
     }
 }
-type ProbeMessage = crate::Evaluate<
-    (),
-    (std::thread::ThreadId, std::thread::ThreadId),
-    market_actors::error::DataError,
->;
+type ProbeMessage =
+    crate::Evaluate<(), (std::thread::ThreadId, std::thread::ThreadId), crate::ValuationError>;
 impl Handler<ProbeMessage> for SnapshotProbe {
     type Result = AtomicResponse<
         Self,
         Result<
             Arc<crate::Mark<(std::thread::ThreadId, std::thread::ThreadId)>>,
-            market_actors::error::DataError,
+            crate::ValuationError,
         >,
     >;
     fn handle(&mut self, message: ProbeMessage, _: &mut Self::Context) -> Self::Result {
@@ -757,13 +745,13 @@ impl Handler<ProbeMessage> for SnapshotProbe {
         AtomicResponse::new(Box::pin(async move{
             let _request=request;
             tokio::select!{biased;
-                _=stop.cancelled()=>Err(DataError::unavailable("Stopping")),
-                _=_request.cancelled.cancelled()=>Err(DataError::unavailable("Cancelled")),
+                _=stop.cancelled()=>Err(ValuationError::unavailable("Stopping")),
+                _=_request.cancelled.cancelled()=>Err(ValuationError::unavailable("Cancelled")),
                 result=source.prepare(move|snapshot|{
                     if let Some(entered)=entered.lock().unwrap().take(){let _=entered.send(());}
                     if let Some(release)=release.lock().unwrap().take(){release.recv().unwrap();}
                     Ok(crate::Prepared { prepared_at:jiff::Timestamp::now(),revision:snapshot.revision()?,data:std::thread::current().id()})
-                })=>result,
+                })=>result?,
             }
         }.into_actor(self).map(|result,actor,_|result.map(|prepared|Arc::new(crate::Mark::evaluated(actor.life.strategy(),crate::Prepared { prepared_at:jiff::Timestamp::now(),revision:prepared.revision,data:(std::thread::current().id(),prepared.data)}))))))
     }
@@ -774,7 +762,7 @@ async fn strategy_actors_share_arbiter_and_read_only_views_while_preparation_run
     let data = MarketDataService::start(writer.reader(), 4, 1)
         .await
         .unwrap();
-    let snapshot = data.orderbooks.snapshot().unwrap();
+    let snapshot = data.reader.snapshot().unwrap();
     let (entered, started) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let first = crate::Service::start_on(
@@ -813,10 +801,7 @@ async fn strategy_actors_share_arbiter_and_read_only_views_while_preparation_run
         })
         .unwrap();
     assert_eq!(snapshot.revision().unwrap(), "c0");
-    assert_eq!(
-        data.orderbooks.snapshot().unwrap().revision().unwrap(),
-        "newer"
-    );
+    assert_eq!(data.reader.snapshot().unwrap().revision().unwrap(), "newer");
     assert!(
         tokio::time::timeout(Duration::from_secs(1), data.handle.status())
             .await
@@ -881,9 +866,9 @@ async fn cancelled_strategy_preparation_retains_its_worker_until_shutdown_drains
 }
 
 async fn calculate(
-    source: &OrderbookReader,
+    source: &MarketReader,
     request: market_gifts::valuation::ValuationRequest,
-) -> Result<Arc<Mark<market_gifts::valuation::Valuation>>, DataError> {
+) -> Result<Arc<Mark<market_gifts::valuation::Valuation>>, ValuationError> {
     use market_gifts::valuation::*;
     let kind = if request.strategy == StrategyId::model_floor() {
         calculation::FloorKind::Model
@@ -899,7 +884,7 @@ async fn calculate(
             calculation::portfolio(snapshot, input, kind)
                 .map(|(prepared, _)| Arc::new(Mark::evaluated(kind.id(), prepared)))
         })
-        .await
+        .await?
 }
 pub(crate) struct HeldWorker(Option<std::sync::mpsc::Sender<()>>);
 impl Drop for HeldWorker {
@@ -909,7 +894,7 @@ impl Drop for HeldWorker {
         }
     }
 }
-pub(crate) async fn hold(source: &OrderbookReader) -> HeldWorker {
+pub(crate) async fn hold(source: &MarketReader) -> HeldWorker {
     let (entered, started) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let source = source.clone();
@@ -918,7 +903,6 @@ pub(crate) async fn hold(source: &OrderbookReader) -> HeldWorker {
             .prepare(move |_| {
                 let _ = entered.send(());
                 let _ = blocked.recv();
-                Ok(())
             })
             .await
     });
@@ -1111,7 +1095,7 @@ async fn catalog_resolution_and_floor_calculation_share_the_pinned_view() {
     let data = MarketDataService::start(writer.reader(), 2, 1)
         .await
         .unwrap();
-    let pinned = data.orderbooks.snapshot().unwrap();
+    let pinned = data.reader.snapshot().unwrap();
     let input = PortfolioPositions {
         positions: vec![ModelPosition {
             model: ModelLookup::named("Gift", "A").unwrap(),
@@ -1137,9 +1121,9 @@ async fn catalog_resolution_and_floor_calculation_share_the_pinned_view() {
     assert_eq!(old.data.total.as_str(), "20");
     assert_eq!(old.data.rows[0].model, "A");
     assert_eq!(old.revision, "models");
-    assert!(!data.orderbooks.is_current(&dependencies));
+    assert!(!data.reader.is_current(&dependencies).await);
     let (new, _) = calculation::portfolio(
-        data.orderbooks.snapshot().unwrap(),
+        data.reader.snapshot().unwrap(),
         input,
         calculation::FloorKind::Model,
     )
@@ -1212,7 +1196,7 @@ async fn ask_projection_skips_unsupported_and_expired_rows_and_preserves_singlet
         currency: "GRAM".into(),
     };
     let page = data
-        .orderbooks
+        .reader
         .snapshot()
         .unwrap()
         .asks(&scope, 10, String::new())
@@ -1273,8 +1257,7 @@ async fn name_lookup_cache_detects_new_ambiguity_without_invalidating_catalog_id
     let Error::Strategy(error) = service.handle.evaluate(named).await.unwrap_err() else {
         panic!("expected ambiguous lookup");
     };
-    let Some(ValuationErrorContext::Portfolio { unpriced }) =
-        &error.valuation_details().unwrap().context
+    let Some(ValuationErrorContext::Portfolio { unpriced }) = &error.details().unwrap().context
     else {
         panic!("expected lookup evidence");
     };
@@ -1285,6 +1268,95 @@ async fn name_lookup_cache_detects_new_ambiguity_without_invalidating_catalog_id
     assert!(Arc::ptr_eq(
         &original,
         &service.handle.evaluate(catalog).await.unwrap()
+    ));
+    service.task.shutdown().await.unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn model_multiplier_ignores_unrestricted_backdrops_and_a_large_unrelated_catalog() {
+    use market_gifts::valuation::*;
+    let (_dir, mut writer) = model_fixture();
+    let mut changes = (0..50_001)
+        .map(|i| {
+            entity(w::entity::Entity::AttributeOption(w::AttributeOption {
+                id: format!("backdrop.{i}"),
+                attribute_id: "tg.backdrop".into(),
+                name: format!("Backdrop {i}"),
+                ..Default::default()
+            }))
+        })
+        .collect::<Vec<_>>();
+    changes.push(entity(w::entity::Entity::ItemType(w::ItemType {
+        id: "gift".into(),
+        name: "Gift".into(),
+        quantity_step: "1".into(),
+        aliases: vec![w::ExternalId {
+            namespace: "tg".into(),
+            id: "99".into(),
+        }],
+        attributes: [
+            (
+                "tg.model".into(),
+                w::AttributeRule {
+                    required: true,
+                    allowed_values: Some(w::AllowedAttributeValues {
+                        ids: vec!["a".into(), "b".into()],
+                    }),
+                },
+            ),
+            (
+                "tg.backdrop".into(),
+                w::AttributeRule {
+                    required: false,
+                    allowed_values: None,
+                },
+            ),
+        ]
+        .into(),
+    })));
+    writer
+        .apply(w::Batch {
+            cursor: "large-catalog".into(),
+            changes,
+        })
+        .unwrap();
+    let data = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let service = Service::start_on(
+        &data,
+        "model_multiplier",
+        ModelMultiplierActor::new,
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let request = ModelMultiplierRequest {
+        collection_id: "gift".into(),
+        model_id: "b".into(),
+        currency_id: "GRAM".into(),
+    };
+    let original = service.handle.evaluate(request.clone()).await.unwrap();
+    assert_eq!(original.factor.as_str(), "2");
+    writer
+        .apply(w::Batch {
+            cursor: "palette".into(),
+            changes: vec![entity(w::entity::Entity::AttributeOption(
+                w::AttributeOption {
+                    id: "backdrop.0".into(),
+                    attribute_id: "tg.backdrop".into(),
+                    name: "Changed backdrop".into(),
+                    ..Default::default()
+                },
+            ))],
+        })
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &original,
+        &service.handle.evaluate(request).await.unwrap()
     ));
     service.task.shutdown().await.unwrap();
     let stop = CancellationToken::new();

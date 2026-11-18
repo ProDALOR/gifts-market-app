@@ -1,5 +1,4 @@
 use super::*;
-use market_actors::error::DataError;
 use market_gifts::{
     SyncState, SyncStatus, TelegramDocumentId, TelegramGiftId,
     valuation::{ModelValue, Valuation, ValuationRequest},
@@ -8,6 +7,7 @@ use market_invocations::{
     AttemptError, Invocation, Policy, RateKey, RateLimit, Replay, Retry,
     Runtime as InvocationRuntime, operation,
 };
+use market_valuation::ValuationError;
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -101,13 +101,13 @@ impl Source {
 #[derive(Clone, Default)]
 struct Quotes {
     calls: Arc<Mutex<Vec<ValuationRequest>>>,
-    errors: Arc<Mutex<VecDeque<DataError>>>,
+    errors: Arc<Mutex<VecDeque<ValuationError>>>,
 }
 impl ValuationProvider for Quotes {
     async fn mark(
         &self,
         request: ValuationRequest,
-    ) -> Result<Arc<market_valuation::Mark<Valuation>>, DataError> {
+    ) -> Result<Arc<market_valuation::Mark<Valuation>>, ValuationError> {
         let mut calls = self.calls.lock().unwrap();
         calls.push(request.clone());
         if let Some(error) = self.errors.lock().unwrap().pop_front() {
@@ -590,7 +590,7 @@ async fn cache_expires_evicts_lru_and_does_not_cache_valuation_errors() {
         .errors
         .lock()
         .unwrap()
-        .push_back(DataError::unavailable("temporary read failure"));
+        .push_back(ValuationError::unavailable("temporary read failure"));
     assert!(matches!(
         handle.request(request(2, "GRAM", Priority::Normal)).await,
         Err(PortfolioError::Valuation(_))
@@ -848,7 +848,7 @@ async fn coalesces_same_currency_valuation_and_keeps_hanging_reads_bounded() {
         async fn mark(
             &self,
             request: ValuationRequest,
-        ) -> Result<Arc<market_valuation::Mark<Valuation>>, DataError> {
+        ) -> Result<Arc<market_valuation::Mark<Valuation>>, ValuationError> {
             self.calls.lock().unwrap().push(request.clone());
             self.release.notified().await;
             Quotes::default().mark(request).await
@@ -1113,7 +1113,7 @@ async fn refreshed_inventory_does_not_join_valuation_of_an_expired_snapshot() {
         async fn mark(
             &self,
             request: ValuationRequest,
-        ) -> Result<Arc<market_valuation::Mark<Valuation>>, DataError> {
+        ) -> Result<Arc<market_valuation::Mark<Valuation>>, ValuationError> {
             self.calls.lock().unwrap().push(request.clone());
             self.release.notified().await;
             Quotes::default().mark(request).await
@@ -1245,7 +1245,7 @@ async fn multiplier_selection_is_rejected_before_inventory_is_requested() {
     };
     assert_eq!(
         error.code(),
-        market_actors::error::DataErrorCode::UnsupportedStrategy
+        market_valuation::ValuationErrorCode::UnsupportedStrategy
     );
     assert_eq!(source.count(), 0);
     assert!(quotes.calls.lock().unwrap().is_empty());

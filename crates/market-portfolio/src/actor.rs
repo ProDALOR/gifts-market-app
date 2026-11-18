@@ -452,10 +452,10 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 tokio::time::timeout(timeout, backend.mark(request))
                     .await
                     .unwrap_or_else(|_| {
-                        Err(market_actors::error::DataError::timed_out(
+                        Err(market_valuation::ValuationError::timed_out(
                             "portfolio valuation timed out",
                         )
-                        .with_valuation(strategy, currency))
+                        .with_context(strategy, currency))
                     })
             }
             .into_actor(self)

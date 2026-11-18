@@ -6,16 +6,12 @@ pub enum DataErrorCode {
     CapacityExceeded,
     Unavailable,
     NotFound,
-    NotEnoughData,
-    InvalidBaseline,
-    UnsupportedStrategy,
     TimedOut,
 }
 #[derive(Debug, Clone)]
 pub struct DataError {
     code: DataErrorCode,
     message: String,
-    valuation: Option<std::sync::Arc<market_gifts::valuation::ValuationErrorDetails>>,
 }
 pub type Result<T> = std::result::Result<T, DataError>;
 impl DataError {
@@ -23,57 +19,25 @@ impl DataError {
         Self {
             code: DataErrorCode::InvalidQuery,
             message: message.into(),
-            valuation: None,
         }
     }
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self {
             code: DataErrorCode::Unavailable,
             message: message.into(),
-            valuation: None,
         }
     }
     pub fn capacity(message: impl Into<String>) -> Self {
         Self {
             code: DataErrorCode::CapacityExceeded,
             message: message.into(),
-            valuation: None,
         }
     }
     pub fn timed_out(message: impl Into<String>) -> Self {
         Self {
             code: DataErrorCode::TimedOut,
             message: message.into(),
-            valuation: None,
         }
-    }
-    pub fn valuation(
-        code: DataErrorCode,
-        message: impl Into<String>,
-        details: market_gifts::valuation::ValuationErrorDetails,
-    ) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            valuation: Some(std::sync::Arc::new(details)),
-        }
-    }
-    pub fn valuation_details(
-        &self,
-    ) -> Option<&std::sync::Arc<market_gifts::valuation::ValuationErrorDetails>> {
-        self.valuation.as_ref()
-    }
-    pub fn with_valuation(
-        mut self,
-        strategy: market_gifts::valuation::StrategyId,
-        currency: market_gifts::CurrencyId,
-    ) -> Self {
-        if self.valuation.is_none() {
-            let mut context = market_gifts::valuation::ValuationErrorDetails::strategy(strategy);
-            context.currency_id = Some(currency);
-            self.valuation = Some(std::sync::Arc::new(context));
-        }
-        self
     }
     pub fn code(&self) -> DataErrorCode {
         self.code
@@ -100,7 +64,6 @@ impl From<tonic::Status> for DataError {
         Self {
             code,
             message: error.message().to_owned(),
-            valuation: None,
         }
     }
 }

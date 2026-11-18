@@ -95,12 +95,7 @@ fn production_dependencies_follow_the_service_boundaries() {
         ("market-valuation", &["market-actors", "market-gifts"]),
         (
             "market-portfolio",
-            &[
-                "market-gifts",
-                "market-actors",
-                "market-invocations",
-                "market-valuation",
-            ],
+            &["market-gifts", "market-invocations", "market-valuation"],
         ),
         (
             "market-telegram-bot",

@@ -115,7 +115,7 @@ async fn services(
     market_valuation::Service<
         market_gifts::valuation::PortfolioPositions,
         market_gifts::valuation::Valuation,
-        market_actors::error::DataError,
+        market_valuation::ValuationError,
     >,
     market_portfolio::PortfolioService,
 ) {
@@ -363,18 +363,18 @@ async fn portfolio_commands_share_pagination_cache_and_revision_consistent_marks
             market_valuation::Evaluate<
                 PortfolioPositions,
                 Valuation,
-                market_actors::error::DataError,
+                market_valuation::ValuationError,
             >,
         > for Floors
     {
         type Result =
-            Result<Arc<market_valuation::Mark<Valuation>>, market_actors::error::DataError>;
+            Result<Arc<market_valuation::Mark<Valuation>>, market_valuation::ValuationError>;
         fn handle(
             &mut self,
             message: market_valuation::Evaluate<
                 PortfolioPositions,
                 Valuation,
-                market_actors::error::DataError,
+                market_valuation::ValuationError,
             >,
             _: &mut Self::Context,
         ) -> Self::Result {
