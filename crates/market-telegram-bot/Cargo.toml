@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 description = "Telegram command application over the market actor layer"
 [dependencies]
+market-invocations.workspace = true
 market-telegram.workspace = true
 market-gifts.workspace = true
 market-actors.workspace = true

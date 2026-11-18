@@ -1,7 +1,6 @@
 //! Bounded work across peers; saved update progress advances only through completed deliveries.
 use super::{
-    BotError, LaunchButton, MessageHandler, Reply,
-    error::ErrorDisposition,
+    BotError, ErrorDisposition, LaunchButton, MessageHandler, Reply,
     transport::{Message, TelegramActions, Transport, UpdateCheckpoint, incoming},
 };
 use futures_util::{

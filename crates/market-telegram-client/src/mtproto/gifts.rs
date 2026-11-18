@@ -1,5 +1,7 @@
 //! TL profile-gift mapping. No market catalog or actor types cross this adapter.
-use super::{client::rpc, cooldown::Cooldown};
+use super::client::rpc;
+use super::invocations::CallError;
+use super::invocations::{Executor, Group};
 use crate::{
     GiftRelation, GiftSource, InventoryError, ProfileGift, SkipReason, VisibleInventory,
     inventory::{InventoryPage, collect},
@@ -7,25 +9,52 @@ use crate::{
 use grammers_client::{Client, tl};
 use grammers_session::types::PeerRef;
 use market_gifts::{TelegramDocumentId, TelegramGiftId};
-use std::{collections::BTreeMap, time::Duration};
+use market_invocations::{Error, Invocation, InvocationExt, Options, Priority, Replay};
+use std::collections::BTreeMap;
+use std::time::Duration;
 
-pub(crate) struct TelegramGifts {
-    pub client: Client,
-    pub peer: PeerRef,
-    pub cooldown: Cooldown,
+pub struct TelegramGifts {
+    pub(super) client: Client,
+    pub(super) peer: PeerRef,
+    pub(super) invocations: Executor,
 }
 impl GiftSource for TelegramGifts {
     async fn inventory(&self) -> Result<VisibleInventory, InventoryError> {
-        if let Some(seconds) = self.cooldown.remaining() {
-            return Err(InventoryError::RetryAfter(seconds));
-        }
-        collect(|offset| self.page(offset)).await
+        collect(|offset| async move {
+            let operation = self.page_operation(offset, 100)?;
+            self.invocations
+                .handle
+                .submit(
+                    operation,
+                    Options {
+                        priority: Priority::Normal,
+                        timeout: Duration::from_secs(30),
+                        cancellation: self.invocations.stopped.clone(),
+                    },
+                )
+                .map_err(|_| InventoryError::Unavailable)?
+                .await
+                .map_err(|e| match e {
+                    Error::Operation(error) => error,
+                    Error::Runtime(error) => inventory_error(CallError::Runtime(error).bot()),
+                })
+        })
+        .await
     }
 }
 impl TelegramGifts {
-    async fn page(&self, offset: String) -> Result<InventoryPage, InventoryError> {
-        if let Some(seconds) = self.cooldown.remaining() {
-            return Err(InventoryError::RetryAfter(seconds));
+    /// An unsubmitted, replayable page operation. Submit it to the shared invocation handle.
+    /// Adapters can map native page data with `InvocationExt` while preserving rate policy.
+    pub fn page_operation(
+        &self,
+        offset: String,
+        limit: u8,
+    ) -> Result<
+        impl Invocation<Output = InventoryPage, Error = InventoryError> + use<>,
+        InventoryError,
+    > {
+        if !(1..=100).contains(&limit) || offset.len() > 4096 {
+            return Err(InventoryError::Unavailable);
         }
         let request = tl::functions::payments::GetSavedStarGifts {
             exclude_unsaved: false,
@@ -40,40 +69,52 @@ impl TelegramGifts {
             peer: self.peer.into(),
             collection_id: None,
             offset,
-            limit: 100,
+            limit: i32::from(limit),
         };
-        let response = tokio::time::timeout(Duration::from_secs(10), self.client.invoke(&request))
-            .await
-            .map_err(|_| InventoryError::Unavailable)?
-            .map_err(|error| match rpc(error) {
-                crate::BotError::Authorization => InventoryError::Authorization,
-                crate::BotError::RetryAfter(seconds) => {
-                    self.cooldown.observe(seconds);
-                    InventoryError::RetryAfter(seconds)
-                }
-                crate::BotError::Rpc(400 | 403) | crate::BotError::PeerUnavailable => {
-                    InventoryError::Forbidden
-                }
-                _ => InventoryError::Unavailable,
-            })?;
-        let tl::enums::payments::SavedStarGifts::Gifts(response) = response;
-        let mut page = InventoryPage {
-            gifts: vec![],
-            regular: 0,
-            skipped: BTreeMap::new(),
-            scanned: response.gifts.len(),
-            total: usize::try_from(response.count).ok(),
-            next: response.next_offset,
-        };
-        for saved in response.gifts {
-            match map_gift(saved, self.peer.id.bare_id()) {
-                Ok(Some(gift)) => page.gifts.push(gift),
-                Ok(None) => page.regular += 1,
-                Err(reason) => *page.skipped.entry(reason).or_default() += 1,
-            }
-        }
-        Ok(page)
+        let client = self.client.clone();
+        let request = std::sync::Arc::new(request);
+        let owner = self.peer.id.bare_id();
+        Ok(self
+            .invocations
+            .operation(Group::Gifts, Replay::Safe, move || {
+                let client = client.clone();
+                let request = request.clone();
+                async move { client.invoke(&*request).await }
+            })
+            .map(
+                move |response| map_page(response, owner),
+                |error| inventory_error(rpc(error)),
+            ))
     }
+}
+fn inventory_error(error: crate::BotError) -> InventoryError {
+    match error {
+        crate::BotError::Authorization => InventoryError::Authorization,
+        crate::BotError::RetryAfter(seconds) => InventoryError::RetryAfter(seconds),
+        crate::BotError::Rpc(400 | 403) | crate::BotError::PeerUnavailable => {
+            InventoryError::Forbidden
+        }
+        _ => InventoryError::Unavailable,
+    }
+}
+fn map_page(response: tl::enums::payments::SavedStarGifts, owner: Option<i64>) -> InventoryPage {
+    let tl::enums::payments::SavedStarGifts::Gifts(response) = response;
+    let mut page = InventoryPage {
+        gifts: vec![],
+        regular: 0,
+        skipped: BTreeMap::new(),
+        scanned: response.gifts.len(),
+        total: usize::try_from(response.count).ok(),
+        next: response.next_offset,
+    };
+    for saved in response.gifts {
+        match map_gift(saved, owner) {
+            Ok(Some(gift)) => page.gifts.push(gift),
+            Ok(None) => page.regular += 1,
+            Err(reason) => *page.skipped.entry(reason).or_default() += 1,
+        }
+    }
+    page
 }
 fn map_gift(
     saved: tl::enums::SavedStarGift,

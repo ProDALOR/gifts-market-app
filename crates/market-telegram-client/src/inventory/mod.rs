@@ -1,6 +1,7 @@
 //! Telegram profile data. Catalog aliases and valuation belong to command services.
 mod collector;
-pub(super) use collector::{InventoryPage, collect};
+pub use collector::InventoryPage;
+pub(crate) use collector::collect;
 use market_gifts::{TelegramDocumentId, TelegramGiftId};
 use std::{collections::BTreeMap, future::Future};
 

@@ -64,6 +64,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-replica",
                 "market-telegram",
                 "market-telegram-bot",
+                "market-invocations",
             ],
         ),
         (
@@ -75,10 +76,31 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-media",
             ],
         ),
-        ("market-telegram", &["market-gifts", "market-media"]),
+        (
+            "market-telegram",
+            &[
+                "market-telegram-client",
+                "market-media",
+                "market-invocations",
+            ],
+        ),
+        (
+            "market-telegram-client",
+            &["market-gifts", "market-media", "market-invocations"],
+        ),
+        ("market-invocations", &[]),
+        (
+            "market-portfolio",
+            &["market-gifts", "market-actors", "market-invocations"],
+        ),
         (
             "market-telegram-bot",
-            &["market-telegram", "market-actors", "market-gifts"],
+            &[
+                "market-telegram",
+                "market-actors",
+                "market-gifts",
+                "market-invocations",
+            ],
         ),
         ("market-media", &[]),
         ("market-miniapp", &[]),
@@ -107,7 +129,7 @@ fn production_dependencies_follow_the_service_boundaries() {
             .iter()
             .find(|package| package["name"] == *name)
             .unwrap();
-        if *name == "market-telegram-bot" {
+        if matches!(*name, "market-telegram-bot" | "market-invocations") {
             assert!(
                 !package["dependencies"]
                     .as_array()

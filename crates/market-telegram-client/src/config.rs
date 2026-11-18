@@ -5,10 +5,10 @@ use url::Url;
 /// Private credentials for bot-token MTProto login. Never expose them in public config.
 #[derive(Clone)]
 pub struct BotCredentials {
-    pub(super) token: String,
-    pub(super) api_id: i32,
-    pub(super) api_hash: String,
-    pub(super) bot_id: u64,
+    pub(crate) token: String,
+    pub(crate) api_id: i32,
+    pub(crate) api_hash: String,
+    pub(crate) bot_id: u64,
 }
 impl BotCredentials {
     pub fn new(token: String, api_id: i32, api_hash: String) -> anyhow::Result<Self> {
@@ -39,7 +39,7 @@ impl BotCredentials {
             bot_id,
         })
     }
-    pub(super) fn bot_id(&self) -> u64 {
+    pub fn bot_id(&self) -> u64 {
         self.bot_id
     }
 }
@@ -51,7 +51,7 @@ pub struct BotConfig {
 }
 
 // Launch validation is independent of Mini App authentication.
-pub(super) fn app_url(raw: &str) -> anyhow::Result<Url> {
+pub fn app_url(raw: &str) -> anyhow::Result<Url> {
     let url = Url::parse(raw).map_err(|_| anyhow::anyhow!("Invalid public app URL"))?;
     anyhow::ensure!(
         url.scheme() == "https"

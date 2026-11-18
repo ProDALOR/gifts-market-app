@@ -7,10 +7,13 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
+market-invocations = { path = "crates/market-invocations" }
+market-telegram-client = { path = "crates/market-telegram-client" }
 market-gifts = { path = "crates/market-gifts" }
 market-gifts-hub = { path = "crates/market-gifts-hub" }
 flate2 = "1"
 market-media = { path = "crates/market-media" }
+market-portfolio = { path = "crates/market-portfolio" }
 market-api = { path = "crates/market-api", default-features = false }
 market-actors = { path = "crates/market-actors" }
 market-miniapp = { path = "crates/market-miniapp" }

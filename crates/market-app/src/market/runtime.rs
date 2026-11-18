@@ -67,7 +67,13 @@ impl MarketRuntime {
     pub fn start_bot(&self, bot: market_telegram_bot::BotService) -> Result<()> {
         let stop = self.supervisor.token();
         self.supervisor.spawn_optional(TaskKind::Bot, async move {
-            if let Err(error) = bot.run(stop).await {
+            let invocations =
+                market_invocations::Runtime::start(Default::default()).map_err(|error| {
+                    tracing::error!(%error,"invocation scheduler failed to start");
+                })?;
+            let result = bot.run_with_invocations(stop, invocations.handle()).await;
+            invocations.shutdown().await;
+            if let Err(error) = result {
                 tracing::error!(%error, "bot worker stopped");
                 return Err(());
             }

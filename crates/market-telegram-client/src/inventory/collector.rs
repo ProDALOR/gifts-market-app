@@ -2,7 +2,8 @@ use super::*;
 use std::{collections::BTreeSet, time::Duration};
 use tokio::time::Instant;
 
-pub(crate) struct InventoryPage {
+#[derive(Debug, Clone)]
+pub struct InventoryPage {
     pub gifts: Vec<ProfileGift>,
     pub regular: usize,
     pub skipped: BTreeMap<SkipReason, usize>,

@@ -1,12 +1,12 @@
 //! Private grammers adapter: TL calls, payloads, session storage and gift mapping.
 mod client;
 mod connection;
-mod cooldown;
 mod gifts;
+mod invocations;
 mod media;
 mod requests;
 mod session_store;
-pub(super) use connection::Connection;
-pub(super) use cooldown::RateLimits;
+pub use connection::Connection;
+pub use gifts::TelegramGifts;
 #[cfg(test)]
 mod tests;

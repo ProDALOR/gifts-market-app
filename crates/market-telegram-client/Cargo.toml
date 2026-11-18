@@ -1,0 +1,21 @@
+[package]
+name = "market-telegram-client"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+market-invocations.workspace = true
+market-gifts.workspace = true
+market-media.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+grammers-client.workspace = true
+grammers-session.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+url.workspace = true
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+[lints]
+workspace = true

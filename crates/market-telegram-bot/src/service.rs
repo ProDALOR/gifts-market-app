@@ -14,6 +14,15 @@ impl BotService {
             commands: MarketCommands::new(data),
         }
     }
+    pub async fn run_with_invocations(
+        self,
+        stop: CancellationToken,
+        invocations: market_invocations::Handle,
+    ) -> Result<(), BotError> {
+        self.worker
+            .run_with_invocations(&self.commands, stop, invocations)
+            .await
+    }
     pub async fn run(self, stop: CancellationToken) -> Result<(), BotError> {
         self.worker.run(self.commands, stop).await
     }

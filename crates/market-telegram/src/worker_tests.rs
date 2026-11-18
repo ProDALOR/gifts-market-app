@@ -294,7 +294,12 @@ async fn pre_cancelled_worker_opens_no_session_or_connection() {
     worker.data_dir = directory.path().join("not-created");
     let stop = CancellationToken::new();
     stop.cancel();
-    worker.execute(stop, true, &TestHandler).await.unwrap();
+    let invocations = market_invocations::Runtime::start(Default::default()).unwrap();
+    worker
+        .execute(stop, true, &TestHandler, invocations.handle())
+        .await
+        .unwrap();
+    invocations.shutdown().await;
     assert!(!directory.path().join("not-created").exists());
 }
 struct BlockingHandler {
@@ -682,4 +687,19 @@ async fn request_fields_cannot_override_transport_peer_scheduling() {
     event(&actions, "ack:2").await;
     stop.cancel();
     job.await.unwrap();
+}
+
+#[tokio::test]
+async fn closed_invocation_runtime_does_not_open_or_reconnect_a_session() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut worker = worker();
+    worker.data_dir = directory.path().join("not-created");
+    let runtime = market_invocations::Runtime::start(Default::default()).unwrap();
+    let handle = runtime.handle();
+    runtime.shutdown().await;
+    let result = worker
+        .run_with_invocations(&TestHandler, CancellationToken::new(), handle)
+        .await;
+    assert!(matches!(result, Err(BotError::Invocations)));
+    assert!(!worker.data_dir.exists());
 }

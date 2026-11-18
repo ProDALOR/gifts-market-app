@@ -14,18 +14,18 @@ pub struct BotUser {
     pub has_main_web_app: bool,
 }
 #[derive(Clone)]
-pub(super) struct Message {
+pub struct Message {
     pub peer: PeerRef,
     pub id: i32,
     pub outgoing: bool,
     pub text: String,
 }
-pub(super) struct Delivery {
+pub struct Delivery {
     pub state: State,
     pub message: Option<Message>,
 }
 /// Named Telegram operations; callers never construct TL requests.
-pub(super) trait TelegramActions: Clone + Send + Sync {
+pub trait TelegramActions: Clone + Send + Sync {
     type GiftSource: super::GiftSource + Send;
     fn media(
         &self,
@@ -50,16 +50,16 @@ pub(super) trait TelegramActions: Clone + Send + Sync {
 }
 
 /// Update delivery and acknowledgement remain separate from Telegram actions.
-pub(super) trait UpdateCheckpoint {
+pub trait UpdateCheckpoint {
     fn acknowledge(&self, state: State) -> impl Future<Output = Result<(), BotError>> + Send;
 }
-pub(super) trait Transport: Send {
+pub trait Transport: Send {
     type Actions: TelegramActions + UpdateCheckpoint;
     fn actions(&self) -> Self::Actions;
     fn next(&mut self) -> impl Future<Output = Result<Delivery, BotError>> + Send;
 }
 
-pub(super) fn incoming(message: &Message) -> IncomingMessage<'_> {
+pub fn incoming(message: &Message) -> IncomingMessage<'_> {
     IncomingMessage {
         private: message.peer.id.kind() == PeerKind::User,
         outgoing: message.outgoing,

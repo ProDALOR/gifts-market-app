@@ -1,12 +1,12 @@
 //! Bot lifecycle and startup. Command scheduling lives in the dispatcher.
 use super::{
     BotConfig, BotCredentials, BotError, BotUser, LaunchButton, MessageHandler,
-    config::app_url,
     dispatcher::{self, Limits, retry},
-    mtproto::{Connection, RateLimits},
     transport::{TelegramActions, Transport},
 };
 use futures_util::FutureExt;
+use market_invocations::{Handle as InvocationHandle, Runtime as InvocationRuntime};
+use market_telegram_client::{Connection, app_url};
 use std::{panic::AssertUnwindSafe, path::PathBuf};
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -17,7 +17,6 @@ pub struct TelegramWorker {
     url: Option<Url>,
     data_dir: PathBuf,
     identity_observer: Option<IdentityObserver>,
-    limits: RateLimits,
     media: Option<tokio::sync::Mutex<market_media::MediaDownloader>>,
 }
 pub struct BotInspection {
@@ -28,12 +27,14 @@ pub async fn inspect(
     credentials: BotCredentials,
     data_dir: PathBuf,
 ) -> anyhow::Result<BotInspection> {
-    let connection = Connection::open(credentials, &data_dir, RateLimits::default()).await?;
+    let invocations = InvocationRuntime::start(Default::default())?;
+    let connection = Connection::open(credentials, &data_dir, invocations.handle()).await?;
     let session_path = connection.session_path();
     let result = AssertUnwindSafe(connection.transport.actions().identity())
         .catch_unwind()
         .await;
     let closed = connection.close().await;
+    invocations.shutdown().await;
     let user = match result {
         Ok(result) => result?,
         Err(panic) => std::panic::resume_unwind(panic),
@@ -52,7 +53,6 @@ impl TelegramWorker {
                 .transpose()?,
             data_dir: config.data_dir,
             identity_observer: None,
-            limits: RateLimits::default(),
             media: None,
         })
     }
@@ -66,18 +66,45 @@ impl TelegramWorker {
         self.media = Some(tokio::sync::Mutex::new(downloader));
     }
     pub async fn configure<H: MessageHandler>(&self, handler: &H) -> Result<BotUser, BotError> {
-        self.execute(CancellationToken::new(), false, handler)
-            .await?
-            .ok_or(BotError::Runner)
+        let invocations =
+            InvocationRuntime::start(Default::default()).map_err(|_| BotError::Runner)?;
+        let result = self
+            .execute(
+                CancellationToken::new(),
+                false,
+                handler,
+                invocations.handle(),
+            )
+            .await;
+        invocations.shutdown().await;
+        result?.ok_or(BotError::Runner)
     }
     pub async fn run<H: MessageHandler>(
         self,
         handler: H,
         stop: CancellationToken,
     ) -> Result<(), BotError> {
+        let invocations =
+            InvocationRuntime::start(Default::default()).map_err(|_| BotError::Runner)?;
+        let result = self
+            .run_with_invocations(&handler, stop, invocations.handle())
+            .await;
+        invocations.shutdown().await;
+        result
+    }
+    /// Use an application-owned scheduler, shared across consumers and reconnects.
+    pub async fn run_with_invocations<H: MessageHandler>(
+        &self,
+        handler: &H,
+        stop: CancellationToken,
+        invocations: InvocationHandle,
+    ) -> Result<(), BotError> {
         let mut backoff = 1;
         loop {
-            match self.execute(stop.clone(), true, &handler).await {
+            match self
+                .execute(stop.clone(), true, handler, invocations.clone())
+                .await
+            {
                 Err(BotError::Runner) => {
                     // Reopen the saved session only after all old session work has drained.
                     tokio::select! {_=stop.cancelled()=>return Ok(()), result=retry(BotError::Transport,&mut backoff)=>result?}
@@ -91,23 +118,25 @@ impl TelegramWorker {
         stop: CancellationToken,
         consume: bool,
         handler: &H,
+        invocations: InvocationHandle,
     ) -> Result<Option<BotUser>, BotError> {
         if stop.is_cancelled() {
             return Ok(None);
         }
+        if invocations.is_closed() {
+            return Err(BotError::Invocations);
+        }
+        let scheduler = invocations.clone();
         // Finish opening storage before cancellation may release the worker lock.
-        let mut connection = Connection::open(
-            self.credentials.clone(),
-            &self.data_dir,
-            self.limits.clone(),
-        )
-        .await?;
+        let mut connection =
+            Connection::open(self.credentials.clone(), &self.data_dir, invocations).await?;
         let exited = connection.transport.stopped();
         let result = AssertUnwindSafe(async {
             tokio::select! {
                 biased;
                 _=stop.cancelled()=>Ok(None),
                 _=exited.cancelled()=>Err(BotError::Runner),
+                _=scheduler.closed()=>Err(BotError::Invocations),
                 result=self.serve(&mut connection.transport,consume,handler)=>result.map(Some),
             }
         })

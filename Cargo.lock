@@ -2012,6 +2012,7 @@ dependencies = [
  "market-api",
  "market-hub-client",
  "market-hub-protocol",
+ "market-invocations",
  "market-media",
  "market-miniapp",
  "market-replica",
@@ -2074,6 +2075,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "market-invocations"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "market-media"
 version = "0.1.0"
 dependencies = [
@@ -2109,6 +2118,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "market-portfolio"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "jiff",
+ "market-actors",
+ "market-gifts",
+ "market-hub-protocol",
+ "market-invocations",
+ "market-replica",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "market-replica"
 version = "0.1.0"
 dependencies = [
@@ -2139,11 +2164,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
- "grammers-client",
  "grammers-session",
- "market-gifts",
+ "market-invocations",
  "market-media",
- "sha2 0.10.9",
+ "market-telegram-client",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -2158,11 +2182,30 @@ dependencies = [
  "anyhow",
  "market-actors",
  "market-gifts",
+ "market-invocations",
  "market-replica",
  "market-telegram",
  "tempfile",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "market-telegram-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "grammers-client",
+ "grammers-session",
+ "market-gifts",
+ "market-invocations",
+ "market-media",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
 ]
 
 [[package]]

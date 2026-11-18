@@ -1,5 +1,5 @@
 //! Resolve fresh documents and download static thumbs or TGS through the existing client.
-use super::{client::rpc, cooldown::Cooldown};
+use super::invocations::{CallError, Executor, Group};
 use crate::BotError;
 use grammers_client::{
     Client,
@@ -7,29 +7,33 @@ use grammers_client::{
     sender::InvocationError,
     tl,
 };
+use market_invocations::{Priority, Replay};
 use market_media::{MAX_THUMBNAIL_BYTES, MediaAsset, MediaError, MediaKey, MediaKind};
 
 pub(super) async fn get(
     client: &Client,
-    cooldown: &Cooldown,
+    invocations: &Executor,
     documents: &Documents,
     key: MediaKey,
 ) -> Result<MediaAsset, MediaError> {
-    if let Some(seconds) = cooldown.remaining() {
-        return Err(MediaError::RetryAfter(seconds));
-    }
     let id = key.document().get();
     for attempt in 0..2 {
         let entry = documents.entry(id);
         let raw = entry
             .value
             .get_or_init(|| async {
-                client
-                    .invoke(&tl::functions::messages::GetCustomEmojiDocuments {
-                        document_id: vec![id],
-                    })
+                invocations
+                    .rpc(
+                        client,
+                        tl::functions::messages::GetCustomEmojiDocuments {
+                            document_id: vec![id],
+                        },
+                        Group::Media,
+                        Priority::Background,
+                        Replay::Safe,
+                    )
                     .await
-                    .map_err(|error| failure(rpc(error), cooldown))?
+                    .map_err(failure)?
                     .into_iter()
                     .find(|document| document.id() == id)
                     .ok_or(MediaError::NotFound)
@@ -43,26 +47,48 @@ pub(super) async fn get(
                 return Err(error);
             }
         };
-        match download(client, cooldown, key, raw).await {
-            Err(DownloadError::Reference) => {
+        let source = client.clone();
+        // Restart a bounded asset on retry: DownloadIter consumes its request on errors.
+        let result = invocations
+            .run(
+                Group::Media,
+                Priority::Background,
+                Replay::Safe,
+                move || {
+                    let source = source.clone();
+                    let raw = raw.clone();
+                    async move {
+                        match download_bytes(&source, key, raw).await {
+                            Ok(bytes) => Ok(Ok(bytes)),
+                            Err(DownloadError::Media(e)) => Ok(Err(e)),
+                            Err(DownloadError::Remote(e)) => Err(e),
+                        }
+                    }
+                },
+            )
+            .await;
+        match result {
+            Ok(Ok(bytes)) => return asset(key, bytes).await,
+            Ok(Err(error)) => return Err(error),
+            Err(CallError::Remote(InvocationError::Rpc(error)))
+                if matches!(
+                    error.name.as_str(),
+                    "FILE_REFERENCE_EXPIRED" | "FILE_REFERENCE_INVALID" | "FILE_REFERENCE_EMPTY"
+                ) =>
+            {
                 documents.invalidate(id, &entry);
                 if attempt == 1 {
                     return Err(MediaError::Unavailable);
                 }
             }
-            result => {
-                return result.map_err(|error| match error {
-                    DownloadError::Media(error) => error,
-                    DownloadError::Reference => MediaError::Unavailable,
-                });
-            }
+            Err(error) => return Err(failure(error.bot())),
         }
     }
     Err(MediaError::Unavailable)
 }
 #[derive(Debug)]
 enum DownloadError {
-    Reference,
+    Remote(InvocationError),
     Media(MediaError),
 }
 impl From<MediaError> for DownloadError {
@@ -70,12 +96,11 @@ impl From<MediaError> for DownloadError {
         Self::Media(error)
     }
 }
-async fn download(
+async fn download_bytes(
     client: &Client,
-    cooldown: &Cooldown,
     key: MediaKey,
     raw: tl::enums::Document,
-) -> Result<MediaAsset, DownloadError> {
+) -> Result<Vec<u8>, DownloadError> {
     let media = Document::from_raw_media(tl::types::MessageMediaDocument {
         document: Some(raw),
         nopremium: false,
@@ -118,36 +143,25 @@ async fn download(
         }
     };
     let mut bytes = Vec::new();
-    while let Some(chunk) = download.next().await.map_err(|error| match error {
-        InvocationError::Rpc(error)
-            if matches!(
-                error.name.as_str(),
-                "FILE_REFERENCE_EXPIRED" | "FILE_REFERENCE_INVALID" | "FILE_REFERENCE_EMPTY"
-            ) =>
-        {
-            DownloadError::Reference
-        }
-        error => DownloadError::Media(failure(rpc(error), cooldown)),
-    })? {
+    while let Some(chunk) = download.next().await.map_err(DownloadError::Remote)? {
         if bytes.len().saturating_add(chunk.len()) > key.max_bytes() {
             return Err(MediaError::InvalidMedia.into());
         }
         bytes.extend_from_slice(&chunk);
     }
-    let result = match key.kind() {
+    Ok(bytes)
+}
+async fn asset(key: MediaKey, bytes: Vec<u8>) -> Result<MediaAsset, MediaError> {
+    match key.kind() {
         MediaKind::Thumbnail => MediaAsset::thumbnail(bytes),
         MediaKind::Animation => tokio::task::spawn_blocking(move || MediaAsset::animation(bytes))
             .await
             .map_err(|_| MediaError::Unavailable)?,
-    };
-    result.map_err(DownloadError::Media)
+    }
 }
-fn failure(error: BotError, cooldown: &Cooldown) -> MediaError {
+fn failure(error: BotError) -> MediaError {
     match error {
-        BotError::RetryAfter(seconds) => {
-            cooldown.observe(seconds);
-            MediaError::RetryAfter(seconds)
-        }
+        BotError::RetryAfter(seconds) => MediaError::RetryAfter(seconds),
         BotError::Rpc(400 | 403 | 404) => MediaError::NotFound,
         _ => MediaError::Unavailable,
     }

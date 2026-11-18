@@ -1,6 +1,6 @@
 //! Grammers transport. Telegram credentials and raw MTProto types stay in this module.
 use super::{
-    cooldown::RateLimits,
+    invocations::{CallError, Executor, Group},
     requests::{command_request, menu_request, reply_request},
     session_store::DurableSession,
 };
@@ -24,19 +24,20 @@ use grammers_session::{
     types::{PeerId, PeerKind},
     updates::State,
 };
+use market_invocations::{Priority, Replay};
 use std::{num::NonZeroUsize, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
-pub(crate) struct MtProtoActions {
+pub struct MtProtoActions {
     client: Client,
     session: Arc<DurableSession>,
     credentials: BotCredentials,
     exited: CancellationToken,
-    limits: RateLimits,
+    invocations: Executor,
     documents: super::media::Documents,
 }
-pub(crate) struct MtProtoTransport {
+pub struct MtProtoTransport {
     actions: MtProtoActions,
     updates: Option<tokio::sync::mpsc::Receiver<grammers_session::updates::UpdatesLike>>,
     stream: Option<UpdateStream>,
@@ -44,10 +45,10 @@ pub(crate) struct MtProtoTransport {
     runner: Option<tokio::task::JoinHandle<()>>,
 }
 impl MtProtoTransport {
-    pub fn new(
+    pub(crate) fn new(
         session: Arc<DurableSession>,
         credentials: BotCredentials,
-        limits: RateLimits,
+        invocations: market_invocations::Handle,
     ) -> Self {
         let parameters = ConnectionParams {
             retry_policy: Box::new(NoRetries),
@@ -67,9 +68,13 @@ impl MtProtoTransport {
             actions: MtProtoActions {
                 client,
                 session,
+                invocations: Executor {
+                    handle: invocations,
+                    account: credentials.bot_id(),
+                    stopped: exited.clone(),
+                },
                 credentials,
                 exited,
-                limits,
                 documents: super::media::Documents::default(),
             },
             updates: Some(pool.updates),
@@ -82,6 +87,7 @@ impl MtProtoTransport {
         self.actions.exited.clone()
     }
     pub async fn close(mut self) -> Result<(), BotError> {
+        self.actions.exited.cancel();
         self.handle.quit();
         let runner = self.runner.as_mut().ok_or(BotError::Runner)?;
         match tokio::time::timeout(std::time::Duration::from_secs(5), &mut *runner).await {
@@ -105,6 +111,7 @@ impl MtProtoActions {
 }
 impl Drop for MtProtoTransport {
     fn drop(&mut self) {
+        self.actions.exited.cancel();
         self.handle.quit();
         if let Some(runner) = self.runner.take() {
             runner.abort();
@@ -120,36 +127,69 @@ impl TelegramActions for MtProtoActions {
         if self.exited.is_cancelled() {
             return Err(market_media::MediaError::Unavailable);
         }
-        super::media::get(&self.client, &self.limits.media, &self.documents, key).await
+        super::media::get(&self.client, &self.invocations, &self.documents, key).await
     }
     fn gift_source(&self, message: &Message) -> Self::GiftSource {
         super::gifts::TelegramGifts {
             client: self.client.clone(),
             peer: message.peer,
-            cooldown: self.limits.gifts.clone(),
+            invocations: self.invocations.clone(),
         }
     }
     async fn identity(&self) -> Result<BotUser, BotError> {
-        let user = if self
-            .client
-            .is_authorized()
+        let client = self.client.clone();
+        let authorized = self
+            .invocations
+            .run(
+                Group::Control,
+                Priority::Interactive,
+                Replay::Safe,
+                move || {
+                    let client = client.clone();
+                    async move { client.is_authorized().await }
+                },
+            )
             .await
-            .map_err(|error| self.failure(error))?
-        {
-            self.client
-                .get_me()
+            .map_err(CallError::bot)?;
+        let user = if authorized {
+            let client = self.client.clone();
+            self.invocations
+                .run(
+                    Group::Control,
+                    Priority::Interactive,
+                    Replay::Safe,
+                    move || {
+                        let client = client.clone();
+                        async move { client.get_me().await }
+                    },
+                )
                 .await
-                .map_err(|error| self.failure(error))?
+                .map_err(CallError::bot)?
         } else {
             // Reauthorizing an existing session would replace its saved update
             // position with a new baseline. Require explicit recovery instead.
             if self.session.peer(PeerId::self_user()).await?.is_some() {
                 return Err(BotError::Authorization);
             }
-            self.client
-                .bot_sign_in(&self.credentials.token, &self.credentials.api_hash)
+            let client = self.client.clone();
+            let credentials = self.credentials.clone();
+            self.invocations
+                .run(
+                    Group::Control,
+                    Priority::Interactive,
+                    Replay::Never,
+                    move || {
+                        let client = client.clone();
+                        let credentials = credentials.clone();
+                        async move {
+                            client
+                                .bot_sign_in(&credentials.token, &credentials.api_hash)
+                                .await
+                        }
+                    },
+                )
                 .await
-                .map_err(|error| self.failure(error))?
+                .map_err(CallError::bot)?
         };
         identity(user, self.credentials.bot_id())
     }
@@ -159,16 +199,26 @@ impl TelegramActions for MtProtoActions {
         launch: Option<&LaunchButton>,
     ) -> Result<(), BotError> {
         let _ = self
-            .client
-            .invoke(&command_request(commands))
-            .await
-            .map_err(|error| self.failure(error))?;
+            .invocations
+            .rpc(
+                &self.client,
+                command_request(commands),
+                Group::Control,
+                Priority::Interactive,
+                Replay::Safe,
+            )
+            .await?;
         if let Some(launch) = launch {
             let _ = self
-                .client
-                .invoke(&menu_request(launch))
-                .await
-                .map_err(|error| self.failure(error))?;
+                .invocations
+                .rpc(
+                    &self.client,
+                    menu_request(launch),
+                    Group::Control,
+                    Priority::Interactive,
+                    Replay::Safe,
+                )
+                .await?;
         }
         Ok(())
     }
@@ -181,17 +231,16 @@ impl TelegramActions for MtProtoActions {
         if self.exited.is_cancelled() {
             return Err(BotError::Runner);
         }
-        if let Some(seconds) = self.limits.replies.remaining() {
-            return Err(BotError::RetryAfter(seconds));
-        }
         let request = reply_request(self.credentials.bot_id(), message, reply, launch);
-        let _ = self.client.invoke(&request).await.map_err(|error| {
-            let error = self.failure(error);
-            if let BotError::RetryAfter(seconds) = error {
-                self.limits.replies.observe(seconds);
-            }
-            error
-        })?;
+        self.invocations
+            .rpc(
+                &self.client,
+                request,
+                Group::Reply(message.peer.id.bare_id().ok_or(BotError::InvalidResponse)?),
+                Priority::Interactive,
+                Replay::Deduplicated,
+            )
+            .await?;
         Ok(())
     }
 }
@@ -301,7 +350,7 @@ fn active_usernames(primary: Option<&str>, aliases: &[tl::enums::Username]) -> V
     }
     names
 }
-pub(super) fn rpc(error: InvocationError) -> BotError {
+pub fn rpc(error: InvocationError) -> BotError {
     match error {
         InvocationError::Session(_) => BotError::Session,
 
@@ -381,22 +430,16 @@ mod tests {
     async fn sender_stops_without_opening_a_network_connection_and_reports_task_failure() {
         let directory = tempfile::tempdir().unwrap();
         let jobs = TaskTracker::new();
+        let invocations = market_invocations::Runtime::start(Default::default()).unwrap();
         let storage = SessionStore::open(directory.path(), 42, 12345, &jobs)
             .await
             .unwrap();
-        MtProtoTransport::new(
-            storage.session.clone(),
-            credentials(),
-            RateLimits::default(),
-        )
-        .close()
-        .await
-        .unwrap();
-        let mut transport = MtProtoTransport::new(
-            storage.session.clone(),
-            credentials(),
-            RateLimits::default(),
-        );
+        MtProtoTransport::new(storage.session.clone(), credentials(), invocations.handle())
+            .close()
+            .await
+            .unwrap();
+        let mut transport =
+            MtProtoTransport::new(storage.session.clone(), credentials(), invocations.handle());
         let exited = transport.stopped();
         let runner = transport.runner.take().unwrap();
         runner.abort();

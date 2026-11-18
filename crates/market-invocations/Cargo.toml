@@ -1,0 +1,11 @@
+[package]
+name = "market-invocations"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+[lints]
+workspace = true

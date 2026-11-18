@@ -3,14 +3,13 @@ name = "market-telegram"
 version.workspace = true
 edition.workspace = true
 [dependencies]
-market-gifts.workspace = true
+market-telegram-client.workspace = true
+market-invocations.workspace = true
 market-media.workspace = true
 anyhow.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
-grammers-client.workspace = true
 grammers-session.workspace = true
-sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 url.workspace = true

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ErrorDisposition {
+pub enum ErrorDisposition {
     Retryable,
     Rejected,
     Fatal,
@@ -14,6 +14,7 @@ pub enum BotError {
     Session,
     Authorization,
     Runner,
+    Invocations,
     InvalidResponse,
     Rpc(i32),
     PeerUnavailable,
@@ -25,6 +26,7 @@ impl std::fmt::Display for BotError {
             Self::Configuration(message) => f.write_str(message),
             Self::Session => f.write_str("Bot session storage unavailable"),
             Self::Authorization => f.write_str("Telegram bot authorization failed"),
+            Self::Invocations => f.write_str("Telegram invocation scheduler stopped"),
             Self::Runner => f.write_str("Telegram connection runner stopped"),
             Self::Transport => f.write_str("Telegram connection failed"),
             Self::InvalidResponse => f.write_str("Invalid MTProto response"),
@@ -36,18 +38,20 @@ impl std::fmt::Display for BotError {
 }
 impl std::error::Error for BotError {}
 impl BotError {
-    pub(super) fn disposition(self) -> ErrorDisposition {
+    pub fn disposition(self) -> ErrorDisposition {
         match self {
-            Self::Configuration(_) | Self::Session | Self::Authorization | Self::Runner => {
-                ErrorDisposition::Fatal
-            }
+            Self::Configuration(_)
+            | Self::Session
+            | Self::Authorization
+            | Self::Runner
+            | Self::Invocations => ErrorDisposition::Fatal,
             Self::PeerUnavailable | Self::InvalidResponse | Self::Rpc(..=499) => {
                 ErrorDisposition::Rejected
             }
             _ => ErrorDisposition::Retryable,
         }
     }
-    pub(super) fn fatal(self) -> bool {
+    pub fn fatal(self) -> bool {
         self.disposition() == ErrorDisposition::Fatal
     }
     pub fn delay(&self, fallback: u64) -> Duration {
