@@ -2,9 +2,9 @@
 use crate::{
     MarketApi,
     error::{ApiError, ErrorCode, Result},
-    models::{MediaTarget, ModelId, PatternId},
 };
 use actix_web::{HttpRequest, HttpResponse, http::header, web};
+use market_gifts::{MediaTarget, ModelId, PatternId};
 use market_media::{MediaCache, MediaError, MediaKey, MediaKind};
 use std::sync::Arc;
 use tokio::sync::Semaphore;

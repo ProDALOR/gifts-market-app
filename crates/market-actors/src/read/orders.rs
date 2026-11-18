@@ -27,7 +27,15 @@ impl MarketSnapshot {
     pub fn orders(&self, query: GiftOrdersQuery) -> Result<Page<GiftOrder>> {
         self.check_cancelled()?;
         let request = crate::query::orders(query, w::ReadMode::Live)?;
-        crate::protocol::orders(self.reader.read(request)?)
+        crate::protocol::orders(self.reader.read_checked(
+            request,
+            crate::catalog::validate_order_collection,
+            |entity| {
+                self.check_cancelled()
+                    .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
+                crate::protocol::include_order(entity)
+            },
+        )?)
     }
     /// One page of sorted, eligible asks; cancellation is checked at every page boundary.
     pub fn asks(

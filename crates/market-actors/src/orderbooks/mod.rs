@@ -31,9 +31,19 @@ impl Handler<ReadOrders> for OrderbooksActor {
         if let Err(error) = selection::orders(&message.request) {
             return Box::pin(async move { Err(error) });
         }
+        let stop = self.environment.stop.clone();
         self.environment
             .blocking(self.reader.clone(), message.permit, move |reader| {
-                reader.read_checked(message.request, crate::catalog::validate_order_collection)
+                reader.read_checked(
+                    message.request,
+                    crate::catalog::validate_order_collection,
+                    |entity| {
+                        if stop.is_cancelled() {
+                            return Err(Status::unavailable("Market read cancelled"));
+                        }
+                        crate::protocol::include_order(entity)
+                    },
+                )
             })
     }
 }

@@ -1,5 +1,6 @@
 //! AsyncAPI wraps the same serde/utoipa message types used by the socket handler.
 use crate::{models::*, schema::ApiDoc};
+use market_gifts::{GiftOrder, Page};
 use serde_json::{Map, Value, json};
 #[cfg(test)]
 use std::collections::BTreeSet;

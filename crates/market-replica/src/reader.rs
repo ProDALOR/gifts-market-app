@@ -36,22 +36,27 @@ impl ReplicaReader {
         self.read_inner(
             request,
             None::<fn(&Self, &w::ReadRequest) -> Result<(), Status>>,
+            &|_| Ok(true),
         )
     }
     /// Validate a query against the exact view used for its results, including retained
     /// continuations. The long-lived reader keeps ownership of pagination state.
     /// The callback's reader is pinned for short metadata reads; use LIVE mode there.
+    /// Apply a caller-owned row policy within the pinned scan, before page size/byte accounting.
+    /// The policy must stay stable across a continuation traversal; replica semantics stay generic.
     pub fn read_checked(
         &self,
         request: w::ReadRequest,
         validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
+        include: impl Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadResult, Status> {
-        self.read_inner(request, Some(validate))
+        self.read_inner(request, Some(validate), &include)
     }
     fn read_inner(
         &self,
         request: w::ReadRequest,
         validate: Option<impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>>,
+        include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadResult, Status> {
         let live = match w::ReadMode::try_from(request.mode) {
             Ok(w::ReadMode::Snapshot) => false,
@@ -116,7 +121,7 @@ impl ReplicaReader {
                     Boundary::Current(None)
                 }
             });
-        let (entities, next) = scan(&view, &filter, position, limit)?;
+        let (entities, next) = scan(&view, &filter, position, limit, include)?;
         let id = if live {
             None
         } else {
@@ -176,19 +181,22 @@ fn scan(
     filter: &Filter,
     mut boundary: Boundary,
     limit: usize,
+    include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
 ) -> Result<(Vec<w::Entity>, Option<Boundary>), Status> {
     if filter.history() {
         if filter.sort != Sort::Identity {
             let Boundary::SortedHistory(after) = boundary else {
                 return Err(Status::invalid_argument("invalid sorted history boundary"));
             };
-            let (data, next) = view.history.ranked_history(filter, after, limit)?;
+            let (data, next) = view.history.ranked_history(filter, after, limit, include)?;
             return Ok((data, next.map(|p| Boundary::SortedHistory(Some(p)))));
         }
         let Boundary::History(after) = boundary else {
             return Err(Status::invalid_argument("invalid history boundary"));
         };
-        let (data, next) = view.history.history(filter, after.as_ref(), limit)?;
+        let (data, next) = view
+            .history
+            .history(filter, after.as_ref(), limit, include)?;
         return Ok((data, next.map(|p| Boundary::History(Some(p)))));
     }
     let mut data = Vec::new();
@@ -259,12 +267,16 @@ fn scan(
         _ => return Err(Status::invalid_argument("invalid page boundary")),
     };
     for (count, ScanRow { rank, key, entity }) in rows.enumerate() {
-        if data.len() == limit || count == 10_000 {
+        if count == 10_000 {
             return Ok((data, Some(boundary)));
         }
         if let Some(entity) = entity
             && filter.matches(entity)?
+            && include(entity)?
         {
+            if data.len() == limit {
+                return Ok((data, Some(boundary)));
+            }
             let size = entity.encoded_len() + 8;
             if bytes + size > 512 * 1024 {
                 if data.is_empty() {

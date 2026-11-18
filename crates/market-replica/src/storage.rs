@@ -355,6 +355,7 @@ impl Snapshot {
         filter: &Filter,
         after: Option<(String, Position)>,
         limit: usize,
+        include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<RankedHistoryPage, Status> {
         use std::ops::Bound::{Excluded, Included};
         let scope = filter
@@ -424,7 +425,7 @@ impl Snapshot {
         let mut bytes = 0;
         let mut position = after;
         for (count, row) in rows.enumerate() {
-            if data.len() == limit || count == 10_000 {
+            if count == 10_000 {
                 return Ok((data, position));
             }
             let (key, _) = row.map_err(failure)?;
@@ -439,15 +440,20 @@ impl Snapshot {
                 let entity = w::Entity {
                     entity: Some(w::entity::Entity::Order(order)),
                 };
-                let size = entity.encoded_len() + 8;
-                if bytes + size > 512 * 1024 {
-                    if data.is_empty() {
-                        return Err(Status::resource_exhausted("order exceeds page budget"));
+                if include(&entity)? {
+                    if data.len() == limit {
+                        return Ok((data, position));
                     }
-                    return Ok((data, position));
+                    let size = entity.encoded_len() + 8;
+                    if bytes + size > 512 * 1024 {
+                        if data.is_empty() {
+                            return Err(Status::resource_exhausted("order exceeds page budget"));
+                        }
+                        return Ok((data, position));
+                    }
+                    bytes += size;
+                    data.push(entity);
                 }
-                bytes += size;
-                data.push(entity);
             }
             position = Some((
                 rank,
@@ -466,6 +472,7 @@ impl Snapshot {
         filter: &Filter,
         after: Option<&Position>,
         limit: usize,
+        include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<(Vec<w::Entity>, Option<Position>), Status> {
         use std::ops::Bound::{Excluded, Included, Unbounded};
         let from = filter
@@ -534,7 +541,7 @@ impl Snapshot {
         let mut bytes = 0;
         for (count, row) in rows.enumerate() {
             let row = row?;
-            if data.len() == limit || count == 10_000 {
+            if count == 10_000 {
                 return Ok((data, position));
             }
             let raw = executions
@@ -546,15 +553,20 @@ impl Snapshot {
                 let entity = w::Entity {
                     entity: Some(w::entity::Entity::Order(order)),
                 };
-                let size = entity.encoded_len() + 8;
-                if bytes + size > 512 * 1024 {
-                    if data.is_empty() {
-                        return Err(Status::resource_exhausted("order exceeds page budget"));
+                if include(&entity)? {
+                    if data.len() == limit {
+                        return Ok((data, position));
                     }
-                    return Ok((data, position));
+                    let size = entity.encoded_len() + 8;
+                    if bytes + size > 512 * 1024 {
+                        if data.is_empty() {
+                            return Err(Status::resource_exhausted("order exceeds page budget"));
+                        }
+                        return Ok((data, position));
+                    }
+                    bytes += size;
+                    data.push(entity);
                 }
-                bytes += size;
-                data.push(entity);
             }
             position = Some(row);
         }

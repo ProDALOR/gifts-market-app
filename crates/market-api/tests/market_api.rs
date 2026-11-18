@@ -1992,7 +1992,6 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     let mut additional = None;
     for row in &mut source.entities {
         if let Some(w::entity::Entity::Order(order)) = row.entity.as_mut() {
-            order.parent_order_id = Some("internal-parent-id".into());
             order
                 .meta
                 .insert("url".into(), "javascript:private_source_diagnostic".into());
@@ -2006,6 +2005,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
             let mut execution = concrete.clone();
             execution.id = "execution".into();
             execution.mode = w::OrderMode::Executed as i32;
+            execution.parent_order_id = Some("internal-parent-id".into());
             execution.executed_at_ms = Some(1800000000123);
             execution.meta.insert(
                 "url".into(),
@@ -2028,6 +2028,18 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
             entity: Some(w::entity::Entity::Order(order)),
         });
     }
+    for (id, price) in [("exhausted-head", "0"), ("exhausted-tail", "30")] {
+        source.entities.push(w::Entity {
+            entity: Some(w::entity::Entity::Order(w::Order {
+                id: id.into(),
+                book: Some(book()),
+                mode: w::OrderMode::Ask as i32,
+                price: price.into(),
+                quantity: "0.00".into(),
+                ..Default::default()
+            })),
+        });
+    }
     peer.page.send_replace(source);
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -2038,11 +2050,6 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
                 .await
                 .unwrap();
             if result.cursor == "order-presentation" {
-                // Internal lineage remains available to the domain layer.
-                assert_eq!(
-                    result.data[0].parent_order_id.as_deref(),
-                    Some("internal-parent-id")
-                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2090,6 +2097,34 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     ] {
         assert!(!rest.to_string().contains(hidden));
     }
+    let mut paged_query = query();
+    paged_query["limit"] = 1.into();
+    let first = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/orders/query")
+            .set_json(&paged_query)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(first.status(), 200);
+    let first: serde_json::Value = test::read_body_json(first).await;
+    assert_eq!(first["data"].as_array().unwrap().len(), 1);
+    assert!(!first["next_page_token"].as_str().unwrap().is_empty());
+    paged_query["page_token"] = first["next_page_token"].clone();
+    let second = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/orders/query")
+            .set_json(paged_query)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(second.status(), 200);
+    let second: serde_json::Value = test::read_body_json(second).await;
+    assert_eq!(second["data"].as_array().unwrap().len(), 1);
+    assert_eq!(second["next_page_token"], "");
+    assert_ne!(first["data"][0]["id"], second["data"][0]["id"]);
     let response = test::call_service(
         &app,
         test::TestRequest::post()

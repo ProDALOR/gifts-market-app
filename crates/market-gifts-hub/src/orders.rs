@@ -114,6 +114,7 @@ pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
     let Some(order) = active_floor_order(value, now_ms)? else {
         return Ok(None);
     };
+    let order = order.into_data();
     let (model_id, backdrop_id) = match order.target {
         GiftTarget::Gift { gift } => (gift.traits.model, gift.traits.backdrop),
         GiftTarget::Criteria { mut criteria } => (
@@ -194,7 +195,19 @@ fn target(
         }
     }
 }
+/// Exhausted active orders remain generic replica facts but are absent from gift reads.
+/// History quantity zero and negative quantities remain invalid rather than disappearing.
+pub fn is_exhausted(value: &w::Order) -> Result<bool> {
+    let quantity = rust_decimal::Decimal::from_str_exact(&value.quantity).map_err(invalid)?;
+    Ok(matches!(
+        w::OrderMode::try_from(value.mode),
+        Ok(w::OrderMode::Ask | w::OrderMode::Bid)
+    ) && quantity == rust_decimal::Decimal::ZERO)
+}
 pub fn order(value: w::Order) -> Result<GiftOrder> {
+    if value.mode != w::OrderMode::Executed as i32 && value.parent_order_id.is_some() {
+        return Err(invalid("active gift orders cannot have execution lineage"));
+    }
     let book = book(required(value.book)?)?;
     let decimal = rust_decimal::Decimal::from_str_exact(&value.quantity)
         .map_err(invalid)?
@@ -206,7 +219,7 @@ pub fn order(value: w::Order) -> Result<GiftOrder> {
     let market_url = ["url", "listing_url", "market_url", "link"]
         .into_iter()
         .find_map(|key| value.meta.get(key).cloned());
-    let order = GiftOrder {
+    let order = GiftOrderData {
         id: value.id.try_into().map_err(invalid)?,
         target: target(value.item_id, book.collection_id.clone(), value.attributes),
         book,
@@ -221,13 +234,7 @@ pub fn order(value: w::Order) -> Result<GiftOrder> {
         observed_at: time(value.observed_at_ms)?,
         expires_at: value.expires_at_ms.map(time).transpose()?,
         executed_at: value.executed_at_ms.map(time).transpose()?,
-        parent_order_id: value
-            .parent_order_id
-            .map(TryInto::try_into)
-            .transpose()
-            .map_err(invalid)?,
         market_url,
     };
-    order.validate().map_err(invalid)?;
-    Ok(order)
+    order.try_into().map_err(invalid)
 }

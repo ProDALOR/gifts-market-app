@@ -65,7 +65,7 @@ impl MarketSnapshot {
                 self.check_cancelled()?;
                 let page = self.orders(query.clone())?;
                 for projected in page.data {
-                    let GiftTarget::Gift { gift } = projected.target else {
+                    let GiftTarget::Gift { gift } = projected.into_data().target else {
                         continue;
                     };
                     if gift.number != Some(slug.number()) {

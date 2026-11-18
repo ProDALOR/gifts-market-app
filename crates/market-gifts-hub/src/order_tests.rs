@@ -36,7 +36,7 @@ fn projection_preserves_exact_amounts_and_distinct_concrete_identity() {
     let projected = order(fixture()).unwrap();
     assert_eq!(projected.price.as_str(), "10000000000000000.000000001");
     assert_eq!(projected.quantity, 1);
-    let GiftTarget::Gift { gift } = projected.target else {
+    let GiftTarget::Gift { gift } = projected.into_data().target else {
         panic!("expected concrete gift")
     };
     assert_eq!(gift.id.as_str(), "9007199254740993");
@@ -46,7 +46,7 @@ fn projection_preserves_exact_amounts_and_distinct_concrete_identity() {
     conditional.item_id = None;
     conditional.mode = w::OrderMode::Bid as i32;
     assert!(matches!(
-        order(conditional).unwrap().target,
+        order(conditional).unwrap().into_data().target,
         GiftTarget::Criteria { .. }
     ));
 }
@@ -58,7 +58,7 @@ fn unsupported_or_nonconcrete_conditions_are_never_reported_as_any_or_as_a_colle
         eq(w::attribute_value::Value::Boolean(true)),
     );
     assert!(matches!(
-        order(unknown).unwrap().target,
+        order(unknown).unwrap().into_data().target,
         GiftTarget::Unsupported { .. }
     ));
     let mut multiple = fixture();
@@ -80,11 +80,11 @@ fn unsupported_or_nonconcrete_conditions_are_never_reported_as_any_or_as_a_colle
         },
     );
     assert!(matches!(
-        order(multiple.clone()).unwrap().target,
+        order(multiple.clone()).unwrap().into_data().target,
         GiftTarget::Unsupported { .. }
     ));
     multiple.item_id = None;
-    let GiftTarget::Criteria { criteria } = order(multiple).unwrap().target else {
+    let GiftTarget::Criteria { criteria } = order(multiple).unwrap().into_data().target else {
         panic!("expected selection")
     };
     assert_eq!(criteria.models.len(), 2);
@@ -124,7 +124,7 @@ fn floors_and_order_projection_agree_on_singleton_and_duplicate_model_predicates
         let quote = ask_quote(raw, 0).unwrap().unwrap();
         assert_eq!(quote.price, projected.price);
         assert_eq!(quote.venue_id, projected.book.venue_id);
-        let GiftTarget::Gift { gift } = projected.target else {
+        let GiftTarget::Gift { gift } = projected.into_data().target else {
             panic!("expected concrete gift")
         };
         assert_eq!(quote.model_id, gift.traits.model);
@@ -219,8 +219,10 @@ fn concrete_quantities_use_shared_validation_while_criteria_keep_bulk_quantities
         assert!(ask_quote(raw.clone(), 0).is_err());
         raw.item_id = None;
         let projected = order(raw).unwrap();
-        assert!(projected.validate().is_ok());
-        assert!(matches!(projected.target, GiftTarget::Criteria { .. }));
+        assert!(matches!(
+            projected.into_data().target,
+            GiftTarget::Criteria { .. }
+        ));
     }
     for number in [0, -1, i64::MAX] {
         let mut raw = fixture();
@@ -230,7 +232,7 @@ fn concrete_quantities_use_shared_validation_while_criteria_keep_bulk_quantities
         );
         // Unsupported source constraints remain explicit rather than inventing gift facts.
         assert!(matches!(
-            order(raw).unwrap().target,
+            order(raw).unwrap().into_data().target,
             GiftTarget::Unsupported { .. }
         ));
     }
@@ -244,7 +246,7 @@ fn unsupported_targets_have_stable_typed_reasons_without_source_diagnostics() {
         eq(w::attribute_value::Value::Boolean(true)),
     );
     assert!(matches!(
-        order(unsupported).unwrap().target,
+        order(unsupported).unwrap().into_data().target,
         GiftTarget::Unsupported {
             reason: UnsupportedGiftReason::UnsupportedConstraints
         }
@@ -255,7 +257,7 @@ fn unsupported_targets_have_stable_typed_reasons_without_source_diagnostics() {
         eq(w::attribute_value::Value::OptionId("".into())),
     );
     assert!(matches!(
-        order(invalid).unwrap().target,
+        order(invalid).unwrap().into_data().target,
         GiftTarget::Unsupported {
             reason: UnsupportedGiftReason::InvalidAttributes
         }
@@ -265,7 +267,7 @@ fn unsupported_targets_have_stable_typed_reasons_without_source_diagnostics() {
         .attributes
         .insert(NUMBER.into(), eq(w::attribute_value::Value::Integer(0)));
     assert!(matches!(
-        order(number).unwrap().target,
+        order(number).unwrap().into_data().target,
         GiftTarget::Unsupported {
             reason: UnsupportedGiftReason::InvalidAttributes
         }
@@ -275,7 +277,7 @@ fn unsupported_targets_have_stable_typed_reasons_without_source_diagnostics() {
         .attributes
         .insert(MODEL.into(), models(&["a", "b"]));
     assert!(matches!(
-        order(nonconcrete).unwrap().target,
+        order(nonconcrete).unwrap().into_data().target,
         GiftTarget::Unsupported {
             reason: UnsupportedGiftReason::NonConcreteGift
         }
@@ -283,9 +285,43 @@ fn unsupported_targets_have_stable_typed_reasons_without_source_diagnostics() {
     let mut id = fixture();
     id.item_id = Some("".into());
     assert!(matches!(
-        order(id).unwrap().target,
+        order(id).unwrap().into_data().target,
         GiftTarget::Unsupported {
             reason: UnsupportedGiftReason::InvalidGiftId
         }
     ));
+}
+
+#[test]
+fn execution_projection_enforces_time_and_lineage_and_ignores_unused_history_lineage_contents() {
+    for mode in [w::OrderMode::Ask, w::OrderMode::Bid, w::OrderMode::Executed] {
+        for time in [None, Some(1)] {
+            let mut value = fixture();
+            value.mode = mode as i32;
+            value.executed_at_ms = time;
+            assert_eq!(
+                order(value).is_ok(),
+                (mode == w::OrderMode::Executed) == time.is_some()
+            );
+        }
+    }
+    let mut active = fixture();
+    active.parent_order_id = Some("parent".into());
+    assert!(order(active).is_err());
+    let mut execution = fixture();
+    execution.mode = w::OrderMode::Executed as i32;
+    execution.executed_at_ms = Some(1);
+    execution.parent_order_id = Some("unused lineage is not a gift identifier".repeat(20));
+    assert!(order(execution).is_ok());
+    for mode in [w::OrderMode::Ask, w::OrderMode::Bid, w::OrderMode::Executed] {
+        for quantity in ["0", "0.00", "-1", "1"] {
+            let mut value = fixture();
+            value.mode = mode as i32;
+            value.quantity = quantity.into();
+            assert_eq!(
+                is_exhausted(&value).unwrap(),
+                mode != w::OrderMode::Executed && matches!(quantity, "0" | "0.00")
+            );
+        }
+    }
 }

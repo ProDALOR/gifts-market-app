@@ -691,3 +691,145 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
     stop.cancel();
     service.task.run(stop).await.unwrap();
 }
+
+#[tokio::test]
+async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscription_boundaries() {
+    use market_gifts::{GiftFilters, GiftOrdersQuery, GiftSide, GiftSort, ReadConsistency};
+    let (_directory, mut writer) = fixture();
+    let mut changes = vec![entity(w::entity::Entity::Attribute(w::Attribute {
+        id: "tg.number".into(),
+        name: "Number".into(),
+        value_type: w::AttributeType::Integer as i32,
+        ..Default::default()
+    }))];
+    let row = |side: GiftSide, i: usize, exhausted: bool| {
+        let mut value = w::Order {
+            id: format!(
+                "{}.{i:02}",
+                if side == GiftSide::Ask { "ask" } else { "bid" }
+            ),
+            book: Some(w::BookKey {
+                venue_id: "venue".into(),
+                item_type_id: "gift".into(),
+                currency_id: "GRAM".into(),
+            }),
+            mode: if side == GiftSide::Ask {
+                w::OrderMode::Ask
+            } else {
+                w::OrderMode::Bid
+            } as i32,
+            price: (i / 3 + 1).to_string(),
+            quantity: if exhausted { "0.00" } else { "1" }.into(),
+            observed_at_ms: (i / 3 + 1) as i64,
+            ..Default::default()
+        };
+        value.attributes.insert(
+            "tg.number".into(),
+            w::AttributePredicate {
+                predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                    value: Some(w::attribute_value::Value::Integer((i / 3 + 1) as i64)),
+                })),
+            },
+        );
+        entity(w::entity::Entity::Order(value))
+    };
+    // Retained generic state still contains the original exhausted order too.
+    let mut original = order("3");
+    if let Some(w::change::Change::Upsert(w::Entity {
+        entity: Some(w::entity::Entity::Order(value)),
+    })) = &mut original.change
+    {
+        value.quantity = "0".into();
+    }
+    changes.push(original);
+    for side in [GiftSide::Ask, GiftSide::Bid] {
+        for i in 0..7 {
+            changes.push(row(side, i, i % 2 == 0));
+        }
+    }
+    writer
+        .apply(w::Batch {
+            changes,
+            cursor: "exhausted".into(),
+        })
+        .unwrap();
+    assert!(writer.reader().read(query()).unwrap().page.entities.iter().any(|entity| matches!(&entity.entity,Some(w::entity::Entity::Order(o)) if o.quantity == "0" || o.quantity == "0.00")));
+    let service = MarketDataService::start(writer.reader(), 2, 2)
+        .await
+        .unwrap();
+    for side in [GiftSide::Ask, GiftSide::Bid] {
+        for consistency in [ReadConsistency::Snapshot, ReadConsistency::Live] {
+            for sort in [
+                GiftSort::Identity,
+                GiftSort::PriceAsc,
+                GiftSort::PriceDesc,
+                GiftSort::TimeAsc,
+                GiftSort::TimeDesc,
+                GiftSort::NumberAsc,
+                GiftSort::NumberDesc,
+            ] {
+                let mut query =
+                    GiftOrdersQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
+                query.side = side;
+                query.consistency = consistency;
+                query.sort = sort;
+                query.limit = 2;
+                let first = service.handle.orders(query.clone()).await.unwrap();
+                assert_eq!(first.data.len(), 2, "{side:?} {consistency:?} {sort:?}");
+                assert!(!first.next_page_token.is_empty());
+                query.page_token = first.next_page_token;
+                let second = service.handle.orders(query).await.unwrap();
+                assert_eq!(second.data.len(), 1);
+                assert!(second.next_page_token.is_empty());
+                let ids: Vec<_> = first
+                    .data
+                    .iter()
+                    .chain(&second.data)
+                    .map(|o| o.id.to_string())
+                    .collect();
+                let mut expected: Vec<_> = [1, 3, 5]
+                    .into_iter()
+                    .map(|i| {
+                        format!(
+                            "{}.{i:02}",
+                            if side == GiftSide::Ask { "ask" } else { "bid" }
+                        )
+                    })
+                    .collect();
+                if matches!(
+                    sort,
+                    GiftSort::PriceDesc | GiftSort::TimeDesc | GiftSort::NumberDesc
+                ) {
+                    expected.reverse();
+                }
+                assert_eq!(ids, expected);
+            }
+        }
+    }
+    let mut query = GiftOrdersQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
+    query.limit = 2;
+    let retained = service.handle.orders(query.clone()).await.unwrap();
+    let (lease, mut updates) = service.handle.subscribe(query.clone()).await.unwrap();
+    let head = next_page(&mut updates, "exhausted").await;
+    assert_eq!(head.data.len(), 2);
+    writer
+        .apply(w::Batch {
+            changes: (0..7).map(|i| row(GiftSide::Ask, i, true)).collect(),
+            cursor: "empty".into(),
+        })
+        .unwrap();
+    let empty = next_page(&mut updates, "empty").await;
+    assert!(empty.data.is_empty());
+    assert!(empty.next_page_token.is_empty());
+    query.page_token = retained.next_page_token;
+    let tail = service.handle.orders(query.clone()).await.unwrap();
+    assert_eq!(tail.data[0].id.as_str(), "ask.05");
+    assert_eq!(tail.cursor, "exhausted");
+    query.page_token.clear();
+    query.consistency = ReadConsistency::Live;
+    assert!(service.handle.orders(query).await.unwrap().data.is_empty());
+    drop(lease);
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+}

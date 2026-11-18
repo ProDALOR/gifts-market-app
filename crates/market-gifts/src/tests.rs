@@ -331,62 +331,88 @@ fn slug_equality_ordering_and_hashing_use_normalized_keys_and_preserve_spelling(
     }
 }
 
-fn order_json() -> serde_json::Value {
-    serde_json::json!({
-        "id":"listing", "book":{"venue_id":"venue","collection_id":"collection","currency_id":"GRAM"},
-        "kind":"ask", "target":{"kind":"gift","gift":{"id":"gift","collection_id":"collection","number":1,"traits":{"model":null,"backdrop":null,"pattern":null}}},
-        "price":"10", "quantity":1, "observed_at":"2026-01-01T00:00:00Z",
-        "expires_at":null, "executed_at":null, "parent_order_id":null, "market_url":null
-    })
-}
-
-#[test]
-fn shared_order_validation_covers_json_projection_invariants_and_partial_gifts() {
-    let json = order_json();
-    let order: GiftOrder = serde_json::from_value(json.clone()).unwrap();
-    assert!(order.validate().is_ok());
-    assert_eq!(serde_json::to_value(&order).unwrap(), json);
-    let mut invalid = order.clone();
-    invalid.book.collection_id = "other".into();
-    assert!(invalid.validate().is_err());
-    assert!(serde_json::to_value(&invalid).is_err());
-    for quantity in [0, 2, u32::MAX] {
-        let mut invalid = order.clone();
-        invalid.quantity = quantity;
-        assert!(invalid.validate().is_err());
-        assert!(serde_json::to_value(&invalid).is_err());
-        let mut invalid_json = json.clone();
-        invalid_json["quantity"] = quantity.into();
-        assert!(serde_json::from_value::<GiftOrder>(invalid_json).is_err());
+fn order_data() -> GiftOrderData {
+    GiftOrderData {
+        id: "listing".into(),
+        book: GiftBook {
+            venue_id: "venue".into(),
+            collection_id: "collection".into(),
+            currency_id: "GRAM".into(),
+        },
+        kind: GiftOrderKind::Ask,
+        target: GiftTarget::Gift {
+            gift: CollectibleGift {
+                id: "gift".into(),
+                collection_id: "collection".into(),
+                number: Some(GiftNumber::new(1).unwrap()),
+                traits: GiftTraits::default(),
+            },
+        },
+        price: "10".into(),
+        quantity: 1,
+        observed_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+        expires_at: None,
+        executed_at: None,
+        market_url: None,
     }
-    let mut mismatch = json.clone();
-    mismatch["target"]["gift"]["collection_id"] = "other".into();
-    assert!(serde_json::from_value::<GiftOrder>(mismatch).is_err());
-    let mut unknown_field = json.clone();
-    unknown_field["legacy"] = true.into();
-    assert!(serde_json::from_value::<GiftOrder>(unknown_field).is_err());
-    let mut partial = json.clone();
-    partial["target"]["gift"]["number"] = serde_json::Value::Null;
-    assert!(
-        serde_json::from_value::<GiftOrder>(partial)
-            .unwrap()
-            .validate()
-            .is_ok()
-    );
-
-    let mut criteria = json;
-    criteria["target"] =
-        serde_json::json!({"kind":"criteria","criteria":{"number":{"min":1,"max":10}}});
-    criteria["quantity"] = 2.into();
-    assert!(
-        serde_json::from_value::<GiftOrder>(criteria.clone())
-            .unwrap()
-            .validate()
-            .is_ok()
-    );
-    criteria["quantity"] = 0.into();
-    assert!(serde_json::from_value::<GiftOrder>(criteria.clone()).is_err());
-    criteria["quantity"] = 2.into();
-    criteria["target"]["criteria"]["number"] = serde_json::json!({"min":10,"max":1});
-    assert!(serde_json::from_value::<GiftOrder>(criteria).is_err());
+}
+#[test]
+fn checked_order_construction_enforces_identity_quantity_and_partial_gift_invariants() {
+    let data = order_data();
+    let order = GiftOrder::try_from(data.clone()).unwrap();
+    assert_eq!(order.quantity, 1);
+    let mut invalid = data.clone();
+    invalid.book.collection_id = "other".into();
+    assert!(GiftOrder::try_from(invalid).is_err());
+    for quantity in [0, 2, u32::MAX] {
+        let mut invalid = data.clone();
+        invalid.quantity = quantity;
+        assert!(GiftOrder::try_from(invalid).is_err());
+    }
+    let mut partial = data.clone();
+    if let GiftTarget::Gift { gift } = &mut partial.target {
+        gift.number = None;
+    }
+    assert!(GiftOrder::try_from(partial).is_ok());
+    let mut criteria = data;
+    criteria.target = GiftTarget::Criteria {
+        criteria: GiftCriteria::default(),
+    };
+    criteria.quantity = 2;
+    assert!(GiftOrder::try_from(criteria.clone()).is_ok());
+    criteria.quantity = 0;
+    assert!(GiftOrder::try_from(criteria.clone()).is_err());
+    criteria.quantity = 2;
+    let GiftTarget::Criteria { criteria: target } = &mut criteria.target else {
+        unreachable!()
+    };
+    target.number = Some(GiftNumberRange {
+        min: Some(GiftNumber::new(10).unwrap()),
+        max: Some(GiftNumber::new(1).unwrap()),
+    });
+    assert!(GiftOrder::try_from(criteria).is_err());
+}
+#[test]
+fn checked_orders_require_execution_time_exactly_for_executions() {
+    for kind in [
+        GiftOrderKind::Ask,
+        GiftOrderKind::Bid,
+        GiftOrderKind::Executed,
+    ] {
+        for executed_at in [None, Some("2025-12-01T00:00:00Z".parse().unwrap())] {
+            let mut data = order_data();
+            data.kind = kind;
+            data.executed_at = executed_at;
+            assert_eq!(
+                GiftOrder::try_from(data).is_ok(),
+                (kind == GiftOrderKind::Executed) == executed_at.is_some()
+            );
+        }
+    }
+    // Editing an extracted draft never mutates the valid value that consumers already hold.
+    let order = GiftOrder::try_from(order_data()).unwrap();
+    let mut draft = order.clone().into_data();
+    draft.quantity = 2;
+    assert!(GiftOrder::try_from(draft).is_err());
+    assert_eq!(order.quantity, 1);
 }

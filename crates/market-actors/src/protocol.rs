@@ -43,3 +43,13 @@ pub(crate) fn orders(result: market_replica::ReadResult) -> Result<Page<GiftOrde
             .collect::<Result<_>>()?,
     })
 }
+
+/// Gift-specific eligibility belongs outside the generic replica's bounded scan.
+pub(crate) fn include_order(entity: &w::Entity) -> std::result::Result<bool, tonic::Status> {
+    match entity.entity.as_ref() {
+        Some(w::entity::Entity::Order(value)) => market_gifts_hub::is_exhausted(value)
+            .map(|exhausted| !exhausted)
+            .map_err(|e| tonic::Status::unavailable(e.to_string())),
+        _ => Err(tonic::Status::unavailable("expected a gift order")),
+    }
+}

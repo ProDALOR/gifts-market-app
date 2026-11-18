@@ -1,6 +1,7 @@
 //! Thin HTTP-facing adapter over gift-domain actor capabilities.
 use super::{error::Result, models::*};
 use market_actors::{DataSubscription, DataUpdate, MarketDataHandle};
+use market_gifts::{GiftOrder, MediaTarget, Page, TelegramDocumentId};
 use std::sync::Arc;
 use tokio::sync::watch;
 #[derive(Clone)]

@@ -64,9 +64,7 @@ pub enum UnsupportedGiftReason {
     InvalidGiftId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GiftTarget {
     Gift {
         gift: CollectibleGift,
@@ -80,31 +78,62 @@ pub enum GiftTarget {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(remote = "Self", deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct GiftOrder {
+/// Immutable validated order. Construct from `GiftOrderData` at domain boundaries.
+///
+/// ```compile_fail
+/// fn change(order: &mut market_gifts::GiftOrder) {
+///     order.quantity = 2;
+/// }
+/// ```
+/// ```compile_fail
+/// fn change(order: &mut market_gifts::GiftOrder) {
+///     order.book.collection_id = "other".into();
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct GiftOrder(GiftOrderData);
+
+/// Construction data; mutable drafts cannot be passed to market consumers as orders.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GiftOrderData {
     pub id: OrderId,
     pub book: GiftBook,
     pub kind: GiftOrderKind,
     pub target: GiftTarget,
     pub price: Amount,
     pub quantity: u32,
-    #[cfg_attr(feature = "schema", schema(value_type = String, format = DateTime))]
     pub observed_at: Timestamp,
-    #[cfg_attr(feature = "schema", schema(value_type = Option<String>, format = DateTime))]
     pub expires_at: Option<Timestamp>,
-    #[cfg_attr(feature = "schema", schema(value_type = Option<String>, format = DateTime))]
     pub executed_at: Option<Timestamp>,
-    pub parent_order_id: Option<OrderId>,
     pub market_url: Option<String>,
 }
-
+impl std::ops::Deref for GiftOrder {
+    type Target = GiftOrderData;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 impl GiftOrder {
-    /// Invariants shared by hub projection and deserialization. Unknown traits remain valid.
-    pub fn validate(&self) -> Result<(), InvalidValue> {
+    pub fn into_data(self) -> GiftOrderData {
+        self.0
+    }
+}
+impl TryFrom<GiftOrderData> for GiftOrder {
+    type Error = InvalidValue;
+    fn try_from(data: GiftOrderData) -> Result<Self, Self::Error> {
+        data.validate()?;
+        Ok(Self(data))
+    }
+}
+impl GiftOrderData {
+    fn validate(&self) -> Result<(), InvalidValue> {
         if self.quantity == 0 {
             return Err(InvalidValue("gift quantity must be a positive integer"));
+        }
+        if (self.kind == GiftOrderKind::Executed) != self.executed_at.is_some() {
+            return Err(InvalidValue(
+                "only executed gift orders must have an execution time",
+            ));
         }
         match &self.target {
             GiftTarget::Gift { gift } => {
@@ -123,19 +152,5 @@ impl GiftOrder {
             GiftTarget::Unsupported { .. } => {}
         }
         Ok(())
-    }
-}
-// Remote derive supplies field parsing once; both entry points use the same validation.
-impl<'de> Deserialize<'de> for GiftOrder {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let order = Self::deserialize(deserializer)?;
-        order.validate().map_err(serde::de::Error::custom)?;
-        Ok(order)
-    }
-}
-impl Serialize for GiftOrder {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.validate().map_err(serde::ser::Error::custom)?;
-        Self::serialize(self, serializer)
     }
 }

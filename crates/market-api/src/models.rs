@@ -1,11 +1,21 @@
 //! Gift domain models plus the HTTP/WebSocket envelope. No public generic hub DTOs.
+//! Internal orders are intentionally absent from this public presentation module.
+//! ```compile_fail
+//! use market_api::models::GiftOrder;
+//! ```
 pub use crate::catalog::{
     GiftCatalog, GiftCollection, GiftCollectionCatalog, GiftMedia, GiftModel, GiftPattern,
 };
 pub use crate::orders::{
     OrderPageResponse, OrderResponse, OrderTargetResponse, UnsupportedTargetReason,
 };
-pub use market_gifts::*;
+pub use market_gifts::{
+    Amount, BackdropId, BackdropPalette, CatalogVersions, CollectibleGift, CollectionId,
+    CollectionSlug, Currency, CurrencyId, GiftBackdrop, GiftBook, GiftCriteria, GiftFilters,
+    GiftHistoryQuery, GiftNumber, GiftNumberRange, GiftOrderKind, GiftOrdersQuery, GiftSide,
+    GiftSlug, GiftSort, GiftTraits, ModelId, OrderId, PatternId, Period, PriceRange,
+    ReadConsistency, SyncState, SyncStatus, UnsupportedGiftReason, Venue, VenueId,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
