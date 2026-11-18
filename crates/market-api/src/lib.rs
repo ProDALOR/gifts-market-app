@@ -6,6 +6,7 @@ mod connections;
 mod encoding;
 pub mod error;
 mod frontend;
+mod http;
 mod market;
 mod media;
 #[cfg(feature = "miniapp")]

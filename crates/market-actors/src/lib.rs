@@ -1,4 +1,4 @@
-//! Read-only order-book, catalog and user-subscription actors.
+//! Read-only order-book, catalog and market-subscription actors.
 mod catalog;
 pub mod error;
 mod handle;
@@ -6,7 +6,6 @@ mod orderbooks;
 mod protocol;
 mod query;
 mod runtime;
-mod selection;
 mod service;
 mod subscriptions;
 #[cfg(test)]

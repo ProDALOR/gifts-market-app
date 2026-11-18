@@ -9,13 +9,6 @@ pub(crate) struct ReadOrders {
     pub permit: market_replica::ReadPermit,
 }
 #[derive(Message)]
-#[rtype(result = "Result<w::BooksPage,Status>")]
-#[cfg(test)]
-pub(crate) struct ListBooks {
-    pub request: w::BooksRequest,
-    pub permit: market_replica::ReadPermit,
-}
-#[derive(Message)]
 #[rtype(result = "Result<SyncStatus,Status>")]
 pub(crate) struct GetStatus;
 

@@ -35,7 +35,7 @@ impl MarketApi {
     ) -> Result<Arc<str>> {
         self.encoder.encode_window(window).await
     }
-    pub async fn subscribe_window(
+    pub(crate) async fn subscribe_window(
         &self,
         query: market_gifts::GiftOrderWindowQuery,
     ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
@@ -51,33 +51,21 @@ impl MarketApi {
             Err(market_actors::error::DataError::unavailable("Market replica is loading").into())
         }
     }
-    pub async fn sync(&self) -> Result<SyncStatus> {
+    pub(crate) async fn sync(&self) -> Result<SyncStatus> {
         Ok(self.data.status().await?)
     }
-    pub async fn catalog(&self) -> Result<GiftCatalog> {
-        Ok(self.catalog_snapshot().await?.data)
+    pub(crate) async fn catalog_snapshot(
+        &self,
+    ) -> Result<market_actors::CatalogSnapshot<market_gifts::GiftCatalog>> {
+        Ok(self.data.catalog_snapshot().await?)
     }
-    pub async fn collection(&self, id: CollectionId) -> Result<GiftCollectionCatalog> {
-        Ok(self.collection_snapshot(id).await?.data)
-    }
-    pub async fn catalog_snapshot(&self) -> Result<market_actors::CatalogSnapshot<GiftCatalog>> {
-        let snapshot = self.data.catalog_snapshot().await?;
-        Ok(market_actors::CatalogSnapshot {
-            data: snapshot.data.into(),
-            revision: crate::catalog::revision(snapshot.revision),
-        })
-    }
-    pub async fn collection_snapshot(
+    pub(crate) async fn collection_snapshot(
         &self,
         id: CollectionId,
-    ) -> Result<market_actors::CatalogSnapshot<GiftCollectionCatalog>> {
-        let snapshot = self.data.collection_snapshot(id).await?;
-        Ok(market_actors::CatalogSnapshot {
-            data: snapshot.data.into(),
-            revision: crate::catalog::revision(snapshot.revision),
-        })
+    ) -> Result<market_actors::CatalogSnapshot<market_gifts::GiftCollectionCatalog>> {
+        Ok(self.data.collection_snapshot(id).await?)
     }
-    pub async fn subscribe_catalog(
+    pub(crate) async fn subscribe_catalog(
         &self,
         ids: Vec<CollectionId>,
     ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
@@ -86,19 +74,19 @@ impl MarketApi {
     pub(crate) async fn media_document(&self, target: MediaTarget) -> Result<TelegramDocumentId> {
         Ok(self.data.media_document(target).await?)
     }
-    pub async fn snapshot_window(
+    pub(crate) async fn snapshot_window(
         &self,
         query: market_gifts::SnapshotWindowQuery,
     ) -> Result<market_gifts::SnapshotWindow> {
         Ok(self.data.snapshot_window(query).await?)
     }
-    pub async fn release_window_snapshot(&self, snapshot: String) -> Result<()> {
+    pub(crate) async fn release_window_snapshot(&self, snapshot: String) -> Result<()> {
         Ok(self.data.release_window_snapshot(snapshot).await?)
     }
     pub async fn orders(&self, query: GiftOrdersQuery) -> Result<Page<GiftOrder>> {
         Ok(self.data.orders(query).await?)
     }
-    pub async fn executions(&self, query: GiftHistoryQuery) -> Result<Page<GiftOrder>> {
+    pub(crate) async fn executions(&self, query: GiftHistoryQuery) -> Result<Page<GiftOrder>> {
         Ok(self.data.executions(query).await?)
     }
     pub async fn gift_valuation(

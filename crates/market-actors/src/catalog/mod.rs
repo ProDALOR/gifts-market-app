@@ -5,14 +5,7 @@ pub(crate) mod messages;
 pub(crate) mod projection;
 mod version;
 use crate::runtime::ActorEnvironment;
-#[cfg(test)]
-use crate::selection;
 use actix::prelude::*;
-#[cfg(test)]
-use market_replica::ReadResult;
-use market_replica::ReplicaReader;
-#[cfg(test)]
-use messages::ReadCatalog;
 use tonic::Status;
 pub use version::CatalogSnapshot;
 pub(crate) struct CatalogActor {
@@ -28,17 +21,6 @@ impl Actor for CatalogActor {
 impl Drop for CatalogActor {
     fn drop(&mut self) {
         self.environment.stopped();
-    }
-}
-#[cfg(test)]
-impl Handler<ReadCatalog> for CatalogActor {
-    type Result = ResponseFuture<Result<ReadResult, Status>>;
-    fn handle(&mut self, message: ReadCatalog, _: &mut Self::Context) -> Self::Result {
-        if let Err(error) = selection::catalog(&message.request) {
-            return Box::pin(async move { Err(error) });
-        }
-        self.environment
-            .blocking(message.permit, move |reader| reader.read(message.request))
     }
 }
 impl Handler<messages::GiftCatalog> for CatalogActor {
@@ -77,22 +59,6 @@ impl Handler<messages::ModelDocuments> for CatalogActor {
             projection::model_documents(reader, message.limit)
         })
     }
-}
-
-pub(crate) fn validate_order_collection(
-    reader: &ReplicaReader,
-    request: &market_hub_protocol::wire::ReadRequest,
-) -> Result<(), Status> {
-    use market_hub_protocol::wire::selection::Source;
-    if let Some(Source::Scope(scope)) = request
-        .selection
-        .as_ref()
-        .and_then(|selection| selection.source.as_ref())
-        && let Some(id) = &scope.item_type_id
-    {
-        projection::validate_collection(reader, id)?;
-    }
-    Ok(())
 }
 
 impl Handler<messages::Versions> for CatalogActor {

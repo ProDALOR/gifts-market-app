@@ -47,7 +47,7 @@ impl Payload {
                 }))
                 .expect("valuation result serializes")
             }
-            // IDs here have already passed OperationId validation. Page bytes are
+            // IDs here have already passed OperationId validation. Window bytes are
             // bounded JSON produced by serde, shared independently of the frame ID.
             Self::Window {
                 window,

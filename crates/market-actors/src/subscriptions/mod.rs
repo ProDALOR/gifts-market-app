@@ -6,7 +6,6 @@ use crate::{
     catalog::handle::CatalogHandle,
     orderbooks::handle::OrderbooksHandle,
     runtime::{ActorEnvironment, capacity},
-    selection,
 };
 use actix::prelude::*;
 use messages::{Release, SubscribeCatalog, SubscribeWindow};
@@ -70,7 +69,6 @@ impl Drop for MarketSubscriptionsActor {
 impl Handler<SubscribeWindow> for MarketSubscriptionsActor {
     type Result = Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status>;
     fn handle(&mut self, message: SubscribeWindow, ctx: &mut Self::Context) -> Self::Result {
-        selection::orders(&message.request)?;
         self.register(
             FeedSpec::Window {
                 request: Box::new(message.request),

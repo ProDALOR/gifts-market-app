@@ -64,7 +64,7 @@ impl Content {
     }
     fn response(&self, req: &actix_web::HttpRequest) -> actix_web::HttpResponse {
         use actix_web::{HttpResponse, http::header};
-        let unchanged = crate::routes::etag_matches(req, &self.etag);
+        let unchanged = crate::http::etag_matches(req, &self.etag);
         let mut response = if unchanged {
             HttpResponse::NotModified()
         } else {

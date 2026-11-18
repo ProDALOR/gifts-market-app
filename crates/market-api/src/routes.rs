@@ -13,15 +13,19 @@ pub(crate) async fn ready(state: web::Data<MarketApi>) -> Result<HttpResponse> {
     state.ready().await?;
     Ok(HttpResponse::Ok().finish())
 }
-#[utoipa::path(get,path="/sync",tag="Health",summary="Synchronization status",responses((status=200,body=SyncStatus)))]
+#[utoipa::path(get,path="/sync",tag="Health",summary="Synchronization status",responses((status=200,body=SyncStatus),(status=503,body=ErrorResponse)))]
 pub(crate) async fn sync(state: web::Data<MarketApi>) -> Result<web::Json<SyncStatus>> {
     Ok(web::Json(state.sync().await?))
 }
-#[utoipa::path(get,path="/catalog",tag="Catalog",summary="Collections, currencies and venues",description="Catalog data. Use GET /sync for replica readiness and freshness.",responses((status=200,body=GiftCatalog,headers(("ETag"=String,description="Catalog content revision"))),(status=304,description="Catalog content is unchanged"),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/catalog",tag="Catalog",summary="Collections, currencies and venues",description="Catalog data. Use GET /sync for replica readiness and freshness.",responses((status=200,body=GiftCatalog,headers(("ETag"=String,description="Catalog content revision"))),(status=304,description="Catalog content is unchanged"),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn catalog(state: web::Data<MarketApi>, req: HttpRequest) -> Result<HttpResponse> {
-    Ok(catalog_response(state.catalog_snapshot().await?, &req))
+    Ok(catalog_response(
+        state.catalog_snapshot().await?,
+        &req,
+        GiftCatalog::from,
+    ))
 }
-#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Collection choices. Use GET /sync for replica readiness and freshness.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Collection content revision"))),(status=304,description="Collection content is unchanged"),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Collection choices. Use GET /sync for replica readiness and freshness.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Collection content revision"))),(status=304,description="Collection content is unchanged"),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn collection(
     state: web::Data<MarketApi>,
     id: web::Path<CollectionId>,
@@ -30,14 +34,16 @@ pub(crate) async fn collection(
     Ok(catalog_response(
         state.collection_snapshot(id.into_inner()).await?,
         &req,
+        GiftCollectionCatalog::from,
     ))
 }
-fn catalog_response<T: serde::Serialize>(
+fn catalog_response<T, U: serde::Serialize>(
     snapshot: market_actors::CatalogSnapshot<T>,
     req: &HttpRequest,
+    present: impl FnOnce(T) -> U,
 ) -> HttpResponse {
-    let etag = format!("\"{}\"", snapshot.revision);
-    let unchanged = etag_matches(req, &etag);
+    let etag = format!("\"{}\"", crate::catalog::revision(snapshot.revision));
+    let unchanged = crate::http::etag_matches(req, &etag);
     let mut response = if unchanged {
         HttpResponse::NotModified()
     } else {
@@ -49,10 +55,10 @@ fn catalog_response<T: serde::Serialize>(
     if unchanged {
         response.finish()
     } else {
-        response.json(snapshot.data)
+        response.json(present(snapshot.data))
     }
 }
-#[utoipa::path(post,path="/orders/query",tag="Orders",summary="Query current asks or bids",request_body=GiftOrdersQuery,responses((status=200,body=OrderPageResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/orders/query",tag="Orders",summary="Query current asks or bids",request_body=GiftOrdersQuery,responses((status=200,body=OrderPageResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn orders(
     state: web::Data<MarketApi>,
     query: web::Json<GiftOrdersQuery>,
@@ -60,7 +66,7 @@ pub(crate) async fn orders(
     let page = state.orders(query.into_inner()).await?;
     Ok(HttpResponse::Ok().json(OrderPageResponse::from(&page)))
 }
-#[utoipa::path(post,path="/history/query",tag="History",summary="Query confirmed executions",request_body=GiftHistoryQuery,responses((status=200,body=OrderPageResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/history/query",tag="History",summary="Query confirmed executions",request_body=GiftHistoryQuery,responses((status=200,body=OrderPageResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn executions(
     state: web::Data<MarketApi>,
     query: web::Json<GiftHistoryQuery>,
@@ -79,7 +85,7 @@ pub(crate) async fn gift_valuation(
         .json(GiftValuationResponse::from(result.as_ref())))
 }
 
-#[utoipa::path(post,path="/orders/window",tag="Orders",summary="Open or navigate a frozen order window",request_body=market_gifts::SnapshotWindowQuery,responses((status=200,body=crate::orders::SnapshotWindowResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse)))]
+#[utoipa::path(post,path="/orders/window",tag="Orders",summary="Open or navigate a frozen order window",request_body=market_gifts::SnapshotWindowQuery,responses((status=200,body=crate::orders::SnapshotWindowResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn snapshot_window(
     state: web::Data<MarketApi>,
     query: web::Json<market_gifts::SnapshotWindowQuery>,
@@ -89,7 +95,7 @@ pub(crate) async fn snapshot_window(
         .insert_header((header::CACHE_CONTROL, "no-store"))
         .json(crate::orders::SnapshotWindowResponse::from(&result)))
 }
-#[utoipa::path(delete,path="/orders/window",tag="Orders",summary="Release a frozen window",request_body=market_gifts::ReleaseWindowSnapshot,responses((status=204,description="Released or already expired"),(status=400,body=ErrorResponse)))]
+#[utoipa::path(delete,path="/orders/window",tag="Orders",summary="Release a frozen window",request_body=market_gifts::ReleaseWindowSnapshot,responses((status=204,description="Released or already expired"),(status=400,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn release_window(
     state: web::Data<MarketApi>,
     query: web::Json<market_gifts::ReleaseWindowSnapshot>,
@@ -100,6 +106,8 @@ pub(crate) async fn release_window(
     Ok(HttpResponse::NoContent().finish())
 }
 
+/// Register endpoints in an embedding Actix app. The embedder owns transport policy
+/// and middleware; `ApiServer` installs deadlines, origins and security headers.
 pub fn configure(cfg: &mut web::ServiceConfig) {
     configure_with_limit(cfg, crate::config::ApiLimits::default().json_bytes);
 }
@@ -145,13 +153,46 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
     cfg.configure(crate::miniapp::configure);
 }
 
-pub(crate) fn etag_matches(req: &HttpRequest, etag: &str) -> bool {
-    req.headers()
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|value| value.trim().trim_start_matches("W/") == etag || value.trim() == "*")
-        })
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[actix_web::test]
+    async fn catalog_revalidation_skips_public_projection_and_preserves_response_headers() {
+        let snapshot = || market_actors::CatalogSnapshot {
+            data: (),
+            revision: "content".into(),
+        };
+        for condition in [
+            "\"catalog-v2-content\"",
+            "\"old\", W/\"catalog-v2-content\"",
+            "*",
+        ] {
+            let request = actix_web::test::TestRequest::get()
+                .insert_header((header::IF_NONE_MATCH, condition))
+                .to_http_request();
+            let response = catalog_response(snapshot(), &request, |()| -> serde_json::Value {
+                panic!("Unchanged catalog must not clone models or build media URLs")
+            });
+            assert_eq!(response.status(), 304);
+            assert_eq!(
+                response.headers().get(header::ETAG).unwrap(),
+                "\"catalog-v2-content\""
+            );
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "no-cache"
+            );
+        }
+        let request = actix_web::test::TestRequest::get().to_http_request();
+        let response =
+            catalog_response(snapshot(), &request, |()| serde_json::json!({"models":[]}));
+        assert_eq!(response.status(), 200);
+        let bytes = actix_web::body::to_bytes(response.into_body())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::json!({"models":[]})
+        );
+    }
 }

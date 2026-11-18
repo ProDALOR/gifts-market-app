@@ -1,4 +1,4 @@
-//! Public order presentation shared by HTTP reads and cached WebSocket page encoding.
+//! Public order presentation shared by HTTP reads and cached WebSocket window encoding.
 use jiff::Timestamp;
 use market_gifts::{
     Amount, CollectibleGift, GiftBook, GiftCriteria, GiftOrder, GiftOrderKind, GiftTarget, OrderId,

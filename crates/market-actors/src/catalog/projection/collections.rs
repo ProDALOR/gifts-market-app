@@ -6,17 +6,6 @@ use market_hub_protocol::wire as w;
 use market_replica::ReplicaReader;
 use std::{collections::BTreeSet, sync::Arc};
 use tonic::Status;
-pub(crate) fn validate_collection(reader: &ReplicaReader, id: &str) -> Result<(), Status> {
-    let items = entities(reader, w::EntityKind::ItemType, Some(&[id.to_owned()]))?;
-    if items
-        .iter()
-        .any(|item| matches!(item, w::entity::Entity::ItemType(item) if is_gift(item)))
-    {
-        Ok(())
-    } else {
-        Err(Status::invalid_argument("unknown gift collection"))
-    }
-}
 pub(crate) fn collections(reader: &ReplicaReader) -> Result<Arc<Vec<GiftCollection>>, Status> {
     let items = entities(reader, w::EntityKind::ItemType, None)?;
     let items: Vec<_> = items

@@ -1,14 +1,6 @@
 use super::CatalogActor;
-#[cfg(test)]
-use super::messages::ReadCatalog;
 use crate::runtime::{QueryBudget, closed};
-#[cfg(test)]
-use crate::selection;
 use actix::Addr;
-#[cfg(test)]
-use market_hub_protocol::wire as w;
-#[cfg(test)]
-use market_replica::ReadResult;
 use tonic::Status;
 #[derive(Clone)]
 pub(crate) struct CatalogHandle {
@@ -16,19 +8,6 @@ pub(crate) struct CatalogHandle {
     pub budget: QueryBudget,
     pub projections: std::sync::Arc<tokio::sync::Semaphore>,
 }
-impl CatalogHandle {
-    #[cfg(test)]
-    pub async fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
-        selection::catalog(&request)?;
-        let permit = self.budget.try_query()?;
-        let _cancel = permit.cancel_on_drop();
-        self.address
-            .send(ReadCatalog { request, permit })
-            .await
-            .map_err(closed)?
-    }
-}
-
 impl CatalogHandle {
     pub async fn bootstrap(
         &self,

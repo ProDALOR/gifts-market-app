@@ -1,4 +1,4 @@
-//! Lifecycle of the orderbooks, catalog and user-subscriptions actor group.
+//! Lifecycle of the orderbooks, catalog and market-subscriptions actor group.
 use crate::{
     MarketDataHandle,
     catalog::{CatalogActor, handle::CatalogHandle},

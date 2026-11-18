@@ -1,4 +1,4 @@
-//! Shared order-page computation; subscriber registration belongs to the actor.
+//! Live window and catalog computation; subscriber registration belongs to the actor.
 use super::{DataUpdate, QueryFeed};
 use crate::error::DataError;
 use crate::{orderbooks::handle::OrderbooksHandle, runtime::ActorEnvironment};

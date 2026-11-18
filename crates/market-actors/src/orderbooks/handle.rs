@@ -1,13 +1,8 @@
-#[cfg(test)]
-use super::messages::ListBooks;
 use super::{
     OrderbooksActor,
     messages::{GetStatus, ReadOrders},
 };
-use crate::{
-    runtime::{QueryBudget, closed},
-    selection,
-};
+use crate::runtime::{QueryBudget, closed};
 use actix::Addr;
 use market_hub_protocol::wire as w;
 use market_replica::{ReadResult, SyncStatus};
@@ -18,13 +13,29 @@ pub(crate) struct OrderbooksHandle {
     pub budget: QueryBudget,
 }
 impl OrderbooksHandle {
+    /// Foreground reads reject overload; persistent producers have bounded waiting admission.
+    pub async fn window(
+        &self,
+        request: w::ReadRequest,
+        window: market_replica::WindowRequest,
+    ) -> Result<market_replica::WindowReadResult, Status> {
+        self.read_window(request, window, self.budget.try_query()?)
+            .await
+    }
     pub async fn window_wait(
         &self,
         request: w::ReadRequest,
         window: market_replica::WindowRequest,
     ) -> Result<market_replica::WindowReadResult, Status> {
-        selection::orders(&request)?;
-        let permit = self.budget.wait().await?;
+        self.read_window(request, window, self.budget.wait().await?)
+            .await
+    }
+    async fn read_window(
+        &self,
+        request: w::ReadRequest,
+        window: market_replica::WindowRequest,
+        permit: market_replica::ReadPermit,
+    ) -> Result<market_replica::WindowReadResult, Status> {
         let _cancel = permit.cancel_on_drop();
         self.address
             .send(super::messages::ReadWindow {
@@ -37,7 +48,6 @@ impl OrderbooksHandle {
     }
 
     pub async fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
-        selection::orders(&request)?;
         let permit = self.budget.try_query()?;
         let _cancel = permit.cancel_on_drop();
         self.address
@@ -49,15 +59,6 @@ impl OrderbooksHandle {
         self.budget.check()?;
         self.address
             .send(super::messages::ReleaseSnapshot { snapshot })
-            .await
-            .map_err(closed)?
-    }
-    #[cfg(test)]
-    pub async fn books(&self, request: w::BooksRequest) -> Result<w::BooksPage, Status> {
-        let permit = self.budget.try_query()?;
-        let _cancel = permit.cancel_on_drop();
-        self.address
-            .send(ListBooks { request, permit })
             .await
             .map_err(closed)?
     }

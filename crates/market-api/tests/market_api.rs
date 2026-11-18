@@ -521,6 +521,34 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
             page_ref
         );
     }
+    for (path, method) in [
+        ("/orders/query", "post"),
+        ("/history/query", "post"),
+        ("/orders/window", "post"),
+        ("/catalog", "get"),
+        ("/collections/{id}", "get"),
+    ] {
+        for status in ["429", "503"] {
+            assert!(
+                schema["paths"][path][method]["responses"]
+                    .get(status)
+                    .is_some(),
+                "{method} {path} must document {status}"
+            );
+        }
+    }
+    for path in ["/sync", "/readyz"] {
+        assert!(
+            schema["paths"][path]["get"]["responses"]
+                .get("503")
+                .is_some()
+        );
+    }
+    assert!(
+        schema["paths"]["/orders/window"]["delete"]["responses"]
+            .get("503")
+            .is_some()
+    );
     let frame = schema["components"]["schemas"]["ServerFrame"]["oneOf"]
         .as_array()
         .unwrap()
@@ -2396,6 +2424,76 @@ async fn paused_window_is_anchored_frozen_and_explicitly_released() {
     )
     .await;
     assert_eq!(expired.status(), 409);
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+async fn server_deadline_bounds_json_extraction_without_stopping_the_service() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (_state, runtime, _peer, stop) = setup().await;
+    let api = ApiServer::bind(
+        ApiConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            cors_origins: vec!["https://example.test".into()],
+            limits: market_api::ApiLimits {
+                request_timeout: Duration::from_millis(100),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        runtime.data.clone(),
+        runtime.valuation.clone(),
+    )
+    .unwrap();
+    let addr = api.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(api.run(api_stop.clone()));
+    // Complete headers, but leave JSON unfinished. A header-only timeout cannot bound this.
+    let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+    socket.write_all(b"POST /orders/window HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nOrigin: https://example.test\r\nContent-Length: 200\r\nConnection: close\r\n\r\n{").await.unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(2), async {
+        let mut bytes = Vec::new();
+        let mut chunk = [0; 1024];
+        loop {
+            let len = socket.read(&mut chunk).await.unwrap();
+            if len == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..len]);
+            if String::from_utf8_lossy(&bytes).contains("HTTP request timed out") {
+                break;
+            }
+        }
+        String::from_utf8(bytes).unwrap()
+    })
+    .await
+    .expect("The handler deadline must also bound payload extraction");
+    assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    assert!(response.contains("\"code\":\"timed_out\""), "{response}");
+    let lower = response.to_ascii_lowercase();
+    assert!(
+        lower.contains("access-control-allow-origin: https://example.test"),
+        "{response}"
+    );
+    assert!(
+        lower.contains("x-content-type-options: nosniff"),
+        "{response}"
+    );
+    drop(socket);
+    let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+    socket
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(bytes.starts_with(b"HTTP/1.1 200"));
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }

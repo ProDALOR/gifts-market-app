@@ -5,7 +5,7 @@ mod markets;
 mod media;
 mod read;
 pub(super) use choices::{ChoiceProjection, choices};
-pub(super) use collections::{collections, validate_collection};
+pub(super) use collections::collections;
 pub(super) use markets::{books, currencies, venues};
 pub(super) use media::{media_document, model_documents};
 #[cfg(test)]

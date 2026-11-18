@@ -37,6 +37,7 @@ impl Default for WebSocketLimits {
 pub struct ApiLimits {
     pub json_bytes: usize,
     pub http_connections: usize,
+    /// Request-head receive timeout and extraction/handler deadline; excludes streaming bodies.
     pub request_timeout: Duration,
     pub websocket: WebSocketLimits,
 }
@@ -67,7 +68,7 @@ impl ApiLimits {
         anyhow::ensure!(
             ws.queue_bytes >= ws.window_bytes.saturating_add(128)
                 && ws.queue_bytes <= u32::MAX as usize,
-            "WebSocket byte budget must hold a page envelope and fit in u32"
+            "WebSocket byte budget must hold a window envelope and fit in u32"
         );
         anyhow::ensure!(
             !self.request_timeout.is_zero()

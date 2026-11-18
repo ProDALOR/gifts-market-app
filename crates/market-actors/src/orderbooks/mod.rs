@@ -1,13 +1,9 @@
-//! Current orderbooks, execution history, book directory and market freshness.
+//! Current orderbooks, execution history, market freshness.
 pub(crate) mod handle;
 pub(crate) mod messages;
-use crate::{runtime::ActorEnvironment, selection};
+use crate::{query, runtime::ActorEnvironment};
 use actix::prelude::*;
-#[cfg(test)]
-use market_hub_protocol::wire as w;
 use market_replica::{ReadResult, ReplicaReader, SyncStatus};
-#[cfg(test)]
-use messages::ListBooks;
 use messages::{GetStatus, ReadOrders};
 use tonic::Status;
 pub(crate) struct OrderbooksActor {
@@ -28,14 +24,14 @@ impl Drop for OrderbooksActor {
 impl Handler<ReadOrders> for OrderbooksActor {
     type Result = ResponseFuture<Result<ReadResult, Status>>;
     fn handle(&mut self, message: ReadOrders, _: &mut Self::Context) -> Self::Result {
-        if let Err(error) = selection::orders(&message.request) {
+        if let Err(error) = query::validate_read(&message.request) {
             return Box::pin(async move { Err(error) });
         }
         let stop = self.environment.stop.clone();
         self.environment.blocking(message.permit, move |reader| {
             reader.read_checked(
                 message.request,
-                crate::catalog::validate_order_collection,
+                query::validate_order_collection,
                 |entity| {
                     if stop.is_cancelled() {
                         return Err(Status::unavailable("Market read cancelled"));
@@ -43,15 +39,6 @@ impl Handler<ReadOrders> for OrderbooksActor {
                     crate::protocol::include_order(entity)
                 },
             )
-        })
-    }
-}
-#[cfg(test)]
-impl Handler<ListBooks> for OrderbooksActor {
-    type Result = ResponseFuture<Result<w::BooksPage, Status>>;
-    fn handle(&mut self, message: ListBooks, _: &mut Self::Context) -> Self::Result {
-        self.environment.blocking(message.permit, move |reader| {
-            reader.books(message.request.after, message.request.limit as usize)
         })
     }
 }
@@ -65,14 +52,14 @@ impl Handler<GetStatus> for OrderbooksActor {
 impl Handler<messages::ReadWindow> for OrderbooksActor {
     type Result = ResponseFuture<Result<market_replica::WindowReadResult, Status>>;
     fn handle(&mut self, message: messages::ReadWindow, _: &mut Self::Context) -> Self::Result {
-        if let Err(error) = selection::orders(&message.request) {
+        if let Err(error) = query::validate_read(&message.request) {
             return Box::pin(async move { Err(error) });
         }
         self.environment.blocking(message.permit, move |reader| {
             reader.read_window_checked(
                 message.request,
                 message.window,
-                crate::catalog::validate_order_collection,
+                query::validate_order_collection,
                 crate::protocol::include_order,
             )
         })

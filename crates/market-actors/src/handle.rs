@@ -10,10 +10,8 @@ use crate::{
 use actix::Addr;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
-use market_replica::{ReadResult, SyncStatus as ReplicaStatus};
 use std::sync::Arc;
 use tokio::sync::watch;
-use tonic::Status;
 #[derive(Clone)]
 pub struct MarketDataHandle {
     pub(crate) orderbooks: OrderbooksHandle,
@@ -21,42 +19,12 @@ pub struct MarketDataHandle {
     pub(crate) subscriptions: Addr<MarketSubscriptionsActor>,
 }
 impl MarketDataHandle {
-    pub(crate) async fn orders_raw(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
-        self.orderbooks.read(request).await
-    }
-    #[cfg(test)]
-    pub(crate) async fn catalog_raw(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
-        self.catalog.read(request).await
-    }
-    #[cfg(test)]
-    pub(crate) async fn books_raw(&self, request: w::BooksRequest) -> Result<w::BooksPage, Status> {
-        self.orderbooks.books(request).await
-    }
-    async fn status_raw(&self) -> Result<ReplicaStatus, Status> {
-        self.orderbooks.status().await
-    }
-}
-
-impl MarketDataHandle {
     pub async fn subscribe_window(
         &self,
         query: market_gifts::GiftOrderWindowQuery,
     ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
         self.orderbooks.budget.check()?;
-        query
-            .validate()
-            .map_err(|e| error::DataError::invalid(e.to_string()))?;
-        let window = market_replica::WindowRequest {
-            anchor: query.anchor,
-            before: query.before,
-            after: query.after,
-            snapshot: None,
-        };
-        let mut orders = market_gifts::GiftOrdersQuery::new(query.filters);
-        orders.side = query.side;
-        orders.sort = query.sort;
-        orders.limit = 200;
-        let request = crate::query::orders(orders, w::ReadMode::Live)?;
+        let (request, window) = crate::query::window(query, w::ReadMode::Live, None)?;
         self.subscriptions
             .send(crate::subscriptions::messages::SubscribeWindow { request, window })
             .await
@@ -68,24 +36,9 @@ impl MarketDataHandle {
         &self,
         query: SnapshotWindowQuery,
     ) -> error::Result<SnapshotWindow> {
-        query
-            .query
-            .validate()
-            .map_err(|e| error::DataError::invalid(e.to_string()))?;
-        let window = market_replica::WindowRequest {
-            anchor: query.query.anchor,
-            before: query.query.before,
-            after: query.query.after,
-            snapshot: query.snapshot,
-        };
-        let mut orders = GiftOrdersQuery::new(query.query.filters);
-        orders.side = query.query.side;
-        orders.sort = query.query.sort;
-        orders.limit = 200;
-        let result = self
-            .orderbooks
-            .window_wait(crate::query::orders(orders, w::ReadMode::Snapshot)?, window)
-            .await?;
+        let (request, window) =
+            crate::query::window(query.query, w::ReadMode::Snapshot, query.snapshot)?;
+        let result = self.orderbooks.window(request, window).await?;
         let snapshot = result
             .snapshot
             .clone()
@@ -107,16 +60,14 @@ impl MarketDataHandle {
             ReadConsistency::Snapshot => w::ReadMode::Snapshot,
             ReadConsistency::Live => w::ReadMode::Live,
         };
-        protocol::orders(self.orders_raw(crate::query::orders(query, mode)?).await?)
+        protocol::orders(
+            self.orderbooks
+                .read(crate::query::orders(query, mode)?)
+                .await?,
+        )
     }
     pub async fn executions(&self, query: GiftHistoryQuery) -> error::Result<Page<GiftOrder>> {
-        protocol::orders(self.orders_raw(crate::query::history(query)?).await?)
-    }
-    pub async fn catalog(&self) -> error::Result<GiftCatalog> {
-        Ok(self.catalog_snapshot().await?.data)
-    }
-    pub async fn collection(&self, id: CollectionId) -> error::Result<GiftCollectionCatalog> {
-        Ok(self.collection_snapshot(id).await?.data)
+        protocol::orders(self.orderbooks.read(crate::query::history(query)?).await?)
     }
     pub async fn catalog_snapshot(&self) -> error::Result<crate::CatalogSnapshot<GiftCatalog>> {
         Ok(self.catalog.bootstrap().await?)
@@ -151,6 +102,6 @@ impl MarketDataHandle {
         Ok(self.catalog.model_documents(limit).await?)
     }
     pub async fn status(&self) -> error::Result<SyncStatus> {
-        protocol::sync(self.status_raw().await?)
+        protocol::sync(self.orderbooks.status().await?)
     }
 }

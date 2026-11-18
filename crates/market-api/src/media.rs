@@ -106,15 +106,7 @@ async fn catalog_media(
             return Ok(response);
         }
     };
-    let unchanged = request
-        .headers()
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|tag| tag.trim().trim_start_matches("W/") == image.etag() || tag.trim() == "*")
-        });
+    let unchanged = crate::http::etag_matches(&request, image.etag());
     let mut response = if unchanged {
         HttpResponse::NotModified()
     } else {

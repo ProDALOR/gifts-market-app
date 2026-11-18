@@ -32,7 +32,10 @@ pub(crate) fn order(price: &str) -> w::Change {
         ..Default::default()
     }))
 }
-fn query() -> w::ReadRequest {
+fn gift_query() -> market_gifts::GiftOrdersQuery {
+    market_gifts::GiftOrdersQuery::new(market_gifts::GiftFilters::new("gift".into(), "GRAM".into()))
+}
+fn raw_query() -> w::ReadRequest {
     w::ReadRequest {
         selection: Some(w::Selection {
             source: Some(w::selection::Source::Scope(w::Scope {
@@ -108,7 +111,7 @@ async fn public_actor_contract_serves_typed_queries_results_and_subscription_err
     assert_eq!(page.cursor, "c1");
     assert_eq!(page.data[0].price.as_str(), "3");
     assert_eq!(page.data[0].kind, m::GiftOrderKind::Ask);
-    let catalog = service.handle.catalog().await.unwrap();
+    let catalog = service.handle.catalog_snapshot().await.unwrap().data;
     assert!(service.handle.model_documents(1).await.unwrap().is_empty());
     for limit in [0, 1001] {
         assert_eq!(
@@ -180,20 +183,20 @@ async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription
     let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let api = service.handle.clone();
     let bot = service.handle.clone();
-    assert_eq!(api.orders_raw(query()).await.unwrap().page.cursor, "c0");
+    assert_eq!(api.orders(gift_query()).await.unwrap().cursor, "c0");
     assert!(bot.status().await.unwrap().ready);
-    let (_api_feed, mut api_updates) = api.test_window_raw(query()).await.unwrap();
-    let (_bot_feed, mut bot_updates) = bot.test_window_raw(query()).await.unwrap();
+    let (_api_feed, mut api_updates) = api.test_window(gift_query()).await.unwrap();
+    let (_bot_feed, mut bot_updates) = bot.test_window(gift_query()).await.unwrap();
     assert!(
         api_updates.same_channel(&bot_updates),
         "both transports share the actor's subscription registry"
     );
     next_window(&mut api_updates, "c0").await;
-    let mut another = query();
+    let mut another = gift_query();
     another.limit = 1;
     assert_eq!(
-        api.test_window_raw(another).await.err().unwrap().code(),
-        tonic::Code::ResourceExhausted
+        api.test_window(another).await.err().unwrap().code(),
+        crate::error::DataErrorCode::CapacityExceeded
     );
     writer
         .apply(w::Batch {
@@ -203,11 +206,11 @@ async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription
         .unwrap();
     let page = next_window(&mut bot_updates, "c1").await;
     assert_eq!(page.data[0].order.price.as_str(), "1");
-    assert_eq!(api.orders_raw(query()).await.unwrap().page.cursor, "c1");
+    assert_eq!(api.orders(gift_query()).await.unwrap().cursor, "c1");
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
-    assert!(api.orders_raw(query()).await.is_err());
+    assert!(api.orders(gift_query()).await.is_err());
     assert!(bot.status().await.is_err());
     assert!(matches!(*api_updates.borrow(), DataUpdate::Error(_)));
 }
@@ -224,7 +227,7 @@ impl Handler<SlowRead> for OrderbooksActor {
         self.environment.blocking(message.permit, move |reader| {
             let _ = message.started.send(());
             message.release.recv().unwrap();
-            reader.read(query())
+            reader.read(raw_query())
         })
     }
 }
@@ -258,22 +261,22 @@ async fn cancelled_api_request_retains_read_capacity_while_actor_still_answers_b
     assert_eq!(
         service
             .handle
-            .orders_raw(query())
+            .orders(gift_query())
             .await
             .err()
             .unwrap()
             .code(),
-        tonic::Code::ResourceExhausted
+        crate::error::DataErrorCode::CapacityExceeded
     );
     assert_eq!(
         service
             .handle
-            .catalog_raw(catalog_query())
+            .catalog_snapshot()
             .await
             .err()
             .unwrap()
             .code(),
-        tonic::Code::ResourceExhausted
+        crate::error::DataErrorCode::CapacityExceeded
     );
     let stop = CancellationToken::new();
     stop.cancel();
@@ -331,14 +334,14 @@ async fn every_actor_failure_is_supervised_without_owning_or_stopping_storage_it
                 .is_err()
         );
         assert!(service.handle.status().await.is_err());
-        assert!(service.handle.catalog_raw(catalog_query()).await.is_err());
+        assert!(service.handle.catalog_snapshot().await.is_err());
         writer
             .apply(w::Batch {
                 cursor: "c2".into(),
                 changes: vec![order("2")],
             })
             .unwrap();
-        assert_eq!(writer.reader().read(query()).unwrap().page.cursor, "c2");
+        assert_eq!(writer.reader().read(raw_query()).unwrap().page.cursor, "c2");
     }
 }
 
@@ -347,7 +350,7 @@ async fn subscriptions_waiting_for_capacity_are_terminated_during_shutdown() {
     let (_directory, writer) = fixture();
     let service = TestData::start(writer.reader(), 1, 1).await.unwrap();
     let permit = service.handle.orderbooks.budget.try_query().unwrap();
-    let (_feed, updates) = service.handle.test_window_raw(query()).await.unwrap();
+    let (_feed, updates) = service.handle.test_window(gift_query()).await.unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(3), service.task.run(stop))
@@ -358,113 +361,48 @@ async fn subscriptions_waiting_for_capacity_are_terminated_during_shutdown() {
     drop(permit);
 }
 
-fn catalog_query() -> w::ReadRequest {
-    w::ReadRequest {
-        selection: Some(w::Selection {
-            kinds: vec![
-                w::EntityKind::Venue as i32,
-                w::EntityKind::Currency as i32,
-                w::EntityKind::ItemType as i32,
-            ],
-            ..Default::default()
-        }),
-        limit: 1,
-        ..Default::default()
-    }
-}
 #[tokio::test]
-async fn catalog_and_orderbooks_enforce_their_projection_and_preserve_snapshot_boundaries() {
-    use crate::{catalog::messages::ReadCatalog, orderbooks::messages::ReadOrders};
+async fn catalog_and_orderbooks_serve_distinct_typed_projections() {
     let (_directory, mut writer) = fixture();
     let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
     let handle = &service.handle;
-    assert_eq!(
-        handle
-            .orders_raw(catalog_query())
-            .await
-            .err()
-            .unwrap()
-            .code(),
-        tonic::Code::InvalidArgument
-    );
-    assert_eq!(
-        handle.catalog_raw(query()).await.err().unwrap().code(),
-        tonic::Code::InvalidArgument
-    );
-    assert_eq!(
-        handle
-            .test_window_raw(catalog_query())
-            .await
-            .err()
-            .unwrap()
-            .code(),
-        tonic::Code::InvalidArgument
-    );
-    let permit = handle.orderbooks.budget.try_query().unwrap();
-    assert_eq!(
-        handle
-            .orderbooks
-            .address
-            .send(ReadOrders {
-                request: catalog_query(),
-                permit
-            })
-            .await
-            .unwrap()
-            .err()
-            .unwrap()
-            .code(),
-        tonic::Code::InvalidArgument
-    );
-    let permit = handle.catalog.budget.try_query().unwrap();
-    assert_eq!(
-        handle
-            .catalog
-            .address
-            .send(ReadCatalog {
-                request: query(),
-                permit
-            })
-            .await
-            .unwrap()
-            .err()
-            .unwrap()
-            .code(),
-        tonic::Code::InvalidArgument
-    );
-    let first = handle.catalog_raw(catalog_query()).await.unwrap();
-    assert_eq!(first.page.cursor, "c0");
-    assert!(!first.page.next_page_token.is_empty());
-    assert!(
-        first
-            .page
-            .entities
-            .iter()
-            .all(|entity| !matches!(entity.entity, Some(w::entity::Entity::Order(_))))
-    );
+    // Private actor messages still reject another responsibility's generic selection.
+    let invalid = handle
+        .orderbooks
+        .address
+        .send(crate::orderbooks::messages::ReadOrders {
+            request: w::ReadRequest {
+                selection: Some(w::Selection {
+                    kinds: vec![w::EntityKind::Venue as i32],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            permit: handle.orderbooks.budget.try_query().unwrap(),
+        })
+        .await
+        .unwrap()
+        .err()
+        .unwrap();
+    assert_eq!(invalid.code(), tonic::Code::InvalidArgument);
+    let before = handle.catalog_snapshot().await.unwrap();
+    assert_eq!(before.data.collections[0].name, "Gift");
+    assert_eq!(before.data.books.len(), 1);
     writer
         .apply(w::Batch {
             cursor: "c1".into(),
             changes: vec![order("1")],
         })
         .unwrap();
-    let mut next = catalog_query();
-    next.page_token = first.page.next_page_token;
-    let page = handle.catalog_raw(next).await.unwrap();
-    assert_eq!(page.page.cursor, "c0");
-    assert_eq!(handle.orders_raw(query()).await.unwrap().page.cursor, "c1");
+    let after = handle.catalog_snapshot().await.unwrap();
     assert_eq!(
-        handle
-            .books_raw(w::BooksRequest {
-                limit: 50,
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .books
-            .len(),
-        1
+        before.revision, after.revision,
+        "Order prices do not invalidate catalog data"
     );
+    assert_eq!(before.data, after.data);
+    let orders = handle.orders(gift_query()).await.unwrap();
+    assert_eq!(orders.cursor, "c1");
+    assert_eq!(orders.data[0].price.as_str(), "1");
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
@@ -485,8 +423,8 @@ async fn terminal(updates: &mut watch::Receiver<DataUpdate>) {
 async fn market_subscription_leases_cancel_independently_and_last_release_stops_the_feed() {
     let (_directory, mut writer) = fixture();
     let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
-    let (api_lease, mut api_updates) = service.handle.test_window_raw(query()).await.unwrap();
-    let (bot_lease, mut bot_updates) = service.handle.test_window_raw(query()).await.unwrap();
+    let (api_lease, mut api_updates) = service.handle.test_window(gift_query()).await.unwrap();
+    let (bot_lease, mut bot_updates) = service.handle.test_window(gift_query()).await.unwrap();
     assert!(
         !Arc::ptr_eq(&api_lease, &bot_lease),
         "callers have separate leases"
@@ -504,17 +442,17 @@ async fn market_subscription_leases_cancel_independently_and_last_release_stops_
         })
         .unwrap();
     next_window(&mut bot_updates, "c1").await;
-    let mut another = query();
+    let mut another = gift_query();
     another.limit = 1;
     assert_eq!(
         service
             .handle
-            .test_window_raw(another.clone())
+            .test_window(another.clone())
             .await
             .err()
             .unwrap()
             .code(),
-        tonic::Code::ResourceExhausted
+        crate::error::DataErrorCode::CapacityExceeded
     );
     drop(bot_lease);
     // Retained receivers cannot keep computation alive after both callers unsubscribe.
@@ -522,9 +460,9 @@ async fn market_subscription_leases_cancel_independently_and_last_release_stops_
     terminal(&mut bot_updates).await;
     let (_lease, mut updates) = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            match service.handle.test_window_raw(another.clone()).await {
+            match service.handle.test_window(another.clone()).await {
                 Ok(subscription) => break subscription,
-                Err(error) if error.code() == tonic::Code::ResourceExhausted => {
+                Err(error) if error.code() == crate::error::DataErrorCode::CapacityExceeded => {
                     tokio::time::sleep(Duration::from_millis(10)).await
                 }
                 Err(error) => panic!("unexpected subscribe failure: {error}"),
@@ -622,8 +560,8 @@ async fn saturated_snapshot_capacity_leaves_normal_reads_available() {
             .await
             .is_err()
     );
-    assert!(service.handle.orders_raw(query()).await.is_ok());
-    assert!(service.handle.catalog().await.is_ok());
+    assert!(service.handle.orders(gift_query()).await.is_ok());
+    assert!(service.handle.catalog_snapshot().await.is_ok());
     drop(busy);
     busy_task.await.unwrap();
     work.await.unwrap().unwrap().unwrap();
@@ -637,7 +575,7 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
     let (_directory, writer) = fixture();
     let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let handle = service.handle.clone();
-    let (_lease, mut updates) = handle.test_window_raw(query()).await.unwrap();
+    let (_lease, mut updates) = handle.test_window(gift_query()).await.unwrap();
     let original = next_window(&mut updates, "c0").await;
     let query_a = handle.orderbooks.budget.try_query().unwrap();
     let query_b = handle.orderbooks.budget.try_query().unwrap();
@@ -668,7 +606,7 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
             .await
             .is_err()
     );
-    assert_eq!(handle.orders_raw(query()).await.unwrap().page.cursor, "c0");
+    assert_eq!(handle.orders(gift_query()).await.unwrap().cursor, "c0");
     drop(heavy);
     heavy_task.await.unwrap();
     work.await.unwrap().unwrap().unwrap();
@@ -738,7 +676,7 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
             cursor: "exhausted".into(),
         })
         .unwrap();
-    assert!(writer.reader().read(query()).unwrap().page.entities.iter().any(|entity| matches!(&entity.entity,Some(w::entity::Entity::Order(o)) if o.quantity == "0" || o.quantity == "0.00")));
+    assert!(writer.reader().read(raw_query()).unwrap().page.entities.iter().any(|entity| matches!(&entity.entity,Some(w::entity::Entity::Order(o)) if o.quantity == "0" || o.quantity == "0.00")));
     let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
     for side in [GiftSide::Ask, GiftSide::Bid] {
         for consistency in [ReadConsistency::Snapshot, ReadConsistency::Live] {
@@ -992,31 +930,19 @@ async fn live_windows_share_producers_keep_freshness_and_release_individual_leas
 }
 
 impl MarketDataHandle {
-    async fn test_window_raw(
-        &self,
-        mut request: w::ReadRequest,
-    ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status> {
-        self.orderbooks.budget.check()?;
-        crate::selection::orders(&request)?;
-        request.mode = w::ReadMode::Live as i32;
-        let window = market_replica::WindowRequest {
-            anchor: None,
-            before: 0,
-            after: request.limit.max(1) - 1,
-            snapshot: None,
-        };
-        self.subscriptions
-            .send(crate::subscriptions::messages::SubscribeWindow { request, window })
-            .await
-            .map_err(crate::runtime::closed)?
-    }
     async fn test_window(
         &self,
         query: market_gifts::GiftOrdersQuery,
     ) -> crate::error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
-        Ok(self
-            .test_window_raw(crate::query::orders(query, w::ReadMode::Live)?)
-            .await?)
+        self.subscribe_window(market_gifts::GiftOrderWindowQuery {
+            filters: query.filters,
+            side: query.side,
+            sort: query.sort,
+            anchor: None,
+            before: 0,
+            after: query.limit - 1,
+        })
+        .await
     }
 }
 
@@ -1127,6 +1053,54 @@ async fn anchored_viewers_do_not_inherit_another_viewers_evolved_fallback() {
         "c"
     );
     drop((head, first, late));
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn frozen_windows_reject_overload_while_live_producers_wait_and_cleanup_stays_available() {
+    let (_directory, writer) = fixture();
+    let service = TestData::start(writer.reader(), 1, 1).await.unwrap();
+    let query = market_gifts::GiftOrderWindowQuery {
+        filters: gift_query().filters,
+        side: Default::default(),
+        sort: Default::default(),
+        anchor: None,
+        before: 0,
+        after: 49,
+    };
+    let frozen = market_gifts::SnapshotWindowQuery {
+        query: query.clone(),
+        snapshot: None,
+    };
+    let first = service
+        .handle
+        .snapshot_window(frozen.clone())
+        .await
+        .unwrap();
+    let permit = service.handle.orderbooks.budget.try_query().unwrap();
+    let error = tokio::time::timeout(
+        Duration::from_millis(100),
+        service.handle.snapshot_window(frozen),
+    )
+    .await
+    .expect("Foreground reads must reject overload without waiting")
+    .err()
+    .unwrap();
+    assert_eq!(error.code(), crate::error::DataErrorCode::CapacityExceeded);
+    // Cleanup and cheap status do not require read slots.
+    service
+        .handle
+        .release_window_snapshot(first.snapshot)
+        .await
+        .unwrap();
+    assert!(service.handle.status().await.unwrap().ready);
+    let (lease, mut updates) = service.handle.subscribe_window(query).await.unwrap();
+    assert!(matches!(*updates.borrow(), DataUpdate::Connecting));
+    drop(permit);
+    assert_eq!(next_window(&mut updates, "c0").await.data.len(), 1);
+    drop(lease);
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();

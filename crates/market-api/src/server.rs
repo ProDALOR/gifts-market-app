@@ -99,9 +99,12 @@ impl ApiServer {
         let state = web::Data::new(market.clone());
         let root = config.web_dir.map(|path| web::Data::new(WebRoot(path)));
         let json_limit = config.limits.json_bytes;
+        let deadline = crate::http::Deadline(config.limits.request_timeout);
         let media_cache = media.as_ref().map(|media| media.cache.clone());
         let server = HttpServer::new(move || {
             let app = App::new()
+                .wrap(actix_web::middleware::from_fn(crate::http::deadline))
+                .app_data(deadline)
                 .wrap(origins.cors())
                 .wrap(
                     ErrorHandlers::new()
