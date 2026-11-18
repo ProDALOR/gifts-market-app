@@ -45,55 +45,51 @@ export function listingLink(order: Order): string | undefined {
   } catch {}
 }
 
-/** Core gift appearance and bid constraints, without redundant listing metadata. */
+export type GiftDetail = {
+  label: string;
+  value: string;
+  option?: CatalogOption;
+};
+
+/** Resolve labels and single-trait visuals together, without reconstructing selections in the UI. */
 export function giftDetails(
   order: Order,
   names: ReadonlyMap<string, string>,
-): [string, string][] {
+  options?: ReadonlyMap<string, CatalogOption>,
+): GiftDetail[] {
   const target = order.target;
   if (target.kind === "unsupported")
-    return [["Conditions", target.reason.message]];
-  const criteria =
-    target.kind === "criteria"
-      ? target.criteria
-      : {
-          models: target.gift.traits.model ? [target.gift.traits.model] : [],
-          backdrops: target.gift.traits.backdrop
-            ? [target.gift.traits.backdrop]
-            : [],
-          patterns: target.gift.traits.pattern
-            ? [target.gift.traits.pattern]
-            : [],
-          number: null,
-        };
-  const rows: [string, string][] = (
-    [
-      ["Model", criteria.models],
-      ["Backdrop", criteria.backdrops],
-      ["Symbol", criteria.patterns],
-    ] as const
-  )
-    .filter(([, ids]) => target.kind === "criteria" || ids.length > 0)
-    .map(([label, ids]) => [
-      label,
-      ids.length
+    return [{ label: "Conditions", value: target.reason.message }];
+  const rows: GiftDetail[] = [];
+  for (const trait of traits) {
+    const id =
+      target.kind === "gift" ? target.gift.traits[trait.kind] : undefined;
+    const ids =
+      target.kind === "criteria" ? target.criteria[trait.id] : id ? [id] : [];
+    if (target.kind === "gift" && !ids.length) continue;
+    const option = ids.length === 1 ? options?.get(ids[0]) : undefined;
+    rows.push({
+      label: trait.label,
+      value: ids.length
         ? ids.map((id) => names.get(id) || "Unavailable").join(" / ")
-        : target.kind === "criteria"
-          ? "Any"
-          : "Unknown",
-    ]);
+        : "Any",
+      ...(option?.kind === trait.kind ? { option } : {}),
+    });
+  }
+  const criteria = target.kind === "criteria" ? target.criteria : undefined;
   if (
-    target.kind === "criteria" &&
+    criteria &&
     criteria.number &&
     (criteria.number.min != null || criteria.number.max != null)
   )
-    rows.push([
-      "Gift #",
-      criteria.number.min === criteria.number.max
-        ? String(criteria.number.min)
-        : `${criteria.number.min ?? "Any"} – ${criteria.number.max ?? "Any"}`,
-    ]);
+    rows.push({
+      label: "Gift #",
+      value:
+        criteria.number.min === criteria.number.max
+          ? String(criteria.number.min)
+          : `${criteria.number.min ?? "Any"} – ${criteria.number.max ?? "Any"}`,
+    });
   if (target.kind === "criteria" && order.quantity > 1)
-    rows.push(["Quantity", String(order.quantity)]);
+    rows.push({ label: "Quantity", value: String(order.quantity) });
   return rows;
 }

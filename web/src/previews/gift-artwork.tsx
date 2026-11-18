@@ -12,17 +12,7 @@ import { useSettledVisibility } from "./use-playback";
 import type { PlaybackPolicy } from "./use-playback";
 const ModelAnimation = lazy(() => import("./model-animation"));
 
-export const GiftArtwork = memo(function GiftArtwork({
-  media,
-  palette,
-  patternUrl,
-  label = "Gift preview",
-  fallback,
-  size = "small",
-  playback = "interaction",
-  className = "",
-  children,
-}: {
+type ArtworkProps = {
   media?: GiftMedia;
   palette?: BackdropPalette;
   patternUrl?: string;
@@ -32,7 +22,32 @@ export const GiftArtwork = memo(function GiftArtwork({
   playback?: PlaybackPolicy;
   className?: string;
   children?: ReactNode;
-}) {
+};
+
+/** Media identity owns thumbnail failures, hover state and renderer lifetime for every caller. */
+export const GiftArtwork = memo(function GiftArtwork(props: ArtworkProps) {
+  return (
+    <Artwork
+      key={JSON.stringify([
+        props.media?.thumbnail_url,
+        props.media?.animation_url,
+      ])}
+      {...props}
+    />
+  );
+});
+
+function Artwork({
+  media,
+  palette,
+  patternUrl,
+  label = "Gift preview",
+  fallback,
+  size = "small",
+  playback = "interaction",
+  className = "",
+  children,
+}: ArtworkProps) {
   const url = media?.thumbnail_url;
   const animationUrl = media?.animation_url;
   const host = useRef<HTMLSpanElement>(null);
@@ -43,8 +58,13 @@ export const GiftArtwork = memo(function GiftArtwork({
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
+  const canAnimate =
+    !!animationUrl && playback !== "static" && pageVisible && !reducedMotion;
+  const canInteract = canAnimate && playback !== "detail";
   const settled = useSettledVisibility(
-    visible,
+    visible &&
+      canAnimate &&
+      (playback === "collection" || playback === "selected"),
     playback === "collection" ? 180 : 100,
   );
   const interactive = hovered || focused;
@@ -57,15 +77,12 @@ export const GiftArtwork = memo(function GiftArtwork({
           ? 20
           : 10;
   const shouldAnimate =
-    !!animationUrl &&
+    canAnimate &&
     visible &&
-    pageVisible &&
-    !reducedMotion &&
-    playback !== "static" &&
     (playback === "detail" ||
       interactive ||
       (settled && playback !== "interaction"));
-  useEffect(() => () => clearTimeout(hoverTimer.current), []);
+  useEffect(() => () => clearTimeout(hoverTimer.current), [canInteract]);
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -91,17 +108,21 @@ export const GiftArtwork = memo(function GiftArtwork({
   return (
     <span
       ref={host}
-      onPointerEnter={(event) => {
-        if (event.pointerType !== "touch") {
-          clearTimeout(hoverTimer.current);
-          hoverTimer.current = setTimeout(() => setHovered(true), 150);
-        }
-      }}
+      onPointerEnter={
+        canInteract
+          ? (event) => {
+              if (event.pointerType !== "touch") {
+                clearTimeout(hoverTimer.current);
+                hoverTimer.current = setTimeout(() => setHovered(true), 150);
+              }
+            }
+          : undefined
+      }
       onPointerLeave={() => {
         clearTimeout(hoverTimer.current);
         setHovered(false);
       }}
-      onFocus={() => setFocused(true)}
+      onFocus={canInteract ? () => setFocused(true) : undefined}
       onBlur={() => setFocused(false)}
       tabIndex={
         url &&
@@ -137,7 +158,7 @@ export const GiftArtwork = memo(function GiftArtwork({
           }}
         />
       )}
-      {requested && animationUrl && (
+      {requested && playback !== "static" && animationUrl && (
         <Suspense fallback={null}>
           <ModelAnimation
             url={animationUrl}
@@ -150,4 +171,4 @@ export const GiftArtwork = memo(function GiftArtwork({
       {children}
     </span>
   );
-});
+}

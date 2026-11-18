@@ -188,13 +188,13 @@
 }
 .detail-art {
   position: relative;
-  height: 140px;
+  height: clamp(240px, 78vw, 360px);
   background: var(--raised);
 }
 .detail-close {
   position: absolute;
-  top: 6px;
-  right: 8px;
+  top: 12px;
+  right: 12px;
   width: 38px;
   height: 38px;
   border-radius: 50%;
@@ -205,7 +205,15 @@
   z-index: 5;
 }
 .detail-body {
-  padding: 16px 18px 0;
+  min-width: 0;
+  padding: 20px 18px 0;
+}
+.detail-body:last-child {
+  padding-bottom: max(
+    18px,
+    env(safe-area-inset-bottom),
+    var(--tg-safe-bottom, 0px)
+  );
 }
 .detail-body h2 {
   font-size: 20px;
@@ -213,9 +221,11 @@
   font-weight: 650;
 }
 .detail-market {
-  display: grid;
-  place-items: center;
-  min-height: 44px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
   border-radius: 12px;
   background: var(--accent);
   color: #2a1728;
@@ -279,11 +289,11 @@
   border-radius: 0;
   margin: 0;
 }
-.detail-art .gift-model-image,
-.detail-art .model-animation {
-  inset: 15px auto auto calc(50% - 55px);
-  width: 110px;
-  height: 110px;
+.detail-art .gift-preview .gift-model-image,
+.detail-art .gift-preview .model-animation {
+  inset: 14%;
+  width: 72%;
+  height: 72%;
 }
 .card-copy .quote-amount.precise {
   font-size: 11px;
@@ -294,9 +304,10 @@
 }
 .detail-price {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
-  margin: 7px 0 14px;
+  margin: 10px 0 0;
   color: var(--accent);
   font-size: 22px;
   line-height: 1.2;
@@ -394,23 +405,25 @@
   margin: 0 0 14px;
 }
 .gift-valuations {
-  margin: 18px 0;
+  margin: 22px 0 18px;
 }
 .valuation-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  min-height: 28px;
 }
 .valuation-heading h3 {
-  font-size: 14px;
+  font-size: 11px;
+  color: var(--muted);
   font-weight: 650;
 }
 .valuation-heading button {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  margin: -8px -6px -8px 0;
   border-radius: 50%;
-  background: var(--raised);
   font-size: 19px;
 }
 .valuation-metrics {
@@ -457,7 +470,7 @@
   font-weight: 550;
 }
 .valuation-metrics li p,
-.gift-valuations small {
+.valuation-metrics small {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.5;
@@ -473,40 +486,56 @@
 .valuation-stale {
   color: #c19b67;
 }
-.detail-market {
-  margin-top: 16px;
-}
 
-.valuation-metrics > .valuation-primary {
-  grid-column: 1 / -1;
-  margin: 0;
-  padding: 14px;
-  border-radius: 12px;
-  background: var(--raised);
-  border: 1px solid var(--accent);
+/* Primary results use the same renderer as the secondary strategy fields. */
+.valuation-summary .valuation-metrics {
+  margin-top: 10px;
+  grid-template-columns: minmax(0, 1fr);
 }
-.valuation-primary .valuation-value {
-  font-size: 24px;
+.valuation-summary .valuation-metrics > li {
+  padding: 0;
+  background: none;
+  border: 0;
 }
-.valuation-primary p {
-  font-size: 11px;
-  margin-top: 6px;
-  color: var(--muted);
+.valuation-summary .valuation-value {
+  font-size: 22px;
+  line-height: 1.2;
 }
-
+.valuation-summary .valuation-metrics h4 {
+  margin-bottom: 6px;
+  font-size: 10px;
+}
+.valuation-summary .valuation-note {
+  font-size: 10px;
+  margin-top: 8px;
+}
+.valuation-strategy h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.valuation-breakdown {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.valuation-breakdown .valuation-metrics {
+  margin-top: 14px;
+}
 .valuation-guide {
   margin-top: 16px;
   border-top: 1px solid var(--line);
   padding-top: 14px;
 }
-.valuation-guide summary {
+.valuation-guide summary,
+.valuation-breakdown summary {
   color: var(--accent);
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
   padding: 4px 0;
 }
-.valuation-guide summary:focus-visible {
+.valuation-guide summary:focus-visible,
+.valuation-breakdown summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
   border-radius: 4px;
@@ -564,4 +593,91 @@
   padding: 10px 0;
   margin: 12px 0;
   font-size: 1.1em;
+}
+
+.detail-pricing {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 20px 0;
+}
+.detail-pricing > section {
+  min-width: 0;
+}
+.listing-price {
+  border-right: 1px solid var(--line);
+  padding-right: 14px;
+}
+.listing-price h3 {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted);
+}
+.price-comparison {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.detail-art .gift-preview-fallback {
+  font-size: 64px;
+}
+.detail-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  padding: 12px 18px
+    max(14px, env(safe-area-inset-bottom), var(--tg-safe-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+}
+.detail-market svg,
+.detail-market .venue-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+@media (hover: hover) {
+  .gift-card:not(.selected):hover {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .detail-market:hover {
+    filter: brightness(1.08);
+  }
+}
+@media (min-width: 800px) {
+  .detail[open] {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    align-items: start;
+    width: min(960px, calc(100% - 48px));
+    inset: 0;
+    margin: auto;
+    height: fit-content;
+    border-radius: 24px;
+  }
+  .detail-art {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    position: sticky;
+    top: 0;
+    height: clamp(320px, 43vw, 480px);
+  }
+  .detail-body,
+  .detail-actions {
+    grid-column: 2;
+  }
+  .detail-body {
+    padding: 28px 24px 0;
+  }
+  .detail-body h2 {
+    padding-right: 28px;
+  }
+  .detail-actions {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
 }

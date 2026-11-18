@@ -18,6 +18,7 @@ const guides = new ResourceCache(
         "The calculation guide is unavailable. Please try again.",
       );
     const markdown = await response.text();
+    signal.throwIfAborted();
     const html = micromark(markdown, {
       extensions: [math()],
       htmlExtensions: [

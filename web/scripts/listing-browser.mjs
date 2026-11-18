@@ -17,9 +17,10 @@ import '/src/style.css';
 const query={kind:'orders',query:{filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},side:'ask',sort:'time_desc',consistency:'live',limit:50,page_token:''}};
 const options=new Map([
 ['gold',{kind:'model',id:'gold',name:'Gold',media:{thumbnail_url:'/__gift.svg',animation_url:null}}],
+['symbol',{kind:'pattern',id:'symbol',name:'Star',media:{thumbnail_url:'/__symbol.svg',animation_url:'/__symbol-motion'}}],
 ['blue',{kind:'backdrop',id:'blue',name:'Sapphire',palette:{center:'#759fb4',edge:'#364e73',pattern:'#283d60'}}]
 ]);
-const names=new Map([['gift','Gift'],['gold','Gold'],['blue','Sapphire'],['venue','MRKT']]);
+const names=new Map([['gift','Gift'],['gold','Gold'],['blue','Sapphire'],['symbol','Star'],['venue','MRKT']]);
 function App(){const feed=useOrderFeed(query,false,0);const [selected,select]=useState();
 window.selectListing=select;window.feedView=()=>feed;
 useEffect(()=>{select(old=>old ? feed.displayOrders.find(row=>orderKey(row)===orderKey(old))||old:undefined)},[feed.displayOrders]);
@@ -72,7 +73,7 @@ const order = (id, number) => ({
       id: `g${number}`,
       collection_id: "gift",
       number,
-      traits: { model: "gold", backdrop: "blue", pattern: null },
+      traits: { model: "gold", backdrop: "blue", pattern: "symbol" },
     },
   },
   price: String(number * 10),
@@ -171,6 +172,33 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 440, height: 880 } });
+  const settled = () =>
+    page.waitForFunction(
+      () =>
+        document
+          .querySelector(".valuation-summary")
+          ?.getAttribute("aria-busy") === "false",
+    );
+  const openBreakdown = async () => {
+    await settled();
+    const breakdown = page.locator(".valuation-breakdown");
+    await breakdown.waitFor();
+    if (!(await breakdown.evaluate((element) => element.open)))
+      await breakdown.locator("summary").click();
+    await page
+      .locator('[data-metric="model_floor"] .valuation-value')
+      .waitFor();
+  };
+  let symbolAnimations = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/__symbol-motion")) symbolAnimations++;
+  });
+  await page.route("**/__symbol.svg", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="red" d="m12 1 3 7 8 1-6 6 2 8-7-4-7 4 2-8-6-6 8-1z"/></svg>',
+    }),
+  );
   const errors = [];
   let guideModuleRequests = 0;
   page.on("request", (request) => {
@@ -206,20 +234,34 @@ try {
     );
   });
   let guideRequests = 0;
-  let guideFails = true;
+  let guideFails = true,
+    holdGuide = false,
+    releaseGuide;
+  let abortedGuides = 0;
+  page.on("requestfailed", (request) => {
+    if (request.url().endsWith("/__fixture_strategy.md")) abortedGuides++;
+  });
   await page.route("**/__fixture_strategy.md", async (route) => {
     guideRequests++;
-    await route.fulfill(
-      guideFails
-        ? { status: 503, body: "Unavailable" }
-        : {
-            contentType: "text/markdown; charset=utf-8",
-            body:
-              methodology +
-              `\n\nGuide revision ${strategyMetadata.documentation_revision}.\n` +
-              "\n<script>window.guideExecuted=true</script>\n\n[Unsafe](javascript:alert(1))",
-          },
-    );
+    if (holdGuide)
+      await new Promise((resolve) => {
+        releaseGuide = resolve;
+      });
+    try {
+      await route.fulfill(
+        guideFails
+          ? { status: 503, body: "Unavailable" }
+          : {
+              contentType: "text/markdown; charset=utf-8",
+              body:
+                methodology +
+                `\n\nGuide revision ${strategyMetadata.documentation_revision}.\n` +
+                "\n<script>window.guideExecuted=true</script>\n\n[Unsafe](javascript:alert(1))",
+            },
+      );
+    } catch {
+      /* A collapsed guide cancels its request. */
+    }
   });
   let socket;
   await page.routeWebSocket("**/ws", (peer) => {
@@ -229,6 +271,7 @@ try {
         peer.send(JSON.stringify(frame([a, b])));
     });
   });
+  let reportKind = "partial";
   let mode = "ok",
     release,
     requests = [];
@@ -239,6 +282,16 @@ try {
       await new Promise((resolve) => {
         release = resolve;
       });
+    const response = report(body);
+    if (reportKind === "identity") response.gift.number++;
+    if (reportKind !== "partial") {
+      response.display.fields.find((field) => field.primary).value = {
+        kind: "currency",
+        amount: "25.00",
+        currency_id: reportKind === "currency" ? "XTR" : body.currency_id,
+      };
+      if (reportKind === "stale") response.sync = { ...sync, state: "stale" };
+    }
     try {
       await route.fulfill(
         mode === "error"
@@ -248,7 +301,7 @@ try {
                 error: { code: "unavailable", message: "Please try again" },
               },
             }
-          : { json: report(body) },
+          : { json: response },
       );
     } catch {
       /* Request may have been cancelled when the detail sheet closed. */
@@ -283,7 +336,53 @@ try {
   await mkdir("/tmp/gifts-market-ui", { recursive: true });
   await page.screenshot({ path: "/tmp/gifts-market-ui/fresh-listings.png" });
   await page.locator('[data-order-id="a"]').click();
-  await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
+  await page.locator('.valuation-summary [data-metric="decision"]').waitFor();
+  assert.equal(await page.locator(".price-comparison").count(), 0);
+  assert.equal(
+    await page.locator(".valuation-breakdown").evaluate((el) => el.open),
+    false,
+  );
+  assert.equal(
+    await page.locator('[data-metric="model_floor"]').isVisible(),
+    false,
+  );
+  const art = await page.locator(".detail-art").boundingBox();
+  const giftArt = await page
+    .locator(".detail-art .gift-model-image")
+    .boundingBox();
+  assert.ok(
+    art.height >= 300 && giftArt.height > 200,
+    "Mobile artwork has more room",
+  );
+  assert.equal(await page.locator(".attribute-visual").count(), 3);
+  await page.locator(".attribute-model .gift-model-image.loaded").waitFor();
+  await page.locator(".attribute-pattern .gift-model-image.loaded").waitFor();
+  await page.waitForFunction(
+    () => document.querySelector(".attribute-backdrop canvas")?.width > 1,
+  );
+  assert.ok(
+    (
+      await page
+        .locator(".attribute-pattern img")
+        .evaluate((el) => getComputedStyle(el).filter)
+    ).includes("brightness(0)"),
+  );
+  await page.screenshot({ path: "/tmp/gifts-market-ui/details-mobile.png" });
+  await page.setViewportSize({ width: 1100, height: 850 });
+  const desktopArt = await page.locator(".detail-art").boundingBox();
+  const desktopBody = await page.locator(".detail-body").boundingBox();
+  assert.ok(
+    desktopBody.x >= desktopArt.x + desktopArt.width - 1,
+    "Desktop shows artwork beside details",
+  );
+  await page.screenshot({ path: "/tmp/gifts-market-ui/details-desktop.png" });
+  await page.setViewportSize({ width: 440, height: 880 });
+  await openBreakdown();
+  assert.equal(
+    symbolAnimations,
+    0,
+    "Attribute thumbnails never request animations",
+  );
   assert.equal(requests.length, 1);
   assert.equal(guideRequests, 0, "Guide is not requested while collapsed");
   assert.deepEqual(requests[0], {
@@ -294,8 +393,8 @@ try {
   assert.deepEqual(
     await page.locator(".valuation-metrics > li h4").allTextContents(),
     [
-      "Fixture confidence",
       "Fixture decision",
+      "Fixture confidence",
       "Fixture price",
       "Fixture score",
     ],
@@ -321,7 +420,7 @@ try {
     "1.2500 points",
   );
   await page
-    .locator(".gift-valuations")
+    .locator(".valuation-summary")
     .getByText("Not enough data", { exact: true })
     .first()
     .waitFor();
@@ -372,15 +471,16 @@ try {
   await page.locator('[data-order-id="a"]').click();
   await page.waitForFunction(
     () =>
-      document.querySelector(".gift-valuations")?.getAttribute("aria-busy") ===
-      "true",
+      document
+        .querySelector(".valuation-summary")
+        ?.getAttribute("aria-busy") === "true",
   );
   for (let tries = 0; !release && tries < 100; tries++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(release, "The delayed valuation request started");
   mode = "ok";
   await page.evaluate((order) => window.selectListing(order), b);
-  await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
+  await openBreakdown();
   release();
   assert.ok((await page.locator("#detail-title").textContent()).includes("#2"));
   assert.equal(
@@ -394,14 +494,14 @@ try {
     .getByRole("button", { name: "Refresh valuation", exact: true })
     .click();
   await page
-    .locator('.gift-valuations [role="alert"]')
+    .locator('.valuation-summary [role="alert"]')
     .getByText("Please try again", { exact: true })
     .waitFor();
   mode = "ok";
   await page
     .getByRole("button", { name: "Refresh valuation", exact: true })
     .click();
-  await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
+  await openBreakdown();
   assert.equal(
     guideModuleRequests,
     0,
@@ -425,7 +525,7 @@ try {
     .getByRole("button", { name: "Retry strategy information" })
     .click();
   await page
-    .locator(".valuation-heading")
+    .locator(".valuation-strategy")
     .getByRole("heading", { name: strategyMetadata.name, exact: true })
     .waitFor();
   assert.equal(metadataRequests, previousMetadataRequests + 1);
@@ -476,8 +576,66 @@ try {
   assert.equal(
     guideRequests,
     2,
-    "Collapsing and reopening reuses the mounted guide",
+    "Collapsing and reopening reuses cached rendered math",
   );
+  // Refreshes keep the breakdown, metadata and already-rendered guide alive.
+  const metadataBeforeRefresh = metadataRequests;
+  const guidesBeforeRefresh = guideRequests;
+  const requestsBeforeRefresh = requests.length;
+  await content.evaluate((node) => {
+    window.__guideBeforeRefresh = node;
+  });
+  mode = "hold";
+  release = undefined;
+  await page
+    .getByRole("button", { name: "Refresh valuation", exact: true })
+    .click();
+  await page.getByText("Refreshing estimate…", { exact: true }).waitFor();
+  for (let tries = 0; !release && tries < 100; tries++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(release);
+  assert.equal(
+    await page.locator(".valuation-breakdown").evaluate((el) => el.open),
+    true,
+  );
+  assert.equal(
+    await content.evaluate((node) => window.__guideBeforeRefresh === node),
+    true,
+  );
+  mode = "ok";
+  release();
+  await settled();
+  assert.equal(requests.length, requestsBeforeRefresh + 1);
+  assert.equal(
+    metadataRequests,
+    metadataBeforeRefresh,
+    "Refreshing does not rediscover unchanged strategy metadata",
+  );
+  assert.equal(
+    guideRequests,
+    guidesBeforeRefresh,
+    "Refreshing does not download the guide again",
+  );
+  assert.equal(
+    await content.evaluate((node) => window.__guideBeforeRefresh === node),
+    true,
+    "Refreshing does not typeset the guide again",
+  );
+  mode = "error";
+  await page
+    .getByRole("button", { name: "Refresh valuation", exact: true })
+    .click();
+  await page.getByText("Previous estimate shown.", { exact: true }).waitFor();
+  assert.equal(
+    await content.evaluate((node) => window.__guideBeforeRefresh === node),
+    true,
+  );
+  assert.equal(await page.locator(".price-comparison").count(), 0);
+  mode = "ok";
+  await page
+    .getByRole("button", { name: "Refresh valuation", exact: true })
+    .click();
+  await settled();
   await page.setViewportSize({ width: 390, height: 844 });
   await content
     .getByRole("heading", { name: "Final mark", exact: true })
@@ -498,7 +656,7 @@ try {
     .getByRole("button", { name: "Close details", exact: true })
     .click();
   await page.evaluate((order) => window.selectListing(order), b);
-  await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
+  await openBreakdown();
   await page.locator(".valuation-guide summary").click();
   await page
     .getByRole("article", {
@@ -523,9 +681,25 @@ try {
   await page.clock.runFor(60_001);
   await page.evaluate((order) => window.selectListing(order), b);
   await page
-    .locator(".valuation-heading")
+    .locator(".valuation-strategy")
     .getByRole("heading", { name: strategyMetadata.name, exact: true })
     .waitFor();
+  holdGuide = true;
+  await page.locator(".valuation-guide summary").click();
+  for (let tries = 0; !releaseGuide && tries < 100; tries++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(releaseGuide);
+  await page.locator(".valuation-guide summary").click();
+  for (let tries = 0; !abortedGuides && tries < 100; tries++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    abortedGuides,
+    1,
+    "Collapsing a pending guide cancels its fetch",
+  );
+  assert.equal(await page.locator(".valuation-guide article").count(), 0);
+  holdGuide = false;
+  releaseGuide();
   await page.locator(".valuation-guide summary").click();
   await page
     .getByRole("article", {
@@ -540,9 +714,92 @@ try {
   );
   assert.equal(
     guideRequests,
-    cachedGuideRequests + 1,
-    "New documentation revision bypasses the old rendered guide",
+    cachedGuideRequests + 2,
+    "New documentation revision loads after a cancelled attempt",
   );
+  // Only a single live currency estimate can be compared with an active ask.
+  reportKind = "estimate";
+  await page
+    .getByRole("button", { name: "Refresh valuation", exact: true })
+    .click();
+  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
+  assert.equal(
+    await page.locator(".valuation-breakdown").evaluate((el) => el.open),
+    false,
+  );
+  await page.setViewportSize({ width: 320, height: 720 });
+  assert.equal(
+    await page
+      .locator(".detail")
+      .evaluate((el) => el.scrollWidth > el.clientWidth),
+    false,
+  );
+  await page.screenshot({ path: "/tmp/gifts-market-ui/details-estimate.png" });
+  for (const variant of ["stale", "currency"]) {
+    reportKind = variant;
+    await page
+      .getByRole("button", { name: "Refresh valuation", exact: true })
+      .click();
+    await settled();
+    await page
+      .locator('.valuation-summary [data-metric="decision"] .valuation-value')
+      .waitFor();
+    if (variant === "stale")
+      await page.getByText("Stale data ·", { exact: true }).waitFor();
+    else
+      await page.locator(".valuation-summary .currency-symbol.star").waitFor();
+    assert.equal(await page.locator(".price-comparison").count(), 0);
+  }
+  reportKind = "identity";
+  await page
+    .getByRole("button", { name: "Refresh valuation", exact: true })
+    .click();
+  await page
+    .getByText("Gift details changed. Refresh this market and try again.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await page.locator(".price-comparison").count(), 0);
+  reportKind = "estimate";
+  for (const kind of ["bid", "executed"]) {
+    await page.evaluate((order) => window.selectListing(order), { ...b, kind });
+    await page
+      .getByRole("button", { name: "Refresh valuation", exact: true })
+      .click();
+    await settled();
+    await page
+      .locator('.valuation-summary [data-metric="decision"] .valuation-value')
+      .waitFor();
+    assert.equal(await page.locator(".price-comparison").count(), 0);
+    await page
+      .getByRole("heading", {
+        name: kind === "bid" ? "Bid price" : "Execution price",
+        exact: true,
+      })
+      .waitFor();
+  }
+  // No spurious valuation calls for criteria or missing trait media.
+  const countBeforeCriteria = requests.length;
+  await page.evaluate((order) => window.selectListing(order), {
+    ...b,
+    kind: "bid",
+    target: {
+      kind: "criteria",
+      criteria: { models: [], backdrops: [], patterns: [], number: null },
+    },
+  });
+  await page
+    .getByText("Choose a numbered collectible to see an estimate.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await page.locator(".attribute-visual").count(), 0);
+  assert.equal(
+    await page.locator(".detail dd").getByText("Any", { exact: true }).count(),
+    3,
+  );
+  assert.equal(requests.length, countBeforeCriteria);
+  assert.equal(symbolAnimations, 0);
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(

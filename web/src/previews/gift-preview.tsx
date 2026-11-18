@@ -29,7 +29,6 @@ export function GiftPreview({
   return (
     <GiftArtwork
       {...props}
-      key={`${appearance.media?.thumbnail_url}|${appearance.media?.animation_url}`}
       media={appearance.media}
       palette={palette}
       patternUrl={appearance.patternUrl}

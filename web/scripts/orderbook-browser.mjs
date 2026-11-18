@@ -927,6 +927,23 @@ try {
   ])
     assert.ok(!labels.includes(hidden), hidden);
   assert.equal(await page.locator(".source-details").count(), 0);
+  await page.locator('[data-metric="final_mark"] .valuation-value').waitFor();
+  assert.equal(
+    await page.locator(".valuation-breakdown").evaluate((el) => el.open),
+    false,
+  );
+  assert.equal(
+    await page.locator('[data-metric="model_floor"]').isVisible(),
+    false,
+  );
+  // Capture the initial focus before deliberately expanding the breakdown.
+  assert.equal(
+    await button("Close details").evaluate(
+      (el) => el === document.activeElement,
+    ),
+    true,
+  );
+  await page.locator(".valuation-breakdown summary").click();
   await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
   assert.equal(await page.locator(".valuation-metrics > li").count(), 7);
   assert.equal(
@@ -940,12 +957,6 @@ try {
       .locator('[data-metric="final_mark"] .quote-amount')
       .textContent(),
     "11.25",
-  );
-  assert.equal(
-    await button("Close details").evaluate(
-      (el) => el === document.activeElement,
-    ),
-    true,
   );
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".detail"));

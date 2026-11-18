@@ -87,7 +87,7 @@ test("gift details show traits and bid constraints without listing metadata", as
     ["model", "Gold"],
   ]);
   const rows = giftDetails(base, names),
-    labels = rows.map(([label]) => label);
+    labels = rows.map(({ label }) => label);
   assert.ok(!labels.includes("Last observed"));
   assert.ok(!labels.includes("Expires"));
   assert.ok(!labels.includes("Quantity"));
@@ -102,8 +102,8 @@ test("gift details show traits and bid constraints without listing metadata", as
     assert.ok(!labels.includes(label));
   assert.ok(!JSON.stringify(rows).includes("source-"));
   assert.deepEqual(
-    rows.find(([label]) => label === "Model"),
-    ["Model", "Gold"],
+    rows.find(({ label }) => label === "Model"),
+    { label: "Model", value: "Gold" },
   );
   assert.ok(!labels.includes("Backdrop"));
 
@@ -123,25 +123,25 @@ test("gift details show traits and bid constraints without listing metadata", as
   };
   const bidRows = giftDetails(bid, names);
   assert.deepEqual(
-    bidRows.find(([label]) => label === "Quantity"),
-    ["Quantity", "5"],
+    bidRows.find(({ label }) => label === "Quantity"),
+    { label: "Quantity", value: "5" },
   );
   assert.deepEqual(
-    bidRows.find(([label]) => label === "Model"),
-    ["Model", "Any"],
+    bidRows.find(({ label }) => label === "Model"),
+    { label: "Model", value: "Any" },
   );
   assert.deepEqual(
-    bidRows.find(([label]) => label === "Gift #"),
-    ["Gift #", "1 – 10"],
+    bidRows.find(({ label }) => label === "Gift #"),
+    { label: "Gift #", value: "1 – 10" },
   );
   const executedRows = giftDetails(
     { ...base, kind: "executed", executed_at: "2026-11-18T13:00:00Z" },
     names,
   );
-  assert.ok(!executedRows.some(([label]) => label === "Executed"));
+  assert.ok(!executedRows.some(({ label }) => label === "Executed"));
   assert.ok(
     !executedRows.some(
-      ([label]) => label === "Expires" || label === "Last observed",
+      ({ label }) => label === "Expires" || label === "Last observed",
     ),
   );
 });
@@ -164,9 +164,59 @@ test("unsupported conditions remain distinct from unrestricted criteria in cards
   assert.equal(serial(order), undefined);
   assert.equal(modelName(order, new Map(), "Any"), "Unsupported conditions");
   const rows = giftDetails(order, new Map());
-  assert.deepEqual(rows[0], [
-    "Conditions",
-    order.target.kind === "unsupported" && order.target.reason.message,
+  assert.deepEqual(rows[0], {
+    label: "Conditions",
+    value: order.target.kind === "unsupported" && order.target.reason.message,
+  });
+  assert.ok(!rows.some(({ value }) => value === "Any"));
+});
+
+test("detail visuals resolve with their labels and only for a single matching trait", async () => {
+  const { giftDetails } = await import("../src/orderbook.ts");
+  const model: CatalogOption = {
+    id: "model",
+    name: "Gold",
+    kind: "model",
+    media: null,
+  };
+  const backdrop: CatalogOption = {
+    id: "backdrop",
+    name: "Blue",
+    kind: "backdrop",
+    palette: null,
+  };
+  const options = new Map([
+    [model.id, model],
+    [backdrop.id, backdrop],
   ]);
-  assert.ok(!rows.some(([, value]) => value === "Any"));
+  const names = new Map([
+    [model.id, model.name],
+    [backdrop.id, backdrop.name],
+  ]);
+  const gift = {
+    target: {
+      kind: "gift",
+      gift: { traits: { model: "model", backdrop: "backdrop", pattern: null } },
+    },
+  } as Order;
+  assert.deepEqual(giftDetails(gift, names, options), [
+    { label: "Model", value: "Gold", option: model },
+    { label: "Backdrop", value: "Blue", option: backdrop },
+  ]);
+  const bid = {
+    quantity: 1,
+    target: {
+      kind: "criteria",
+      criteria: {
+        models: ["model", "other"],
+        backdrops: ["model"],
+        patterns: [],
+        number: null,
+      },
+    },
+  } as Order;
+  assert.ok(
+    giftDetails(bid, names, options).every((row) => row.option === undefined),
+    "Multiple choices, wrong trait kinds and unrestricted bids have no invented preview",
+  );
 });

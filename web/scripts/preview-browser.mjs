@@ -48,6 +48,7 @@ window.preload=()=>Promise.all(bulk.map(item=>loadAnimationData('/media/models/'
 window.mountMany=(detail=false)=>{document.getElementById('fixture').style.margin='0';root.render(React.createElement(Many,{detail}));};
 window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i,animation_url:'/media/models/rail-'+i+'/animation'},model_ids:['rail-'+i],backdrop_ids:[],pattern_ids:[]}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
 window.mountReference=(animated=true)=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/custom-still?v=1',animation_url:animated?'/media/custom-motion.tgs?v=2':null},fallback:'R',playback:'detail'}));
+window.mountSource=(thumbnail,playback='static')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:thumbnail,animation_url:'/media/custom-motion.tgs?v=2'},fallback:'F',playback}));
 window.mount();
 </script></body></html>`;
 const server = await createServer({
@@ -78,6 +79,12 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
+    const timeout = window.setTimeout;
+    window.setTimeout = function (callback, delay, ...args) {
+      if (window.__trackPreviewTimers && [100, 150, 180].includes(delay))
+        window.__previewTimers++;
+      return timeout(callback, delay, ...args);
+    };
     const clear = CanvasRenderingContext2D.prototype.clearRect;
     CanvasRenderingContext2D.prototype.clearRect = function (...args) {
       if (window.__failGift && this.canvas.closest(".model-animation"))
@@ -149,6 +156,10 @@ try {
   await page.route("**/media/**", async (route) => {
     const url = route.request().url();
     mediaRequests.push(new URL(url).pathname + new URL(url).search);
+    if (url.endsWith("/broken-still")) {
+      await route.fulfill({ status: 404, body: "Missing" });
+      return;
+    }
     if (
       url.endsWith("/animation") ||
       new URL(url).pathname === "/media/custom-motion.tgs"
@@ -420,6 +431,65 @@ try {
   );
   await page.evaluate(() => window.mountReference(false));
   await page.waitForFunction(() => !document.querySelector(".model-animation"));
+  await page.evaluate(() => {
+    window.__previewTimers = 0;
+    window.__trackPreviewTimers = true;
+    window.mountSource("/media/static-source");
+  });
+  await page.locator('img.loaded[src="/media/static-source"]').waitFor();
+  await page.locator(".gift-preview").hover();
+  await page.waitForTimeout(220);
+  assert.equal(
+    await page.evaluate(() => window.__previewTimers),
+    0,
+    "Static artwork schedules neither hover nor settled autoplay timers",
+  );
+  assert.equal(await page.locator(".model-animation").count(), 0);
+  await page.evaluate(() => {
+    window.__trackPreviewTimers = false;
+    window.mountSource("/media/static-source", "detail");
+  });
+  await page.locator(".model-animation.ready canvas").waitFor();
+  const downloaded = animations;
+  await page.evaluate(() =>
+    window.mountSource("/media/static-source", "static"),
+  );
+  await page.waitForFunction(() => !document.querySelector(".model-animation"));
+  assert.equal(
+    animations,
+    downloaded,
+    "Changing to a static policy releases the player without another download",
+  );
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.evaluate(() => {
+    window.__previewTimers = 0;
+    window.__trackPreviewTimers = true;
+    window.mountSource("/media/reduced-motion-source", "selected");
+  });
+  await page
+    .locator('img.loaded[src="/media/reduced-motion-source"]')
+    .waitFor();
+  await page.locator(".gift-preview").hover();
+  await page.waitForTimeout(220);
+  assert.equal(
+    await page.evaluate(() => window.__previewTimers),
+    0,
+    "Reduced motion schedules no hover or autoplay timers",
+  );
+  await page.evaluate(() => {
+    window.__trackPreviewTimers = false;
+    window.mountSource("/media/broken-still");
+  });
+  await page.waitForFunction(
+    () => !document.querySelector(".gift-model-image"),
+  );
+  await page.evaluate(() => window.mountSource("/media/recovered-source"));
+  await page.locator('img.loaded[src="/media/recovered-source"]').waitFor();
+  assert.equal(
+    await page.locator(".gift-preview-fallback").count(),
+    0,
+    "Changing media resets a failed thumbnail without caller-owned keys",
+  );
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(

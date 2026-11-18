@@ -1,10 +1,14 @@
 import type { Order } from "../market";
 import type { CatalogOption } from "../orderbook";
-import { listingLink, serial, giftDetails } from "../orderbook";
+import { listingLink, serial } from "../orderbook";
 import { GiftPreview } from "../previews/gift-preview";
 import { DetailSheet } from "../ui/detail-sheet";
-import { GiftValuations } from "./gift-valuations";
+import { GiftValuations, GiftValuationSummary } from "./gift-valuations";
 import { Quote } from "../ui/market-controls";
+import { VenueIcon } from "../ui/icons";
+import { OrderAttributes } from "./order-attributes";
+import { useGiftValuation } from "../valuation/use-gift-valuation";
+import { priceComparison } from "../valuation/price-comparison";
 export function OrderDetails({
   selected,
   options,
@@ -20,9 +24,22 @@ export function OrderDetails({
   removed?: boolean;
   close: () => void;
 }) {
+  const state = useGiftValuation(selected);
   const selectedSerial = serial(selected),
     marketLink = listingLink(selected),
-    details = giftDetails(selected, names);
+    venue = names.get(selected.book.venue_id) || selected.book.venue_id;
+  const { primary } = state.fields;
+  const estimate = primary.length === 1 ? primary[0].value : undefined;
+  const comparison =
+    !removed &&
+    !state.loading &&
+    !state.error &&
+    selected.kind === "ask" &&
+    state.report?.sync.state === "live" &&
+    estimate?.kind === "currency" &&
+    estimate.currency_id === selected.book.currency_id
+      ? priceComparison(selected.price, estimate.amount)
+      : undefined;
   return (
     <DetailSheet close={close}>
       <div className="detail-art">
@@ -33,53 +50,62 @@ export function OrderDetails({
           size="large"
           playback="detail"
         />
-        <button
-          className="detail-close"
-          aria-label="Close details"
-          onClick={close}
-          autoFocus
-        >
-          ×
-        </button>
       </div>
+      <button
+        className="detail-close"
+        aria-label="Close details"
+        onClick={close}
+        autoFocus
+      >
+        ×
+      </button>
       <div className="detail-body">
         <h2 id="detail-title">
           {names.get(selected.book.collection_id) ||
             selected.book.collection_id}
           {selectedSerial && ` #${selectedSerial}`}
         </h2>
-        <div className="detail-price">
-          <Quote price={selected.price} currency={selected.book.currency_id} />
+        <div className="detail-pricing">
+          <section className="listing-price" aria-label="Listing price">
+            <h3>
+              {selected.kind === "executed"
+                ? "Execution price"
+                : selected.kind === "bid"
+                  ? "Bid price"
+                  : "Asking price"}
+            </h3>
+            <div className="detail-price">
+              <Quote
+                price={selected.price}
+                currency={selected.book.currency_id}
+              />
+            </div>
+            {comparison && <p className="price-comparison">{comparison}</p>}
+          </section>
+          <GiftValuationSummary state={state} />
         </div>
-        {details.length > 0 && (
-          <dl>
-            {details.map(([label, value]) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>{value}</dd>
-              </div>
-            ))}
-          </dl>
-        )}
+        <OrderAttributes order={selected} options={options} names={names} />
         {removed && (
           <p className="listing-gone" role="status">
             This listing left the refreshed results. A disappearance does not
             confirm a sale.
           </p>
         )}
-        <GiftValuations order={selected} />
-        {marketLink && !removed && (
+        <GiftValuations key={state.key} state={state} />
+      </div>
+      {marketLink && !removed && (
+        <div className="detail-actions">
           <a
             className="detail-market"
             href={marketLink}
             target="_blank"
             rel="noreferrer"
           >
-            Open on{" "}
-            {names.get(selected.book.venue_id) || selected.book.venue_id} ↗
+            <VenueIcon name={venue} />
+            Open on {venue} <span aria-hidden="true">↗</span>
           </a>
-        )}
-      </div>
+        </div>
+      )}
     </DetailSheet>
   );
 }
