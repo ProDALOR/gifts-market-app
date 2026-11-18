@@ -12,6 +12,7 @@ pub struct GiftMedia {
 pub struct GiftCollection {
     pub id: gifts::CollectionId,
     pub name: String,
+    pub slug: Option<gifts::CollectionSlug>,
     pub preview: Option<GiftMedia>,
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -64,6 +65,7 @@ impl From<gifts::GiftCollection> for GiftCollection {
     fn from(value: gifts::GiftCollection) -> Self {
         Self {
             id: value.id,
+            slug: value.slug,
             name: value.name,
             preview: value.preview.map(Into::into),
         }
@@ -115,7 +117,7 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
 }
 /// Namespace content revisions by the public representation. Bump if URL/JSON mapping changes.
 pub(crate) fn revision(domain: String) -> String {
-    format!("catalog-v1-{domain}")
+    format!("catalog-v2-{domain}")
 }
 pub(crate) fn versions(mut value: gifts::CatalogVersions) -> gifts::CatalogVersions {
     value.directory = revision(value.directory);

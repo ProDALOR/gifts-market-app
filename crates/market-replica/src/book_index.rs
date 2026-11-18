@@ -136,6 +136,25 @@ fn ranks(order: &w::Order) -> Result<[Decimal; 3], Status> {
     ])
 }
 
+// Number ranking and integer predicates use the same exact values.
+fn number_bounds(predicate: Option<&w::AttributePredicate>) -> (Option<Decimal>, Option<Decimal>) {
+    let integer = |value: &w::AttributeValue| match value.value.as_ref() {
+        Some(w::attribute_value::Value::Integer(n)) => Some(Decimal::from(*n)),
+        _ => None,
+    };
+    match predicate.and_then(|p| p.predicate.as_ref()) {
+        Some(w::attribute_predicate::Predicate::Eq(value)) => {
+            let value = integer(value);
+            (value, value)
+        }
+        Some(w::attribute_predicate::Predicate::Range(range)) => (
+            range.min.as_ref().and_then(integer),
+            range.max.as_ref().and_then(integer),
+        ),
+        _ => (None, None),
+    }
+}
+
 // Only rank and source position participate in heap ordering; records stay borrowed.
 fn merge<'a, K: Ord + 'a>(
     mut iterators: Vec<RankedIterator<'a>>,
@@ -360,16 +379,16 @@ impl BookIndex {
                     book: b.clone(),
                     mode,
                 }) {
-                    let min = scope
-                        .price
-                        .as_ref()
-                        .filter(|_| sort.is_price())
-                        .and_then(|p| p.min);
-                    let max = scope
-                        .price
-                        .as_ref()
-                        .filter(|_| sort.is_price())
-                        .and_then(|p| p.max);
+                    let (min, max) = if sort.is_price() {
+                        (
+                            scope.price.as_ref().and_then(|p| p.min),
+                            scope.price.as_ref().and_then(|p| p.max),
+                        )
+                    } else if matches!(sort, Sort::NumberAsc | Sort::NumberDesc) {
+                        number_bounds(scope.attributes.get("tg.number"))
+                    } else {
+                        (None, None)
+                    };
                     let lower = min.map(RankKey::first);
                     let upper = max.map(RankKey::last);
                     let low = if !descending

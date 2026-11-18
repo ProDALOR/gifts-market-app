@@ -74,26 +74,15 @@ pub(crate) async fn executions(
 ) -> Result<web::Json<Page<GiftOrder>>> {
     Ok(web::Json(state.executions(query.into_inner()).await?))
 }
-#[utoipa::path(post,path="/portfolio/value",tag="Portfolio",summary="Get a shared named valuation mark",description="Explicitly select model_floor or collection_floor. Each strategy uses its own shared actor and cached marks keyed by normalized positions and currency. No automatic strategy fallback or currency conversion. Nonempty requests with no priced gifts return 422 not_enough_data with per-position reasons; partial coverage remains a successful mark. Relevant book and catalog changes invalidate marks; time-dependent listing expiry is checked on demand after the 30-second cache TTL. The source checkpoint is the mark revision; nested data has no cursor. The nested data contains exact decimal prices and synchronization status; evaluated_at is the original UTC evaluation time, including on cache hits. Does not fetch Telegram inventory.",request_body=market_gifts::valuation::ValuationRequest,responses((status=200,body=ValuationMark),(status=400,body=ErrorResponse),(status=422,body=ErrorResponse,description="No requested gifts could be priced; error details include strategy, currency, revision and unpriced reasons"),(status=429,body=ErrorResponse,description="Valuation admission or market query capacity exhausted"),(status=503,body=ErrorResponse,description="Valuation unavailable, stopped or timed out")))]
-pub(crate) async fn portfolio(
+#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift slug with every registered strategy",description="Accepts a Telegram gift URL or collection-number slug and an explicit currency. Resolves concrete gifts from synchronized concrete active asks across quote currencies; unlisted/unknown gifts return 404. Each strategy returns its own typed data, revision and evaluation time, or a structured error. Missing evidence for one strategy does not discard others; all-strategy failures still return 200 for a resolved gift. Multiplier results are dimensionless ratios, not price estimates. Marks can have different revisions because actors cache and prepare independently. No Telegram account or external lookup is used.",request_body=market_gifts::valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+pub(crate) async fn gift_valuation(
     state: web::Data<MarketApi>,
-    query: web::Json<market_gifts::valuation::ValuationRequest>,
+    query: web::Json<market_gifts::valuation::GiftValuationRequest>,
 ) -> Result<HttpResponse> {
-    let mark = state.valuation_mark(query.into_inner()).await?;
+    let result = state.gift_valuation(query.into_inner()).await?;
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(ValuationMark::from(mark.as_ref())))
-}
-
-#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Evaluate a strategy with its own typed input and output",description="Explicitly select model_floor, collection_floor, model_multiplier or backdrop_multiplier. Multipliers are selected-trait ask floor / collection ask floor in one currency and pinned snapshot. Both samples require at least three eligible listing rows. Factors are dimensionless decimal strings rounded to 12 decimal places, midpoint to even. Samples count listings, not distinct sellers. These ratios are measurements, not portfolio estimators; attributes are never automatically multiplied together.",request_body=market_gifts::valuation::ValuationQuery,responses((status=200,body=StrategyMark),(status=400,body=ErrorResponse),(status=422,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub(crate) async fn valuation_query(
-    state: web::Data<MarketApi>,
-    query: web::Json<market_gifts::valuation::ValuationQuery>,
-) -> Result<HttpResponse> {
-    let result = state.valuation_query(query.into_inner()).await?;
-    Ok(HttpResponse::Ok()
-        .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(StrategyMark::from(&result)))
+        .json(GiftValuationResponse::from(&result)))
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
@@ -108,8 +97,7 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
         .route("/collections/{id}", web::get().to(collection))
         .route("/orders/query", web::post().to(orders))
         .route("/history/query", web::post().to(executions))
-        .route("/portfolio/value", web::post().to(portfolio))
-        .route("/valuations/query", web::post().to(valuation_query))
+        .route("/valuations/gift", web::post().to(gift_valuation))
         .route(
             "/media/models/{id}",
             web::get().to(crate::media::model_thumbnail),

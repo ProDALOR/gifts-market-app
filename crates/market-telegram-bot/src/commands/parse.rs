@@ -1,29 +1,21 @@
-use super::{Command, CommandRequest, FloorQuery};
-use market_gifts::{
-    CurrencyId,
-    valuation::{ModelLookup, StrategyId},
-};
+use super::{Command, CommandRequest};
+use market_gifts::{CurrencyId, GiftSlug, valuation::GiftValuationRequest};
 use market_telegram::IncomingMessage;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
     Start,
     Market,
     Help,
     Status,
-    Floor,
-    Portfolio,
-    Multiplier,
+    Value,
 }
 impl CommandKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 5] = [
         Self::Start,
         Self::Market,
         Self::Help,
         Self::Status,
-        Self::Floor,
-        Self::Portfolio,
-        Self::Multiplier,
+        Self::Value,
     ];
     pub const fn name(self) -> &'static str {
         match self {
@@ -31,9 +23,7 @@ impl CommandKind {
             Self::Market => "market",
             Self::Help => "help",
             Self::Status => "status",
-            Self::Floor => "floor",
-            Self::Portfolio => "portfolio",
-            Self::Multiplier => "multiplier",
+            Self::Value => "value",
         }
     }
     pub const fn description(self) -> &'static str {
@@ -42,13 +32,10 @@ impl CommandKind {
             Self::Market => "Browse markets",
             Self::Help => "How to use the app",
             Self::Status => "Check market data status",
-            Self::Floor => "Gift floor with an explicit strategy",
-            Self::Portfolio => "Value your visible gifts with an explicit strategy",
-            Self::Multiplier => "Measure a model or backdrop ask-floor ratio",
+            Self::Value => "Value a gift URL or slug with all strategies",
         }
     }
 }
-
 pub(crate) fn parse<S: AsRef<str>>(
     message: IncomingMessage<'_>,
     usernames: &[S],
@@ -57,6 +44,15 @@ pub(crate) fn parse<S: AsRef<str>>(
         return None;
     }
     let text = message.text?.trim();
+    if !text.starts_with('/') {
+        return value(text)
+            .map(|query| CommandRequest {
+                command: Command::Value(query),
+                user_id: message.user_id.unwrap_or(0),
+                message_id: message.message_id,
+            })
+            .filter(|request| request.user_id > 0);
+    }
     let (name, arguments) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
     let (name, target) = name
         .split_once('@')
@@ -77,12 +73,8 @@ pub(crate) fn parse<S: AsRef<str>>(
         CommandKind::Market => Command::Market,
         CommandKind::Help => Command::Help,
         CommandKind::Status => Command::Status,
-        CommandKind::Portfolio => portfolio(arguments).unwrap_or(Command::Invalid(kind)),
-        CommandKind::Multiplier => multiplier(arguments)
-            .map(Command::Multiplier)
-            .unwrap_or(Command::Invalid(kind)),
-        CommandKind::Floor => floor(arguments)
-            .map(Command::Floor)
+        CommandKind::Value => value(arguments)
+            .map(Command::Value)
             .unwrap_or(Command::Invalid(kind)),
     };
     Some(CommandRequest {
@@ -92,81 +84,16 @@ pub(crate) fn parse<S: AsRef<str>>(
     })
 }
 
-// Command shorthand belongs here; catalog IDs and availability remain domain/actor concerns.
-fn quote_currency(text: &str) -> Option<CurrencyId> {
-    if text.len() > 128 || text.split_whitespace().count() > 1 {
+fn value(arguments: &str) -> Option<GiftValuationRequest> {
+    if arguments.len() > 2048 {
         return None;
     }
-    let symbol = text.trim().to_ascii_uppercase();
-    CurrencyId::new(match symbol.as_str() {
-        "" | "TON" => "GRAM".to_owned(),
-        _ => symbol,
-    })
-    .ok()
-}
-fn floor(arguments: &str) -> Option<FloorQuery> {
-    if arguments.len() > 1024 {
-        return None;
-    }
-    let mut parts = arguments.split('|').map(str::trim);
-    let strategy = StrategyId::new(parts.next()?).ok()?;
-    if !strategy.is_portfolio_strategy() {
-        return None;
-    }
-    let model = ModelLookup::named(parts.next()?, parts.next()?).ok()?;
-    let currency = quote_currency(parts.next().unwrap_or(""))?;
+    let mut parts = arguments.split_whitespace();
+    let gift = GiftSlug::new(parts.next()?).ok()?;
+    let currency = parts.next().unwrap_or("GRAM").to_ascii_uppercase();
+    let currency_id = CurrencyId::new(if currency == "TON" { "GRAM" } else { &currency }).ok()?;
     if parts.next().is_some() {
         return None;
     }
-    Some(FloorQuery {
-        model,
-        currency,
-        strategy,
-    })
-}
-
-fn portfolio(arguments: &str) -> Option<Command> {
-    if arguments.len() > 256 {
-        return None;
-    }
-    let mut parts = arguments.split('|').map(str::trim);
-    let strategy = StrategyId::new(parts.next()?).ok()?;
-    if !strategy.is_portfolio_strategy() {
-        return None;
-    }
-    let currency = quote_currency(parts.next().unwrap_or(""))?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(Command::Portfolio { currency, strategy })
-}
-
-fn multiplier(arguments: &str) -> Option<market_gifts::valuation::ValuationQuery> {
-    use market_gifts::valuation::*;
-    if arguments.len() > 512 {
-        return None;
-    }
-    let mut parts = arguments.split('|').map(str::trim);
-    let strategy = parts.next()?;
-    let collection_id = market_gifts::CollectionId::new(parts.next()?).ok()?;
-    let trait_id = parts.next()?;
-    let currency_id = quote_currency(parts.next().unwrap_or(""))?;
-    if parts.next().is_some() {
-        return None;
-    }
-    match strategy {
-        "model_multiplier" => Some(ValuationQuery::ModelMultiplier(ModelMultiplierRequest {
-            collection_id,
-            model_id: market_gifts::ModelId::new(trait_id).ok()?,
-            currency_id,
-        })),
-        "backdrop_multiplier" => Some(ValuationQuery::BackdropMultiplier(
-            BackdropMultiplierRequest {
-                collection_id,
-                backdrop_id: market_gifts::BackdropId::new(trait_id).ok()?,
-                currency_id,
-            },
-        )),
-        _ => None,
-    }
+    Some(GiftValuationRequest { gift, currency_id })
 }

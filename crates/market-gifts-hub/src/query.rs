@@ -21,9 +21,9 @@ fn selection<T: AsRef<str>>(ids: Vec<T>) -> w::AttributePredicate {
         }),
     }
 }
-fn number(value: u32) -> w::AttributeValue {
+fn number(value: GiftNumber) -> w::AttributeValue {
     w::AttributeValue {
-        value: Some(w::attribute_value::Value::Integer(i64::from(value))),
+        value: Some(w::attribute_value::Value::Integer(i64::from(value.get()))),
     }
 }
 fn scope(filters: GiftFilters, mode: w::OrderMode) -> Result<w::Scope, InvalidValue> {
@@ -124,8 +124,8 @@ mod tests {
         query.filters.models = vec!["b".into(), "a".into(), "a".into()];
         query.filters.patterns = vec!["pattern".into()];
         query.filters.number = Some(GiftNumberRange {
-            min: Some(1),
-            max: Some(42),
+            min: Some(GiftNumber::new(1).unwrap()),
+            max: Some(GiftNumber::new(42).unwrap()),
         });
         query.filters.price = Some(PriceRange {
             min: Some("1.000000001".into()),
@@ -162,8 +162,8 @@ mod tests {
             vec!["a", "b"]
         );
         query.filters.number = Some(GiftNumberRange {
-            min: Some(0),
-            max: None,
+            min: Some(GiftNumber::new(43).unwrap()),
+            max: Some(GiftNumber::new(42).unwrap()),
         });
         assert!(orders(query, w::ReadMode::Live).is_err());
     }

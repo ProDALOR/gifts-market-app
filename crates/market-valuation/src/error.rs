@@ -58,8 +58,14 @@ impl ValuationError {
     pub fn with_context(mut self, strategy: StrategyId, currency: CurrencyId) -> Self {
         if self.details.is_none() {
             let mut details = ValuationErrorDetails::strategy(strategy);
-            details.currency_id = Some(currency);
+            details.currency_id = Some(currency.clone());
             self.details = Some(Arc::new(details));
+        }
+        if let Some(details) = &mut self.details {
+            let details = Arc::make_mut(details);
+            if details.currency_id.is_none() {
+                details.currency_id = Some(currency);
+            }
         }
         self
     }

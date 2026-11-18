@@ -11,12 +11,11 @@ impl BotService {
     pub fn new(
         worker: TelegramWorker,
         data: MarketDataHandle,
-        portfolio: market_portfolio::PortfolioHandle,
         valuation: market_valuation::ValuationHandle,
     ) -> Self {
         Self {
             worker,
-            commands: MarketCommands::new(data, portfolio, valuation),
+            commands: MarketCommands::new(data, valuation),
         }
     }
     pub async fn run_with_invocations(

@@ -24,7 +24,7 @@ pub(crate) fn history(query: GiftHistoryQuery) -> Result<w::ReadRequest> {
 mod tests {
     use super::*;
     use crate::error::DataErrorCode;
-    use market_gifts::GiftNumberRange;
+    use market_gifts::{GiftNumber, GiftNumberRange};
     #[test]
     fn query_admission_keeps_service_limits_and_classifies_domain_errors() {
         let base = GiftOrdersQuery::new(GiftFilters::new("collection".into(), "GRAM".into()));
@@ -44,8 +44,8 @@ mod tests {
         );
         let mut reversed = base;
         reversed.filters.number = Some(GiftNumberRange {
-            min: Some(10),
-            max: Some(1),
+            min: Some(GiftNumber::new(10).unwrap()),
+            max: Some(GiftNumber::new(1).unwrap()),
         });
         assert_eq!(
             orders(reversed, w::ReadMode::Live).unwrap_err().code(),

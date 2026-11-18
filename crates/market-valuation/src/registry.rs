@@ -49,6 +49,8 @@ pub enum ValuationResult {
 #[derive(Clone)]
 pub struct ValuationHandle {
     strategies: Arc<BTreeMap<StrategyId, RegisteredStrategy>>,
+    pub(crate) reader: Option<market_actors::MarketReader>,
+    pub(crate) gift_slots: Arc<tokio::sync::Semaphore>,
 }
 impl ValuationHandle {
     pub fn new<H: Into<RegisteredStrategy>>(
@@ -84,7 +86,13 @@ impl ValuationHandle {
         }
         Ok(Self {
             strategies: Arc::new(strategies),
+            reader: None,
+            gift_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         })
+    }
+    pub fn with_reader(mut self, reader: market_actors::MarketReader) -> Self {
+        self.reader = Some(reader);
+        self
     }
     pub fn strategies(&self) -> impl Iterator<Item = &StrategyId> {
         self.strategies.keys()

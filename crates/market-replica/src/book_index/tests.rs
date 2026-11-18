@@ -406,3 +406,68 @@ fn locations_share_partition_keys_and_follow_moves_without_retaining_removed_ord
     assert_shared_records(&state, 1);
     assert!(pinned.entity(&a_key).is_some());
 }
+
+#[test]
+fn number_predicates_seek_rank_bounds_in_both_directions_without_losing_ties_or_cursors() {
+    let mut state = State::default();
+    for (id, number) in [
+        ("before", 1),
+        ("a", 100_000),
+        ("b", 100_000),
+        ("after", 200_000),
+    ] {
+        let mut value = order(id, "1", None);
+        set_number(&mut value, Some(number));
+        state.upsert(entity(E::Order(value))).unwrap();
+    }
+    let mut selection = scope(order("", "", None).book.as_ref().unwrap());
+    selection.attributes.insert(
+        "tg.number".into(),
+        w::AttributePredicate {
+            predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                value: Some(w::attribute_value::Value::Integer(100_000)),
+            })),
+        },
+    );
+    for (sort, expected) in [
+        (Sort::NumberAsc, ["a", "b"]),
+        (Sort::NumberDesc, ["b", "a"]),
+    ] {
+        let rows: Vec<_> = state.books().ranked(&selection, None, sort).collect();
+        assert_eq!(
+            rows.iter()
+                .map(|(key, _)| key.entity().1.id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let first = rows[0].0.clone();
+        let remainder: Vec<_> = state
+            .books()
+            .ranked(&selection, Some(first), sort)
+            .collect();
+        assert_eq!(remainder.len(), 1);
+        assert_eq!(remainder[0].0.entity().1.id, expected[1]);
+    }
+    selection.attributes.insert(
+        "tg.number".into(),
+        w::AttributePredicate {
+            predicate: Some(w::attribute_predicate::Predicate::Range(
+                w::AttributeRange {
+                    min: Some(w::AttributeValue {
+                        value: Some(w::attribute_value::Value::Integer(100_000)),
+                    }),
+                    max: Some(w::AttributeValue {
+                        value: Some(w::attribute_value::Value::Integer(200_000)),
+                    }),
+                },
+            )),
+        },
+    );
+    assert_eq!(
+        state
+            .books()
+            .ranked(&selection, None, Sort::NumberAsc)
+            .count(),
+        3
+    );
+}

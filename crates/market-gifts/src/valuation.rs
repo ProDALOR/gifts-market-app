@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ModelLookup {
+    /// Collection-only floor lookup; no model identity is invented for a partial gift.
+    Collection {
+        collection: CollectionId,
+    },
     Name {
         collection: String,
         model: String,
@@ -200,4 +204,13 @@ impl ValuationErrorDetails {
             context: None,
         }
     }
+}
+
+/// Evaluate every registered strategy for one concrete gift found in market data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct GiftValuationRequest {
+    pub gift: crate::GiftSlug,
+    pub currency_id: CurrencyId,
 }

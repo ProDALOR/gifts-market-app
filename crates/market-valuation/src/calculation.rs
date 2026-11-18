@@ -63,7 +63,9 @@ pub(crate) fn portfolio(
         .positions
         .iter()
         .filter_map(|p| match &p.model {
-            ModelLookup::Catalog { collection, .. } => Some(collection.clone()),
+            ModelLookup::Catalog { collection, .. } | ModelLookup::Collection { collection } => {
+                Some(collection.clone())
+            }
             _ => None,
         })
         .collect();

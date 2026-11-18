@@ -82,6 +82,7 @@ function fixture(t: TestContext) {
       const collections = [...definitions].map(([id, v]) => ({
         id,
         name: v.name,
+        slug: null,
         preview: null,
       }));
       const result: Catalog = {
@@ -103,7 +104,7 @@ function fixture(t: TestContext) {
       const data = definitions.get(id)!;
       const version = data.version;
       const result: CollectionCatalog = {
-        collection: { id, name: data.name, preview: null },
+        collection: { id, name: data.name, slug: null, preview: null },
         models: Array.from({ length: data.count }, (_, i) => ({
           id: `${id}.${i}`,
           name: version,

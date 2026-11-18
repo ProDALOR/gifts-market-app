@@ -1,7 +1,7 @@
 //! Gift collections, appearance choices and catalog revision contracts.
 use crate::{
-    BackdropId, CollectionId, CurrencyId, GiftBook, GiftMedia, ModelId, PatternId, RgbColor,
-    VenueId,
+    BackdropId, CollectionId, CollectionSlug, CurrencyId, GiftBook, GiftMedia, ModelId, PatternId,
+    RgbColor, VenueId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct GiftCollection {
     pub id: CollectionId,
     pub name: String,
+    pub slug: Option<CollectionSlug>,
     pub preview: Option<GiftMedia>,
 }
 

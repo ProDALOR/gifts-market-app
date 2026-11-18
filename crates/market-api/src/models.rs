@@ -55,4 +55,4 @@ pub enum SubscriptionStatus {
     Connecting,
 }
 
-pub use crate::valuation::{StrategyMark, ValuationMark};
+pub use crate::valuation::GiftValuationResponse;

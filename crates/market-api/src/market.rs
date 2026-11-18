@@ -82,17 +82,11 @@ impl MarketApi {
     pub async fn executions(&self, query: GiftHistoryQuery) -> Result<Page<GiftOrder>> {
         Ok(self.data.executions(query).await?)
     }
-    pub async fn valuation_mark(
+    pub async fn gift_valuation(
         &self,
-        query: market_gifts::valuation::ValuationRequest,
-    ) -> Result<Arc<market_valuation::Mark<market_gifts::valuation::Valuation>>> {
-        Ok(self.valuation.mark(query).await?)
-    }
-    pub async fn valuation_query(
-        &self,
-        query: market_gifts::valuation::ValuationQuery,
-    ) -> Result<market_valuation::ValuationResult> {
-        Ok(self.valuation.query(query).await?)
+        query: market_gifts::valuation::GiftValuationRequest,
+    ) -> Result<market_valuation::GiftValuationResult> {
+        Ok(self.valuation.gift(query).await?)
     }
     pub async fn subscribe(
         &self,

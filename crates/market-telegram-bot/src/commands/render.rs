@@ -1,224 +1,76 @@
 use super::{CommandKind, Reply};
-use market_gifts::inventory::{
-    GiftRelation, InventoryCompletion, InventoryError, InventorySnapshot, PartialReason,
-};
-use market_gifts::{
-    SyncState,
-    valuation::{UnpricedReason, Valuation},
-};
-use market_valuation::ValuationError;
+use market_gifts::SyncState;
+use market_valuation::{GiftValuationResult, ValuationError, ValuationResult};
 pub(super) fn error_reply(error: impl Into<ValuationError>) -> Reply {
-    use market_valuation::ValuationErrorCode;
     let error = error.into();
-    let text = match error.code() {
-        ValuationErrorCode::NotEnoughData => {
-            let detail = error
-                .details()
-                .map(|d| {
-                    format!(
-                        "Strategy: {}. Eligible quotes: {} of {} required. {}",
-                        d.strategy,
-                        d.available_samples.unwrap_or(0),
-                        d.required_samples.unwrap_or(1),
-                        match &d.context {
-                            Some(market_gifts::valuation::ValuationErrorContext::Portfolio { unpriced })=>unpriced.first().map(|row|format!("{} · {}: {}",label(&row.collection),label(&row.model),match row.unpriced {
-                                Some(UnpricedReason::UnknownCollection)=>"collection not found",
-                                Some(UnpricedReason::AmbiguousCollection)=>"collection is ambiguous",
-                                Some(UnpricedReason::UnknownModel)=>"model not found",
-                                Some(UnpricedReason::AmbiguousModel)=>"model is ambiguous",
-                                _=>"no eligible asks in this currency",
-                            })).unwrap_or_default(),
-                            Some(market_gifts::valuation::ValuationErrorContext::Multiplier { collection_samples,trait_samples,.. })=>format!("Collection listings: {collection_samples}; selected trait listings: {trait_samples}."),
-                            None=>String::new(),
-                        }
-                    )
-                })
-                .unwrap_or_default();
-            format!("Not enough market data to value these gifts. {detail}")
-        }
-        ValuationErrorCode::InvalidBaseline => "A valid multiplier baseline is unavailable.".into(),
-        ValuationErrorCode::UnsupportedStrategy => error.message().to_owned(),
-        ValuationErrorCode::TimedOut => "Valuation timed out. Please try again shortly.".into(),
-        ValuationErrorCode::InvalidQuery => error.message().to_owned(),
-        ValuationErrorCode::CapacityExceeded => {
-            "Market queries are busy. Please try again shortly.".into()
-        }
-        _ => "Market data is unavailable. Please try again shortly.".into(),
-    };
-    Reply { text }
-}
-fn freshness(value: &Valuation) -> &'static str {
-    if value.sync.state == SyncState::Live {
-        ""
-    } else {
-        "\nMarket data is not live; using the last synchronized listings."
-    }
-}
-fn label(value: &str) -> String {
-    let mut chars = value.chars();
-    let text: String = chars.by_ref().take(40).collect();
-    if chars.next().is_some() {
-        format!("{text}…")
-    } else {
-        text
-    }
-}
-pub(super) fn floor(mark: &market_valuation::Mark<Valuation>) -> Reply {
-    let value = &mark.data;
-    let row = &value.rows[0];
-    let text = if let Some(price) = &row.floor {
-        format!(
-            "{} · {}\n{}: {} {}\nLowest eligible ask across loaded venues ({}).{}",
-            label(&row.collection),
-            label(&row.model),
-            strategy_label(mark.strategy),
-            price,
-            label(&value.currency_id),
-            label(row.venue_id.as_deref().unwrap_or("market")),
-            freshness(value)
-        )
-    } else {
-        let detail = match row.unpriced {
-            Some(UnpricedReason::UnknownCollection) => {
-                "Collection not found. Use its exact catalog name."
-            }
-            Some(UnpricedReason::AmbiguousCollection) => {
-                "Collection name is ambiguous. Use its catalog ID."
-            }
-            Some(UnpricedReason::UnknownModel) => {
-                "Model not found in this collection. Use its exact name."
-            }
-            Some(UnpricedReason::AmbiguousModel) => "Model name is ambiguous. Use its catalog ID.",
-            _ => "No current model ask is available in this currency.",
-        };
-        format!(
-            "{} · {}\n{}{}",
-            label(&row.collection),
-            label(&row.model),
-            detail,
-            freshness(value)
-        )
-    };
     Reply {
-        text: format!(
-            "{text}\nStrategy: {}\nValued at: {}",
-            mark.strategy,
-            mark.evaluated_at.strftime("%Y-%m-%d %H:%M:%S UTC")
-        ),
+        text: error.message().chars().take(300).collect(),
     }
 }
-pub(super) fn portfolio(
-    mark: &market_valuation::Mark<Valuation>,
-    inventory: &InventorySnapshot,
-) -> Reply {
-    let value = &mark.data;
-    let regular = inventory.regular_gifts;
-    let unsupported = inventory.skipped_count();
-    let mut text = format!(
-        "Your visible gift portfolio\nTelegram gifts read: {}{} across {} page(s)\n{} estimate: {} {}\nPriced collectibles: {}\nWithout a floor: {}",
-        inventory.gifts_scanned,
-        inventory
-            .reported_total
-            .map(|total| format!(" of {total}"))
-            .unwrap_or_default(),
-        inventory.pages_read,
-        strategy_label(mark.strategy),
-        value.total,
-        value.currency_id,
-        value.priced,
-        value.unpriced,
-    );
-    for row in value.rows.iter().filter(|row| row.value.is_some()).take(10) {
-        text.push_str(&format!(
-            "\n{} · {} × {} = {} {}",
-            label(&row.collection),
-            label(&row.model),
-            row.quantity,
-            row.value.as_deref().unwrap(),
-            value.currency_id
-        ));
-    }
-    if value.rows.iter().filter(|row| row.value.is_some()).count() > 10 {
-        text.push_str("\nAdditional models are included in the total.");
-    }
-    if unsupported > 0 {
-        text.push_str(&format!(
-            "\nUnsupported visible collectibles skipped: {unsupported}."
-        ));
-    }
-    if regular > 0 {
-        text.push_str(&format!(
-            "\nRegular, non-collectible gifts skipped: {regular}."
-        ));
-    }
-    if inventory.relation_count(GiftRelation::Hosted) > 0 {
-        text.push_str(&format!(
-            "\nHosted collectibles included: {}. These are linked to your profile; wallet ownership is not verified.",
-            inventory.relation_count(GiftRelation::Hosted)
-        ));
-    }
-    if let InventoryCompletion::Partial(reason) = &inventory.completion {
-        let detail = match reason {
-            PartialReason::LimitReached => "read limit reached",
-            PartialReason::MissingCursor => {
-                "Telegram returned fewer gifts than advertised without a continuation cursor"
+pub(super) fn valuation(value: &GiftValuationResult) -> Reply {
+    let mut text = format!("{}\nCurrency: {}", value.slug, value.currency_id);
+    let mut stale = false;
+    for row in &value.strategies {
+        text.push_str(&format!("\n\n{}", row.strategy));
+        match &row.result {
+            Err(error) => text.push_str(&format!(
+                "\n{}",
+                error.message().chars().take(300).collect::<String>()
+            )),
+            Ok(result) => {
+                let at = match result {
+                    ValuationResult::ModelFloor(mark) | ValuationResult::CollectionFloor(mark) => {
+                        text.push_str(&format!("\n{} {}", mark.total, mark.currency_id));
+                        stale |= mark.sync.state != SyncState::Live;
+                        mark.evaluated_at
+                    }
+                    ValuationResult::ModelMultiplier(mark) => {
+                        text.push_str(&format!(
+                            "\n{}× ask-floor ratio\nTrait: {} {}; collection: {} {}",
+                            mark.factor,
+                            mark.evidence.selected_trait.floor,
+                            mark.currency_id,
+                            mark.evidence.collection.floor,
+                            mark.currency_id
+                        ));
+                        stale |= mark.sync.state != SyncState::Live;
+                        mark.evaluated_at
+                    }
+                    ValuationResult::BackdropMultiplier(mark) => {
+                        text.push_str(&format!(
+                            "\n{}× ask-floor ratio\nTrait: {} {}; collection: {} {}",
+                            mark.factor,
+                            mark.evidence.selected_trait.floor,
+                            mark.currency_id,
+                            mark.evidence.collection.floor,
+                            mark.currency_id
+                        ));
+                        stale |= mark.sync.state != SyncState::Live;
+                        mark.evaluated_at
+                    }
+                };
+                text.push_str(&format!(
+                    "\nEvaluated: {}",
+                    at.strftime("%Y-%m-%d %H:%M:%S UTC")
+                ));
             }
-            PartialReason::RepeatedCursor => "Telegram repeated a continuation cursor",
-            PartialReason::ReadFailed(InventoryError::RetryAfter(_)) => {
-                "Telegram requested a rate-limit wait"
-            }
-            PartialReason::ReadFailed(_) => "a later Telegram page could not be read",
-        };
-        text.push_str(&format!(
-            "\nPartial inventory: {detail}. Only the gifts read are included in this estimate."
-        ));
+        }
     }
-    for (reason, count) in &inventory.skipped {
-        text.push_str(&format!("\nSkipped {}: {count}.", reason.description()));
+    text.push_str("\n\nBased on eligible asks, without fees. Ratios are not price estimates.");
+    if stale {
+        text.push_str("\nMarket data is not live; using the last synchronized listings.");
     }
-    let unverified = inventory.relation_count(GiftRelation::Unverified);
-    if unverified > 0 {
-        text.push_str(&format!(
-            "\nCollectibles with undisclosed ownership: {unverified}."
-        ));
-    }
-    if value.unpriced > 0 || unsupported > 0 {
-        text.push_str("\nUnpriced gifts are excluded from the estimate.");
-    }
-    text.push_str(
-        "\nBased on asks at valuation time, without fees. Only gifts Telegram makes visible to this bot are included.",
-    );
-    text.push_str(&format!("\nStrategy: {}", mark.strategy));
-    text.push_str(&format!(
-        "\nValued at: {}",
-        mark.evaluated_at.strftime("%Y-%m-%d %H:%M:%S UTC")
-    ));
-    text.push_str(freshness(value));
     Reply { text }
 }
-
-pub(super) fn usage(kind: CommandKind) -> Reply {
-    Reply{text:match kind {
-        CommandKind::Floor=>"Use /floor model_floor | Collection | Model | GRAM\nOr select collection_floor explicitly.",
-        CommandKind::Portfolio=>"Use /portfolio model_floor | GRAM\nOr /portfolio collection_floor | GRAM.",
-        CommandKind::Multiplier=>"Use /multiplier model_multiplier | collection_id | model_id | GRAM\nOr /multiplier backdrop_multiplier | collection_id | backdrop_id | GRAM. IDs are from the catalog.",
-        _=>"Use /help to see available commands.",
-    }.into()}
+pub(super) fn usage(_kind: CommandKind) -> Reply {
+    Reply { text: "Use /value PlushPepe-123 [GRAM|XTR] or /value https://t.me/nft/PlushPepe-123. Only gifts in synchronized market orders can be resolved.".into() }
 }
 pub(crate) fn launch_reply(command: CommandKind) -> Option<Reply> {
-    Some(Reply{text:match command {
-        CommandKind::Start|CommandKind::Market=>"Browse live gift markets, compare venues and filter offers in one place.",
-        CommandKind::Help=>"/floor model_floor | Collection | Model | GRAM — model floor.\n/portfolio model_floor | GRAM — your visible gift estimate. Choose collection_floor for collection floors.\n/multiplier model_multiplier | collection_id | model_id | GRAM — model ask-floor ratio. Choose backdrop_multiplier with a backdrop ID.\n/status — synchronization status.\n/market — open the market.",
-        _=>return None,
-    }.into()})
-}
-pub(super) fn inventory_error(error: InventoryError) -> Reply {
-    Reply{text:match error {
-        InventoryError::Authorization=>"Telegram authorization failed.".into(),
-        InventoryError::Forbidden=>"Telegram did not allow this bot to read your profile gifts. Your portfolio could not be valued.".into(),
-        InventoryError::RetryAfter(delay)=>format!("Telegram requested a wait. Please try /portfolio again in {} seconds.", delay.as_secs().saturating_add(u64::from(delay.subsec_nanos()>0))),
-        InventoryError::InvalidData(_)|InventoryError::Unavailable=>"Your visible gifts could not be read from Telegram. Please try again shortly.".into(),
-    }}
+    Some(Reply { text: match command {
+        CommandKind::Start | CommandKind::Market => "Browse live gift markets, compare venues and filter offers in one place.",
+        CommandKind::Help => "/value <gift URL or slug> [GRAM|XTR] — all valuation strategies. You can also send a gift link directly.\n/status — synchronization status.\n/market — open the market.\nGift lookup uses synchronized market orders; unlisted gifts are unavailable.",
+        _ => return None,
+    }.into() })
 }
 pub(super) fn status_reply(status: market_gifts::SyncStatus) -> Reply {
     let state = match status.state {
@@ -236,124 +88,5 @@ pub(super) fn status_reply(status: market_gifts::SyncStatus) -> Reply {
     };
     Reply {
         text: format!("Market data: {state}. {detail}"),
-    }
-}
-
-fn strategy_label(strategy: &str) -> &str {
-    match strategy {
-        "model_floor" => "Model-floor",
-        "collection_floor" => "Collection-floor",
-        _ => strategy,
-    }
-}
-
-pub(super) fn multiplier(result: &market_valuation::ValuationResult) -> Reply {
-    use market_valuation::ValuationResult as R;
-    let (strategy, time, currency, factor, evidence, sync) = match result {
-        R::ModelMultiplier(m) => (
-            m.strategy,
-            m.evaluated_at,
-            &m.currency_id,
-            &m.factor,
-            &m.evidence,
-            &m.sync,
-        ),
-        R::BackdropMultiplier(m) => (
-            m.strategy,
-            m.evaluated_at,
-            &m.currency_id,
-            &m.factor,
-            &m.evidence,
-            &m.sync,
-        ),
-        _ => {
-            return Reply {
-                text: "Select a multiplier strategy.".into(),
-            };
-        }
-    };
-    Reply {
-        text: format!(
-            "Strategy: {strategy}\nMultiplier: {factor}×\nTrait floor: {} {currency} ({} listings)\nCollection floor: {} {currency} ({} listings)\nAsk-floor ratio; listing counts do not represent independent sellers.\nValued at: {}{}",
-            evidence.selected_trait.floor,
-            evidence.selected_trait.samples,
-            evidence.collection.floor,
-            evidence.collection.samples,
-            time.strftime("%Y-%m-%d %H:%M:%S UTC"),
-            if sync.state == SyncState::Live {
-                ""
-            } else {
-                "\nMarket data is not live; using the last synchronized listings."
-            }
-        ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use market_gifts::inventory::SkipReason;
-    #[test]
-    fn portfolio_reports_precise_totals_skip_reasons_partial_reads_and_freshness() {
-        let value = market_gifts::valuation::Valuation {
-            rows: vec![market_gifts::valuation::ModelValue {
-                identity: None,
-                collection: "Collection".into(),
-                model: "Model".into(),
-                quantity: 2,
-                floor: Some("2.000000000000000001".into()),
-                value: Some("4.000000000000000002".into()),
-                venue_id: Some("market".into()),
-                unpriced: None,
-            }],
-            total: "4.000000000000000002".into(),
-            priced: 2,
-            unpriced: 1,
-            currency_id: "GRAM".into(),
-            sync: market_gifts::SyncStatus {
-                ready: true,
-                state: market_gifts::SyncState::Stale,
-                updated_at: None,
-            },
-        };
-        let inventory = InventorySnapshot {
-            gifts: vec![market_gifts::inventory::InventoryGift {
-                id: "1".into(),
-                collection_id: market_gifts::TelegramGiftId::new(2).unwrap(),
-                model_document_id: market_gifts::TelegramDocumentId::new(3).unwrap(),
-                relation: GiftRelation::Hosted,
-            }],
-            regular_gifts: 45,
-            skipped: [(SkipReason::MissingModel, 129)].into(),
-            pages_read: 1,
-            gifts_scanned: 100,
-            reported_total: Some(700),
-            completion: InventoryCompletion::Partial(PartialReason::ReadFailed(
-                InventoryError::Unavailable,
-            )),
-            fetched_at: jiff::Timestamp::now(),
-        };
-        let mark = market_valuation::Mark::evaluated(
-            "model_floor",
-            market_valuation::Prepared {
-                prepared_at: jiff::Timestamp::now(),
-                revision: "fixture".into(),
-                data: value,
-            },
-        );
-        let reply = portfolio(&mark, &inventory);
-        for text in [
-            "4.000000000000000002 GRAM",
-            "100 of 700",
-            "Without a floor: 1",
-            "Skipped missing model document: 129",
-            "Hosted collectibles included: 1",
-            "wallet ownership is not verified",
-            "Partial inventory: a later Telegram page could not be read",
-            "Market data is not live",
-            "Unpriced gifts are excluded",
-        ] {
-            assert!(reply.text.contains(text), "missing {text}");
-        }
     }
 }

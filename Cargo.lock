@@ -2017,7 +2017,6 @@ dependencies = [
  "market-invocations",
  "market-media",
  "market-miniapp",
- "market-portfolio",
  "market-replica",
  "market-telegram",
  "market-telegram-bot",
@@ -2041,6 +2040,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "url",
  "utoipa",
 ]
 
@@ -2191,7 +2191,6 @@ dependencies = [
  "market-actors",
  "market-gifts",
  "market-invocations",
- "market-portfolio",
  "market-replica",
  "market-telegram",
  "market-valuation",
@@ -2223,6 +2222,7 @@ name = "market-valuation"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "futures-util",
  "jiff",
  "market-actors",
  "market-gifts",

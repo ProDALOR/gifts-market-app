@@ -21,6 +21,8 @@ fn invalid(value: impl std::fmt::Display) -> ProjectionError {
 pub const MODEL: &str = "tg.model";
 pub const BACKDROP: &str = "tg.backdrop";
 pub const PATTERN: &str = "tg.pattern";
+/// Canonical collection slug stored in an ItemType external alias.
+pub const COLLECTION_SLUG_NAMESPACE: &str = "tg.slug";
 pub const NUMBER: &str = "tg.number";
 const TELEGRAM_NAMESPACE: &str = "tg";
 #[cfg(test)]

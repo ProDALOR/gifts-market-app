@@ -40,7 +40,7 @@ fn projection_preserves_exact_amounts_and_distinct_concrete_identity() {
         panic!("expected concrete gift")
     };
     assert_eq!(gift.id.as_str(), "9007199254740993");
-    assert_eq!(gift.number, Some(42));
+    assert_eq!(gift.number, Some(GiftNumber::new(42).unwrap()));
     assert_eq!(gift.traits.model.as_deref(), Some("model"));
     let mut conditional = fixture();
     conditional.item_id = None;
@@ -208,4 +208,30 @@ fn trait_evidence_never_invents_a_model_from_broad_criteria() {
     let quote = ask_quote(raw, 0).unwrap().unwrap();
     assert!(quote.model_id.is_none());
     assert_eq!(quote.backdrop_id.as_deref(), Some("backdrop"));
+}
+
+#[test]
+fn concrete_quantities_use_shared_validation_while_criteria_keep_bulk_quantities() {
+    for quantity in ["2", "2.00", "4294967295"] {
+        let mut raw = fixture();
+        raw.quantity = quantity.into();
+        assert!(order(raw.clone()).is_err());
+        assert!(ask_quote(raw.clone(), 0).is_err());
+        raw.item_id = None;
+        let projected = order(raw).unwrap();
+        assert!(projected.validate().is_ok());
+        assert!(matches!(projected.target, GiftTarget::Criteria { .. }));
+    }
+    for number in [0, -1, i64::MAX] {
+        let mut raw = fixture();
+        raw.attributes.insert(
+            NUMBER.into(),
+            eq(w::attribute_value::Value::Integer(number)),
+        );
+        // Unsupported source constraints remain explicit rather than inventing gift facts.
+        assert!(matches!(
+            order(raw).unwrap().target,
+            GiftTarget::Unsupported { .. }
+        ));
+    }
 }

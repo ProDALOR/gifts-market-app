@@ -1,6 +1,8 @@
 //! Gift valuation actors, calculations, typed clients and lifecycle ownership.
 mod calculation;
 mod floors;
+mod gift;
+pub use gift::*;
 mod multipliers;
 mod registry;
 mod runtime;

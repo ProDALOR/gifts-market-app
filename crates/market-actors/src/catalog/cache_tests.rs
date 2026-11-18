@@ -828,3 +828,58 @@ fn catalog_content_revisions_survive_cache_eviction_and_identical_replica_replac
             .revision
     );
 }
+
+#[test]
+fn canonical_slug_updates_invalidate_directory_and_collection_content_revisions() {
+    let mut f = Fixture::new();
+    let versions = || {
+        f.cache
+            .versions(f.writer.reader(), vec!["gift".into()])
+            .unwrap()
+    };
+    let before = versions();
+    let E::ItemType(mut gift) = item("Gift", Some("model")) else {
+        unreachable!()
+    };
+    gift.aliases.push(w::ExternalId {
+        namespace: "tg.slug".into(),
+        id: "OriginalGift".into(),
+    });
+    f.apply(vec![upsert(E::ItemType(gift.clone()))]);
+    let added = f
+        .cache
+        .versions(f.writer.reader(), vec!["gift".into()])
+        .unwrap();
+    assert_ne!(before.directory, added.directory);
+    assert_ne!(before.collections, added.collections);
+    assert_eq!(
+        f.catalog().collections[0].slug.as_ref().unwrap().as_str(),
+        "OriginalGift"
+    );
+    assert_eq!(
+        f.choices().collection.slug.as_ref().unwrap().lookup_key(),
+        "originalgift"
+    );
+
+    gift.aliases[0].id = "RenamedSlug".into();
+    f.apply(vec![upsert(E::ItemType(gift.clone()))]);
+    let changed = f
+        .cache
+        .versions(f.writer.reader(), vec!["gift".into()])
+        .unwrap();
+    assert_ne!(added.directory, changed.directory);
+    assert_ne!(added.collections, changed.collections);
+    assert_eq!(
+        f.choices().collection.slug.as_ref().unwrap().as_str(),
+        "RenamedSlug"
+    );
+    gift.aliases.clear();
+    f.apply(vec![upsert(E::ItemType(gift))]);
+    let removed = f
+        .cache
+        .versions(f.writer.reader(), vec!["gift".into()])
+        .unwrap();
+    assert_eq!(removed, before);
+    assert!(f.catalog().collections[0].slug.is_none());
+    assert!(f.choices().collection.slug.is_none());
+}

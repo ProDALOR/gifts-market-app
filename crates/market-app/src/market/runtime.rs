@@ -63,7 +63,8 @@ impl MarketRuntime {
                 )
                 .await?,
             ),
-        ])?;
+        ])?
+        .with_reader(data.reader.clone());
         supervisor.spawn_critical(TaskKind::MarketData, async move {
             if let Err(error) = data.task.run(stop).await {
                 tracing::error!(code=?error.code(),"market data actor stopped");
@@ -113,45 +114,18 @@ impl MarketRuntime {
                 market_invocations::Runtime::start(Default::default()).map_err(|error| {
                     tracing::error!(%error, "invocation runtime failed");
                 })?;
-            let portfolio = market_portfolio::PortfolioService::start(
-                crate::portfolio::TelegramInventoryProvider(worker.inventory()),
-                valuation.clone(),
-                Default::default(),
-                invocations.handle(),
-            )
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, "portfolio actor failed to start");
-            })?;
-            let bot =
-                market_telegram_bot::BotService::new(worker, data, portfolio.handle, valuation);
-            let group = stop.child_token();
-            let bot_work =
-                AssertUnwindSafe(bot.run_with_invocations(group.clone(), invocations.handle()))
-                    .catch_unwind();
-            let portfolio_work = AssertUnwindSafe(portfolio.task.run(group.clone())).catch_unwind();
-            tokio::pin!(bot_work, portfolio_work);
-            // Stop and join both consumers before the shared invocation runtime, including panics.
-            let (bot_result, portfolio_result) = tokio::select! {
-                result = &mut bot_work => { group.cancel(); (result, portfolio_work.await) },
-                result = &mut portfolio_work => { group.cancel(); (bot_work.await, result) },
-            };
+            let bot = market_telegram_bot::BotService::new(worker, data, valuation);
+            let result = AssertUnwindSafe(bot.run_with_invocations(stop, invocations.handle()))
+                .catch_unwind()
+                .await;
             invocations.shutdown().await;
-            let bot_result = bot_result
+            result
                 .map_err(|_| {
                     tracing::error!("bot worker panicked");
                 })?
                 .map_err(|error| {
                     tracing::error!(%error, "bot worker stopped");
-                });
-            let portfolio_result = portfolio_result
-                .map_err(|_| {
-                    tracing::error!("portfolio supervisor panicked");
-                })?
-                .map_err(|error| {
-                    tracing::error!(%error, "portfolio actor stopped");
-                });
-            bot_result.and(portfolio_result)
+                })
         })
     }
 
@@ -238,7 +212,7 @@ mod tests {
     }
     #[cfg(feature = "bot")]
     #[tokio::test]
-    async fn shutdown_joins_bot_and_portfolio_before_opening_cancelled_transport() {
+    async fn shutdown_joins_bot_and_invocations_before_opening_cancelled_transport() {
         let directory = tempfile::tempdir().unwrap();
         let runtime = MarketRuntime::open(&directory.path().join("replica"), "test", 1, 1)
             .await

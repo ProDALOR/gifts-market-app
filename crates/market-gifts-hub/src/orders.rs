@@ -39,12 +39,11 @@ fn options(value: w::AttributePredicate) -> Result<Vec<String>> {
     ids.dedup();
     Ok(ids.into_iter().map(str::to_owned).collect())
 }
-fn number(value: w::AttributeValue) -> Result<u32> {
+fn number(value: w::AttributeValue) -> Result<GiftNumber> {
     match required(value.value)? {
         w::attribute_value::Value::Integer(value) => u32::try_from(value)
-            .ok()
-            .filter(|n| *n > 0)
-            .ok_or_else(|| invalid("gift number must be positive")),
+            .map_err(invalid)
+            .and_then(|n| GiftNumber::new(n).map_err(invalid)),
         _ => Err(invalid("gift number must be an integer")),
     }
 }
@@ -202,13 +201,11 @@ pub fn order(value: w::Order) -> Result<GiftOrder> {
     let quantity: u32 = decimal
         .to_string()
         .parse()
-        .ok()
-        .filter(|q| *q > 0)
-        .ok_or_else(|| invalid("gift quantity must be a positive integer"))?;
+        .map_err(|_| invalid("gift quantity must be a positive integer"))?;
     let market_url = ["url", "listing_url", "market_url", "link"]
         .into_iter()
         .find_map(|key| value.meta.get(key).cloned());
-    Ok(GiftOrder {
+    let order = GiftOrder {
         id: value.id.try_into().map_err(invalid)?,
         target: target(value.item_id, book.collection_id.clone(), value.attributes),
         book,
@@ -229,5 +226,7 @@ pub fn order(value: w::Order) -> Result<GiftOrder> {
             .transpose()
             .map_err(invalid)?,
         market_url,
-    })
+    };
+    order.validate().map_err(invalid)?;
+    Ok(order)
 }

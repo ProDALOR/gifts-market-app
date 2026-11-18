@@ -60,50 +60,28 @@ test("concrete previews use supplied media, never guessed paths or hypothetical 
   );
 });
 
-test("valuation requests preserve strategy data and structured failure evidence", async (t) => {
+test("gift valuation preserves every strategy outcome and only throws for HTTP failures", async (t) => {
   const { valuation, ApiFailure } = await import("../src/market.ts");
-  const query = {
-    strategy: "model_multiplier" as const,
-    collection_id: "gift",
-    model_id: "model",
-    currency_id: "GRAM",
-  };
-  const mark = {
-    strategy: "model_multiplier",
-    data: { factor: "3.333333333333" },
-    revision: "r1",
-    evaluated_at: "2026-11-18T12:00:00Z",
-  };
-  const details = {
-    strategy: "model_multiplier",
-    required_samples: 3,
-    available_samples: 1,
-    context: { kind: "multiplier", trait_samples: 1 },
+  const query = { gift: "https://t.me/nft/Gift-123", currency_id: "GRAM" };
+  const report = {
+    slug: "Gift-123", gift: { id: "gift123", collection_id: "gift", number: 123, traits: {model: "model", backdrop: null, pattern: null} }, currency_id: "GRAM",
+    strategies: [
+      { strategy: "model_floor", data: { total: "6" }, revision: "r1", evaluated_at: "2026-11-18T12:00:00Z" },
+      { strategy: "backdrop_multiplier", error: { code: "not_enough_data", message: "Missing backdrop", details: { strategy: "backdrop_multiplier" } } },
+    ],
   };
   let fail = false;
   t.mock.method(globalThis, "fetch", async (url, init) => {
-    assert.equal(url, "/valuations/query");
+    assert.equal(url, "/valuations/gift");
     assert.equal(init.method, "POST");
     assert.deepEqual(JSON.parse(init.body), query);
-    return fail
-      ? Response.json(
-          {
-            error: {
-              code: "not_enough_data",
-              message: "Missing evidence",
-              details,
-            },
-          },
-          { status: 422 },
-        )
-      : Response.json(mark);
+    return fail ? Response.json({ error: { code: "not_found", message: "Gift is not in market data" } }, { status: 404 }) : Response.json(report);
   });
-  assert.deepEqual(await valuation(query), mark);
+  assert.deepEqual(await valuation(query), report);
   fail = true;
   await assert.rejects(valuation(query), (error: unknown) => {
     assert.ok(error instanceof ApiFailure);
-    assert.equal(error.code, "not_enough_data");
-    assert.deepEqual(error.details, details);
+    assert.equal(error.code, "not_found");
     return true;
   });
 });

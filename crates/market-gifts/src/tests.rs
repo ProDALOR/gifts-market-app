@@ -54,18 +54,29 @@ fn backdrop_colors_are_validated_and_normalized() {
 
 #[test]
 fn domain_ranges_reject_reversed_bounds_and_zero_gift_numbers() {
-    for (min, max) in [(Some(0), None), (None, Some(0)), (Some(10), Some(1))] {
-        let mut filters = GiftFilters::new("collection".into(), "GRAM".into());
-        filters.number = Some(GiftNumberRange { min, max });
-        assert!(filters.validate().is_err());
+    for value in [serde_json::json!({"min":0}), serde_json::json!({"max":0})] {
+        assert!(serde_json::from_value::<GiftNumberRange>(value).is_err());
     }
+    let mut filters = GiftFilters::new("collection".into(), "GRAM".into());
+    filters.number = Some(GiftNumberRange {
+        min: Some(GiftNumber::new(10).unwrap()),
+        max: Some(GiftNumber::new(1).unwrap()),
+    });
+    assert!(filters.validate().is_err());
     for (min, max) in [
         (None, None),
         (Some(1), None),
         (None, Some(10)),
         (Some(10), Some(10)),
     ] {
-        assert!(GiftNumberRange { min, max }.validate().is_ok());
+        assert!(
+            GiftNumberRange {
+                min: min.map(|n| GiftNumber::new(n).unwrap()),
+                max: max.map(|n| GiftNumber::new(n).unwrap())
+            }
+            .validate()
+            .is_ok()
+        );
     }
     let mut filters = GiftFilters::new("collection".into(), "GRAM".into());
     filters.price = Some(PriceRange {
@@ -226,4 +237,156 @@ fn multiplier_ratios_validate_baselines_and_round_deterministically() {
     }
     let request:ValuationQuery=serde_json::from_value(serde_json::json!({"strategy":"model_multiplier","collection_id":"gift","model_id":"model","currency_id":"GRAM"})).unwrap();
     assert!(matches!(request, ValuationQuery::ModelMultiplier(_)));
+}
+
+#[test]
+fn gift_slugs_normalize_public_urls_and_reject_untrusted_or_malformed_inputs() {
+    for (input, expected) in [
+        ("PlushPepe-123", "PlushPepe-123"),
+        (" https://t.me/nft/PlushPepe-00123 ", "PlushPepe-123"),
+        ("t.me/nft/PlushPepe-123?source=test", "PlushPepe-123"),
+        ("https://telegram.me/nft/PlushPepe-123", "PlushPepe-123"),
+    ] {
+        let slug = crate::GiftSlug::new(input).unwrap();
+        assert_eq!(slug.to_string(), expected);
+        assert_eq!(slug.number().get(), 123);
+        assert!(slug.collection() == &CollectionSlug::new("PlushPepe").unwrap());
+        assert_eq!(
+            serde_json::from_str::<crate::GiftSlug>(&serde_json::to_string(input).unwrap())
+                .unwrap(),
+            slug
+        );
+    }
+    for input in [
+        "",
+        "Gift",
+        "Gift-0",
+        "Gift--1",
+        "Gift-4294967296",
+        "Gift-1x",
+        "https://evil.example/nft/Gift-1",
+        "https://t.me.evil.example/nft/Gift-1",
+        "https://user@t.me/nft/Gift-1",
+        "https://t.me/nft/Gift-1/other",
+        "tg://resolve?domain=Gift-1",
+    ] {
+        assert!(crate::GiftSlug::new(input).is_err(), "{input}");
+    }
+}
+
+#[test]
+fn gift_numbers_are_positive_in_gifts_ranges_and_json_schemas() {
+    for n in [1, u32::MAX] {
+        let number = GiftNumber::new(n).unwrap();
+        assert_eq!(number.get(), n);
+        assert_eq!(serde_json::to_value(number).unwrap(), n);
+        assert_eq!(
+            serde_json::from_value::<GiftNumber>(n.into()).unwrap(),
+            number
+        );
+    }
+    assert!(GiftNumber::new(0).is_err());
+    for value in [
+        serde_json::json!(0),
+        serde_json::json!(-1),
+        serde_json::json!(4294967296_u64),
+        serde_json::json!(1.5),
+        serde_json::json!("1"),
+    ] {
+        let gift = serde_json::json!({"id":"gift","collection_id":"collection","number":value,"traits":{"model":null,"backdrop":null,"pattern":null}});
+        assert!(serde_json::from_value::<CollectibleGift>(gift).is_err());
+    }
+    #[cfg(feature = "schema")]
+    {
+        let schema = serde_json::to_value(<GiftNumber as utoipa::PartialSchema>::schema()).unwrap();
+        assert_eq!(schema["type"], "integer");
+        assert_eq!(schema["minimum"], 1);
+        assert_eq!(schema["maximum"], u32::MAX);
+    }
+}
+
+#[test]
+fn slug_equality_ordering_and_hashing_use_normalized_keys_and_preserve_spelling() {
+    use std::collections::{BTreeSet, HashSet};
+    let a = GiftSlug::new("PlushPepe-0001").unwrap();
+    let b = GiftSlug::new("https://t.me/nft/plushpepe-1").unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
+    assert_eq!(a.lookup_key(), "plushpepe-1");
+    assert_eq!(a.collection().lookup_key(), "plushpepe");
+    assert_eq!(serde_json::to_value(&a).unwrap(), "PlushPepe-1");
+    assert_eq!(serde_json::to_value(a.collection()).unwrap(), "PlushPepe");
+    assert_eq!(HashSet::from([a.clone(), b.clone()]).len(), 1);
+    assert_eq!(BTreeSet::from([a, b]).len(), 1);
+    for value in [
+        "",
+        "Plush Pepe",
+        "Gift-1",
+        "Gift/Other",
+        " Gift",
+        "💎",
+        &"x".repeat(129),
+    ] {
+        assert!(CollectionSlug::new(value).is_err());
+    }
+}
+
+fn order_json() -> serde_json::Value {
+    serde_json::json!({
+        "id":"listing", "book":{"venue_id":"venue","collection_id":"collection","currency_id":"GRAM"},
+        "mode":"ask", "target":{"kind":"gift","gift":{"id":"gift","collection_id":"collection","number":1,"traits":{"model":null,"backdrop":null,"pattern":null}}},
+        "price":"10", "quantity":1, "observed_at":"2026-01-01T00:00:00Z",
+        "expires_at":null, "executed_at":null, "parent_order_id":null, "market_url":null
+    })
+}
+
+#[test]
+fn shared_order_validation_covers_json_projection_invariants_and_partial_gifts() {
+    let json = order_json();
+    let order: GiftOrder = serde_json::from_value(json.clone()).unwrap();
+    assert!(order.validate().is_ok());
+    assert_eq!(serde_json::to_value(&order).unwrap(), json);
+    let mut invalid = order.clone();
+    invalid.book.collection_id = "other".into();
+    assert!(invalid.validate().is_err());
+    assert!(serde_json::to_value(&invalid).is_err());
+    for quantity in [0, 2, u32::MAX] {
+        let mut invalid = order.clone();
+        invalid.quantity = quantity;
+        assert!(invalid.validate().is_err());
+        assert!(serde_json::to_value(&invalid).is_err());
+        let mut invalid_json = json.clone();
+        invalid_json["quantity"] = quantity.into();
+        assert!(serde_json::from_value::<GiftOrder>(invalid_json).is_err());
+    }
+    let mut mismatch = json.clone();
+    mismatch["target"]["gift"]["collection_id"] = "other".into();
+    assert!(serde_json::from_value::<GiftOrder>(mismatch).is_err());
+    let mut unknown_field = json.clone();
+    unknown_field["legacy"] = true.into();
+    assert!(serde_json::from_value::<GiftOrder>(unknown_field).is_err());
+    let mut partial = json.clone();
+    partial["target"]["gift"]["number"] = serde_json::Value::Null;
+    assert!(
+        serde_json::from_value::<GiftOrder>(partial)
+            .unwrap()
+            .validate()
+            .is_ok()
+    );
+
+    let mut criteria = json;
+    criteria["target"] =
+        serde_json::json!({"kind":"criteria","criteria":{"number":{"min":1,"max":10}}});
+    criteria["quantity"] = 2.into();
+    assert!(
+        serde_json::from_value::<GiftOrder>(criteria.clone())
+            .unwrap()
+            .validate()
+            .is_ok()
+    );
+    criteria["quantity"] = 0.into();
+    assert!(serde_json::from_value::<GiftOrder>(criteria.clone()).is_err());
+    criteria["quantity"] = 2.into();
+    criteria["target"]["criteria"]["number"] = serde_json::json!({"min":10,"max":1});
+    assert!(serde_json::from_value::<GiftOrder>(criteria).is_err());
 }

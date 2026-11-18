@@ -2,6 +2,7 @@
 mod catalog;
 mod dependencies;
 mod execution;
+mod gift;
 mod orders;
 pub use crate::catalog::ResolvedModel;
 use crate::{

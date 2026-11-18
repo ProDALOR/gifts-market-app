@@ -30,6 +30,7 @@ test("trait choices use the active collection response and matching gift trait",
   const collection: Collection = {
     id: "gift",
     name: "Gift",
+    slug: "Gift",
     preview: null,
   };
   const options = new Map<string, CatalogOption>([

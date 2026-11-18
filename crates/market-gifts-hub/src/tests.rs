@@ -183,3 +183,36 @@ fn choice_rules_keep_trait_membership_separate_and_normalize_requested_ids() {
         Some(vec![])
     );
 }
+
+#[test]
+fn collection_slugs_are_explicit_stable_and_validated() {
+    let mut item = w::ItemType {
+        id: "collection".into(),
+        name: "Plush Pepe".into(),
+        attributes: [(MODEL.into(), w::AttributeRule::default())].into(),
+        ..Default::default()
+    };
+    assert!(collection(item.clone()).unwrap().slug.is_none());
+    item.aliases.push(w::ExternalId {
+        namespace: COLLECTION_SLUG_NAMESPACE.into(),
+        id: "PlushPepe".into(),
+    });
+    let original = collection(item.clone()).unwrap();
+    item.name = "A completely different display name".into();
+    let renamed = collection(item.clone()).unwrap();
+    assert_eq!(original.slug, renamed.slug);
+    assert_eq!(renamed.slug.unwrap().as_str(), "PlushPepe");
+    item.aliases.push(w::ExternalId {
+        namespace: COLLECTION_SLUG_NAMESPACE.into(),
+        id: "plushpepe".into(),
+    });
+    assert_eq!(
+        collection_slug(&item).unwrap().unwrap().lookup_key(),
+        "plushpepe"
+    );
+    item.aliases[1].id = "OtherGift".into();
+    assert!(collection(item.clone()).is_err());
+    item.aliases.truncate(1);
+    item.aliases[0].id = "Plush Pepe".into();
+    assert!(collection(item).is_err());
+}

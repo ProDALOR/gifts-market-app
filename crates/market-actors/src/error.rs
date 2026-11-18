@@ -15,6 +15,13 @@ pub struct DataError {
 }
 pub type Result<T> = std::result::Result<T, DataError>;
 impl DataError {
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            code: DataErrorCode::NotFound,
+            message: message.into(),
+        }
+    }
+
     pub fn invalid(message: impl Into<String>) -> Self {
         Self {
             code: DataErrorCode::InvalidQuery,

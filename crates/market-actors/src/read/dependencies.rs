@@ -87,7 +87,12 @@ impl MarketSnapshot {
             metadata: self.reader.metadata_dependencies(keys, attributes)?,
             collections: lookups
                 .iter()
-                .any(|lookup| !matches!(lookup, ModelLookup::Catalog { .. }))
+                .any(|lookup| {
+                    !matches!(
+                        lookup,
+                        ModelLookup::Catalog { .. } | ModelLookup::Collection { .. }
+                    )
+                })
                 .then(|| self.reader.metadata_revision(&[w::EntityKind::ItemType]))
                 .transpose()?,
             checked: Mutex::new(self.reader.metadata_revision(KINDS)?),

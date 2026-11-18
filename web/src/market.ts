@@ -1,6 +1,6 @@
 import type { components } from "./gen/api";
-export type ValuationQuery = components["schemas"]["ValuationQuery"];
-export type StrategyMark = components["schemas"]["StrategyMark"];
+export type GiftValuationRequest = components["schemas"]["GiftValuationRequest"];
+export type GiftValuation = components["schemas"]["GiftValuationResponse"];
 export type ModelMultiplier = components["schemas"]["ModelMultiplier"];
 export type BackdropMultiplier = components["schemas"]["BackdropMultiplier"];
 export type ValuationErrorDetails =
@@ -66,9 +66,9 @@ export async function request<T>(
   return value;
 }
 export const valuation = (
-  query: ValuationQuery,
+  query: GiftValuationRequest,
   signal?: AbortSignal,
-): Promise<StrategyMark> => request("/valuations/query", query, signal);
+): Promise<GiftValuation> => request("/valuations/gift", query, signal);
 export const catalog = (
   signal: AbortSignal,
   revision?: (value: string) => void,

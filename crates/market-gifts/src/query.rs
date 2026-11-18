@@ -1,7 +1,7 @@
 //! Gift query contracts and reusable range and period invariants.
 use crate::{
-    Amount, BackdropId, CollectionId, CurrencyId, GiftSide, InvalidValue, ModelId, PatternId,
-    ReadConsistency, VenueId,
+    Amount, BackdropId, CollectionId, CurrencyId, GiftNumber, GiftSide, InvalidValue, ModelId,
+    PatternId, ReadConsistency, VenueId,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -49,17 +49,12 @@ impl PriceRange {
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftNumberRange {
-    #[cfg_attr(feature = "schema", schema(minimum = 1))]
-    pub min: Option<u32>,
-    #[cfg_attr(feature = "schema", schema(minimum = 1))]
-    pub max: Option<u32>,
+    pub min: Option<GiftNumber>,
+    pub max: Option<GiftNumber>,
 }
 impl GiftNumberRange {
     pub fn validate(&self) -> Result<(), InvalidValue> {
-        if self.min == Some(0)
-            || self.max == Some(0)
-            || self.min.zip(self.max).is_some_and(|(min, max)| min > max)
-        {
+        if self.min.zip(self.max).is_some_and(|(min, max)| min > max) {
             return Err(InvalidValue("invalid gift number range"));
         }
         Ok(())

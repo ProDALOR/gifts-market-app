@@ -28,6 +28,7 @@ pub(crate) fn resolve(
             return Err(Status::cancelled("Market read cancelled"));
         }
         let (collection, model) = match &lookup {
+            ModelLookup::Collection { collection } => (collection.to_string(), String::new()),
             ModelLookup::Name { collection, model } => (collection.clone(), model.clone()),
             ModelLookup::Catalog { collection, model } => {
                 (collection.to_string(), model.to_string())
@@ -59,6 +60,17 @@ pub(crate) fn resolve(
             }
         };
         row.collection_label = item.name.clone();
+        if matches!(lookup, ModelLookup::Collection { .. }) {
+            row.collection = Some(
+                item.id
+                    .clone()
+                    .try_into()
+                    .map_err(|e| Status::data_loss(format!("{e}")))?,
+            );
+            result.push(row);
+            continue;
+        }
+
         if !options.contains_key(&item.id) {
             let rules =
                 CollectionChoices::new(item).map_err(|e| Status::data_loss(e.to_string()))?;

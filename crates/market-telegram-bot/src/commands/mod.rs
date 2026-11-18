@@ -1,7 +1,5 @@
 //! Typed command requests, services and reply rendering.
-mod floor;
 mod parse;
-mod portfolio;
 mod render;
 use market_actors::MarketDataHandle;
 use market_telegram::{BotError, IncomingMessage, MenuCommand, MessageHandler, Reply};
@@ -10,23 +8,12 @@ pub(crate) use parse::parse;
 pub(super) use render::launch_reply;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FloorQuery {
-    pub strategy: market_gifts::valuation::StrategyId,
-    pub model: market_gifts::valuation::ModelLookup,
-    pub currency: market_gifts::CurrencyId,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Start,
     Market,
     Help,
     Status,
-    Floor(FloorQuery),
-    Multiplier(market_gifts::valuation::ValuationQuery),
-    Portfolio {
-        currency: market_gifts::CurrencyId,
-        strategy: market_gifts::valuation::StrategyId,
-    },
+    Value(market_gifts::valuation::GiftValuationRequest),
     Invalid(CommandKind),
 }
 impl Command {
@@ -36,9 +23,7 @@ impl Command {
             Self::Market => CommandKind::Market,
             Self::Help => CommandKind::Help,
             Self::Status => CommandKind::Status,
-            Self::Floor(_) => CommandKind::Floor,
-            Self::Multiplier(_) => CommandKind::Multiplier,
-            Self::Portfolio { .. } => CommandKind::Portfolio,
+            Self::Value(_) => CommandKind::Value,
             Self::Invalid(kind) => *kind,
         }
     }
@@ -52,20 +37,11 @@ pub struct CommandRequest {
 }
 pub struct MarketCommands {
     market: MarketDataHandle,
-    portfolio: market_portfolio::PortfolioHandle,
     valuation: market_valuation::ValuationHandle,
 }
 impl MarketCommands {
-    pub fn new(
-        market: MarketDataHandle,
-        portfolio: market_portfolio::PortfolioHandle,
-        valuation: market_valuation::ValuationHandle,
-    ) -> Self {
-        Self {
-            market,
-            portfolio,
-            valuation,
-        }
+    pub fn new(market: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
+        Self { market, valuation }
     }
 }
 impl MessageHandler for MarketCommands {
@@ -85,14 +61,10 @@ impl MessageHandler for MarketCommands {
                 Ok(status) => render::status_reply(status),
                 Err(error) => render::error_reply(error),
             }),
-            Command::Floor(query) => Ok(floor::execute(&self.valuation, query).await),
-            Command::Multiplier(query) => Ok(match self.valuation.query(query).await {
-                Ok(result) => render::multiplier(&result),
+            Command::Value(query) => Ok(match self.valuation.gift(query).await {
+                Ok(result) => render::valuation(&result),
                 Err(error) => render::error_reply(error),
             }),
-            Command::Portfolio { currency, strategy } => {
-                portfolio::execute(&self.portfolio, request.user_id, currency, strategy).await
-            }
             command => {
                 LaunchCommands
                     .handle(CommandRequest { command, ..request })

@@ -202,7 +202,8 @@ impl TestMarket {
             market_valuation::RegisteredStrategy::from(model_ratio.handle.clone()),
             market_valuation::RegisteredStrategy::from(backdrop_ratio.handle.clone()),
         ])
-        .unwrap();
+        .unwrap()
+        .with_reader(data.reader.clone());
         let collection_stop = stop.child_token();
         let valuation_stop = stop.child_token();
         let jobs = vec![
@@ -316,28 +317,6 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
             .configure(configure),
     )
     .await;
-    for (name, status) in [
-        ("".to_owned(), 400),
-        (" \t".to_owned(), 400),
-        ("x".repeat(257), 400),
-        ("💎".repeat(65), 400),
-        ("x".repeat(256), 422),
-        ("💎".repeat(64), 422),
-    ] {
-        let response = test::call_service(&app, test::TestRequest::post()
-            .uri("/portfolio/value")
-            .set_json(serde_json::json!({"strategy":"model_floor","positions":[{"model":{"kind":"name","collection":"Gift","model":name},"quantity":1}],"currency_id":"GRAM"}))
-            .to_request()).await;
-        assert_eq!(response.status(), status);
-        if status == 400 {
-            let body: serde_json::Value = test::read_body_json(response).await;
-            assert_eq!(body["error"]["code"], "invalid_query");
-            assert_eq!(
-                body["error"]["message"],
-                "collection and model names must contain 1..256 bytes"
-            );
-        }
-    }
     let response = test::call_service(
         &app,
         test::TestRequest::post()
@@ -1427,435 +1406,6 @@ fn valuation_page(price: &str) -> w::Page {
     }
     page
 }
-#[actix_web::test]
-async fn valuation_http_returns_the_shared_mark_and_refreshes_after_market_changes() {
-    use market_gifts::valuation::{ModelLookup, ModelPosition, ValuationRequest};
-    let (state, runtime, peer, stop) = setup().await;
-    let price = "1.000000000000000001";
-    peer.page.send_replace(valuation_page(price));
-    let request = ValuationRequest {
-        strategy: market_gifts::valuation::StrategyId::model_floor(),
-        positions: vec![ModelPosition {
-            model: ModelLookup::Catalog {
-                collection: "tg.gift.123".into(),
-                model: "model".into(),
-            },
-            quantity: 3,
-        }],
-        currency_id: "GRAM".into(),
-    };
-    let original = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if let Ok(mark) = state.valuation_mark(request.clone()).await
-                && mark.revision == format!("checkpoint.{price}")
-            {
-                break mark;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(original.total.as_str(), "3.000000000000000003");
-    // Another API instance and a direct actor caller use the same normalized key and immutable mark.
-    let other = MarketApi::new(runtime.data.clone(), runtime.valuation.clone());
-    assert!(Arc::ptr_eq(
-        &original,
-        &other.valuation_mark(request.clone()).await.unwrap()
-    ));
-    assert!(Arc::ptr_eq(
-        &original,
-        &runtime.valuation.mark(request.clone()).await.unwrap()
-    ));
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(other))
-            .configure(configure),
-    )
-    .await;
-    let mut duplicate = request.clone();
-    duplicate.positions[0].quantity = 1;
-    let mut extra = duplicate.positions[0].clone();
-    extra.quantity = 2;
-    duplicate.positions.push(extra);
-    let response = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/portfolio/value")
-            .set_json(&duplicate)
-            .to_request(),
-    )
-    .await;
-    assert_eq!(response.status(), 200);
-    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
-    let json: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(json.as_object().unwrap().len(), 4);
-    assert_eq!(json["data"]["total"], "3.000000000000000003");
-    assert!(json.get("total").is_none());
-    assert_eq!(json["revision"], original.revision);
-    assert!(json["data"].get("cursor").is_none());
-    assert_eq!(json["data"]["priced"], 3);
-    assert_eq!(json["data"]["unpriced"], 0);
-    assert_eq!(json["data"]["currency_id"], "GRAM");
-    assert_eq!(json["data"]["rows"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        json["evaluated_at"]
-            .as_str()
-            .unwrap()
-            .parse::<jiff::Timestamp>()
-            .unwrap(),
-        original.evaluated_at
-    );
-    peer.page
-        .send_replace(valuation_page("2.000000000000000001"));
-    let refreshed = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let response = test::call_service(
-                &app,
-                test::TestRequest::post()
-                    .uri("/portfolio/value")
-                    .set_json(&request)
-                    .to_request(),
-            )
-            .await;
-            assert_eq!(response.status(), 200);
-            let mark: serde_json::Value = test::read_body_json(response).await;
-            if mark["revision"] != "checkpoint.1.000000000000000001" {
-                break mark;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(refreshed["data"]["total"], "6.000000000000000003");
-    assert!(refreshed["data"].get("cursor").is_none());
-    stop.cancel();
-    runtime.shutdown().await.unwrap();
-}
-#[actix_web::test]
-async fn valuation_schema_describes_mark_metadata_and_http_errors() {
-    let schema = serde_json::to_value(ApiDoc::openapi()).unwrap();
-    let response = &schema["paths"]["/portfolio/value"]["post"]["responses"];
-    assert_eq!(
-        response["200"]["content"]["application/json"]["schema"]["$ref"],
-        "#/components/schemas/ValuationMark"
-    );
-    for code in ["400", "422", "429", "503"] {
-        assert!(response[code].is_object());
-    }
-    let mark = &schema["components"]["schemas"]["ValuationMark"];
-    for field in ["strategy", "data", "revision", "evaluated_at"] {
-        assert!(
-            mark["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == field)
-        );
-    }
-    assert_eq!(mark["properties"]["evaluated_at"]["format"], "date-time");
-    assert_eq!(mark["properties"]["evaluated_at"]["type"], "string");
-    assert_eq!(
-        mark["properties"]["data"]["$ref"],
-        "#/components/schemas/Valuation"
-    );
-    assert!(schema["components"]["schemas"]["ApiError"]["properties"]["details"].is_object());
-    assert!(
-        schema["components"]["schemas"]["ValuationErrorDetails"]["properties"]["context"]
-            .is_object()
-    );
-    assert!(
-        schema["components"]["schemas"]["ValuationRequest"]["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "strategy")
-    );
-    assert!(
-        schema["components"]["schemas"]
-            .get("ValuationCoverage")
-            .is_none()
-    );
-}
-#[actix_web::test]
-async fn valuation_admission_timeout_and_shutdown_are_http_errors_without_affecting_other_reads() {
-    use actix::{ActorFutureExt, WrapFuture};
-    use market_gifts::valuation::{PortfolioPositions, Valuation};
-    struct Blocked {
-        life: market_valuation::Lifecycle,
-        started: Arc<AtomicUsize>,
-    }
-    impl actix::Actor for Blocked {
-        type Context = actix::Context<Self>;
-        fn started(&mut self, ctx: &mut Self::Context) {
-            self.life.started(ctx);
-        }
-    }
-    impl
-        actix::Handler<
-            market_valuation::Evaluate<
-                PortfolioPositions,
-                Valuation,
-                market_valuation::ValuationError,
-            >,
-        > for Blocked
-    {
-        type Result = actix::AtomicResponse<
-            Self,
-            Result<Arc<market_valuation::Mark<Valuation>>, market_valuation::ValuationError>,
-        >;
-        fn handle(
-            &mut self,
-            message: market_valuation::Evaluate<
-                PortfolioPositions,
-                Valuation,
-                market_valuation::ValuationError,
-            >,
-            _: &mut Self::Context,
-        ) -> Self::Result {
-            let (_, request) = message.into_parts();
-            let stop = self.life.stop_token();
-            self.started.fetch_add(1, Ordering::SeqCst);
-            actix::AtomicResponse::new(Box::pin(
-                async move {
-                    let _request = request;
-                    tokio::select! {_=stop.cancelled()=>{},_=_request.cancelled.cancelled()=>{}}
-                    Err(market_valuation::ValuationError::unavailable("Cancelled"))
-                }
-                .into_actor(self)
-                .map(|result, _, _| result),
-            ))
-        }
-    }
-    let (_, runtime, _, stop) = setup().await;
-    let started = Arc::new(AtomicUsize::new(0));
-    let valuation = market_valuation::Service::start(
-        "model_floor",
-        market_valuation::Config {
-            max_requests: 1,
-            request_timeout: Duration::from_millis(150),
-        },
-        |life| Blocked {
-            life,
-            started: started.clone(),
-        },
-    )
-    .unwrap();
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(MarketApi::new(
-                runtime.data.clone(),
-                market_valuation::ValuationHandle::new([valuation.handle.clone()]).unwrap(),
-            )))
-            .configure(configure),
-    )
-    .await;
-    let body = serde_json::json!({"strategy":"model_floor","positions":[],"currency_id":"GRAM"});
-    let (timed_out, busy) = tokio::join!(
-        test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri("/portfolio/value")
-                .set_json(&body)
-                .to_request()
-        ),
-        async {
-            while started.load(Ordering::SeqCst) == 0 {
-                tokio::task::yield_now().await;
-            }
-            test::call_service(
-                &app,
-                test::TestRequest::post()
-                    .uri("/portfolio/value")
-                    .set_json(&body)
-                    .to_request(),
-            )
-            .await
-        }
-    );
-    assert_eq!(busy.status(), 429);
-    let json: serde_json::Value = test::read_body_json(busy).await;
-    assert_eq!(json["error"]["code"], "capacity_exceeded");
-    assert_eq!(timed_out.status(), 503);
-    let json: serde_json::Value = test::read_body_json(timed_out).await;
-    assert_eq!(json["error"]["code"], "timed_out");
-    assert_eq!(json["error"]["message"], "Valuation request timed out");
-    valuation.task.shutdown().await.unwrap();
-    let stopped = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/portfolio/value")
-            .set_json(body)
-            .to_request(),
-    )
-    .await;
-    assert_eq!(stopped.status(), 503);
-    assert_eq!(
-        test::call_service(&app, test::TestRequest::get().uri("/sync").to_request())
-            .await
-            .status(),
-        200
-    );
-    stop.cancel();
-    runtime.shutdown().await.unwrap();
-}
-
-#[actix_web::test]
-async fn named_strategies_keep_independent_marks_and_explain_missing_data() {
-    use market_gifts::valuation::{ModelLookup, ModelPosition, ValuationRequest};
-    let (state, runtime, peer, stop) = setup().await;
-    let mut data = valuation_page("10");
-    data.cursor = "strategies".into();
-    let mut cheap = data
-        .entities
-        .iter()
-        .find_map(|e| match &e.entity {
-            Some(w::entity::Entity::Order(o)) => Some(o.clone()),
-            _ => None,
-        })
-        .unwrap();
-    cheap.id = "cheap".into();
-    cheap.price = "3".into();
-    cheap.attributes.clear(); // A valid collection-wide ask, not a model-specific quote.
-    data.entities.push(w::Entity {
-        entity: Some(w::entity::Entity::Order(cheap)),
-    });
-    peer.page.send_replace(data);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while runtime
-            .data
-            .orders(market_gifts::GiftOrdersQuery::new(
-                market_gifts::GiftFilters::new("tg.gift.123".into(), "GRAM".into()),
-            ))
-            .await
-            .unwrap()
-            .cursor
-            != "strategies"
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    let request = ValuationRequest {
-        strategy: market_gifts::valuation::StrategyId::model_floor(),
-        currency_id: "GRAM".into(),
-        positions: vec![ModelPosition {
-            model: ModelLookup::named("Gift", "Model").unwrap(),
-            quantity: 2,
-        }],
-    };
-    let mut collection = request.clone();
-    collection.strategy = market_gifts::valuation::StrategyId::collection_floor();
-    let (model, broad) = tokio::join!(
-        runtime.valuation.mark(request.clone()),
-        runtime.valuation.mark(collection.clone()),
-    );
-    let model = model.unwrap();
-    let broad = broad.unwrap();
-    assert_eq!(model.strategy, "model_floor");
-    assert_eq!(broad.strategy, "collection_floor");
-    assert_eq!(model.total.as_str(), "20");
-    assert_eq!(broad.total.as_str(), "6");
-    assert!(Arc::ptr_eq(
-        &model,
-        &runtime.valuation.mark(request.clone()).await.unwrap()
-    ));
-    assert!(Arc::ptr_eq(
-        &broad,
-        &runtime.valuation.mark(collection.clone()).await.unwrap()
-    ));
-
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(state))
-            .configure(configure),
-    )
-    .await;
-    let missing = ModelPosition {
-        model: ModelLookup::named("Gift", "Missing").unwrap(),
-        quantity: 1,
-    };
-    let mut no_data = request.clone();
-    no_data.positions = vec![missing.clone()];
-    let response = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/portfolio/value")
-            .set_json(&no_data)
-            .to_request(),
-    )
-    .await;
-    assert_eq!(response.status(), 422);
-    let body: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(body["error"]["code"], "not_enough_data");
-    let detail = &body["error"]["details"];
-    assert_eq!(detail["strategy"], "model_floor");
-    assert_eq!(detail["currency_id"], "GRAM");
-    assert_eq!(detail["revision"], "strategies");
-    assert_eq!(detail["required_samples"], 1);
-    assert_eq!(detail["available_samples"], 0);
-    assert_eq!(
-        detail["context"]["unpriced"][0]["unpriced"],
-        "unknown_model"
-    );
-    no_data.strategy = collection.strategy.clone();
-    assert_eq!(
-        runtime
-            .valuation
-            .mark(no_data)
-            .await
-            .unwrap()
-            .total
-            .as_str(),
-        "3"
-    );
-
-    let mut partial = request.clone();
-    partial.positions.push(missing);
-    let response = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/portfolio/value")
-            .set_json(partial)
-            .to_request(),
-    )
-    .await;
-    assert_eq!(response.status(), 200);
-    let body: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(body["strategy"], "model_floor");
-    assert_eq!(body["data"]["priced"], 2);
-    assert_eq!(body["data"]["unpriced"], 1);
-    for (strategy, status, code) in [
-        ("unknown", 400, "unsupported_strategy"),
-        ("Invalid!", 400, "invalid_query"),
-    ] {
-        let body = serde_json::json!({"strategy":strategy,"positions":[],"currency_id":"GRAM"});
-        let response = test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri("/portfolio/value")
-                .set_json(body)
-                .to_request(),
-        )
-        .await;
-        assert_eq!(response.status(), status);
-        let body: serde_json::Value = test::read_body_json(response).await;
-        assert_eq!(body["error"]["code"], code);
-    }
-    let empty = ValuationRequest {
-        positions: vec![],
-        ..request
-    };
-    assert_eq!(
-        runtime.valuation.mark(empty).await.unwrap().total.as_str(),
-        "0"
-    );
-    stop.cancel();
-    runtime.shutdown().await.unwrap();
-}
-
 fn multiplier_page(traits: usize) -> w::Page {
     let mut data = valuation_page("6");
     data.cursor = format!("multiplier-{traits}");
@@ -1928,109 +1478,484 @@ fn multiplier_page(traits: usize) -> w::Page {
     }
     data
 }
+
+fn slug_page(samples: usize) -> w::Page {
+    let mut page = multiplier_page(samples);
+    for (id, kind) in [
+        ("tg.number", w::AttributeType::Integer),
+        ("tg.model", w::AttributeType::Enum),
+        ("tg.backdrop", w::AttributeType::Enum),
+    ] {
+        page.entities.push(w::Entity {
+            entity: Some(w::entity::Entity::Attribute(w::Attribute {
+                id: id.into(),
+                name: id.into(),
+                value_type: kind as i32,
+                ..Default::default()
+            })),
+        });
+    }
+    for row in &mut page.entities {
+        match row.entity.as_mut() {
+            Some(w::entity::Entity::ItemType(item)) => {
+                item.aliases.push(w::ExternalId {
+                    namespace: "tg.slug".into(),
+                    id: "Gift".into(),
+                });
+                item.attributes
+                    .insert("tg.number".into(), w::AttributeRule::default());
+            }
+            Some(w::entity::Entity::Order(order)) => {
+                let selected = order.id == "trait.0" || order.id == "trait-0";
+                // Every order is a concrete, unique collectible. Only one is Gift-123.
+                let number = if selected { 123 } else { 999 };
+                order.item_id = Some(if selected {
+                    "gift-123".into()
+                } else {
+                    format!("gift-{}", order.id)
+                });
+                order.attributes.insert(
+                    "tg.number".into(),
+                    w::AttributePredicate {
+                        predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                            value: Some(w::attribute_value::Value::Integer(number)),
+                        })),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    page
+}
+async fn wait_slug(state: &MarketApi) -> market_valuation::GiftValuationResult {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(value) = state
+                .gift_valuation(market_gifts::valuation::GiftValuationRequest {
+                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap(),
+                    currency_id: "GRAM".into(),
+                })
+                .await
+            {
+                return value;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
 #[actix_web::test]
-async fn valuation_queries_use_explicit_typed_contracts_and_strategy_specific_errors() {
+async fn gift_valuation_returns_all_strategies_and_independent_errors_and_removes_legacy_routes() {
     let (state, runtime, peer, stop) = setup().await;
+    peer.page.send_replace(slug_page(3));
+    let direct = wait_slug(&state).await;
+    assert_eq!(direct.strategies.len(), 4);
+    assert!(direct.strategies.iter().all(|row| row.result.is_ok()));
     let app = test::init_service(
         App::new()
-            .app_data(web::Data::new(state))
+            .app_data(web::Data::new(state.clone()))
             .configure(configure),
     )
     .await;
-    for endpoint in ["/portfolio/value", "/valuations/query"] {
+    let request = serde_json::json!({"gift":"https://t.me/nft/Gift-123","currency_id":"GRAM"});
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/gift")
+            .set_json(&request)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let body: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(body["slug"], "Gift-123");
+    assert_eq!(body["gift"]["number"], 123);
+    assert_eq!(body["strategies"].as_array().unwrap().len(), 4);
+    for row in body["strategies"].as_array().unwrap() {
+        assert!(row.get("data").is_some());
+        assert!(row["revision"].is_string());
+        assert!(row["evaluated_at"].is_string());
+    }
+    for route in ["/portfolio/value", "/valuations/query"] {
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(route)
+                    .set_json(&request)
+                    .to_request()
+            )
+            .await
+            .status(),
+            404
+        );
+    }
+    // Trait mismatch is a strategy-level outcome; other strategies remain useful.
+    let mut query = slug_page(3);
+    query.cursor = "partial".into();
+    for row in &mut query.entities {
+        if let Some(w::entity::Entity::Order(order)) = &mut row.entity {
+            order.attributes.remove("tg.backdrop");
+        }
+    }
+    peer.page.send_replace(query);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let value = wait_slug(&state).await;
+            if value.gift.traits.backdrop.is_none() {
+                assert!(
+                    value
+                        .strategies
+                        .iter()
+                        .find(|r| r.strategy.as_str() == "backdrop_multiplier")
+                        .unwrap()
+                        .result
+                        .is_err()
+                );
+                assert!(
+                    value
+                        .strategies
+                        .iter()
+                        .find(|r| r.strategy.as_str() == "model_floor")
+                        .unwrap()
+                        .result
+                        .is_ok()
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/gift")
+            .set_json(&request)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let report: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(report["gift_revision"], "partial");
+    let missing = report["strategies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["strategy"] == "backdrop_multiplier")
+        .unwrap();
+    assert_eq!(missing["error"]["code"], "not_enough_data");
+    assert_eq!(missing["error"]["details"]["currency_id"], "GRAM");
+    assert_eq!(missing["error"]["details"]["revision"], "partial");
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+#[actix_web::test]
+async fn gift_valuation_validates_links_reports_unknown_and_conflicting_gifts_and_documents_new_contract()
+ {
+    let (state, runtime, peer, stop) = setup().await;
+    peer.page.send_replace(slug_page(3));
+    wait_slug(&state).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure),
+    )
+    .await;
+    for (gift, expected) in [
+        ("Gift-0", 400),
+        ("https://evil.example/nft/Gift-123", 400),
+        ("Unknown-123", 404),
+        ("Gift-789", 404),
+    ] {
         let response = test::call_service(
             &app,
             test::TestRequest::post()
-                .uri(endpoint)
-                .set_json(serde_json::json!({"positions":[],"currency_id":"GRAM"}))
+                .uri("/valuations/gift")
+                .set_json(serde_json::json!({"gift":gift,"currency_id":"GRAM"}))
                 .to_request(),
         )
         .await;
-        assert_eq!(response.status(), 400);
+        assert_eq!(response.status(), expected, "{gift}");
     }
-    for count in [1, 3] {
-        peer.page.send_replace(multiplier_page(count));
-        tokio::time::timeout(Duration::from_secs(5), async {
+    let schema: serde_json::Value =
+        serde_json::from_str(&market_api::schema_json().unwrap()).unwrap();
+    assert!(schema["paths"].get("/portfolio/value").is_none());
+    assert!(schema["paths"].get("/valuations/query").is_none());
+    assert!(
+        schema["paths"]["/valuations/gift"]["post"]["responses"]
+            .get("404")
+            .is_some()
+    );
+    assert!(
+        schema["components"]["schemas"]
+            .get("ValuationRequest")
+            .is_none()
+    );
+    assert!(
+        schema["components"]["schemas"]
+            .get("ValuationQuery")
+            .is_none()
+    );
+    let mut conflict = slug_page(3);
+    conflict.cursor = "conflict".into();
+    let mut row = conflict
+        .entities
+        .iter()
+        .find_map(|e| match &e.entity {
+            Some(w::entity::Entity::Order(o)) if o.item_id.as_deref() == Some("gift-123") => {
+                Some(o.clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    row.id = "conflicting".into();
+    row.item_id = Some("other-identity".into());
+    conflict.entities.push(w::Entity {
+        entity: Some(w::entity::Entity::Order(row)),
+    });
+    peer.page.send_replace(conflict);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let result = state
+                .gift_valuation(market_gifts::valuation::GiftValuationRequest {
+                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap(),
+                    currency_id: "GRAM".into(),
+                })
+                .await;
+            if let Err(error) = result {
+                assert!(matches!(
+                    error.code,
+                    market_api::error::ErrorCode::Unavailable
+                ));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+async fn gift_lookup_is_currency_independent_and_all_strategy_failures_remain_successful_reports() {
+    let (state, runtime, peer, stop) = setup().await;
+    let mut initial = slug_page(3);
+    initial.entities.push(w::Entity {
+        entity: Some(w::entity::Entity::Currency(w::Currency {
+            id: "XTR".into(),
+            name: "Stars".into(),
+            decimals: 0,
+        })),
+    });
+    for row in &mut initial.entities {
+        if let Some(w::entity::Entity::Order(order)) = &mut row.entity
+            && order.item_id.as_deref() == Some("gift-123")
+        {
+            order.book.as_mut().unwrap().currency_id = "XTR".into();
+        }
+    }
+    peer.page.send_replace(initial);
+    let value = wait_slug(&state).await;
+    assert_eq!(value.currency_id.as_str(), "GRAM");
+    assert!(
+        value
+            .strategies
+            .iter()
+            .find(|r| r.strategy.as_str() == "model_floor")
+            .unwrap()
+            .result
+            .is_ok()
+    );
+    let mut expired = slug_page(3);
+    expired.cursor = "expired".into();
+    for row in &mut expired.entities {
+        if let Some(w::entity::Entity::Order(order)) = &mut row.entity {
+            order.expires_at_ms = Some(1);
+        }
+    }
+    peer.page.send_replace(expired);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let value = wait_slug(&state).await;
+            if value.gift_revision == "expired" {
+                assert!(value.strategies.iter().all(|row| row.result.is_err()));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure),
+    )
+    .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/gift")
+            .set_json(serde_json::json!({"gift":"Gift-123","currency_id":"GRAM"}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = test::read_body_json(response).await;
+    assert!(
+        body["strategies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["error"]["code"] == "not_enough_data")
+    );
+    // A criteria ask cannot fabricate a gift identity from its number predicate.
+    let mut criteria = slug_page(3);
+    criteria.cursor = "criteria".into();
+    for row in &mut criteria.entities {
+        if let Some(w::entity::Entity::Order(order)) = &mut row.entity
+            && order.item_id.as_deref() == Some("gift-123")
+        {
+            order.item_id = None;
+        }
+    }
+    peer.page.send_replace(criteria);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let result = state
+                .gift_valuation(market_gifts::valuation::GiftValuationRequest {
+                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap(),
+                    currency_id: "GRAM".into(),
+                })
+                .await;
+            if let Err(error) = result {
+                assert!(matches!(error.code, market_api::error::ErrorCode::NotFound));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous_aliases() {
+    let (state, runtime, peer, stop) = setup().await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure),
+    )
+    .await;
+    for (case, aliases, duplicate, expected) in [
+        ("renamed", vec!["Gift"], false, 200),
+        ("missing", vec![], false, 404),
+        ("ambiguous", vec!["Gift"], true, 400),
+        ("conflicting", vec!["Gift", "Other"], false, 503),
+        ("malformed", vec!["Gift Name"], false, 503),
+    ] {
+        let mut page = slug_page(3);
+        page.cursor = case.into();
+        let mut second = None;
+        for row in &mut page.entities {
+            if let Some(w::entity::Entity::ItemType(item)) = row.entity.as_mut() {
+                item.name = "A renamed collection".into();
+                item.aliases.retain(|a| a.namespace != "tg.slug");
+                item.aliases.extend(aliases.iter().map(|id| w::ExternalId {
+                    namespace: "tg.slug".into(),
+                    id: (*id).into(),
+                }));
+                if duplicate {
+                    let mut other = item.clone();
+                    other.id = "other".into();
+                    other.name = "A different collection".into();
+                    other.aliases.retain(|a| a.namespace != "tg");
+                    other
+                        .aliases
+                        .iter_mut()
+                        .find(|a| a.namespace == "tg.slug")
+                        .unwrap()
+                        .id = "gIfT".into();
+                    second = Some(other);
+                }
+            }
+        }
+        if let Some(item) = second {
+            page.entities.push(w::Entity {
+                entity: Some(w::entity::Entity::ItemType(item)),
+            });
+        }
+        peer.page.send_replace(page);
+        tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let page = runtime
-                    .data
+                let page = state
                     .orders(market_gifts::GiftOrdersQuery::new(
                         market_gifts::GiftFilters::new("tg.gift.123".into(), "GRAM".into()),
                     ))
                     .await
                     .unwrap();
-                if page.cursor == format!("multiplier-{count}") {
+                if page.cursor == case {
                     break;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
         .unwrap();
-        for (strategy, field, id) in [
-            ("model_multiplier", "model_id", "model"),
-            ("backdrop_multiplier", "backdrop_id", "b"),
-        ] {
-            let query = serde_json::json!({"strategy":strategy,"collection_id":"tg.gift.123",field:id,"currency_id":"GRAM"});
-            let response = test::call_service(
-                &app,
-                test::TestRequest::post()
-                    .uri("/valuations/query")
-                    .set_json(&query)
-                    .to_request(),
-            )
-            .await;
-            assert_eq!(response.status(), if count == 1 { 422 } else { 200 });
-            let body: serde_json::Value = test::read_body_json(response).await;
-            if count == 1 {
-                assert_eq!(body["error"]["code"], "not_enough_data");
-                let d = &body["error"]["details"];
-                assert_eq!(d["strategy"], strategy);
-                assert_eq!(d["available_samples"], 1);
-                assert_eq!(d["required_samples"], 3);
-                assert_eq!(d["context"]["kind"], "multiplier");
-                assert_eq!(d["context"]["trait_samples"], 1);
-                assert!(d["context"].get("unpriced").is_none());
-            } else {
-                assert_eq!(body["strategy"], strategy);
-                assert_eq!(body["data"][field], id);
-                assert_eq!(body["data"]["factor"], "3");
-                assert_eq!(body["data"]["evidence"]["collection"]["samples"], 6);
-                assert_eq!(body["data"]["evidence"]["selected_trait"]["samples"], 3);
-                assert!(body.get("coverage").is_none());
-                assert!(body["data"].get("total").is_none());
-                let again = test::call_service(
-                    &app,
-                    test::TestRequest::post()
-                        .uri("/valuations/query")
-                        .set_json(query)
-                        .to_request(),
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/valuations/gift")
+                .set_json(
+                    serde_json::json!({"gift":"https://t.me/nft/gIfT-00123", "currency_id":"GRAM"}),
                 )
-                .await;
-                let again: serde_json::Value = test::read_body_json(again).await;
-                assert_eq!(body["evaluated_at"], again["evaluated_at"]);
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), expected, "{case}");
+        if case == "renamed" {
+            let report: serde_json::Value = test::read_body_json(response).await;
+            assert_eq!(report["gift"]["number"], 123);
+            assert_eq!(report["gift"]["collection_id"], "tg.gift.123");
+            for path in ["/catalog", "/collections/tg.gift.123"] {
+                let response =
+                    test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+                let body: serde_json::Value = test::read_body_json(response).await;
+                let collection = if path == "/catalog" {
+                    &body["collections"][0]
+                } else {
+                    &body["collection"]
+                };
+                assert_eq!(collection["slug"], "Gift");
+                assert_eq!(collection["name"], "A renamed collection");
             }
         }
     }
-    let schema = serde_json::to_value(ApiDoc::openapi()).unwrap();
-    let variants = schema["components"]["schemas"]["StrategyMark"]["oneOf"]
-        .as_array()
-        .unwrap();
-    assert_eq!(variants.len(), 4);
-    for (variant, name) in variants.iter().zip([
-        "model_floor",
-        "collection_floor",
-        "model_multiplier",
-        "backdrop_multiplier",
-    ]) {
-        let tag = variant["allOf"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|part| part["properties"].get("strategy"))
-            .unwrap();
-        assert_eq!(tag["enum"][0], name);
-    }
+    let schema: serde_json::Value =
+        serde_json::from_str(&market_api::schema_json().unwrap()).unwrap();
+    assert_eq!(schema["components"]["schemas"]["GiftNumber"]["minimum"], 1);
+    assert_eq!(
+        schema["components"]["schemas"]["GiftNumber"]["type"],
+        "integer"
+    );
+    assert_eq!(
+        schema["components"]["schemas"]["CollectionSlug"]["type"],
+        "string"
+    );
+    assert_eq!(
+        schema["components"]["schemas"]["GiftSlug"]["type"],
+        "string"
+    );
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }

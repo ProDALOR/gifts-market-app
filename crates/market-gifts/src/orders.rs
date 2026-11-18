@@ -1,7 +1,7 @@
-//! Gift identities, traits, order targets and exact market quotes.
+//! Order targets and exact market quotes.
 use crate::{
-    Amount, BackdropId, CollectionId, CurrencyId, GiftId, GiftNumberRange, ModelId, OrderId,
-    PatternId, VenueId,
+    Amount, BackdropId, CollectibleGift, CollectionId, CurrencyId, GiftNumberRange, InvalidValue,
+    ModelId, OrderId, PatternId, VenueId,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -53,25 +53,6 @@ pub enum GiftSide {
     Bid,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct GiftTraits {
-    pub model: Option<ModelId>,
-    pub backdrop: Option<BackdropId>,
-    pub pattern: Option<PatternId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct CollectibleGift {
-    pub id: GiftId,
-    pub collection_id: CollectionId,
-    pub number: Option<u32>,
-    pub traits: GiftTraits,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -89,7 +70,7 @@ pub enum GiftTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftOrder {
     pub id: OrderId,
@@ -106,4 +87,44 @@ pub struct GiftOrder {
     pub executed_at: Option<Timestamp>,
     pub parent_order_id: Option<OrderId>,
     pub market_url: Option<String>,
+}
+
+impl GiftOrder {
+    /// Invariants shared by hub projection and deserialization. Unknown traits remain valid.
+    pub fn validate(&self) -> Result<(), InvalidValue> {
+        if self.quantity == 0 {
+            return Err(InvalidValue("gift quantity must be a positive integer"));
+        }
+        match &self.target {
+            GiftTarget::Gift { gift } => {
+                if self.quantity != 1 {
+                    return Err(InvalidValue("a concrete gift must have quantity one"));
+                }
+                if gift.collection_id != self.book.collection_id {
+                    return Err(InvalidValue("gift collection must match the order book"));
+                }
+            }
+            GiftTarget::Criteria { criteria } => {
+                if let Some(range) = &criteria.number {
+                    range.validate()?;
+                }
+            }
+            GiftTarget::Unsupported { .. } => {}
+        }
+        Ok(())
+    }
+}
+// Remote derive supplies field parsing once; both entry points use the same validation.
+impl<'de> Deserialize<'de> for GiftOrder {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let order = Self::deserialize(deserializer)?;
+        order.validate().map_err(serde::de::Error::custom)?;
+        Ok(order)
+    }
+}
+impl Serialize for GiftOrder {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.validate().map_err(serde::ser::Error::custom)?;
+        Self::serialize(self, serializer)
+    }
 }

@@ -12,12 +12,15 @@ fn by_telegram(input: i64, aliases: &[w::ExternalId]) -> bool {
 pub(crate) fn collection_matches(lookup: &ModelLookup, item: &w::ItemType) -> bool {
     match lookup {
         ModelLookup::Name { collection, .. } => by_name(collection, &item.id, &item.name),
-        ModelLookup::Catalog { collection, .. } => collection.as_str() == item.id,
+        ModelLookup::Catalog { collection, .. } | ModelLookup::Collection { collection } => {
+            collection.as_str() == item.id
+        }
         ModelLookup::Telegram { gift_id, .. } => by_telegram(gift_id.get(), &item.aliases),
     }
 }
 pub(crate) fn model_matches(lookup: &ModelLookup, option: &w::AttributeOption) -> bool {
     match lookup {
+        ModelLookup::Collection { .. } => false,
         ModelLookup::Name { model, .. } => by_name(model, &option.id, &option.name),
         ModelLookup::Catalog { model, .. } => model.as_str() == option.id,
         ModelLookup::Telegram { document_id, .. } => {

@@ -1,4 +1,6 @@
-use super::{BACKDROP, MODEL, PATTERN, Result, TELEGRAM_NAMESPACE, invalid};
+use super::{
+    BACKDROP, COLLECTION_SLUG_NAMESPACE, MODEL, PATTERN, Result, TELEGRAM_NAMESPACE, invalid,
+};
 use market_gifts::*;
 use market_hub_protocol::wire as w;
 use std::collections::BTreeSet;
@@ -12,11 +14,33 @@ pub fn document(option: &w::AttributeOption) -> Option<TelegramDocumentId> {
 pub fn is_gift(item: &w::ItemType) -> bool {
     item.attributes.contains_key(MODEL)
         || item.aliases.iter().any(|alias| {
-            alias.namespace == TELEGRAM_NAMESPACE && alias.id.parse::<i64>().is_ok_and(|id| id > 0)
+            (alias.namespace == TELEGRAM_NAMESPACE
+                && alias.id.parse::<i64>().is_ok_and(|id| id > 0))
+                || alias.namespace == COLLECTION_SLUG_NAMESPACE
         })
 }
+/// Explicit identity only: display names are mutable and must not generate lookup keys.
+pub fn collection_slug(item: &w::ItemType) -> Result<Option<CollectionSlug>> {
+    let mut slug = None;
+    for alias in item
+        .aliases
+        .iter()
+        .filter(|a| a.namespace == COLLECTION_SLUG_NAMESPACE)
+    {
+        let next = CollectionSlug::new(alias.id.clone()).map_err(invalid)?;
+        if slug.as_ref().is_some_and(|current| current != &next) {
+            return Err(invalid("conflicting canonical collection slugs"));
+        }
+        if slug.is_none() {
+            slug = Some(next);
+        }
+    }
+    Ok(slug)
+}
 pub fn collection(item: w::ItemType) -> Result<GiftCollection> {
+    let slug = collection_slug(&item)?;
     Ok(GiftCollection {
+        slug,
         id: item.id.try_into().map_err(invalid)?,
         name: item.name,
         preview: None,

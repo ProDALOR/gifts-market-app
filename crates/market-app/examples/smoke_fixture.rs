@@ -167,14 +167,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             })),
         ];
-        for (id, name) in [
-            ("tg.gift.123", "Velvet Heart (test data)"),
-            ("tg.gift.124", "Electric Skull (test data)"),
+        for (id, name, slug) in [
+            ("tg.gift.123", "Velvet Heart (test data)", "VelvetHeart"),
+            ("tg.gift.124", "Electric Skull (test data)", "ElectricSkull"),
         ] {
             entries.push(entry(E::ItemType(w::ItemType {
                 id: id.into(),
                 name: name.into(),
                 quantity_step: "1".into(),
+                aliases: vec![w::ExternalId {
+                    namespace: "tg.slug".into(),
+                    id: slug.into(),
+                }],
                 attributes: [
                     (
                         "tg.model".into(),
@@ -191,7 +195,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ("tg.number".into(), w::AttributeRule::default()),
                 ]
                 .into(),
-                ..Default::default()
             })));
         }
         let books = ["partner", "telegram"]

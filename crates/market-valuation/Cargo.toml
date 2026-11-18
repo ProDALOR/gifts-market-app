@@ -3,6 +3,7 @@ name = "market-valuation"
 version.workspace = true
 edition.workspace = true
 [dependencies]
+futures-util.workspace = true
 market-actors.workspace = true
 market-gifts.workspace = true
 rust_decimal.workspace = true
