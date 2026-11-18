@@ -312,12 +312,16 @@ body:has(.detail[open]) {
 }
 .detail-attributes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(95px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  margin: 20px 0;
+  margin: 16px 0 0;
   font-size: 12px;
 }
 .detail-attributes > div {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.75fr) minmax(0, 1.5fr);
+  align-items: start;
+  gap: 12px;
   min-width: 0;
   padding: 10px;
   border: 1px solid var(--line);
@@ -325,14 +329,15 @@ body:has(.detail[open]) {
   background: var(--surface);
 }
 .detail-attributes dt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--muted);
+  font-size: 10px;
 }
 .detail-attributes dd {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 8px 0 0;
+  min-width: 0;
+  margin: 0;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -349,4 +354,27 @@ body:has(.detail[open]) {
 }
 .telegram[data-telegram-theme="light"] .attribute-pattern .gift-model-image {
   filter: brightness(0) invert(0.3);
+}
+
+.detail-attributes .valuation-metrics {
+  margin-top: 8px;
+}
+.detail-attributes .valuation-metrics > li {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: none;
+}
+.detail-attributes .valuation-metrics > :only-child {
+  grid-column: 1 / -1;
+}
+.detail-attributes .valuation-metrics h4 {
+  font-size: 9px;
+  margin-bottom: 4px;
+}
+.detail-attributes .valuation-value {
+  font-size: 13px;
+}
+.attribute-name {
+  font-size: 12px;
 }

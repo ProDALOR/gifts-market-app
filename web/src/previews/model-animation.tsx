@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { loadAnimationData } from "./animation-data";
+import { animationRenderer, loadAnimationData } from "./animation-data";
 import { AnimationLifecycle } from "./animation-lifecycle";
 import { playbackBudget } from "./playback-budget";
 export default function ModelAnimation({
@@ -24,21 +24,28 @@ export default function ModelAnimation({
     if (!host) return;
     const controller = new AnimationLifecycle(
       async (signal) => {
-        const [data, player] = await Promise.all([
-          loadAnimationData(url, signal, priorityRef.current),
-          import("lottie-web/build/player/lottie_light_canvas"),
-        ]);
+        const data = await loadAnimationData(url, signal, priorityRef.current);
+        const renderer = animationRenderer(data);
         signal.throwIfAborted();
+        const player = await (renderer === "svg"
+          ? import("lottie-web/build/player/lottie_light")
+          : import("lottie-web/build/player/lottie_light_canvas"));
+        signal.throwIfAborted();
+        // The two lazy bundles have independent ID generators for masks and gradients.
+        player.default.setIDPrefix(`gift-${renderer}-`);
         const animation = player.default.loadAnimation({
           container: host,
-          renderer: "canvas",
+          renderer,
           loop: true,
           autoplay: false,
           animationData: structuredClone(data),
-          rendererSettings: {
-            dpr: Math.min(window.devicePixelRatio || 1, 2),
-            clearCanvas: true,
-          },
+          rendererSettings:
+            renderer === "canvas"
+              ? {
+                  dpr: Math.min(window.devicePixelRatio || 1, 2),
+                  clearCanvas: true,
+                }
+              : {},
         });
         return {
           play: () => animation.play(),

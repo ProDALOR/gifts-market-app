@@ -103,7 +103,7 @@ test("gift details show traits and bid constraints without listing metadata", as
   assert.ok(!JSON.stringify(rows).includes("source-"));
   assert.deepEqual(
     rows.find(({ label }) => label === "Model"),
-    { label: "Model", value: "Gold" },
+    { label: "Model", value: "Gold", attribute: "model" },
   );
   assert.ok(!labels.includes("Backdrop"));
 
@@ -128,7 +128,7 @@ test("gift details show traits and bid constraints without listing metadata", as
   );
   assert.deepEqual(
     bidRows.find(({ label }) => label === "Model"),
-    { label: "Model", value: "Any" },
+    { label: "Model", value: "Any", attribute: "model" },
   );
   assert.deepEqual(
     bidRows.find(({ label }) => label === "Gift #"),
@@ -200,8 +200,13 @@ test("detail visuals resolve with their labels and only for a single matching tr
     },
   } as Order;
   assert.deepEqual(giftDetails(gift, names, options), [
-    { label: "Model", value: "Gold", option: model },
-    { label: "Backdrop", value: "Blue", option: backdrop },
+    { label: "Model", value: "Gold", attribute: "model", option: model },
+    {
+      label: "Backdrop",
+      value: "Blue",
+      attribute: "backdrop",
+      option: backdrop,
+    },
   ]);
   const bid = {
     quantity: 1,

@@ -3,7 +3,7 @@ import type { CatalogOption } from "../orderbook";
 import { listingLink, serial } from "../orderbook";
 import { GiftPreview } from "../previews/gift-preview";
 import { DetailSheet } from "../ui/detail-sheet";
-import { GiftValuations, GiftValuationSummary } from "./gift-valuations";
+import { GiftValuationSummary } from "./gift-valuations";
 import { Quote } from "../ui/market-controls";
 import { VenueIcon } from "../ui/icons";
 import { OrderAttributes } from "./order-attributes";
@@ -84,14 +84,19 @@ export function OrderDetails({
           </section>
           <GiftValuationSummary state={state} />
         </div>
-        <OrderAttributes order={selected} options={options} names={names} />
+        <OrderAttributes
+          order={selected}
+          options={options}
+          names={names}
+          fields={state.fields.secondary}
+          summary={state.report?.display.summary}
+        />
         {removed && (
           <p className="listing-gone" role="status">
             This listing left the refreshed results. A disappearance does not
             confirm a sale.
           </p>
         )}
-        <GiftValuations key={state.key} state={state} />
       </div>
       {marketLink && !removed && (
         <div className="detail-actions">

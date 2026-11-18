@@ -1,6 +1,6 @@
 //! Gift valuation actors, calculations, typed clients and lifecycle ownership.
 mod display;
-pub use display::{DisplayField, DisplayValue, ValuationDisplay};
+pub use display::{DisplayAttribute, DisplayField, DisplayValue, ValuationDisplay};
 mod calculation;
 mod floors;
 pub mod gift_floor;

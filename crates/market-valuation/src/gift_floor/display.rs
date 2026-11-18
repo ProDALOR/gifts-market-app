@@ -1,6 +1,6 @@
 //! gift_floor selects its fields and presentation from checked, typed calculation output.
 use super::GiftFloorValuation;
-use crate::{DisplayField, ValuationDisplay};
+use crate::{DisplayAttribute, DisplayField, ValuationDisplay};
 impl GiftFloorValuation {
     pub fn display(&self) -> ValuationDisplay<'_> {
         ValuationDisplay {
@@ -26,14 +26,16 @@ impl GiftFloorValuation {
                     &self.model_floor,
                     &self.currency_id,
                     None,
-                ),
+                )
+                .attribute(DisplayAttribute::Model),
                 DisplayField::currency(
                     "backdrop_floor",
                     "Backdrop floor",
                     &self.backdrop_floor,
                     &self.currency_id,
                     None,
-                ),
+                )
+                .attribute(DisplayAttribute::Backdrop),
                 DisplayField::currency(
                     "model_backdrop_floor",
                     "Model × backdrop floor",
@@ -47,14 +49,16 @@ impl GiftFloorValuation {
                     &self.model_multiplier,
                     "×",
                     Some(2),
-                ),
+                )
+                .attribute(DisplayAttribute::Model),
                 DisplayField::number(
                     "backdrop_multiplier",
                     "Backdrop multiplier",
                     &self.backdrop_multiplier,
                     "×",
                     Some(2),
-                ),
+                )
+                .attribute(DisplayAttribute::Backdrop),
             ],
             summary: Some(format!(
                 "{} collection listings",

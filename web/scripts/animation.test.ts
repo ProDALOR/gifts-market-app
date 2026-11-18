@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { gzipSync, strToU8 } from "fflate";
-import { decodeTgs, loadAnimationData } from "../src/previews/animation-data.ts";
+import {
+  decodeTgs,
+  loadAnimationData,
+} from "../src/previews/animation-data.ts";
 const data = {
   v: "5.7.4",
   w: 512,
@@ -81,5 +84,61 @@ test("leaving the last preview cancels its network request and a later preview c
       new AbortController().signal,
     ),
     data,
+  );
+});
+
+test("renderer selection preserves independent gradient opacity without changing source data", async () => {
+  const { animationRenderer } =
+    await import("../src/previews/animation-data.ts");
+  const colors = [0, 1, 1, 1, 0.8, 1, 1, 1, 1, 1, 1, 1];
+  const aligned = [...colors, 0, 1, 0.8, 0.5, 1, 0];
+  const separate = [...colors, 0, 1, 0.5, 0.5, 1, 0];
+  const scene = (values: unknown, kind = "gf") => ({
+    ...data,
+    layers: [
+      {
+        ty: 4,
+        shapes: [{ ty: "gr", it: [{ ty: kind, g: { p: 3, k: values } }] }],
+      },
+    ],
+  });
+  assert.equal(animationRenderer(data), "canvas");
+  assert.equal(animationRenderer(scene({ a: 0, k: colors })), "canvas");
+  assert.equal(animationRenderer(scene({ a: 0, k: aligned })), "canvas");
+  const independent = scene({ a: 0, k: separate });
+  const original = JSON.stringify(independent);
+  assert.equal(animationRenderer(independent), "svg");
+  assert.equal(
+    animationRenderer(independent),
+    "svg",
+    "Shared data reuse the renderer decision",
+  );
+  assert.equal(
+    JSON.stringify(independent),
+    original,
+    "Telegram shapes and colors remain untouched",
+  );
+  assert.equal(
+    animationRenderer(scene({ a: 0, k: [...colors, 0, 1, 1, 0] }, "gs")),
+    "svg",
+  );
+  assert.equal(
+    animationRenderer(
+      scene({
+        a: 1,
+        k: [
+          { t: 0, s: aligned, e: separate },
+          { t: 90, s: separate },
+        ],
+      }),
+    ),
+    "svg",
+  );
+  assert.equal(
+    animationRenderer({
+      ...data,
+      assets: [{ id: "nested", layers: independent.layers }],
+    }),
+    "svg",
   );
 });

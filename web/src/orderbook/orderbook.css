@@ -404,9 +404,6 @@
   line-height: 1.5;
   margin: 0 0 14px;
 }
-.gift-valuations {
-  margin: 22px 0 18px;
-}
 .valuation-heading {
   display: flex;
   align-items: center;
@@ -418,11 +415,16 @@
   color: var(--muted);
   font-weight: 650;
 }
-.valuation-heading button {
-  width: 36px;
-  height: 36px;
+.valuation-controls {
+  display: flex;
+  align-items: center;
   flex: none;
-  margin: -8px -6px -8px 0;
+  margin: -6px -5px -6px 2px;
+}
+.valuation-controls button {
+  width: 32px;
+  height: 32px;
+  flex: none;
   border-radius: 50%;
   font-size: 19px;
 }
@@ -501,44 +503,13 @@
   font-size: 22px;
   line-height: 1.2;
 }
-.valuation-summary .valuation-metrics h4 {
+.valuation-summary .valuation-metrics h4:not(.sr) {
   margin-bottom: 6px;
   font-size: 10px;
 }
 .valuation-summary .valuation-note {
   font-size: 10px;
   margin-top: 8px;
-}
-.valuation-strategy h3 {
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-.valuation-breakdown {
-  border-top: 1px solid var(--line);
-  padding-top: 10px;
-}
-.valuation-breakdown .valuation-metrics {
-  margin-top: 14px;
-}
-.valuation-guide {
-  margin-top: 16px;
-  border-top: 1px solid var(--line);
-  padding-top: 14px;
-}
-.valuation-guide summary,
-.valuation-breakdown summary {
-  color: var(--accent);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 4px 0;
-}
-.valuation-guide summary:focus-visible,
-.valuation-breakdown summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 4px;
-  border-radius: 4px;
 }
 .valuation-guide-content {
   font-size: 13px;
@@ -598,15 +569,19 @@
 .detail-pricing {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin: 20px 0;
+  gap: 8px;
+  margin: 20px 0 16px;
 }
 .detail-pricing > section {
   min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
 }
-.listing-price {
-  border-right: 1px solid var(--line);
-  padding-right: 14px;
+.detail-pricing > .valuation-summary {
+  background: var(--tint);
+  border-color: var(--accent-line);
 }
 .listing-price h3 {
   min-height: 28px;
@@ -617,9 +592,13 @@
   color: var(--muted);
 }
 .price-comparison {
-  margin-top: 10px;
-  font-size: 11px;
-  color: var(--muted);
+  display: inline-block;
+  margin-top: 14px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--tint);
 }
 .detail-art .gift-preview-fallback {
   font-size: 64px;
@@ -680,4 +659,64 @@
     padding-left: 24px;
     padding-right: 24px;
   }
+}
+
+.valuation-info-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+}
+.valuation-popup {
+  width: min(640px, calc(100% - 24px));
+  max-height: min(84dvh, calc(100dvh - 48px));
+  padding: 0;
+  margin: auto;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--ink);
+  background: var(--paper);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.valuation-popup::backdrop {
+  background: #08070bb3;
+}
+.valuation-popup-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+.valuation-popup-heading h3 {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.valuation-popup-heading button {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--surface);
+  font-size: 22px;
+}
+.valuation-popup-body {
+  padding: 16px 18px 20px;
+}
+.valuation-context {
+  margin-top: 12px;
+}
+.valuation-context .valuation-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
+}
+.gift-attributes {
+  margin-bottom: 20px;
 }

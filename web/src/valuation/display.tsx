@@ -3,14 +3,14 @@ import { amount } from "../market";
 import { Quote } from "../ui/market-controls";
 type Field = components["schemas"]["DisplayField"];
 type Value = components["schemas"]["DisplayValue"];
-function ValueResult({ value }: { value: Value }) {
+function ValueResult({ value, compact }: { value: Value; compact: boolean }) {
   switch (value.kind) {
     case "unavailable":
       return (
         <>
           <strong className="valuation-unavailable">{value.label}</strong>
-          <p>{value.message}</p>
-          {value.detail && <small>{value.detail}</small>}
+          {!compact && <p>{value.message}</p>}
+          {!compact && value.detail && <small>{value.detail}</small>}
         </>
       );
     case "currency":
@@ -35,7 +35,13 @@ function ValueResult({ value }: { value: Value }) {
   }
 }
 /** Rendering knows value kinds, never a strategy ID, metric name, precision or suffix. */
-export function ValuationFields({ fields }: { fields: Field[] }) {
+export function ValuationFields({
+  fields,
+  compact = false,
+}: {
+  fields: Field[];
+  compact?: boolean;
+}) {
   if (!fields.length) return null;
   return (
     <ul className="valuation-metrics">
@@ -45,8 +51,10 @@ export function ValuationFields({ fields }: { fields: Field[] }) {
           data-metric={field.id}
           className={field.primary ? "valuation-primary" : undefined}
         >
-          <h4>{field.label}</h4>
-          <ValueResult value={field.value} />
+          <h4 className={compact && fields.length === 1 ? "sr" : undefined}>
+            {field.label}
+          </h4>
+          <ValueResult value={field.value} compact={compact} />
         </li>
       ))}
     </ul>

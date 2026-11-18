@@ -49,6 +49,7 @@ export type GiftDetail = {
   label: string;
   value: string;
   option?: CatalogOption;
+  attribute?: CatalogOption["kind"];
 };
 
 /** Resolve labels and single-trait visuals together, without reconstructing selections in the UI. */
@@ -70,6 +71,7 @@ export function giftDetails(
     const option = ids.length === 1 ? options?.get(ids[0]) : undefined;
     rows.push({
       label: trait.label,
+      attribute: trait.kind,
       value: ids.length
         ? ids.map((id) => names.get(id) || "Unavailable").join(" / ")
         : "Any",

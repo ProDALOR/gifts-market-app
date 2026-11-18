@@ -140,6 +140,7 @@ function report(body) {
         },
         {
           id: "model_floor",
+          attribute: "model",
           label: "Fixture price",
           primary: false,
           value: {
@@ -150,6 +151,7 @@ function report(body) {
         },
         {
           id: "model_multiplier",
+          attribute: "pattern",
           label: "Fixture score",
           primary: false,
           value: { kind: "number", amount: "1.2500", suffix: " points" },
@@ -179,15 +181,27 @@ try {
           .querySelector(".valuation-summary")
           ?.getAttribute("aria-busy") === "false",
     );
-  const openBreakdown = async () => {
+  const waitReport = async () => {
     await settled();
-    const breakdown = page.locator(".valuation-breakdown");
-    await breakdown.waitFor();
-    if (!(await breakdown.evaluate((element) => element.open)))
-      await breakdown.locator("summary").click();
     await page
       .locator('[data-metric="model_floor"] .valuation-value')
       .waitFor();
+  };
+  const toggleGuide = async () => {
+    if (await page.locator(".valuation-popup").count())
+      await page
+        .getByRole("button", { name: "Close calculation guide", exact: true })
+        .click();
+    else
+      await page
+        .getByRole("button", { name: "How is this calculated?", exact: true })
+        .click();
+  };
+  const closeDetails = async () => {
+    if (await page.locator(".valuation-popup").count()) await toggleGuide();
+    await page
+      .getByRole("button", { name: "Close details", exact: true })
+      .click();
   };
   let symbolAnimations = 0;
   page.on("request", (request) => {
@@ -217,7 +231,9 @@ try {
     }),
   );
   let metadataFails = true;
-  let metadataRequests = 0;
+  let metadataRequests = 0,
+    holdMetadata = false,
+    releaseMetadata;
   const strategyMetadata = {
     id: "fixture_floor",
     name: "Fixture floor",
@@ -225,8 +241,12 @@ try {
     documentation_url: "/__fixture_strategy.md",
     documentation_revision: "r1",
   };
-  await page.route("**/valuations/strategies", (route) => {
+  await page.route("**/valuations/strategies", async (route) => {
     metadataRequests++;
+    if (holdMetadata)
+      await new Promise((resolve) => {
+        releaseMetadata = resolve;
+      });
     return route.fulfill(
       metadataFails
         ? { status: 503, json: { error: { message: "Unavailable" } } }
@@ -237,9 +257,11 @@ try {
   let guideFails = true,
     holdGuide = false,
     releaseGuide;
-  let abortedGuides = 0;
+  let abortedGuides = 0,
+    abortedMetadata = 0;
   page.on("requestfailed", (request) => {
     if (request.url().endsWith("/__fixture_strategy.md")) abortedGuides++;
+    if (request.url().endsWith("/valuations/strategies")) abortedMetadata++;
   });
   await page.route("**/__fixture_strategy.md", async (route) => {
     guideRequests++;
@@ -338,13 +360,10 @@ try {
   await page.locator('[data-order-id="a"]').click();
   await page.locator('.valuation-summary [data-metric="decision"]').waitFor();
   assert.equal(await page.locator(".price-comparison").count(), 0);
-  assert.equal(
-    await page.locator(".valuation-breakdown").evaluate((el) => el.open),
-    false,
-  );
+  assert.equal(await page.locator(".valuation-breakdown").count(), 0);
   assert.equal(
     await page.locator('[data-metric="model_floor"]').isVisible(),
-    false,
+    true,
   );
   const art = await page.locator(".detail-art").boundingBox();
   const giftArt = await page
@@ -377,7 +396,7 @@ try {
   );
   await page.screenshot({ path: "/tmp/gifts-market-ui/details-desktop.png" });
   await page.setViewportSize({ width: 440, height: 880 });
-  await openBreakdown();
+  await waitReport();
   assert.equal(
     symbolAnimations,
     0,
@@ -390,13 +409,20 @@ try {
     currency_id: "GRAM",
   });
   assert.equal(await page.locator(".valuation-metrics > li").count(), 4);
+  await page
+    .locator('[data-attribute="model"] [data-metric="model_floor"]')
+    .waitFor();
+  await page
+    .locator('[data-attribute="pattern"] [data-metric="model_multiplier"]')
+    .waitFor();
+  await page.locator('.valuation-context [data-metric="confidence"]').waitFor();
   assert.deepEqual(
     await page.locator(".valuation-metrics > li h4").allTextContents(),
     [
       "Fixture decision",
-      "Fixture confidence",
       "Fixture price",
       "Fixture score",
+      "Fixture confidence",
     ],
   );
   assert.equal(
@@ -453,9 +479,7 @@ try {
   assert.equal(await page.locator(".detail-market").count(), 0);
   assert.equal(requests.length, 1, "Feed changes do not poll valuations");
   await page.screenshot({ path: "/tmp/gifts-market-ui/valuation-preview.png" });
-  await page
-    .getByRole("button", { name: "Close details", exact: true })
-    .click();
+  await closeDetails();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.waitForFunction(() => !document.querySelector(".card-clock"));
   assert.equal(await page.locator(".card-clock").count(), 0);
@@ -480,7 +504,7 @@ try {
   assert.ok(release, "The delayed valuation request started");
   mode = "ok";
   await page.evaluate((order) => window.selectListing(order), b);
-  await openBreakdown();
+  await waitReport();
   release();
   assert.ok((await page.locator("#detail-title").textContent()).includes("#2"));
   assert.equal(
@@ -501,15 +525,23 @@ try {
   await page
     .getByRole("button", { name: "Refresh valuation", exact: true })
     .click();
-  await openBreakdown();
+  await waitReport();
   assert.equal(
     guideModuleRequests,
     0,
     "The Markdown and math renderer stay unloaded until the guide opens",
   );
-  const guide = page.locator(".valuation-guide");
-  const summary = guide.locator("summary");
-  await summary.focus();
+  const guide = page.locator(".valuation-popup");
+  const info = page.getByRole("button", {
+    name: "How is this calculated?",
+    exact: true,
+  });
+  assert.equal(
+    metadataRequests,
+    0,
+    "Strategy discovery waits for the info popup",
+  );
+  await info.focus();
   await page.keyboard.press("Enter");
   await guide
     .getByRole("button", { name: "Retry strategy information" })
@@ -525,7 +557,7 @@ try {
     .getByRole("button", { name: "Retry strategy information" })
     .click();
   await page
-    .locator(".valuation-strategy")
+    .locator(".valuation-popup-heading")
     .getByRole("heading", { name: strategyMetadata.name, exact: true })
     .waitFor();
   assert.equal(metadataRequests, previousMetadataRequests + 1);
@@ -571,8 +603,23 @@ try {
       .getAttribute("href"),
     "",
   );
-  await summary.click();
-  await summary.click();
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await guide.evaluate((el) => el.contains(document.activeElement)),
+    true,
+    "Keyboard focus stays in the popup",
+  );
+  await page.mouse.click(2, 2);
+  assert.equal(await guide.count(), 0, "Backdrop click closes only the guide");
+  assert.equal(await page.locator(".detail").count(), 1);
+  assert.equal(
+    await info.evaluate((el) => el === document.activeElement),
+    true,
+  );
+  await toggleGuide();
+  await content.waitFor();
+  await toggleGuide();
+  await toggleGuide();
   assert.equal(
     guideRequests,
     2,
@@ -583,23 +630,22 @@ try {
   const guidesBeforeRefresh = guideRequests;
   const requestsBeforeRefresh = requests.length;
   await content.evaluate((node) => {
-    window.__guideBeforeRefresh = node;
+    window.__guideBeforeRefresh = node.querySelector("math");
   });
   mode = "hold";
   release = undefined;
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
-  await page.getByText("Refreshing estimate…", { exact: true }).waitFor();
+  await page.evaluate(() =>
+    document.querySelector('button[aria-label="Refresh valuation"]').click(),
+  );
+  await guide.getByText("Refreshing estimate…", { exact: true }).waitFor();
   for (let tries = 0; !release && tries < 100; tries++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(release);
+  assert.equal(await page.locator(".valuation-breakdown").count(), 0);
   assert.equal(
-    await page.locator(".valuation-breakdown").evaluate((el) => el.open),
-    true,
-  );
-  assert.equal(
-    await content.evaluate((node) => window.__guideBeforeRefresh === node),
+    await content.evaluate(
+      (node) => window.__guideBeforeRefresh === node.querySelector("math"),
+    ),
     true,
   );
   mode = "ok";
@@ -617,24 +663,38 @@ try {
     "Refreshing does not download the guide again",
   );
   assert.equal(
-    await content.evaluate((node) => window.__guideBeforeRefresh === node),
+    await content.evaluate(
+      (node) => window.__guideBeforeRefresh === node.querySelector("math"),
+    ),
     true,
     "Refreshing does not typeset the guide again",
   );
   mode = "error";
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
-  await page.getByText("Previous estimate shown.", { exact: true }).waitFor();
+  await page.evaluate(() =>
+    document.querySelector('button[aria-label="Refresh valuation"]').click(),
+  );
+  await guide.getByText("Previous estimate shown.", { exact: true }).waitFor();
   assert.equal(
-    await content.evaluate((node) => window.__guideBeforeRefresh === node),
+    await content.evaluate(
+      (node) => window.__guideBeforeRefresh === node.querySelector("math"),
+    ),
     true,
   );
   assert.equal(await page.locator(".price-comparison").count(), 0);
   mode = "ok";
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
+  await page.evaluate(() =>
+    document.querySelector('button[aria-label="Refresh valuation"]').click(),
+  );
+  await settled();
+  reportKind = "stale";
+  await page.evaluate(() =>
+    document.querySelector('button[aria-label="Refresh valuation"]').click(),
+  );
+  await guide.getByText("Stale data ·", { exact: true }).waitFor();
+  reportKind = "partial";
+  await page.evaluate(() =>
+    document.querySelector('button[aria-label="Refresh valuation"]').click(),
+  );
   await settled();
   await page.setViewportSize({ width: 390, height: 844 });
   await content
@@ -642,7 +702,7 @@ try {
     .scrollIntoViewIfNeeded();
   assert.equal(
     await page
-      .locator(".detail")
+      .locator(".valuation-popup")
       .evaluate((el) => el.scrollWidth > el.clientWidth),
     false,
     "Guide formulas fit mobile details",
@@ -652,12 +712,10 @@ try {
   });
   const cachedMetadataRequests = metadataRequests;
   const cachedGuideRequests = guideRequests;
-  await page
-    .getByRole("button", { name: "Close details", exact: true })
-    .click();
+  await closeDetails();
   await page.evaluate((order) => window.selectListing(order), b);
-  await openBreakdown();
-  await page.locator(".valuation-guide summary").click();
+  await waitReport();
+  await toggleGuide();
   await page
     .getByRole("article", {
       name: `${strategyMetadata.name} calculation guide`,
@@ -673,23 +731,50 @@ try {
     cachedGuideRequests,
     "Reopening details reuses rendered math without a new download",
   );
-  await page
-    .getByRole("button", { name: "Close details", exact: true })
-    .click();
+  await closeDetails();
   strategyMetadata.documentation_revision = "r2";
   strategyMetadata.name = "Updated fixture floor";
   await page.clock.runFor(60_001);
   await page.evaluate((order) => window.selectListing(order), b);
+  await waitReport();
+  holdGuide = true;
+  holdMetadata = true;
+  await toggleGuide();
+  for (let tries = 0; !releaseMetadata && tries < 100; tries++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(releaseMetadata);
+  await guide
+    .getByText("Loading strategy information…", { exact: true })
+    .waitFor();
+  assert.equal(
+    await guide.locator("article").count(),
+    0,
+    "No guide from an older popup appears during revalidation",
+  );
+  assert.equal(
+    guideRequests,
+    cachedGuideRequests,
+    "Guide reads wait for current metadata",
+  );
+  await toggleGuide();
+  for (let tries = 0; !abortedMetadata && tries < 100; tries++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    abortedMetadata,
+    1,
+    "Closing the popup cancels its pending metadata read",
+  );
+  holdMetadata = false;
+  releaseMetadata();
+  await toggleGuide();
   await page
-    .locator(".valuation-strategy")
+    .locator(".valuation-popup-heading")
     .getByRole("heading", { name: strategyMetadata.name, exact: true })
     .waitFor();
-  holdGuide = true;
-  await page.locator(".valuation-guide summary").click();
   for (let tries = 0; !releaseGuide && tries < 100; tries++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(releaseGuide);
-  await page.locator(".valuation-guide summary").click();
+  await toggleGuide();
   for (let tries = 0; !abortedGuides && tries < 100; tries++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(
@@ -697,10 +782,10 @@ try {
     1,
     "Collapsing a pending guide cancels its fetch",
   );
-  assert.equal(await page.locator(".valuation-guide article").count(), 0);
+  assert.equal(await page.locator(".valuation-popup article").count(), 0);
   holdGuide = false;
   releaseGuide();
-  await page.locator(".valuation-guide summary").click();
+  await toggleGuide();
   await page
     .getByRole("article", {
       name: `${strategyMetadata.name} calculation guide`,
@@ -709,13 +794,21 @@ try {
     .waitFor();
   assert.equal(
     metadataRequests,
-    cachedMetadataRequests + 1,
-    "Expired metadata revalidates on use",
+    cachedMetadataRequests + 2,
+    "Expired metadata retries only after the cancelled popup is reopened",
   );
   assert.equal(
     guideRequests,
     cachedGuideRequests + 2,
     "New documentation revision loads after a cancelled attempt",
+  );
+  await page.keyboard.press("Escape");
+  assert.equal(await guide.count(), 0, "Escape closes only the info popup");
+  assert.equal(await page.locator(".detail").count(), 1);
+  assert.equal(
+    await info.evaluate((el) => el === document.activeElement),
+    true,
+    "Focus returns to the info button",
   );
   // Only a single live currency estimate can be compared with an active ask.
   reportKind = "estimate";
@@ -723,10 +816,7 @@ try {
     .getByRole("button", { name: "Refresh valuation", exact: true })
     .click();
   await page.getByText("About 20% below estimate", { exact: true }).waitFor();
-  assert.equal(
-    await page.locator(".valuation-breakdown").evaluate((el) => el.open),
-    false,
-  );
+  assert.equal(await page.locator(".valuation-breakdown").count(), 0);
   await page.setViewportSize({ width: 320, height: 720 });
   assert.equal(
     await page

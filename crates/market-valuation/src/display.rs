@@ -6,7 +6,7 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ValuationDisplay<'a> {
-    /// Ordered by the strategy; primary fields receive emphasis without changing their order.
+    /// Strategy order is preserved within each presentation group.
     pub fields: Vec<DisplayField<'a>>,
     pub summary: Option<String>,
     pub note: &'static str,
@@ -17,7 +17,18 @@ pub struct DisplayField<'a> {
     pub id: &'static str,
     pub label: &'static str,
     pub primary: bool,
+    /// Optional semantic placement beside the gift's matching attribute preview.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribute: Option<DisplayAttribute>,
     pub value: DisplayValue<'a>,
+}
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum DisplayAttribute {
+    Model,
+    Backdrop,
+    Pattern,
 }
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -91,11 +102,16 @@ impl<'a> DisplayField<'a> {
             id,
             label,
             primary: false,
+            attribute: None,
             value,
         }
     }
     pub fn primary(mut self) -> Self {
         self.primary = true;
+        self
+    }
+    pub fn attribute(mut self, attribute: DisplayAttribute) -> Self {
+        self.attribute = Some(attribute);
         self
     }
 }

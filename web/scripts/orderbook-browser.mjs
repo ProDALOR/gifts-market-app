@@ -358,6 +358,7 @@ try {
             },
             {
               id: "model_floor",
+              attribute: "model",
               label: "Model floor",
               primary: false,
               value: {
@@ -368,6 +369,7 @@ try {
             },
             {
               id: "backdrop_floor",
+              attribute: "backdrop",
               label: "Backdrop floor",
               primary: false,
               value: {
@@ -388,12 +390,14 @@ try {
             },
             {
               id: "model_multiplier",
+              attribute: "model",
               label: "Model multiplier",
               primary: false,
               value: { kind: "number", amount: "1.25", suffix: "×" },
             },
             {
               id: "backdrop_multiplier",
+              attribute: "backdrop",
               label: "Backdrop multiplier",
               primary: false,
               value: { kind: "number", amount: "1.13", suffix: "×" },
@@ -928,23 +932,24 @@ try {
     assert.ok(!labels.includes(hidden), hidden);
   assert.equal(await page.locator(".source-details").count(), 0);
   await page.locator('[data-metric="final_mark"] .valuation-value').waitFor();
+  assert.equal(await page.locator(".valuation-breakdown").count(), 0);
+  await page
+    .locator(
+      '[data-attribute="model"] [data-metric="model_floor"] .valuation-value',
+    )
+    .waitFor();
   assert.equal(
-    await page.locator(".valuation-breakdown").evaluate((el) => el.open),
-    false,
+    await page
+      .getByRole("button", { name: "How is this calculated?", exact: true })
+      .count(),
+    1,
   );
-  assert.equal(
-    await page.locator('[data-metric="model_floor"]').isVisible(),
-    false,
-  );
-  // Capture the initial focus before deliberately expanding the breakdown.
   assert.equal(
     await button("Close details").evaluate(
       (el) => el === document.activeElement,
     ),
     true,
   );
-  await page.locator(".valuation-breakdown summary").click();
-  await page.locator('[data-metric="model_floor"] .valuation-value').waitFor();
   assert.equal(await page.locator(".valuation-metrics > li").count(), 7);
   assert.equal(
     await page

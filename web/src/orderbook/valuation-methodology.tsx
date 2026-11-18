@@ -13,10 +13,12 @@ const guides = new ResourceCache(
     if (
       !response.ok ||
       !response.headers.get("content-type")?.startsWith("text/markdown")
-    )
+    ) {
+      await response.body?.cancel();
       throw new Error(
         "The calculation guide is unavailable. Please try again.",
       );
+    }
     const markdown = await response.text();
     signal.throwIfAborted();
     const html = micromark(markdown, {

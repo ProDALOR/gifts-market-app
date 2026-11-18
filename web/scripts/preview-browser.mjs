@@ -1,12 +1,12 @@
 // Isolated browser regression: real React/Lottie, synthetic public media, no hub or Telegram.
 import assert from "node:assert/strict";
-import { gzipSync } from "node:zlib";
+import { gzipSync, gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style.css"></head><body>
-<style>.detail-test{position:fixed;top:0;left:0;width:160px;height:160px;z-index:10}</style><div id="fixture" style="margin:50px;height:4000px"></div>
+<style>.detail-test{position:fixed;top:0;left:0;width:160px;height:160px;z-index:10}#fixture{margin:50px;height:4000px}.mixed-renderers{display:flex;flex-wrap:wrap;width:320px}</style><div id="fixture"></div>
 <script type="module">
 import React from 'react';
 import {createRoot} from 'react-dom/client';
@@ -23,6 +23,9 @@ const options=new Map([
 ]);
 import {loadAnimationData} from '/src/previews/animation-data.ts';
 import {useBackgroundPlaybackSuspension} from '/src/previews/use-playback.ts';
+import {ValuationInfo} from '/src/orderbook/valuation-info.tsx';
+const valuationState={key:'preview',fields:{primary:[],secondary:[]},loading:false,
+ report:{strategy:'preview',sync:{state:'live'},evaluated_at:'2026-11-18T12:00:00Z',display:{note:'Fixture estimate'}}};
 const root=createRoot(document.getElementById('fixture'));
 window.mount=(large=false)=>root.render(React.createElement(GiftPreview,{order,options,fallback:'G',size:large?'large':'small',playback:large?'detail':'interaction'},
  React.createElement('span',{className:'venue-icon',style:{position:'relative',zIndex:4}},React.createElement(VenueIcon,{name:'MRKT'}))));
@@ -42,12 +45,15 @@ function Many({detail}) {
  useBackgroundPlaybackSuspension(detail);
  return React.createElement(React.Fragment,null,
   React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook'},React.createElement(TraitPreview,{collection:bulkCollection,options:bulkOptions,filters:bulkFilters,reset}))),
-  detail?React.createElement(GiftArtwork,{media:options.get('model').media,fallback:'D',playback:'detail',className:'detail-test'}):null);
+  detail?React.createElement(GiftArtwork,{media:options.get('model').media,fallback:'D',playback:'detail',className:'detail-test'}):null,
+  detail?React.createElement(ValuationInfo,{state:valuationState}):null);
 }
 window.preload=()=>Promise.all(bulk.map(item=>loadAnimationData('/media/models/'+item.id+'/animation',new AbortController().signal)));
 window.mountMany=(detail=false)=>{document.getElementById('fixture').style.margin='0';root.render(React.createElement(Many,{detail}));};
 window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i,animation_url:'/media/models/rail-'+i+'/animation'},model_ids:['rail-'+i],backdrop_ids:[],pattern_ids:[]}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
 window.mountReference=(animated=true)=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/custom-still?v=1',animation_url:animated?'/media/custom-motion.tgs?v=2':null},fallback:'R',playback:'detail'}));
+window.mountMixed=()=>root.render(React.createElement('div',{className:'mixed-renderers'},...Array.from({length:12},(_,index)=>React.createElement(GiftArtwork,{key:index,media:index%2?{thumbnail_url:'/media/gradient-still',animation_url:'/media/opacity-test/animation'}:options.get('model').media,fallback:'M',playback:'selected'}))));
+window.mountGradient=(playback='detail')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/gradient-still',animation_url:'/media/opacity-test/animation'},fallback:'G',playback}));
 window.mountSource=(thumbnail,playback='static')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:thumbnail,animation_url:'/media/custom-motion.tgs?v=2'},fallback:'F',playback}));
 window.mount();
 </script></body></html>`;
@@ -61,6 +67,10 @@ const server = await createServer({
         server.middlewares.use("/__preview_test", async (req, res, next) => {
           try {
             res.setHeader("Content-Type", "text/html");
+            res.setHeader(
+              "Content-Security-Policy",
+              "style-src-attr 'none'; style-src-elem 'self' 'unsafe-inline'",
+            );
             res.end(await server.transformIndexHtml("/__preview_test", html));
           } catch (error) {
             next(error);
@@ -144,6 +154,53 @@ try {
       assets: [],
     }),
   );
+  const gradient = JSON.parse(gunzipSync(tgs));
+  gradient.layers = [
+    {
+      ddd: 0,
+      ind: 1,
+      ty: 4,
+      nm: "Independent opacity",
+      ks: {
+        o: { a: 0, k: 100 },
+        r: { a: 0, k: 0 },
+        p: { a: 0, k: [0, 0, 0] },
+        a: { a: 0, k: [0, 0, 0] },
+        s: { a: 0, k: [100, 100, 100] },
+      },
+      shapes: [
+        {
+          ty: "rc",
+          d: 1,
+          s: { a: 0, k: [512, 512] },
+          p: { a: 0, k: [256, 256] },
+          r: { a: 0, k: 0 },
+        },
+        {
+          ty: "gf",
+          o: { a: 0, k: 100 },
+          s: { a: 0, k: [256, 256] },
+          e: { a: 0, k: [400, 256] },
+          t: 2,
+          h: { a: 0, k: 0 },
+          a: { a: 0, k: 0 },
+          r: 1,
+          g: {
+            p: 3,
+            k: {
+              a: 0,
+              k: [0, 1, 1, 1, 0.8, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0.5, 0.5, 1, 0],
+            },
+          },
+        },
+      ],
+      ip: 0,
+      op: 180,
+      st: 0,
+      bm: 0,
+    },
+  ];
+  const gradientTgs = gzipSync(JSON.stringify(gradient));
   const png = await page.evaluate(() => {
     const canvas = document.createElement("canvas");
     canvas.width = canvas.height = 16;
@@ -171,7 +228,7 @@ try {
       try {
         await route.fulfill({
           contentType: "application/x-tgsticker",
-          body: tgs,
+          body: url.includes("/opacity-test/") ? gradientTgs : tgs,
         });
       } finally {
         activeDownloads--;
@@ -180,6 +237,29 @@ try {
       if (url.includes("/patterns/")) patterns++;
       await route.fulfill({ contentType: "image/png", body: image });
     }
+  });
+  let metadataRequests = 0,
+    guideRequests = 0;
+  await page.route("**/valuations/strategies", (route) => {
+    metadataRequests++;
+    return route.fulfill({
+      json: [
+        {
+          id: "preview",
+          name: "Preview strategy",
+          description: "Fixture strategy",
+          documentation_url: "/__preview_guide.md",
+          documentation_revision: "one",
+        },
+      ],
+    });
+  });
+  await page.route("**/__preview_guide.md", (route) => {
+    guideRequests++;
+    return route.fulfill({
+      contentType: "text/markdown",
+      body: "# Preview calculation guide",
+    });
   });
   await page.goto(
     `http://127.0.0.1:${server.httpServer.address().port}/__preview_test`,
@@ -389,7 +469,50 @@ try {
     0,
     "Opening details suspends background players",
   );
-  await page.evaluate(() => window.mountMany(false));
+  const beforePopup = animations;
+  assert.equal(metadataRequests, 0);
+  await page
+    .getByRole("button", { name: "How is this calculated?", exact: true })
+    .click();
+  await page.waitForFunction(
+    () => !document.querySelector(".model-animation canvas"),
+  );
+  await page
+    .getByRole("article", {
+      name: "Preview strategy calculation guide",
+      exact: true,
+    })
+    .waitFor();
+  await page.keyboard.press("Escape");
+  await page.locator(".detail-test .model-animation.ready canvas").waitFor();
+  assert.equal(
+    animations,
+    beforePopup,
+    "Closing the info popup resumes detail playback from cached data",
+  );
+  await page
+    .getByRole("button", { name: "How is this calculated?", exact: true })
+    .click();
+  await page
+    .getByRole("article", {
+      name: "Preview strategy calculation guide",
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(
+    metadataRequests,
+    1,
+    "Reopening the actual popup reuses discovery",
+  );
+  assert.equal(
+    guideRequests,
+    1,
+    "Reopening the actual popup reuses its rendered guide",
+  );
+  await page.evaluate(() => {
+    window.mountMany(false);
+    window.scrollTo(0, 0);
+  });
   await page.waitForFunction(
     () =>
       document.querySelectorAll(".preview-model .model-animation.ready canvas")
@@ -490,7 +613,92 @@ try {
     0,
     "Changing media resets a failed thumbnail without caller-owned keys",
   );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    window.mountGradient();
+  });
+  const svg = page.locator(".model-animation.ready > svg");
+  await svg.waitFor();
+  assert.equal(
+    await page.locator(".model-animation canvas").count(),
+    0,
+    "Opacity gradients use the compatible SVG renderer",
+  );
+  assert.ok(
+    (await svg.locator("mask").count()) > 0,
+    "Independent opacity stops retain their mask",
+  );
+  const pixels = await svg.evaluate(async (element) => {
+    const image = new Image();
+    image.src =
+      "data:image/svg+xml;charset=utf-8," +
+      encodeURIComponent(new XMLSerializer().serializeToString(element));
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 512;
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0, 512, 512);
+    return {
+      corner: [...context.getImageData(0, 0, 1, 1).data],
+      center: [...context.getImageData(256, 256, 1, 1).data],
+    };
+  });
+  assert.equal(
+    pixels.corner[3],
+    0,
+    "No opaque white rectangle outside the gradient",
+  );
+  assert.ok(
+    pixels.center[0] > 245 && pixels.center[3] > 240,
+    "White gift details remain white and opaque",
+  );
+  const svgDownloads = animations;
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.waitForFunction(
+    () => !document.querySelector(".model-animation > svg"),
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await svg.waitFor();
+  await page.evaluate(() => window.scrollTo(0, 2000));
+  await page.waitForFunction(
+    () => !document.querySelector(".model-animation > svg"),
+  );
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await svg.waitFor();
+  assert.equal(
+    animations,
+    svgDownloads,
+    "SVG playback shares the same decoded TGS cache",
+  );
+  await page.evaluate(() => window.mountGradient("static"));
+  await page.waitForFunction(() => !document.querySelector(".model-animation"));
+  await page.evaluate(() => window.mountMixed());
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(
+        ".model-animation.ready > svg,.model-animation.ready > canvas",
+      ).length === 6,
+  );
+  assert.ok((await page.locator(".model-animation.ready > svg").count()) > 0);
+  assert.ok(
+    (await page.locator(".model-animation.ready > canvas").count()) > 0,
+  );
+  const ids = await page
+    .locator(".model-animation svg [id]")
+    .evaluateAll((nodes) => nodes.map((node) => node.id));
+  assert.equal(
+    new Set(ids).size,
+    ids.length,
+    "Concurrent SVG players keep independent gradient and mask IDs",
+  );
+  assert.equal(
+    animations,
+    svgDownloads,
+    "Mixed renderers share existing cached downloads",
+  );
   await page.evaluate(() => window.unmount());
+  assert.equal(await page.locator(".model-animation").count(), 0);
   assert.deepEqual(errors, []);
   console.log(
     "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details, bounded downloads/playback, stable reflow, long-rail initialization and unmount.",

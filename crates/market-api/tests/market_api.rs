@@ -1550,6 +1550,17 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
     assert_eq!(body["final_mark"]["value"], "6");
     let fields = body["display"]["fields"].as_array().unwrap();
     assert_eq!(fields.len(), 7);
+    for (id, attribute) in [
+        ("model_floor", "model"),
+        ("model_multiplier", "model"),
+        ("backdrop_floor", "backdrop"),
+        ("backdrop_multiplier", "backdrop"),
+    ] {
+        assert_eq!(
+            fields.iter().find(|field| field["id"] == id).unwrap()["attribute"],
+            attribute
+        );
+    }
     let final_field = fields
         .iter()
         .find(|field| field["id"] == "final_mark")

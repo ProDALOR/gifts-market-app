@@ -6,7 +6,7 @@ type Request = {
 /** Limit actual players independently of cached downloads. Higher priorities preempt autoplay. */
 export class PlaybackBudget {
   private requests = new Set<Request>();
-  private suspensions = 0;
+  private suspensions = new Set<{ threshold: number }>();
   constructor(private limit = 6) {}
   request(priority: number, change: Request["change"]) {
     const entry = { priority, change, granted: false };
@@ -19,19 +19,27 @@ export class PlaybackBudget {
     };
   }
   suspendBackground() {
-    this.suspensions++;
+    return this.suspend(100);
+  }
+  suspendAll() {
+    return this.suspend(Infinity);
+  }
+  private suspend(threshold: number) {
+    const suspension = { threshold };
+    this.suspensions.add(suspension);
     this.reconcile();
-    let released = false;
     return () => {
-      if (released) return;
-      released = true;
-      this.suspensions--;
+      if (!this.suspensions.delete(suspension)) return;
       this.reconcile();
     };
   }
   private reconcile() {
+    const threshold = Math.max(
+      -Infinity,
+      ...[...this.suspensions].map((item) => item.threshold),
+    );
     const eligible = [...this.requests].filter(
-      (item) => !this.suspensions || item.priority >= 100,
+      (item) => item.priority >= threshold,
     );
     const winners = new Set(
       eligible.sort((a, b) => b.priority - a.priority).slice(0, this.limit),
