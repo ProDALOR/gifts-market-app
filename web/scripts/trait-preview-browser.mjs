@@ -7,7 +7,7 @@ const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style
 <script type="module">
 import React from 'react';import {createRoot} from 'react-dom/client';
 import { TraitPreview } from "/src/previews/trait-preview.tsx";
-const make=(id,name,kind,palette)=>({id,name,kind,...(kind==='backdrop'?{palette}:{media:{thumbnail_url:'/media/'+(kind==='pattern'?'patterns':'models')+'/'+id,animation_url:kind==='model'?'/media/models/'+id+'/animation':null}})});
+const make=(id,name,kind,palette)=>({id,name,kind,...(kind==='backdrop'?{palette}:{media:{thumbnail_url:'/media/'+(kind==='pattern'?'patterns':'models')+'/'+id+'/thumbnail',animation_url:kind==='model'?'/media/models/'+id+'/animation':null}})});
 const models=Array.from({length:30},(_,i)=>make('model-'+i,'Model '+String(i+1).padStart(2,'0'),'model'));
 const backdrops=Array.from({length:24},(_,i)=>make('backdrop-'+i,'Backdrop '+i,'backdrop',{center:'#'+(0x906090+i*0x030502).toString(16),edge:'#'+(0x503850+i*0x030201).toString(16),pattern:'#'+(0x301830+i*0x010203).toString(16)}));
 const patterns=Array.from({length:24},(_,i)=>make('symbol-'+i,'Symbol '+i,'pattern'));

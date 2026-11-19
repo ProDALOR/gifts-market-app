@@ -448,6 +448,7 @@ fn parse_name(name: &str) -> Option<MediaKey> {
     match extension {
         "thumb" => Some(MediaKey::thumbnail(id)),
         "tgs" => Some(MediaKey::animation(id)),
+        "placeholder.svg" => Some(MediaKey::placeholder(id)),
         _ => {
             let (version, hash) = preview_extension(extension)?;
             (version == crate::asset::PREVIEW_VERSION).then(|| MediaKey::preview(id, hash))

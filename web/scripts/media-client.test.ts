@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { setImmediate as flush } from "node:timers/promises";
 import { ResourceCache } from "../src/resources/cache.ts";
-import { fetchMedia, retryDelay } from "../src/previews/media-client.ts";
+import { fetchMedia, MediaHttpError } from "../src/previews/media-client.ts";
 const signal = () => new AbortController().signal;
 test("resource cache uses byte limits and least-recently-used eviction", async () => {
   const calls: string[] = [];
@@ -58,17 +59,40 @@ test("failed resources are removed and oversized values are not retained", async
   await store.get("key", signal());
   assert.equal(calls, 3);
 });
-test("retry policy honors bounded Retry-After and never retries a missing asset", () => {
-  const response = (status: number, after?: string) =>
-    new Response(null, {
-      status,
-      headers: after ? { "Retry-After": after } : {},
+test("downloads bound retry attempts, honor Retry-After and never retry missing assets", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.method(Date, "now", () => 0);
+  for (const [status, after, delay] of [
+    [503, "3", 3000],
+    [429, undefined, 2000],
+    [503, new Date(3000).toUTCString(), 3000],
+    [404, undefined, undefined],
+    [503, "300", 300_000],
+    [503, "invalid", undefined],
+  ] as const) {
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      calls++;
+      return new Response(null, {
+        status,
+        headers: after ? { "Retry-After": after } : {},
+      });
     });
-  assert.equal(retryDelay(response(503, "3")), 3000);
-  assert.equal(retryDelay(response(429)), 2000);
-  assert.equal(retryDelay(response(404)), undefined);
-  assert.equal(retryDelay(response(503, "300")), undefined);
-  assert.equal(retryDelay(response(503, "invalid")), undefined);
+    const result = fetchMedia("/media", signal(), "image").catch(
+      (error) => error,
+    );
+    await flush();
+    const retry = delay !== undefined && delay <= 10_000;
+    if (retry) {
+      t.mock.timers.tick(delay);
+      await flush();
+      t.mock.timers.tick(delay);
+    }
+    const error = await result;
+    assert.ok(error instanceof MediaHttpError);
+    assert.equal(error.retryAfterMs, delay);
+    assert.equal(calls, retry ? 3 : 1);
+  }
 });
 test("downloads reject invalid types, declared oversize and chunked oversize", async (t) => {
   for (const response of [
@@ -91,8 +115,7 @@ test("a transient response retries once and abort cancels backoff", async (t) =>
       : new Response("ok", { headers: { "Content-Type": "image/png" } }),
   );
   const result = fetchMedia("/media", signal(), "image");
-  await Promise.resolve();
-  await Promise.resolve();
+  await flush();
   t.mock.timers.tick(1000);
   assert.equal(new TextDecoder().decode(await result), "ok");
   assert.equal(calls, 2);
@@ -103,10 +126,76 @@ test("a transient response retries once and abort cancels backoff", async (t) =>
   );
   const stop = new AbortController();
   const cancelled = fetchMedia("/media", stop.signal, "image");
-  await Promise.resolve();
-  await Promise.resolve();
+  await flush();
   stop.abort();
   await assert.rejects(cancelled);
+});
+
+test("per-result expiry caches misses briefly without shortening successful resources", async () => {
+  let now = 0;
+  const calls: string[] = [];
+  const store = new ResourceCache<string | null>(
+    async (key) => {
+      calls.push(key);
+      return key === "missing"
+        ? { value: null, bytes: 1, maxAge: 10 }
+        : { value: key, bytes: 4 };
+    },
+    64,
+    4,
+    100,
+    () => now,
+  );
+  await store.get("missing", signal());
+  await store.get("present", signal());
+  now = 9;
+  assert.equal(await store.get("missing", signal()), null);
+  now = 10;
+  assert.equal(store.hasFresh("missing"), false);
+  await store.get("missing", signal());
+  assert.equal(store.hasFresh("present"), true);
+  now = 100;
+  await store.get("present", signal());
+  assert.deepEqual(calls, ["missing", "present", "missing", "present"]);
+});
+
+test("background retry delays release transfer slots for interactive media and cancel cleanly", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const calls = new Map<string, number>();
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = String(input);
+    const count = (calls.get(url) ?? 0) + 1;
+    calls.set(url, count);
+    return url.startsWith("/outline/") && count === 1
+      ? new Response(null, { status: 503, headers: { "Retry-After": "1" } })
+      : new Response("ok", {
+          headers: {
+            "Content-Type":
+              url === "/interactive"
+                ? "application/x-tgsticker"
+                : "image/svg+xml",
+          },
+        });
+  });
+  const stops = Array.from({ length: 4 }, () => new AbortController());
+  const background = stops.map((stop, i) =>
+    fetchMedia(`/outline/${i}`, stop.signal, "placeholder", -10),
+  );
+  await flush();
+  assert.equal(calls.size, 4);
+  const interactive = await fetchMedia("/interactive", signal(), "tgs", 100);
+  assert.equal(
+    new TextDecoder().decode(interactive),
+    "ok",
+    "Interactive transfer runs before backoff elapses",
+  );
+  const cancelled = assert.rejects(background[0]);
+  stops[0].abort();
+  await cancelled;
+  t.mock.timers.tick(1000);
+  await Promise.all(background.slice(1));
+  assert.equal(calls.get("/outline/0"), 1);
+  assert.equal(calls.get("/outline/1"), 2);
 });
 
 test("SVG recovery accepts the preview budget and keeps other image limits", async (t) => {
@@ -131,4 +220,35 @@ test("SVG recovery accepts the preview budget and keeps other image limits", asy
       }),
   );
   await assert.rejects(fetchMedia("/preview", signal(), "image"));
+});
+
+test("placeholder downloads accept only small SVGs", async (t) => {
+  for (const response of [
+    new Response("mask"),
+    new Response("mask", { headers: { "Content-Type": "image/png" } }),
+    new Response(new Uint8Array(8193), {
+      headers: { "Content-Type": "image/svg+xml" },
+    }),
+  ]) {
+    t.mock.method(globalThis, "fetch", async () => response);
+    await assert.rejects(
+      fetchMedia("/media/models/model/placeholder", signal(), "placeholder"),
+    );
+  }
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () =>
+      new Response("mask", { headers: { "Content-Type": "image/svg+xml" } }),
+  );
+  assert.equal(
+    new TextDecoder().decode(
+      await fetchMedia(
+        "/media/models/model/placeholder",
+        signal(),
+        "placeholder",
+      ),
+    ),
+    "mask",
+  );
 });

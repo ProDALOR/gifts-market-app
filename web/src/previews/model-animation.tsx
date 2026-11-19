@@ -8,12 +8,16 @@ export default function ModelAnimation({
   retain,
   priority,
   vector = false,
+  ready,
+  onReady,
 }: {
   url: string;
   active: boolean;
   retain: boolean;
   priority: number;
   vector?: boolean;
+  ready: boolean;
+  onReady: (ready: boolean) => void;
 }) {
   const container = useRef<HTMLSpanElement>(null);
   const lifecycle = useRef<AnimationLifecycle | null>(null);
@@ -59,7 +63,7 @@ export default function ModelAnimation({
           },
         };
       },
-      (ready) => host.classList.toggle("ready", ready),
+      onReady,
       350,
       () => setFailed(true),
     );
@@ -68,7 +72,7 @@ export default function ModelAnimation({
       controller.stop();
       lifecycle.current = null;
     };
-  }, [url, vector]);
+  }, [url, vector, onReady]);
   useEffect(() => {
     const controller = lifecycle.current;
     if (!controller) return;
@@ -79,8 +83,12 @@ export default function ModelAnimation({
     return playbackBudget.request(priority, (granted, preempted) =>
       controller.setActive(granted, preempted ? false : retain),
     );
-  }, [url, active, retain, priority, failed, vector]);
+  }, [url, active, retain, priority, failed, vector, onReady]);
   return (
-    <span ref={container} className="model-animation" aria-hidden="true" />
+    <span
+      ref={container}
+      className={`model-animation${ready ? " ready" : ""}`}
+      aria-hidden="true"
+    />
   );
 }

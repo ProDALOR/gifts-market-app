@@ -9,11 +9,11 @@ export class ResourceCache<T> {
       key: string,
       signal: AbortSignal,
       priority: number,
-    ) => Promise<{ value: T; bytes: number }>,
+    ) => Promise<{ value: T; bytes: number; maxAge?: number }>,
     private budget = 16 * 1024 * 1024,
     concurrency = 4,
     private maxAge = Infinity,
-    private now: () => number = Date.now,
+    private now: () => number = () => Date.now(),
   ) {
     this.queue = new TaskQueue(concurrency);
   }
@@ -48,10 +48,10 @@ export class ResourceCache<T> {
           controller.signal,
           priority,
         )
-        .then(({ value, bytes }) => {
+        .then(({ value, bytes, maxAge }) => {
           controller.signal.throwIfAborted();
           if (this.entries.get(key) === created) {
-            created.expires = this.now() + this.maxAge;
+            created.expires = this.now() + (maxAge ?? this.maxAge);
             created.bytes = bytes;
             this.bytes += bytes;
             created.settled = true;

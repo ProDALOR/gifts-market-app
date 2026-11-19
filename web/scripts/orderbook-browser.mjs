@@ -17,7 +17,7 @@ const option = (id, name, kind, palette) => ({
     ? { palette }
     : {
         media: {
-          thumbnail_url: `/media/${kind === "pattern" ? "patterns" : "models"}/${id}`,
+          thumbnail_url: `/media/${kind === "pattern" ? "patterns" : "models"}/${id}/thumbnail`,
           animation_url:
             kind === "model" ? `/media/models/${id}/animation` : null,
         },

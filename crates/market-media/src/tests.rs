@@ -162,6 +162,7 @@ async fn animation_and_thumbnail_have_separate_cache_entries_and_survive_offline
                 Ok(match key.kind() {
                     MediaKind::Thumbnail => image(),
                     MediaKind::Animation => animation(),
+                    MediaKind::Placeholder => unreachable!("fixture does not request outlines"),
                     MediaKind::Preview => unreachable!("Previews are generated locally"),
                 })
             })

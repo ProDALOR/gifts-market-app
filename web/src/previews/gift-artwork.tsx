@@ -1,7 +1,16 @@
-import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { GiftMedia } from "../market";
 import type { ReactNode } from "react";
 import type { BackdropPalette } from "./gift-appearance";
+import { GiftPlaceholder } from "./gift-placeholder";
 import { GiftBackdrop } from "./gift-backdrop";
 import {
   usePreviewEnvironment,
@@ -96,7 +105,19 @@ function Artwork({
   const [attempt, setAttempt] = useState(0);
   const [recovered, setRecovered] = useState<string[]>([]);
   const [failed, setFailed] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  // One owner for poster, animation and loading UI; either ready source stops outlines.
+  const [ready, setReady] = useState({ still: false, animation: false });
+  const setStillReady = useCallback((still: boolean) => {
+    setReady((previous) =>
+      previous.still === still ? previous : { ...previous, still },
+    );
+  }, []);
+  const setAnimationReady = useCallback((animation: boolean) => {
+    setReady((previous) =>
+      previous.animation === animation ? previous : { ...previous, animation },
+    );
+  }, []);
+  const artworkReady = ready.still || ready.animation;
   const [requested, setRequested] = useState(false);
   useEffect(() => {
     if (shouldAnimate) setRequested(true);
@@ -116,7 +137,7 @@ function Artwork({
       if (success) {
         if (recoveryUrl === preferred) setPreviewFailed(false);
         setFailed(false);
-        setLoaded(false);
+        setStillReady(false);
         setAttempt((value) => value + 1);
       }
     };
@@ -125,7 +146,7 @@ function Artwork({
       () => settled(false),
     );
     return () => stop.abort();
-  }, [recoveryUrl, preferred, visible, pageVisible]);
+  }, [recoveryUrl, preferred, visible, pageVisible, setStillReady]);
   return (
     <span
       ref={host}
@@ -163,7 +184,14 @@ function Artwork({
           visible={visible && pageVisible}
         />
       )}
-      {!loaded && <span className="gift-preview-fallback">{fallback}</span>}
+      {!artworkReady && (
+        <GiftPlaceholder
+          key={media?.placeholder_url}
+          url={media?.placeholder_url}
+          active={!!url && !failed && visible && pageVisible}
+          fallback={fallback}
+        />
+      )}
       {url && !failed && (
         <img
           key={attempt}
@@ -171,10 +199,10 @@ function Artwork({
           alt=""
           loading={playback === "detail" ? "eager" : "lazy"}
           decoding="async"
-          className={`gift-model-image${loaded ? " loaded" : ""}`}
-          onLoad={() => setLoaded(true)}
+          className={`gift-model-image${ready.still ? " loaded" : ""}`}
+          onLoad={() => setStillReady(true)}
           onError={() => {
-            setLoaded(false);
+            setStillReady(false);
             if (!previewFailed && preferred !== media?.thumbnail_url) {
               setPreviewFailed(true);
               setAttempt(0);
@@ -190,6 +218,8 @@ function Artwork({
             vector={highResolution}
             priority={priority}
             retain={visible && pageVisible && !reducedMotion}
+            ready={ready.animation}
+            onReady={setAnimationReady}
           />
         </Suspense>
       )}

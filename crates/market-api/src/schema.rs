@@ -11,20 +11,17 @@ use utoipa::OpenApi;
         crate::valuation::strategies,
         crate::routes::read_orders,
         crate::routes::release_read,
-        crate::media::model_thumbnail,
-        crate::media::pattern_thumbnail,
-        crate::media::model_animation,
-        crate::media::model_preview,
+        crate::media::get,
         crate::websocket::connect
     ),
     tags(
         (name="Catalog",description="Discover gift collections and their traits."),
         (name="Orders",description="Asks, bids and confirmed executions with exact prices and stable pagination."),
         (name="Valuations",description="One coherent floor valuation for a gift URL, slug or catalog identity, with typed evidence and per-metric errors."),
-        (name="Media",description="Cached Telegram gift thumbnails, animations and patterns."),
+        (name="Media",description="Cached gift thumbnails, first-frame SVGs, original TGS animations and transparent loading silhouettes."),
         (name="WebSocket",description="See /docs/ws for live-message documentation and a test console.")
     ),
-    components(schemas(Command, ServerFrame)),
+    components(schemas(Command, ServerFrame, crate::media::MediaCategory, crate::media::MediaVariant)),
     info(title = "Market App", description = "Browse gift markets and calculate estimates. Start with /catalog for collection and currency IDs, then use /collections/{id} for model, backdrop and pattern choices. Prices are exact decimal strings. One orders/query model covers asks, bids and history; the connection-level market.status message reports market availability. Live message documentation and an interactive subscription console are available at /docs/ws. Public market reads do not require sign-in.")
 )]
 struct MarketDoc;

@@ -6,7 +6,7 @@ import { createServer } from "vite";
 import { chromium } from "playwright";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style.css"></head><body>
-<style>.detail-test{position:fixed;top:0;left:0;width:160px;height:160px;z-index:10}#fixture{margin:50px;height:4000px}.mixed-renderers{display:flex;flex-wrap:wrap;width:320px}</style><div id="fixture"></div>
+<style>.detail-test{position:fixed;top:0;left:0;width:160px;height:160px;z-index:10}.loading-offscreen{margin-top:1800px}#fixture{margin:50px;height:4000px}.mixed-renderers{display:flex;flex-wrap:wrap;width:320px}</style><div id="fixture"></div>
 <script type="module">
 import React from 'react';
 import {createRoot} from 'react-dom/client';
@@ -17,9 +17,9 @@ import { TraitPreview } from "/src/previews/trait-preview.tsx";
 import { VenueIcon } from "/src/ui/icons.tsx";
 const order={target:{kind:'gift',id:'gift-1',number:1,traits:{model:'model',backdrop:'backdrop',pattern:'pattern'}}};
 const options=new Map([
- ['model',{kind:'model',id:'model',name:'Model',media:{thumbnail_url:'/media/models/model',preview_url:'/media/models/model/preview',animation_url:'/media/models/model/animation'}}],
+ ['model',{kind:'model',id:'model',name:'Model',media:{thumbnail_url:'/media/models/model/thumbnail',preview_url:'/media/models/model/preview',animation_url:'/media/models/model/animation'}}],
  ['backdrop',{kind:'backdrop',id:'backdrop',name:'Backdrop',palette:{center:'#b789e4',edge:'#8a5abc',pattern:'#5b10ab'}}],
- ['pattern',{kind:'pattern',id:'pattern',name:'Pattern',media:{thumbnail_url:'/media/patterns/pattern',animation_url:null}}]
+ ['pattern',{kind:'pattern',id:'pattern',name:'Pattern',media:{thumbnail_url:'/media/patterns/pattern/thumbnail',animation_url:null}}]
 ]);
 import {loadAnimationData} from '/src/previews/animation-data.ts';
 import {useBackgroundPlaybackSuspension} from '/src/previews/use-playback.ts';
@@ -36,7 +36,7 @@ window.mountSelection=()=>{
   React.createElement(CollectionRail,{collections,selected:'gift',select:()=>{}}),
   React.createElement(TraitPreview,{collection:collections[0],options,filters:{models:['model']},reset:()=>{}})));
 };
-const bulk=Array.from({length:24},(_,i)=>({kind:'model',id:'bulk-'+i,name:'Bulk '+String(i).padStart(2,'0'),media:{thumbnail_url:'/media/models/bulk-'+i,animation_url:'/media/models/bulk-'+i+'/animation'}}));
+const bulk=Array.from({length:24},(_,i)=>({kind:'model',id:'bulk-'+i,name:'Bulk '+String(i).padStart(2,'0'),media:{thumbnail_url:'/media/models/bulk-'+i+'/thumbnail',animation_url:'/media/models/bulk-'+i+'/animation'}}));
 const bulkOptions=new Map(bulk.map(item=>[item.id,item]));
 const bulkCollection={id:'bulk',model_ids:bulk.map(item=>item.id),backdrop_ids:[],pattern_ids:[]};
 const bulkFilters={models:bulk.map(item=>item.id)};
@@ -50,12 +50,13 @@ function Many({detail}) {
 }
 window.preload=()=>Promise.all(bulk.map(item=>loadAnimationData('/media/models/'+item.id+'/animation',new AbortController().signal)));
 window.mountMany=(detail=false)=>{document.getElementById('fixture').style.margin='0';root.render(React.createElement(Many,{detail}));};
-window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i,animation_url:'/media/models/rail-'+i+'/animation'},model_ids:['rail-'+i],backdrop_ids:[],pattern_ids:[]}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
+window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i+'/thumbnail',animation_url:'/media/models/rail-'+i+'/animation'},model_ids:['rail-'+i],backdrop_ids:[],pattern_ids:[]}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
 window.mountReference=(animated=true)=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/custom-still?v=1',animation_url:animated?'/media/custom-motion.tgs?v=2':null},fallback:'R',playback:'detail'}));
 window.mountMixed=()=>root.render(React.createElement('div',{className:'mixed-renderers'},...Array.from({length:12},(_,index)=>React.createElement(GiftArtwork,{key:index,media:index%2?{thumbnail_url:'/media/gradient-still',preview_url:'/media/opacity-test/preview',animation_url:'/media/opacity-test/animation'}:options.get('model').media,fallback:'M',playback:'selected'}))));
 window.mountGradient=(playback='detail')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/gradient-still',preview_url:'/media/opacity-test/preview',animation_url:'/media/opacity-test/animation'},fallback:'G',playback}));
 window.mountSource=(thumbnail,playback='static')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:thumbnail,animation_url:'/media/custom-motion.tgs?v=2'},fallback:'F',playback}));
 window.mountLarge=(playback='static',preview='/media/large-preview.svg')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/large-still',preview_url:preview,animation_url:'/media/custom-motion.tgs?v=2'},fallback:'L',size:'large',playback}));
+window.mountLoading=(name='slow')=>root.render(React.createElement('div',{className:name==='offscreen'?'loading-offscreen':''},React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/models/loading-'+name+'/thumbnail',placeholder_url:'/media/models/loading-'+name+'/placeholder'},fallback:'P',playback:'static',className:'loading-test'})));
 window.mount();
 </script></body></html>`;
 const server = await createServer({
@@ -212,9 +213,28 @@ try {
   });
   const image = Buffer.from(png, "base64");
   let transientPreviews = 0;
+  const loadingStills = [];
   await page.route("**/media/**", async (route) => {
     const url = route.request().url();
     mediaRequests.push(new URL(url).pathname + new URL(url).search);
+    if (url.includes("/loading-") && url.endsWith("/placeholder")) {
+      if (url.includes("/loading-missing/"))
+        await route.fulfill({ status: 404, body: "No outline" });
+      else
+        await route.fulfill({
+          contentType: "image/svg+xml",
+          headers: { "Cache-Control": "public,max-age=86400" },
+          body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#fff" d="M128,128L384,128L384,384L128,384z"/></svg>',
+        });
+      return;
+    }
+    if (
+      url.includes("/loading-") &&
+      url.endsWith("/thumbnail") &&
+      !url.includes("/loading-fast/")
+    ) {
+      await new Promise((resolve) => loadingStills.push(resolve));
+    }
     if (url.endsWith("/broken-still")) {
       await route.fulfill({ status: 404, body: "Missing" });
       return;
@@ -846,9 +866,83 @@ try {
   );
   await page.evaluate(() => window.unmount());
   assert.equal(await page.locator(".model-animation").count(), 0);
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    window.mountLoading("slow");
+  });
+  await page.locator(".gift-model-placeholder").waitFor();
+  assert.ok(
+    await page
+      .locator(".gift-model-placeholder clipPath path")
+      .getAttribute("d"),
+  );
+  assert.equal(
+    await page
+      .locator(".gift-placeholder-shimmer")
+      .evaluate((node) => getComputedStyle(node).animationName),
+    "none",
+    "Reduced motion keeps the silhouette static",
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  assert.equal(
+    await page
+      .locator(".gift-placeholder-shimmer")
+      .evaluate((node) => getComputedStyle(node).animationName),
+    "gift-placeholder-shimmer",
+  );
+  assert.equal(
+    await page.locator(".model-animation").count(),
+    0,
+    "Silhouettes never allocate a player",
+  );
+  loadingStills.splice(0).forEach((release) => release());
+  await page.locator(".loading-test img.loaded").waitFor();
+  assert.equal(
+    await page.locator(".gift-model-placeholder").count(),
+    0,
+    "Loaded stills remove the shimmer",
+  );
+  await page.evaluate(() => window.mountLoading("fast"));
+  await page.locator(".loading-test img.loaded").waitFor();
+  await page.waitForTimeout(180);
+  assert.equal(
+    mediaRequests.filter((url) => url.includes("/loading-fast/placeholder"))
+      .length,
+    0,
+    "Fast stills skip outline requests",
+  );
+  await page.evaluate(() => window.mountLoading("missing"));
+  await page.waitForFunction(() =>
+    document.querySelector(".loading-test .gift-preview-fallback"),
+  );
+  await page.waitForTimeout(250);
+  assert.equal(
+    await page.locator(".gift-model-placeholder").count(),
+    0,
+    "Absent outlines keep the ordinary fallback",
+  );
+  assert.equal(
+    mediaRequests.filter((url) => url.includes("/loading-missing/placeholder"))
+      .length,
+    1,
+    "Missing outlines are not repeatedly requested",
+  );
+  loadingStills.splice(0).forEach((release) => release());
+  await page.locator(".loading-test img.loaded").waitFor();
+  await page.evaluate(() => window.mountLoading("offscreen"));
+  await page.waitForTimeout(180);
+  assert.equal(
+    mediaRequests.filter((url) =>
+      url.includes("/loading-offscreen/placeholder"),
+    ).length,
+    0,
+    "Offscreen artwork skips outlines",
+  );
+  loadingStills.splice(0).forEach((release) => release());
+  await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(
-    "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details, sharp large stills, SVG retry/fallback, bounded downloads/playback, stable reflow, long-rail initialization and unmount.",
+    "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details, sharp large stills, SVG retry/fallback, transparent CSS placeholders, bounded downloads/playback, stable reflow, long-rail initialization and unmount.",
   );
 } finally {
   await browser?.close();

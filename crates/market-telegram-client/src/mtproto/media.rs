@@ -1,4 +1,5 @@
-//! Resolve fresh documents and download static thumbs or TGS through the existing client.
+//! Resolve fresh documents and download thumbs/TGS or extract embedded vector outlines.
+mod outline;
 use super::invocations::{CallError, Executor, Group};
 use crate::BotError;
 use grammers_client::{
@@ -47,6 +48,9 @@ pub(super) async fn get(
                 return Err(error);
             }
         };
+        if key.kind() == MediaKind::Placeholder {
+            return outline::from_document(&raw);
+        }
         let source = client.clone();
         // Restart a bounded asset on retry: DownloadIter consumes its request on errors.
         let result = invocations
@@ -114,7 +118,7 @@ async fn download_bytes(
         ttl_seconds: None,
     });
     let mut download = match key.kind() {
-        MediaKind::Preview => return Err(MediaError::InvalidMedia.into()),
+        MediaKind::Preview | MediaKind::Placeholder => return Err(MediaError::InvalidMedia.into()),
         MediaKind::Thumbnail => {
             let thumb = media
                 .thumbs()
@@ -154,7 +158,7 @@ async fn download_bytes(
 }
 async fn asset(key: MediaKey, bytes: Vec<u8>) -> Result<MediaAsset, MediaError> {
     match key.kind() {
-        MediaKind::Preview => Err(MediaError::InvalidMedia),
+        MediaKind::Preview | MediaKind::Placeholder => Err(MediaError::InvalidMedia),
         MediaKind::Thumbnail => MediaAsset::thumbnail(bytes),
         MediaKind::Animation => tokio::task::spawn_blocking(move || MediaAsset::animation(bytes))
             .await

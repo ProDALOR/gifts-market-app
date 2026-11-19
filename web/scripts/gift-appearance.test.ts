@@ -33,7 +33,7 @@ function options(): Map<string, GiftOption> {
         id: "pattern",
         name: "Lion Head",
         media: {
-          thumbnail_url: "/media/patterns/pattern",
+          thumbnail_url: "/media/patterns/pattern/thumbnail",
           animation_url: null,
         },
       },
@@ -57,7 +57,7 @@ test("gift previews use named traits and validated catalog appearance", () => {
       animation_url: "/custom/model.tgs",
     },
     palette: { center: "#b789e4", edge: "#8a5abc", pattern: "#5b10ab" },
-    patternUrl: "/media/patterns/pattern",
+    patternUrl: "/media/patterns/pattern/thumbnail",
     label: "Gift preview, Lavender backdrop, Lion Head pattern",
   });
 });
