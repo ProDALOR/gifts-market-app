@@ -29,7 +29,6 @@ const schema = JSON.parse(result.stdout);
 await mkdir("src/gen", { recursive: true });
 await writeFile("src/gen/api.ts", astToString(await openapiTS(schema)));
 await writeFile("src/gen/openapi.json", JSON.stringify(schema));
-
 // Validate the server's AsyncAPI envelope against the same Rust build as OpenAPI.
 const asyncResult = run("asyncapi");
 if (asyncResult.status !== 0)

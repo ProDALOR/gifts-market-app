@@ -11,11 +11,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum Payload {
     Result(Arc<market_valuation::GiftFloorMark>),
     Connecting,
-    Window {
-        window: Arc<str>,
-        sync: market_gifts::SyncStatus,
-        revision: String,
-    },
+    Orders(Arc<str>),
     Sync {
         sync: market_gifts::SyncStatus,
         revision: String,
@@ -26,18 +22,9 @@ pub(super) enum Payload {
 }
 impl Payload {
     #[cfg(test)]
-    pub fn test_window(window: Arc<str>) -> Self {
-        Self::Window {
-            window,
-            sync: market_gifts::SyncStatus {
-                ready: false,
-                state: market_gifts::SyncState::Starting,
-                updated_at: None,
-            },
-            revision: "1".into(),
-        }
+    pub fn test_orders(result: Arc<str>) -> Self {
+        Self::Orders(format!("{{\"type\":\"orders.snapshot\",\"id\":\"offers\",\"sequence\":0,\"reset\":false,\"result\":{result},\"sync\":{{\"ready\":false,\"state\":\"starting\",\"updated_at\":null}},\"revision\":\"1\"}}").into())
     }
-
     pub fn text(&self, id: &str) -> String {
         match self {
             Self::Result(mark) => {
@@ -47,20 +34,7 @@ impl Payload {
                 }))
                 .expect("valuation result serializes")
             }
-            // IDs here have already passed OperationId validation. Window bytes are
-            // bounded JSON produced by serde, shared independently of the frame ID.
-            Self::Window {
-                window,
-                sync,
-                revision,
-            } => {
-                let id = serde_json::to_string(id).expect("ID serializes");
-                let sync = serde_json::to_string(sync).expect("sync serializes");
-                let revision = serde_json::to_string(revision).expect("revision serializes");
-                format!(
-                    "{{\"type\":\"window\",\"id\":{id},\"window\":{window},\"sync\":{sync},\"revision\":{revision}}}"
-                )
-            }
+            Self::Orders(encoded) => encoded.to_string(),
             Self::Sync { sync, revision } => serde_json::to_string(&ServerFrame::Sync {
                 id: id.into(),
                 sync: sync.clone(),
@@ -91,20 +65,7 @@ impl Payload {
     }
     fn bytes(&self, id: &str) -> usize {
         match self {
-            Self::Window {
-                window,
-                sync,
-                revision,
-            } => {
-                Self::Sync {
-                    sync: sync.clone(),
-                    revision: revision.clone(),
-                }
-                .text(id)
-                .len()
-                    + window.len()
-                    + 12
-            }
+            Self::Orders(encoded) => encoded.len(),
             _ => self.text(id).len(),
         }
     }
@@ -219,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn queue_budget_includes_inflight_frames_and_cancelled_generations_are_filtered() {
         let limits = WebSocketLimits {
-            queue_bytes: 256,
+            queue_bytes: 1024,
             queue_messages: 2,
             write_timeout: std::time::Duration::from_millis(10),
             ..Default::default()
@@ -229,7 +190,7 @@ mod tests {
         let id = OperationId::parse("offers".into()).unwrap();
         let mut registry = Registry::new(1, 1);
         let (old, _) = registry.reserve(id.clone(), &stop).unwrap();
-        let payload = Payload::test_window(Arc::from(" ".repeat(80)));
+        let payload = Payload::test_orders(Arc::from(" ".repeat(600)));
         tx.send(Scope::Operation(old), payload.clone(), false, &stop)
             .await
             .unwrap();
@@ -243,15 +204,5 @@ mod tests {
         assert!(!inflight.scope.current(&registry));
         drop(inflight);
         tx.send(Scope::Global, payload, false, &stop).await.unwrap();
-    }
-    #[test]
-    fn shared_window_envelopes_preserve_json_and_do_not_escape_subscription_ids_incorrectly() {
-        let id = OperationId::parse("offers._-1".into()).unwrap();
-        assert!(OperationId::parse("bad\"id".into()).is_err());
-        let text = Payload::test_window(Arc::from("{\"data\":[]}")).text(id.as_str());
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
-            serde_json::json!({"type":"window","id":"offers._-1","window":{"data":[]},"sync":{"ready":false,"state":"starting","updated_at":null},"revision":"1"})
-        );
     }
 }

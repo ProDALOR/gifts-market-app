@@ -1,73 +1,60 @@
-//! Bounded window encoding shared by subscribers to the same immutable window.
+//! Tracked, bounded encoding of order snapshots and atomic range changes.
 use crate::{
     error::{ApiError, Result},
-    orders::OrderWindowResponse,
+    models::{ApiResult, ServerFrame},
+    orders::*,
 };
+use market_gifts::{OrderRead, OrderResult, SyncStatus};
 use std::{
-    collections::VecDeque,
+    collections::HashMap,
     io::{self, Write},
-    sync::{Arc, Mutex, Weak},
+    sync::Arc,
 };
-use tokio::sync::{OnceCell, Semaphore};
+use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
-type NativeWindow = market_gifts::OrderWindow;
-type Cell = Arc<OnceCell<Result<Arc<str>>>>;
-struct Entry {
-    source: Weak<NativeWindow>,
-    encoded: Cell,
+pub(crate) enum OrderEvent {
+    Read {
+        id: String,
+        read: OrderRead,
+    },
+    Update {
+        id: String,
+        previous: Option<Arc<OrderResult>>,
+        current: Arc<OrderResult>,
+        sequence: u64,
+        reset: bool,
+        sync: SyncStatus,
+        revision: String,
+    },
 }
-pub(crate) struct WindowEncoder {
-    cache: Mutex<VecDeque<Entry>>,
+pub(crate) struct OrderEncoder {
     slots: Arc<Semaphore>,
     jobs: TaskTracker,
     limit: usize,
 }
-impl WindowEncoder {
+impl OrderEncoder {
     pub fn new(limit: usize) -> Self {
         Self {
-            cache: Mutex::default(),
             slots: Arc::new(Semaphore::new(4)),
             jobs: TaskTracker::new(),
             limit,
         }
     }
-    pub async fn encode_window(&self, window: Arc<NativeWindow>) -> Result<Arc<str>> {
-        let source = Arc::downgrade(&window);
-        let cell = {
-            let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-            cache.retain(|entry| entry.source.strong_count() > 0);
-            if let Some(entry) = cache.iter().find(|entry| entry.source.ptr_eq(&source)) {
-                entry.encoded.clone()
-            } else {
-                let encoded = Arc::new(OnceCell::new());
-                while cache.len() >= 8 {
-                    cache.pop_front();
-                }
-                cache.push_back(Entry {
-                    source,
-                    encoded: encoded.clone(),
-                });
-                encoded
-            }
-        };
-        cell.get_or_init(|| async {
-            let permit = self
-                .slots
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| ApiError::unavailable("Window encoding is unavailable"))?;
-            let limit = self.limit;
-            self.jobs
-                .spawn_blocking(move || {
-                    let _permit = permit;
-                    encode(&window, limit)
-                })
-                .await
-                .map_err(|_| ApiError::unavailable("Window encoding failed"))?
-        })
-        .await
-        .clone()
+    pub async fn encode(&self, event: OrderEvent) -> Result<Arc<str>> {
+        let permit = self
+            .slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::unavailable("Order encoding stopped"))?;
+        let limit = self.limit;
+        self.jobs
+            .spawn_blocking(move || {
+                let _permit = permit;
+                encode(event, limit)
+            })
+            .await
+            .map_err(|_| ApiError::unavailable("Order encoding failed"))?
     }
     pub async fn shutdown(&self) {
         self.jobs.close();
@@ -83,7 +70,7 @@ impl Write for Limited {
     fn write(&mut self, value: &[u8]) -> io::Result<usize> {
         if value.len() > self.limit.saturating_sub(self.bytes.len()) {
             self.overflow = true;
-            return Err(io::Error::other("window limit exceeded"));
+            return Err(io::Error::other("response byte budget exceeded"));
         }
         self.bytes.extend_from_slice(value);
         Ok(value.len())
@@ -92,49 +79,147 @@ impl Write for Limited {
         Ok(())
     }
 }
-fn encode(window: &NativeWindow, limit: usize) -> Result<Arc<str>> {
+fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
     let mut writer = Limited {
-        bytes: Vec::new(),
+        bytes: vec![],
         limit,
         overflow: false,
     };
-    let result = serde_json::to_writer(&mut writer, &OrderWindowResponse::from(window));
-    if result.is_err() {
+    let encoded = match event {
+        OrderEvent::Read { id, read } => serde_json::to_writer(
+            &mut writer,
+            &ServerFrame::Result(ApiResult::Orders {
+                id,
+                data: (&read).into(),
+            }),
+        ),
+        OrderEvent::Update {
+            id,
+            previous,
+            current,
+            sequence,
+            reset,
+            sync,
+            revision,
+        } => {
+            if let Some(previous) = previous.filter(|_| !reset) {
+                let key = |row: &market_gifts::OrderedEntry<market_gifts::GiftOrder>| {
+                    (row.order.book.venue_id.clone(), row.order.id.clone())
+                };
+                let old: HashMap<_, _> = previous.data.iter().map(|row| (key(row), row)).collect();
+                let new: HashMap<_, _> = current.data.iter().map(|row| (key(row), row)).collect();
+                let upserts = current
+                    .data
+                    .iter()
+                    .filter(|row| old.get(&key(row)).is_none_or(|old| **old != **row))
+                    .map(Into::into)
+                    .collect();
+                let removed = previous
+                    .data
+                    .iter()
+                    .filter(|row| !new.contains_key(&key(row)))
+                    .map(|row| OrderIdentity {
+                        venue_id: &row.order.book.venue_id,
+                        id: &row.order.id,
+                    })
+                    .collect();
+                serde_json::to_writer(
+                    &mut writer,
+                    &ServerFrame::OrdersChanged {
+                        id,
+                        base_sequence: sequence
+                            .checked_sub(1)
+                            .ok_or_else(|| ApiError::invalid("Invalid change sequence"))?,
+                        sequence,
+                        upserts,
+                        removed,
+                        sync: &sync,
+                        revision: &revision,
+                    },
+                )
+            } else {
+                serde_json::to_writer(
+                    &mut writer,
+                    &ServerFrame::OrdersSnapshot {
+                        id,
+                        sequence,
+                        reset,
+                        data: OrderReadResponse {
+                            result: (&*current).into(),
+                            snapshot: None,
+                            sync: &sync,
+                            revision: &revision,
+                        },
+                    },
+                )
+            }
+        }
+    };
+    if encoded.is_err() {
         return Err(if writer.overflow {
-            ApiError::capacity("Subscription data is too large; reduce the window size")
+            ApiError::capacity("Order response exceeds byte budget; narrow the range")
         } else {
-            ApiError::unavailable("Window encoding failed")
+            ApiError::unavailable("Order encoding failed")
         });
     }
     String::from_utf8(writer.bytes)
         .map(Arc::from)
-        .map_err(|_| ApiError::unavailable("Window encoding failed"))
+        .map_err(|_| ApiError::unavailable("Invalid encoded order response"))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[tokio::test]
-    async fn window_encodings_are_shared_and_bounded_by_the_same_budget() {
-        let encoder = WindowEncoder::new(1024);
-        let window = Arc::new(market_gifts::OrderWindow {
+    fn empty() -> OrderResult {
+        OrderResult {
             data: vec![],
-            anchor: None,
-            has_before: false,
-            has_after: false,
-            cursor: "c".into(),
-        });
-        let (a, b) = tokio::join!(
-            encoder.encode_window(window.clone()),
-            encoder.encode_window(window.clone())
+            range: market_gifts::OrderRange {
+                start: None,
+                end: None,
+            },
+        }
+    }
+    #[tokio::test]
+    async fn order_encoding_enforces_bytes_and_keeps_the_shared_read_contract() {
+        let encoder = OrderEncoder::new(1024);
+        let read = OrderRead {
+            result: empty(),
+            snapshot: None,
+            sync: SyncStatus {
+                ready: true,
+                state: market_gifts::SyncState::Live,
+                updated_at: None,
+            },
+            revision: "r".into(),
+        };
+        let expected = serde_json::to_value(OrderReadResponse::from(&read)).unwrap();
+        let text = encoder
+            .encode(OrderEvent::Read {
+                id: "x".into(),
+                read,
+            })
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["data"], expected);
+        let small = OrderEncoder::new(8);
+        assert!(
+            small
+                .encode(OrderEvent::Update {
+                    id: "x".into(),
+                    previous: None,
+                    current: Arc::new(empty()),
+                    sequence: 0,
+                    reset: false,
+                    sync: SyncStatus {
+                        ready: true,
+                        state: market_gifts::SyncState::Live,
+                        updated_at: None
+                    },
+                    revision: "r".into()
+                })
+                .await
+                .is_err()
         );
-        let (a, b) = (a.unwrap(), b.unwrap());
-        assert!(Arc::ptr_eq(&a, &b));
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&a).unwrap(),
-            serde_json::to_value(crate::orders::OrderWindowResponse::from(&*window)).unwrap()
-        );
-        let small = WindowEncoder::new(8);
-        assert!(small.encode_window(window).await.is_err());
         small.shutdown().await;
         encoder.shutdown().await;
     }

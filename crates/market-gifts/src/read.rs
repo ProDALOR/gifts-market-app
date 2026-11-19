@@ -40,23 +40,39 @@ pub struct SyncStatus {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WindowEntry<T> {
+pub struct OrderedEntry<T> {
     pub order: T,
     pub position: String,
-}
-#[derive(Debug, Clone, PartialEq)]
-pub struct OrderWindow {
-    pub data: Vec<WindowEntry<crate::GiftOrder>>,
-    pub anchor: Option<String>,
-    pub has_before: bool,
-    pub has_after: bool,
-    pub cursor: String,
+    pub sort_key: String,
 }
 
+/// Inclusive, fixed ordering boundary. The position is query-bound; sort_key is comparable ASCII.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct OrderBoundary {
+    pub position: String,
+    pub sort_key: String,
+}
+/// Null start/end means the open head/tail of the query, respectively.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct OrderRange {
+    #[cfg_attr(feature = "schema", schema(required = true))]
+    pub start: Option<OrderBoundary>,
+    #[cfg_attr(feature = "schema", schema(required = true))]
+    pub end: Option<OrderBoundary>,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderResult {
+    pub data: Vec<OrderedEntry<crate::GiftOrder>>,
+    pub range: OrderRange,
+}
 #[derive(Debug, Clone)]
-pub struct SnapshotWindow {
-    pub window: OrderWindow,
-    pub snapshot: String,
+pub struct OrderRead {
+    pub result: OrderResult,
+    pub snapshot: Option<String>,
     pub sync: SyncStatus,
     pub revision: String,
 }

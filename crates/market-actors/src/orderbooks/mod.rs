@@ -73,6 +73,23 @@ impl Handler<messages::ReleaseSnapshot> for OrderbooksActor {
         message: messages::ReleaseSnapshot,
         _: &mut Self::Context,
     ) -> Self::Result {
-        self.reader.release_window_snapshot(&message.snapshot)
+        self.reader.release_snapshot(&message.snapshot)
+    }
+}
+
+impl Handler<messages::ReadRange> for OrderbooksActor {
+    type Result = ResponseFuture<Result<market_replica::WindowReadResult, Status>>;
+    fn handle(&mut self, message: messages::ReadRange, _: &mut Self::Context) -> Self::Result {
+        if let Err(error) = query::validate_read(&message.request) {
+            return Box::pin(async move { Err(error) });
+        }
+        self.environment.blocking(message.permit, move |reader| {
+            reader.read_range_checked(
+                message.request,
+                message.range,
+                query::validate_order_collection,
+                crate::protocol::include_order,
+            )
+        })
     }
 }

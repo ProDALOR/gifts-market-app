@@ -307,30 +307,40 @@ test("unsubscribing inside an error callback leaves no delayed retry", (t) => {
 test("resume anchors do not suppress navigation and reconnect uses the latest visible position", (t) => {
   const { Socket, live } = setup(t);
   const command = {
-    type: "subscribe_window" as const,
+    type: "orders.watch" as const,
     id: "offers",
-    query: {
-      filters: { collection_id: "gift", currency_id: "GRAM" },
-      anchor: null as string | null,
-      before: 50,
-      after: 99,
+    params: {
+      query: {
+        filters: { collection_id: "gift", currency_id: "GRAM" },
+        position: null as string | null,
+        limit: 150,
+      },
     },
   };
   const stop = live.subscribe(command, () => {});
   t.after(stop);
   const first = Socket.all[0];
   first.onopen?.();
-  const next = { ...command, query: { ...command.query, anchor: "visible" } };
+  const next = {
+    ...command,
+    params: { query: { ...command.params.query, position: "visible" } },
+  };
   live.remember(next);
-  assert.equal(first.commands("subscribe_window").length, 1);
+  assert.equal(first.commands("orders.watch").length, 1);
   live.update(next);
-  assert.equal(first.commands("subscribe_window").length, 2);
-  live.remember({ ...next, query: { ...next.query, anchor: "latest" } });
+  assert.equal(first.commands("orders.watch").length, 2);
+  live.remember({
+    ...next,
+    params: { query: { ...next.params.query, position: "latest" } },
+  });
   first.close();
   t.mock.timers.tick(1000);
   const second = Socket.all[1];
   second.onopen?.();
-  assert.equal(second.commands("subscribe_window")[0].query.anchor, "latest");
+  assert.equal(
+    second.commands("orders.watch")[0].params.query.position,
+    "latest",
+  );
 });
 
 test("command rejections do not complete or cancel the original request", async (t) => {

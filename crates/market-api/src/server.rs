@@ -89,7 +89,7 @@ impl ApiServer {
             config.limits.websocket.connections,
         );
         let market =
-            MarketApi::with_window_limit(data, valuation, config.limits.websocket.window_bytes);
+            MarketApi::with_order_limit(data, valuation, config.limits.websocket.order_bytes);
         let ws = web::Data::new(WebSocketService {
             market: market.clone(),
             connections: connections.clone(),

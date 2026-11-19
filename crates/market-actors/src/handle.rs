@@ -19,40 +19,41 @@ pub struct MarketDataHandle {
     pub(crate) subscriptions: Addr<MarketSubscriptionsActor>,
 }
 impl MarketDataHandle {
-    pub async fn subscribe_window(
+    pub async fn watch_orders(
         &self,
-        query: market_gifts::GiftOrderWindowQuery,
+        query: OrderWatchQuery,
     ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
         self.orderbooks.budget.check()?;
-        let (request, window) = crate::query::window(query, w::ReadMode::Live, None)?;
+        let (request, window) = crate::query::selection(query.query, w::ReadMode::Live, None)?;
+        crate::query::range(query.range.as_ref())?;
         self.subscriptions
-            .send(crate::subscriptions::messages::SubscribeWindow { request, window })
+            .send(crate::subscriptions::messages::WatchOrders {
+                request,
+                window,
+                range: query.range,
+            })
             .await
             .map_err(closed)?
             .map_err(Into::into)
     }
-
-    pub async fn snapshot_window(
-        &self,
-        query: SnapshotWindowQuery,
-    ) -> error::Result<SnapshotWindow> {
-        let (request, window) =
-            crate::query::window(query.query, w::ReadMode::Snapshot, query.snapshot)?;
+    pub async fn read_orders(&self, query: OrderReadQuery) -> error::Result<OrderRead> {
+        let mode = match query.consistency {
+            ReadView::Latest => w::ReadMode::Live,
+            ReadView::Snapshot => w::ReadMode::Snapshot,
+        };
+        let (request, window) = crate::query::selection(query.query, mode, query.snapshot)?;
         let result = self.orderbooks.window(request, window).await?;
-        let snapshot = result
-            .snapshot
-            .clone()
-            .ok_or_else(|| error::DataError::unavailable("Missing snapshot lease"))?;
+        let snapshot = result.snapshot.clone();
         let revision = result.revision.token();
-        let (window, sync) = protocol::window(result)?;
-        Ok(SnapshotWindow {
-            window,
+        let (result, sync) = protocol::order_result(result, None)?;
+        Ok(OrderRead {
+            result,
             snapshot,
             sync,
             revision,
         })
     }
-    pub async fn release_window_snapshot(&self, snapshot: String) -> error::Result<()> {
+    pub async fn release_read_snapshot(&self, snapshot: String) -> error::Result<()> {
         Ok(self.orderbooks.release_snapshot(snapshot).await?)
     }
     pub async fn orders(&self, query: GiftOrdersQuery) -> error::Result<Page<GiftOrder>> {

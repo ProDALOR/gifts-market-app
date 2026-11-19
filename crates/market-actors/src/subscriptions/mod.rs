@@ -8,8 +8,7 @@ use crate::{
     runtime::{ActorEnvironment, capacity},
 };
 use actix::prelude::*;
-use messages::{Release, SubscribeCatalog, SubscribeWindow};
-use prost::Message;
+use messages::{Release, SubscribeCatalog, WatchOrders};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -66,14 +65,15 @@ impl Drop for MarketSubscriptionsActor {
         self.environment.stopped();
     }
 }
-impl Handler<SubscribeWindow> for MarketSubscriptionsActor {
+impl Handler<WatchOrders> for MarketSubscriptionsActor {
     type Result = Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status>;
-    fn handle(&mut self, message: SubscribeWindow, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, message: WatchOrders, ctx: &mut Self::Context) -> Self::Result {
         self.register(
-            FeedSpec::Window {
-                request: Box::new(message.request),
+            FeedSpec::Orders(Box::new(types::OrdersFeed {
+                range: message.range,
+                request: message.request,
                 window: message.window,
-            },
+            })),
             ctx,
         )
     }
@@ -97,12 +97,7 @@ impl MarketSubscriptionsActor {
         let id = SubscriberId(next);
         let key = match &spec {
             FeedSpec::Catalog(ids) => QueryKey::Catalog(ids.clone()),
-            FeedSpec::Window { request, window } if window.anchor.is_none() => QueryKey::Head {
-                request: request.encode_to_vec(),
-                before: window.before,
-                after: window.after,
-            },
-            FeedSpec::Window { .. } => QueryKey::View(id),
+            FeedSpec::Orders(_) => QueryKey::View(id),
         };
         let running = self
             .feeds
@@ -123,12 +118,11 @@ impl MarketSubscriptionsActor {
             // Register the receiver before starting the producer so it cannot observe a closed channel.
             let updates = feed.sender.subscribe();
             match spec {
-                FeedSpec::Window { request, window } => producer::start_window(
+                FeedSpec::Orders(selection) => producer::start_orders(
                     &self.environment,
                     &feed,
                     self.orders.clone(),
-                    *request,
-                    window,
+                    *selection,
                     self.reader.clone(),
                     permit,
                 ),

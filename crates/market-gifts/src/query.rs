@@ -113,7 +113,7 @@ pub struct GiftOrdersQuery {
     #[serde(default)]
     pub consistency: ReadConsistency,
     #[serde(default = "default_limit")]
-    #[cfg_attr(feature = "schema", schema(minimum = 1, maximum = 200))]
+    #[cfg_attr(feature = "schema", schema(minimum = 1))]
     pub limit: u32,
     #[serde(default)]
     pub page_token: String,
@@ -162,7 +162,7 @@ pub struct GiftHistoryQuery {
     pub sort: GiftSort,
     pub period: Option<Period>,
     #[serde(default = "default_limit")]
-    #[cfg_attr(feature = "schema", schema(minimum = 1, maximum = 200))]
+    #[cfg_attr(feature = "schema", schema(minimum = 1))]
     pub limit: u32,
     #[serde(default)]
     pub page_token: String,
@@ -182,52 +182,71 @@ impl GiftHistoryQuery {
     }
 }
 
-/// A bounded live window. Anchor tokens belong to these filters, side and sort.
+/// A finite ordered slice. Positions belong to the filters, source and sort.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct GiftOrderWindowQuery {
+pub struct GiftOrderQuery {
     pub filters: GiftFilters,
     #[serde(default)]
-    pub side: GiftSide,
+    pub source: OrderSource,
     #[serde(default)]
     pub sort: GiftSort,
-    pub anchor: Option<String>,
-    #[cfg_attr(feature = "schema", schema(maximum = 199))]
-    pub before: u32,
-    #[cfg_attr(feature = "schema", schema(maximum = 199))]
-    pub after: u32,
+    pub period: Option<Period>,
+    pub position: Option<String>,
+    #[serde(default = "default_limit")]
+    #[cfg_attr(feature = "schema", schema(minimum = 1))]
+    pub limit: u32,
+    #[serde(default)]
+    pub direction: ReadDirection,
 }
-impl GiftOrderWindowQuery {
-    pub fn validate(&self) -> Result<(), InvalidValue> {
-        self.filters.validate()?;
-        if self.before.checked_add(self.after).is_none_or(|n| n >= 200) {
-            return Err(InvalidValue("window must contain 1..200 orders"));
-        }
-        if self
-            .anchor
-            .as_ref()
-            .is_some_and(|p| p.is_empty() || p.len() > 8192)
-        {
-            return Err(InvalidValue("invalid window anchor"));
-        }
-        Ok(())
-    }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum OrderSource {
+    #[default]
+    Asks,
+    Bids,
+    History,
 }
-
-/// Read or navigate one frozen order window around a portable anchor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum ReadDirection {
+    #[default]
+    Forward,
+    Backward,
+    Around,
+}
+/// A watch seeds its coverage from the query, or reads an explicit query-bound range.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct OrderWatchQuery {
+    pub query: GiftOrderQuery,
+    pub range: Option<crate::OrderRange>,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum ReadView {
+    #[default]
+    Latest,
+    Snapshot,
+}
+/// Read the latest order window, or navigate a retained snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct SnapshotWindowQuery {
-    pub query: GiftOrderWindowQuery,
-    #[cfg_attr(feature = "schema", schema(max_length = 128))]
+pub struct OrderReadQuery {
+    pub query: GiftOrderQuery,
+    #[serde(default)]
+    pub consistency: ReadView,
     pub snapshot: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct ReleaseWindowSnapshot {
-    #[cfg_attr(feature = "schema", schema(max_length = 128))]
+pub struct ReleaseReadSnapshot {
     pub snapshot: String,
 }

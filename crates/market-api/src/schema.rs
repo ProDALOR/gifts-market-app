@@ -13,8 +13,8 @@ use utoipa::OpenApi;
         crate::valuation::documentation,
         crate::valuation::strategies,
         crate::routes::orders,
-        crate::routes::snapshot_window,
-        crate::routes::release_window,
+        crate::routes::read_orders,
+        crate::routes::release_read,
         crate::routes::executions,
         crate::media::model_thumbnail,
         crate::media::pattern_thumbnail,
@@ -37,7 +37,38 @@ struct MarketDoc;
 pub struct ApiDoc;
 impl OpenApi for ApiDoc {
     fn openapi() -> utoipa::openapi::OpenApi {
-        let doc = MarketDoc::openapi();
+        let mut doc = MarketDoc::openapi();
+        // Publish client-relevant syntax constraints; execution budgets remain internal.
+        let limits = market_actors::READ_LIMITS;
+        for (name, field, length) in [
+            ("GiftOrderQuery", "position", limits.max_position_bytes),
+            ("OrderBoundary", "position", limits.max_position_bytes),
+            (
+                "OrderReadQuery",
+                "snapshot",
+                limits.max_snapshot_token_bytes,
+            ),
+            (
+                "ReleaseReadSnapshot",
+                "snapshot",
+                limits.max_snapshot_token_bytes,
+            ),
+            (
+                "OrderedOrderResponse",
+                "position",
+                limits.max_position_bytes,
+            ),
+        ] {
+            use utoipa::openapi::{RefOr, schema::Schema};
+            if let Some(RefOr::T(Schema::Object(schema))) = doc
+                .components
+                .as_mut()
+                .and_then(|c| c.schemas.get_mut(name))
+                && let Some(RefOr::T(Schema::Object(property))) = schema.properties.get_mut(field)
+            {
+                property.max_length = Some(length);
+            }
+        }
         #[cfg(feature = "miniapp")]
         let doc = {
             let mut doc = doc;

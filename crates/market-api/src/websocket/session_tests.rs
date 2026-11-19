@@ -37,19 +37,20 @@ async fn connect(
             let scenario = scenario.clone();
             async move {
             let query = match query {
-                operations::Operation::Window(query) => query,
+                operations::Operation::Orders(params) => params.query,
                 operations::Operation::Request(_) => {
                     scenario.started.notify_one();cancel.cancelled().await;scenario.cancelled.notify_one();return End::Cancelled;
                 },
                 _ => return End::Failed,
             };
-            if (query.after+1)==1 {
+            if query.limit==1 {
                 scenario.started.notify_one();cancel.cancelled().await;scenario.cancelled.notify_one();return End::Cancelled;
             }
-            if (query.after+1)==4 {return End::SlowConsumer;}
-            let label=if (query.after+1)==3 {"😀".repeat(20_000)} else {"ready".into()};
-            let window=serde_json::json!({"data":[],"cursor":label,"anchor":null,"has_before":false,"has_after":false}).to_string();
-            if tx.send(Scope::Operation(key),queue::Payload::test_window(Arc::from(window)),false,&cancel).await.is_err() {return End::SlowConsumer;}
+            if query.limit==4 {return End::SlowConsumer;}
+            let label=if query.limit==3 {"😀".repeat(20_000)} else {"ready".into()};
+            let window=serde_json::json!({"data":[],"range":{"start":null,"end":null}}).to_string();
+            let payload = queue::Payload::Orders(serde_json::json!({"type":"orders.snapshot","id":key.id.as_str(),"sequence":0,"reset":false,"result":serde_json::from_str::<serde_json::Value>(&window).unwrap(),"sync":{"ready":false,"state":"starting","updated_at":null},"revision":label}).to_string().into());
+            if tx.send(Scope::Operation(key),payload,false,&cancel).await.is_err() {return End::SlowConsumer;}
             cancel.cancelled().await;scenario.cancelled.notify_one();End::Cancelled
         }.boxed_local()
         },
@@ -113,7 +114,7 @@ async fn server_with_writer(
 async fn subscribe(socket: &mut Socket, limit: u32) {
     socket
         .send(Message::Text(
-            serde_json::json!({"type":"subscribe_window","id":"offers","query":{"filters":{"collection_id":"gift","currency_id":"GRAM"},"before":0,"after":limit-1}})
+            serde_json::json!({"type":"orders.watch","id":"offers","params":{"query":{"filters":{"collection_id":"gift","currency_id":"GRAM"},"limit":limit}}})
                 .to_string()
                 .into(),
         ))
@@ -158,7 +159,7 @@ async fn pending_setup_does_not_block_ping_cancel_replacement_or_shutdown() {
         panic!("missing replacement page")
     };
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&text).unwrap()["window"]["cursor"],
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()["revision"],
         "ready"
     );
     tokio::time::timeout(
@@ -182,10 +183,7 @@ async fn fragmented_large_unicode_pages_preserve_one_json_message() {
         panic!("missing page")
     };
     let page: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(
-        page["window"]["cursor"].as_str().unwrap().chars().count(),
-        20_000
-    );
+    assert_eq!(page["revision"].as_str().unwrap().chars().count(), 20_000);
     socket.close(None).await.unwrap();
     scenario.stop.cancel();
     server.stop(true).await;

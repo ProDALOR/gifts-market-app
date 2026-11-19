@@ -102,8 +102,8 @@
         <h2 id="protocol-heading">How the stream works</h2>
         <ul>
           <li>
-            <code>subscribe_window</code> starts an atomic live window. Use a
-            fresh operation ID for each subscription, replacement or request.
+            <code>orders.watch</code> starts an atomic ordered-range watch. Use
+            a fresh operation ID for each subscription, replacement or request.
             <code>cancel</code>
             stops requests and subscriptions without an acknowledgement. Ignore
             frames for canceled IDs.
@@ -118,19 +118,21 @@
             cancellation examples from the message reference below.
           </li>
           <li>
-            <code>window</code> replaces all rows together from one replica
-            view. Use the frame-level <code>sync</code> for current freshness.
+            <code>orders.snapshot</code> initializes range state.
+            <code>orders.changed</code> applies removals and upserts atomically
+            after checking its sequence. Use the frame-level
+            <code>sync</code> for current freshness.
           </li>
           <li>
             <code>sync</code> leaves orders unchanged. The server checks the
-            whole window before sending <code>sync</code>.
+            subscribed range before sending <code>sync</code>.
           </li>
           <li>
-            Move a live window using a row’s opaque <code>position</code> as the
-            next <code>anchor</code>. Cancel the old subscription, use a fresh
-            ID and replace rows atomically while preserving the scroll anchor.
-            History uses HTTP snapshot pagination. Paused asks/bids use frozen
-            anchored windows via <code>POST /orders/window</code>.
+            Query around a row’s opaque <code>position</code> when changing
+            coverage. Cancel the old subscription, use a fresh ID and replace
+            rows atomically while preserving the scroll anchor. History uses
+            HTTP snapshot pagination. Paused asks/bids use frozen slices via
+            <code>POST /orders/read</code>.
           </li>
           <li>
             Browsers answer WebSocket pings automatically. After a disconnect,

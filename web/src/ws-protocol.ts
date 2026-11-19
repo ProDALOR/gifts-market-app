@@ -4,7 +4,7 @@ export type RequestCall = components["schemas"]["ApiRequest"];
 export type RequestResult = components["schemas"]["ApiResult"];
 export type SubscriptionCommand = Extract<
   components["schemas"]["Command"],
-  { type: "subscribe_window" | "watch_catalog" }
+  { type: "orders.watch" | "watch_catalog" }
 >;
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -112,6 +112,72 @@ function display(value: unknown) {
     }
   });
 }
+const sequence = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const boundary = (value: unknown) =>
+  value === null ||
+  (record(value) &&
+    text(value.position) &&
+    value.position.length > 0 &&
+    text(value.sort_key) &&
+    value.sort_key.length > 0 &&
+    /^[\x20-\x7e]+$/.test(value.sort_key));
+function orderedRows(value: unknown): value is Record<string, unknown>[] {
+  if (
+    !Array.isArray(value) ||
+    !value.every(
+      (row) =>
+        order(row) &&
+        record(row) &&
+        text(row.position) &&
+        row.position.length > 0 &&
+        text(row.sort_key) &&
+        row.sort_key.length > 0 &&
+        /^[\x20-\x7e]+$/.test(row.sort_key),
+    )
+  )
+    return false;
+  const rows = value as Record<string, unknown>[];
+  return (
+    new Set(
+      rows.map((row) =>
+        JSON.stringify([
+          (row.book as Record<string, unknown>).venue_id,
+          row.id,
+        ]),
+      ),
+    ).size === rows.length &&
+    new Set(rows.map((row) => row.position)).size === rows.length &&
+    rows.every(
+      (row, i) =>
+        i === 0 || (rows[i - 1].sort_key as string) < (row.sort_key as string),
+    )
+  );
+}
+function readResult(value: unknown) {
+  if (
+    !record(value) ||
+    !record(value.result) ||
+    !orderedRows(value.result.data) ||
+    !record(value.result.range)
+  )
+    return false;
+  const { start, end } = value.result.range;
+  if (!boundary(start) || !boundary(end)) return false;
+  const lower = record(start) ? (start.sort_key as string) : undefined;
+  const upper = record(end) ? (end.sort_key as string) : undefined;
+  return (
+    !(lower !== undefined && upper !== undefined && lower > upper) &&
+    value.result.data.every(
+      (row) =>
+        (lower === undefined || (row.sort_key as string) >= lower) &&
+        (upper === undefined || (row.sort_key as string) <= upper),
+    ) &&
+    sync(value.sync) &&
+    text(value.revision) &&
+    nullableText(value.snapshot)
+  );
+}
 /** Validate envelopes and the data the GUI consumes; calculations remain server-owned typed results. */
 export function parseFrame(raw: unknown): LiveFrame {
   if (!text(raw) || raw.length > 8 * 1024 * 1024)
@@ -138,42 +204,36 @@ export function parseFrame(raw: unknown): LiveFrame {
     case "sync":
       valid = sync(value.sync) && text(value.revision);
       break;
-    case "window": {
-      const w = value.window;
-      if (
-        record(w) &&
-        Array.isArray(w.data) &&
-        w.data.length <= 200 &&
-        w.data.every(
-          (row) =>
-            order(row) &&
-            record(row) &&
-            oneOf(row.kind, ["ask", "bid"]) &&
-            text(row.position) &&
-            row.position.length > 0 &&
-            row.position.length <= 8192,
-        )
-      ) {
-        const rows = w.data as Record<string, unknown>[];
-        const positions = new Set(rows.map((row) => row.position));
-        const identities = new Set(
-          rows.map((row) => {
-            const book = row.book as Record<string, unknown>;
-            return JSON.stringify([book.venue_id, row.id]);
-          }),
-        );
-        valid =
-          positions.size === rows.length &&
-          identities.size === rows.length &&
-          (rows.length
-            ? text(w.anchor) && positions.has(w.anchor)
-            : w.anchor == null && !w.has_before && !w.has_after) &&
-          typeof w.has_before === "boolean" &&
-          typeof w.has_after === "boolean" &&
-          text(w.cursor) &&
-          sync(value.sync) &&
-          text(value.revision);
-      }
+    case "orders.snapshot":
+      valid =
+        sequence(value.sequence) &&
+        typeof value.reset === "boolean" &&
+        readResult(value);
+      break;
+    case "orders.changed": {
+      const removed = value.removed;
+      const upserts = value.upserts;
+      valid =
+        sequence(value.sequence) &&
+        sequence(value.base_sequence) &&
+        value.sequence === (value.base_sequence as number) + 1 &&
+        orderedRows(upserts) &&
+        Array.isArray(removed) &&
+        removed.every(
+          (row) => record(row) && text(row.venue_id) && text(row.id),
+        ) &&
+        new Set(removed.map((row) => JSON.stringify([row.venue_id, row.id])))
+          .size === removed.length &&
+        !removed.some((row) =>
+          (upserts as Record<string, unknown>[]).some(
+            (upsert) =>
+              row.id === upsert.id &&
+              row.venue_id ===
+                (upsert.book as Record<string, unknown>).venue_id,
+          ),
+        ) &&
+        sync(value.sync) &&
+        text(value.revision);
       break;
     }
     case "catalog":
@@ -186,15 +246,17 @@ export function parseFrame(raw: unknown): LiveFrame {
     case "result": {
       const d = value.data;
       valid =
-        value.method === "valuation.evaluate" &&
-        record(d) &&
-        text(d.strategy) &&
-        text(d.revision) &&
-        text(d.evaluated_at) &&
-        text(d.currency_id) &&
-        gift(d.gift) &&
-        sync(d.sync) &&
-        display(d.display);
+        value.method === "orders.query"
+          ? readResult(d)
+          : value.method === "valuation.evaluate" &&
+            record(d) &&
+            text(d.strategy) &&
+            text(d.revision) &&
+            text(d.evaluated_at) &&
+            text(d.currency_id) &&
+            gift(d.gift) &&
+            sync(d.sync) &&
+            display(d.display);
       break;
     }
   }

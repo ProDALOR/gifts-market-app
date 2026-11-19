@@ -4,8 +4,11 @@ use market_gifts::{GiftFilters, GiftHistoryQuery, GiftOrdersQuery};
 use market_hub_protocol::wire as w;
 use tonic::Status;
 fn admit(filters: &GiftFilters, limit: u32) -> Result<()> {
-    if !(1..=200).contains(&limit) {
-        return Err(DataError::invalid("limit must be 1..200"));
+    if !(1..=market_replica::READ_LIMITS.max_rows).contains(&limit) {
+        return Err(DataError::invalid(format!(
+            "row count must be 1..={}",
+            market_replica::READ_LIMITS.max_rows
+        )));
     }
     if filters.models.len() + filters.backdrops.len() + filters.patterns.len() > 500 {
         return Err(DataError::invalid("at most 500 gift trait selections"));
@@ -21,27 +24,6 @@ pub(crate) fn history(query: GiftHistoryQuery) -> Result<w::ReadRequest> {
     market_gifts_hub::query::history(query).map_err(|e| DataError::invalid(e.to_string()))
 }
 
-/// Compile live and frozen windows through the same domain validation/admission path.
-pub(crate) fn window(
-    query: market_gifts::GiftOrderWindowQuery,
-    mode: w::ReadMode,
-    snapshot: Option<String>,
-) -> Result<(w::ReadRequest, market_replica::WindowRequest)> {
-    query
-        .validate()
-        .map_err(|e| DataError::invalid(e.to_string()))?;
-    let window = market_replica::WindowRequest {
-        anchor: query.anchor,
-        before: query.before,
-        after: query.after,
-        snapshot,
-    };
-    let mut read = GiftOrdersQuery::new(query.filters);
-    read.side = query.side;
-    read.sort = query.sort;
-    read.limit = 200;
-    Ok((orders(read, mode)?, window))
-}
 /// Validate collection identity against the same pinned view as the order read.
 pub(crate) fn validate_order_collection(
     reader: &market_replica::ReplicaReader,
@@ -87,6 +69,90 @@ pub(crate) fn validate_read(request: &w::ReadRequest) -> std::result::Result<(),
             "orderbook queries must select only orders",
         ))
     }
+}
+
+/// One query compiler for finite HTTP/WS reads and atomic watch initialization.
+pub(crate) fn selection(
+    query: market_gifts::GiftOrderQuery,
+    mode: w::ReadMode,
+    snapshot: Option<String>,
+) -> Result<(w::ReadRequest, market_replica::WindowRequest)> {
+    use market_gifts::{OrderSource, ReadDirection};
+    if query.source != OrderSource::History && query.period.is_some() {
+        return Err(DataError::invalid("period is only valid for history"));
+    }
+    if query
+        .position
+        .as_ref()
+        .is_some_and(|s| s.is_empty() || s.len() > market_replica::READ_LIMITS.max_position_bytes)
+    {
+        return Err(DataError::invalid("invalid order position"));
+    }
+    if mode == w::ReadMode::Live && snapshot.is_some() {
+        return Err(DataError::invalid(
+            "latest reads do not use snapshot leases",
+        ));
+    }
+    admit(&query.filters, query.limit)?;
+    let before = match query.direction {
+        ReadDirection::Forward => 0,
+        ReadDirection::Backward => query.limit - 1,
+        ReadDirection::Around => query.limit / 3,
+    };
+    let window = market_replica::WindowRequest {
+        fill_edges: query.direction == ReadDirection::Around,
+        anchor: query.position,
+        before,
+        after: query.limit - before - 1,
+        snapshot,
+    };
+    let request = if query.source == OrderSource::History {
+        let mut history = GiftHistoryQuery::new(query.filters);
+        history.sort = query.sort;
+        history.period = query.period;
+        history.limit = query.limit;
+        let mut request = self::history(history)?;
+        request.mode = mode as i32;
+        request
+    } else {
+        let mut orders = GiftOrdersQuery::new(query.filters);
+        orders.side = if query.source == OrderSource::Bids {
+            market_gifts::GiftSide::Bid
+        } else {
+            market_gifts::GiftSide::Ask
+        };
+        orders.sort = query.sort;
+        orders.limit = query.limit;
+        self::orders(orders, mode)?
+    };
+    Ok((request, window))
+}
+
+pub(crate) fn range(
+    range: Option<&market_gifts::OrderRange>,
+) -> Result<Option<market_replica::WindowRange>> {
+    range
+        .map(|range| {
+            for boundary in range.start.iter().chain(range.end.iter()) {
+                if market_replica::position_sort_key(&boundary.position).map_err(DataError::from)?
+                    != boundary.sort_key
+                {
+                    return Err(DataError::invalid(
+                        "range ordering key does not match position",
+                    ));
+                }
+            }
+            if let (Some(start), Some(end)) = (&range.start, &range.end)
+                && start.sort_key > end.sort_key
+            {
+                return Err(DataError::invalid("inverted order range"));
+            }
+            Ok(market_replica::WindowRange {
+                start: range.start.as_ref().map(|b| b.position.clone()),
+                end: range.end.as_ref().map(|b| b.position.clone()),
+            })
+        })
+        .transpose()
 }
 
 #[cfg(test)]

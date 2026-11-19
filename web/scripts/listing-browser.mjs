@@ -1,3 +1,4 @@
+import { RangeWatch } from "./range-fixture.mjs";
 // Live transitions and valuation lifecycle against isolated React components and a fake feed.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -93,19 +94,14 @@ const a = order("a", 1),
   b = order("b", 2),
   x = order("x", 3);
 let orderWire;
-const frame = (rows) => ({
-  type: "window",
-  id: orderWire,
-  revision: JSON.stringify(rows.map((row) => row.id)),
-  sync,
-  window: {
-    data: rows.map((row) => ({ ...row, position: row.id })),
-    anchor: rows[0]?.id ?? null,
-    has_before: false,
-    has_after: false,
-    cursor: "view",
-  },
-});
+let watcher;
+const frame = (rows) =>
+  watcher.frame(
+    orderWire,
+    rows,
+    sync,
+    JSON.stringify(rows.map((row) => row.id)),
+  );
 function report(body) {
   const number = body.gift.number;
   const missing = {
@@ -328,8 +324,9 @@ try {
         cancelled.add(command.id);
         return;
       }
-      if (command.type === "subscribe_window") {
+      if (command.type === "orders.watch") {
         orderWire = command.id;
+        watcher = new RangeWatch(command.params.query, [a, b]);
         peer.send(JSON.stringify(frame([a, b])));
         return;
       }

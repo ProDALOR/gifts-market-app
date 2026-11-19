@@ -1,3 +1,4 @@
+import type { LoadedOrders } from "./loaded-orders.ts";
 import type { Order, SyncStatus } from "../market.ts";
 import type { OrderActivity } from "../orderbook/order-activity.ts";
 export type FeedState = {
@@ -12,7 +13,8 @@ export type FeedState = {
   hasMore: boolean;
 };
 export type Bookmark =
-  { kind: "window"; anchor?: string } | { kind: "history"; depth: number };
+  | { kind: "range"; anchor?: string; cache?: LoadedOrders }
+  | { kind: "history"; depth: number };
 export interface FeedController {
   start(): void;
   close(): void;

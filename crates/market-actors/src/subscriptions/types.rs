@@ -8,8 +8,9 @@ use tokio_util::sync::CancellationToken;
 pub enum DataUpdate {
     Connecting,
     Catalog(market_gifts::CatalogVersions),
-    Window {
-        window: Arc<market_gifts::OrderWindow>,
+    Orders {
+        result: Arc<market_gifts::OrderResult>,
+        epoch: String,
         sync: market_gifts::SyncStatus,
         revision: String,
     },
@@ -20,19 +21,16 @@ pub(super) struct SubscriberId(pub u64);
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum QueryKey {
     Catalog(Vec<market_gifts::CollectionId>),
-    Head {
-        request: Vec<u8>,
-        before: u32,
-        after: u32,
-    },
     View(SubscriberId),
+}
+pub(super) struct OrdersFeed {
+    pub range: Option<market_gifts::OrderRange>,
+    pub request: market_hub_protocol::wire::ReadRequest,
+    pub window: market_replica::WindowRequest,
 }
 pub(super) enum FeedSpec {
     Catalog(Vec<market_gifts::CollectionId>),
-    Window {
-        request: Box<market_hub_protocol::wire::ReadRequest>,
-        window: market_replica::WindowRequest,
-    },
+    Orders(Box<OrdersFeed>),
 }
 /// One caller's lease. Dropping its final Arc releases only that caller.
 pub struct DataSubscription {

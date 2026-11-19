@@ -308,7 +308,7 @@ def main():
         assert call("/orders/query", dict(query, page_token=live["next_page_token"]))["data"][0]["price"] == "3.25"
         # WebSockets use portable positions, not REST continuation tokens.
         subprocess.run(
-            ["node", str(root / "scripts/window-probe.mjs")],
+            ["node", str(root / "scripts/range-probe.mjs")],
             env=dict(base_env, PUBLIC_QUERY=json.dumps(query), PUBLIC_URL=base),
             check=True,
             timeout=30,
@@ -363,7 +363,7 @@ def main():
             )
         )
         print(
-            "Verified local REST/WebSocket reads, snapshot catch-up, price ranking, filters, portable window anchors and pause/resume, persisted offline app restart, hub restart rebuild, terminal transitions and late execution backfills."
+            "Verified local REST/WebSocket reads, snapshot catch-up, price ranking, filters, portable query positions and pause/resume, persisted offline app restart, hub restart rebuild, terminal transitions and late execution backfills."
         )
         print("Preview: " + base if args.keep else "Disposable services stopped.")
     except BaseException:

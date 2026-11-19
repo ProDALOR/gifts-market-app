@@ -141,7 +141,7 @@ async fn public_actor_contract_serves_typed_queries_results_and_subscription_err
     );
     let (lease, mut updates) = service.handle.test_window(query).await.unwrap();
     assert_eq!(
-        next_window(&mut updates, "c1")
+        next_window(&mut updates, &writer.reader())
             .await
             .data
             .iter()
@@ -161,13 +161,18 @@ async fn public_actor_contract_serves_typed_queries_results_and_subscription_err
 }
 async fn next_window(
     updates: &mut watch::Receiver<DataUpdate>,
-    cursor: &str,
-) -> Arc<market_gifts::OrderWindow> {
+    reader: &market_replica::ReplicaReader,
+) -> Arc<market_gifts::OrderResult> {
+    let expected = reader.read_revision(&raw_query()).unwrap().token();
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let update = updates.borrow_and_update().clone();
-            if let DataUpdate::Window { window: page, .. } = update
-                && page.cursor == cursor
+            if let DataUpdate::Orders {
+                result: page,
+                revision,
+                ..
+            } = update
+                && revision == expected
             {
                 return page;
             }
@@ -180,7 +185,7 @@ async fn next_window(
 #[tokio::test]
 async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription_actors() {
     let (_directory, mut writer) = fixture();
-    let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
+    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
     let api = service.handle.clone();
     let bot = service.handle.clone();
     assert_eq!(api.orders(gift_query()).await.unwrap().cursor, "c0");
@@ -188,10 +193,10 @@ async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription
     let (_api_feed, mut api_updates) = api.test_window(gift_query()).await.unwrap();
     let (_bot_feed, mut bot_updates) = bot.test_window(gift_query()).await.unwrap();
     assert!(
-        api_updates.same_channel(&bot_updates),
-        "both transports share the actor's subscription registry"
+        !api_updates.same_channel(&bot_updates),
+        "both transports use independent range-watch lifetimes"
     );
-    next_window(&mut api_updates, "c0").await;
+    next_window(&mut api_updates, &writer.reader()).await;
     let mut another = gift_query();
     another.limit = 1;
     assert_eq!(
@@ -204,7 +209,7 @@ async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription
             changes: vec![order("1")],
         })
         .unwrap();
-    let page = next_window(&mut bot_updates, "c1").await;
+    let page = next_window(&mut bot_updates, &writer.reader()).await;
     assert_eq!(page.data[0].order.price.as_str(), "1");
     assert_eq!(api.orders(gift_query()).await.unwrap().cursor, "c1");
     let stop = CancellationToken::new();
@@ -420,58 +425,37 @@ async fn terminal(updates: &mut watch::Receiver<DataUpdate>) {
     .unwrap();
 }
 #[tokio::test]
-async fn market_subscription_leases_cancel_independently_and_last_release_stops_the_feed() {
+async fn market_watch_leases_cancel_independently_and_release_capacity() {
     let (_directory, mut writer) = fixture();
-    let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
-    let (api_lease, mut api_updates) = service.handle.test_window(gift_query()).await.unwrap();
-    let (bot_lease, mut bot_updates) = service.handle.test_window(gift_query()).await.unwrap();
-    assert!(
-        !Arc::ptr_eq(&api_lease, &bot_lease),
-        "callers have separate leases"
-    );
-    assert!(
-        api_updates.same_channel(&bot_updates),
-        "identical queries share computation"
-    );
-    next_window(&mut bot_updates, "c0").await;
-    drop(api_lease);
-    writer
-        .apply(w::Batch {
-            cursor: "c1".into(),
-            changes: vec![order("1")],
-        })
-        .unwrap();
-    next_window(&mut bot_updates, "c1").await;
-    let mut another = gift_query();
-    another.limit = 1;
+    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
+    let (api, mut api_updates) = service.handle.test_window(gift_query()).await.unwrap();
+    let (bot, mut bot_updates) = service.handle.test_window(gift_query()).await.unwrap();
+    assert!(!api_updates.same_channel(&bot_updates));
+    next_window(&mut api_updates, &writer.reader()).await;
+    next_window(&mut bot_updates, &writer.reader()).await;
     assert_eq!(
         service
             .handle
-            .test_window(another.clone())
+            .test_window(gift_query())
             .await
             .err()
             .unwrap()
             .code(),
         crate::error::DataErrorCode::CapacityExceeded
     );
-    drop(bot_lease);
-    // Retained receivers cannot keep computation alive after both callers unsubscribe.
+    drop(api);
     terminal(&mut api_updates).await;
+    writer
+        .apply(w::Batch {
+            cursor: "changed".into(),
+            changes: vec![order("1")],
+        })
+        .unwrap();
+    let next = next_window(&mut bot_updates, &writer.reader()).await;
+    assert_eq!(next.data[0].order.price.as_str(), "1");
+    let (replacement, _) = service.handle.test_window(gift_query()).await.unwrap();
+    drop((bot, replacement));
     terminal(&mut bot_updates).await;
-    let (_lease, mut updates) = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            match service.handle.test_window(another.clone()).await {
-                Ok(subscription) => break subscription,
-                Err(error) if error.code() == crate::error::DataErrorCode::CapacityExceeded => {
-                    tokio::time::sleep(Duration::from_millis(10)).await
-                }
-                Err(error) => panic!("unexpected subscribe failure: {error}"),
-            }
-        }
-    })
-    .await
-    .unwrap();
-    next_window(&mut updates, "c1").await;
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
@@ -576,14 +560,14 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
     let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let handle = service.handle.clone();
     let (_lease, mut updates) = handle.test_window(gift_query()).await.unwrap();
-    let original = next_window(&mut updates, "c0").await;
+    let original = next_window(&mut updates, &writer.reader()).await;
     let query_a = handle.orderbooks.budget.try_query().unwrap();
     let query_b = handle.orderbooks.budget.try_query().unwrap();
     writer.mark(market_replica::SyncState::Stale);
     let (same, sync) = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let DataUpdate::Window {
-                window: page, sync, ..
+            if let DataUpdate::Orders {
+                result: page, sync, ..
             } = updates.borrow_and_update().clone()
                 && sync.state == market_gifts::SyncState::Stale
             {
@@ -731,7 +715,7 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
     query.limit = 2;
     let retained = service.handle.orders(query.clone()).await.unwrap();
     let (lease, mut updates) = service.handle.test_window(query.clone()).await.unwrap();
-    let head = next_window(&mut updates, "exhausted").await;
+    let head = next_window(&mut updates, &writer.reader()).await;
     assert_eq!(head.data.len(), 2);
     writer
         .apply(w::Batch {
@@ -739,9 +723,9 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
             cursor: "empty".into(),
         })
         .unwrap();
-    let empty = next_window(&mut updates, "empty").await;
+    let empty = next_window(&mut updates, &writer.reader()).await;
     assert!(empty.data.is_empty());
-    assert!(!empty.has_after);
+    assert_eq!(empty.range, head.range);
     query.page_token = retained.next_page_token;
     let tail = service.handle.orders(query.clone()).await.unwrap();
     assert_eq!(tail.data[0].id.as_str(), "ask.05");
@@ -809,10 +793,10 @@ impl TestTask {
 }
 
 #[tokio::test]
-async fn live_windows_share_producers_keep_freshness_and_release_individual_leases() {
+async fn range_watches_keep_open_edges_freshness_and_independent_leases() {
     let (_dir, mut writer) = fixture();
-    let service = TestData::start(writer.reader(), 4, 1).await.unwrap();
-    let query = market_gifts::GiftOrderWindowQuery {
+    let service = TestData::start(writer.reader(), 4, 2).await.unwrap();
+    let query = Seed {
         filters: market_gifts::GiftFilters::new("gift".into(), "GRAM".into()),
         side: Default::default(),
         sort: Default::default(),
@@ -820,24 +804,17 @@ async fn live_windows_share_producers_keep_freshness_and_release_individual_leas
         before: 1,
         after: 1,
     };
-    let (a, mut updates) = service
-        .handle
-        .subscribe_window(query.clone())
-        .await
-        .unwrap();
-    let (b, other) = service
-        .handle
-        .subscribe_window(query.clone())
-        .await
-        .unwrap();
-    assert!(updates.same_channel(&other));
+    let (a, mut updates) = service.handle.test_seed_watch(query.clone()).await.unwrap();
+    let (b, other) = service.handle.test_seed_watch(query.clone()).await.unwrap();
+    assert!(!updates.same_channel(&other));
     async fn next(
         updates: &mut watch::Receiver<DataUpdate>,
         price: &str,
-    ) -> Arc<market_gifts::OrderWindow> {
+    ) -> Arc<market_gifts::OrderResult> {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                if let DataUpdate::Window { window, .. } = updates.borrow_and_update().clone()
+                if let DataUpdate::Orders { result: window, .. } =
+                    updates.borrow_and_update().clone()
                     && window
                         .data
                         .first()
@@ -852,7 +829,7 @@ async fn live_windows_share_producers_keep_freshness_and_release_individual_leas
         .unwrap()
     }
     let first = next(&mut updates, "3").await;
-    drop(a);
+    drop(b);
     writer
         .apply(w::Batch {
             cursor: "window2".into(),
@@ -867,7 +844,11 @@ async fn live_windows_share_producers_keep_freshness_and_release_individual_leas
     writer.mark(market_replica::SyncState::Stale);
     let same = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let DataUpdate::Window { window, sync, .. } = updates.borrow_and_update().clone()
+            if let DataUpdate::Orders {
+                result: window,
+                sync,
+                ..
+            } = updates.borrow_and_update().clone()
                 && sync.state == market_gifts::SyncState::Stale
             {
                 break window;
@@ -904,18 +885,18 @@ async fn live_windows_share_producers_keep_freshness_and_release_individual_leas
     let head = next(&mut updates, "0.1").await;
     assert_eq!(
         head.data.len(),
-        3,
-        "A head subscription continues following the head after bursts"
+        5,
+        "An open range grows to include new rows rather than evicting its tail"
     );
 
-    drop(b);
+    drop(a);
     drop(other);
     drop(updates);
     let mut different = query;
     different.before = 2;
     let (lease, _) = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let Ok(result) = service.handle.subscribe_window(different.clone()).await {
+            if let Ok(result) = service.handle.test_seed_watch(different.clone()).await {
                 break result;
             }
             tokio::task::yield_now().await;
@@ -929,12 +910,54 @@ async fn live_windows_share_producers_keep_freshness_and_release_individual_leas
     service.task.run(stop).await.unwrap();
 }
 
+#[derive(Clone)]
+struct Seed {
+    filters: market_gifts::GiftFilters,
+    side: market_gifts::GiftSide,
+    sort: market_gifts::GiftSort,
+    anchor: Option<String>,
+    before: u32,
+    after: u32,
+}
+impl Seed {
+    fn query(self) -> market_gifts::GiftOrderQuery {
+        market_gifts::GiftOrderQuery {
+            filters: self.filters,
+            source: if self.side == market_gifts::GiftSide::Bid {
+                market_gifts::OrderSource::Bids
+            } else {
+                market_gifts::OrderSource::Asks
+            },
+            sort: self.sort,
+            position: self.anchor,
+            limit: self.before + self.after + 1,
+            period: None,
+            direction: if self.before == 0 {
+                market_gifts::ReadDirection::Forward
+            } else if self.after == 0 {
+                market_gifts::ReadDirection::Backward
+            } else {
+                market_gifts::ReadDirection::Around
+            },
+        }
+    }
+}
 impl MarketDataHandle {
+    async fn test_seed_watch(
+        &self,
+        seed: Seed,
+    ) -> crate::error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
+        self.watch_orders(market_gifts::OrderWatchQuery {
+            query: seed.query(),
+            range: None,
+        })
+        .await
+    }
     async fn test_window(
         &self,
         query: market_gifts::GiftOrdersQuery,
     ) -> crate::error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
-        self.subscribe_window(market_gifts::GiftOrderWindowQuery {
+        self.test_seed_watch(Seed {
             filters: query.filters,
             side: query.side,
             sort: query.sort,
@@ -947,7 +970,7 @@ impl MarketDataHandle {
 }
 
 #[tokio::test]
-async fn anchored_viewers_do_not_inherit_another_viewers_evolved_fallback() {
+async fn fixed_ranges_remove_exiting_rows_and_new_watches_seed_independently() {
     let (_dir, mut writer) = fixture();
     let changes = [("a", "10"), ("b", "11"), ("c", "12")]
         .into_iter()
@@ -970,7 +993,7 @@ async fn anchored_viewers_do_not_inherit_another_viewers_evolved_fallback() {
         })
         .unwrap();
     let service = TestData::start(writer.reader(), 4, 5).await.unwrap();
-    let mut query = market_gifts::GiftOrderWindowQuery {
+    let mut query = Seed {
         filters: market_gifts::GiftFilters::new("gift".into(), "GRAM".into()),
         side: Default::default(),
         sort: Default::default(),
@@ -978,12 +1001,8 @@ async fn anchored_viewers_do_not_inherit_another_viewers_evolved_fallback() {
         before: 0,
         after: 3,
     };
-    let (head, mut head_updates) = service
-        .handle
-        .subscribe_window(query.clone())
-        .await
-        .unwrap();
-    let initial = next_window(&mut head_updates, "ready").await;
+    let (head, mut head_updates) = service.handle.test_seed_watch(query.clone()).await.unwrap();
+    let initial = next_window(&mut head_updates, &writer.reader()).await;
     query.anchor = Some(
         initial
             .data
@@ -994,12 +1013,8 @@ async fn anchored_viewers_do_not_inherit_another_viewers_evolved_fallback() {
             .clone(),
     );
     query.after = 0;
-    let (first, mut first_updates) = service
-        .handle
-        .subscribe_window(query.clone())
-        .await
-        .unwrap();
-    next_window(&mut first_updates, "ready").await;
+    let (first, mut first_updates) = service.handle.test_seed_watch(query.clone()).await.unwrap();
+    next_window(&mut first_updates, &writer.reader()).await;
     writer
         .apply(w::Batch {
             cursor: "gone".into(),
@@ -1015,12 +1030,10 @@ async fn anchored_viewers_do_not_inherit_another_viewers_evolved_fallback() {
             }],
         })
         .unwrap();
-    assert_eq!(
-        next_window(&mut first_updates, "gone").await.data[0]
-            .order
-            .id
-            .as_str(),
-        "b"
+    let empty = next_window(&mut first_updates, &writer.reader()).await;
+    assert!(
+        empty.data.is_empty(),
+        "a fixed single-row range does not refill after deletion"
     );
     let mut moved = order("100");
     let Some(w::change::Change::Upsert(ref mut value)) = moved.change else {
@@ -1036,17 +1049,16 @@ async fn anchored_viewers_do_not_inherit_another_viewers_evolved_fallback() {
             changes: vec![moved],
         })
         .unwrap();
-    assert_eq!(
-        next_window(&mut first_updates, "fallback-moved").await.data[0]
-            .order
-            .id
-            .as_str(),
-        "b"
+    assert!(
+        next_window(&mut first_updates, &writer.reader())
+            .await
+            .data
+            .is_empty()
     );
-    let (late, mut late_updates) = service.handle.subscribe_window(query).await.unwrap();
+    let (late, mut late_updates) = service.handle.test_seed_watch(query).await.unwrap();
     assert!(!late_updates.same_channel(&first_updates));
     assert_eq!(
-        next_window(&mut late_updates, "fallback-moved").await.data[0]
+        next_window(&mut late_updates, &writer.reader()).await.data[0]
             .order
             .id
             .as_str(),
@@ -1062,7 +1074,7 @@ async fn anchored_viewers_do_not_inherit_another_viewers_evolved_fallback() {
 async fn frozen_windows_reject_overload_while_live_producers_wait_and_cleanup_stays_available() {
     let (_directory, writer) = fixture();
     let service = TestData::start(writer.reader(), 1, 1).await.unwrap();
-    let query = market_gifts::GiftOrderWindowQuery {
+    let query = Seed {
         filters: gift_query().filters,
         side: Default::default(),
         sort: Default::default(),
@@ -1070,19 +1082,16 @@ async fn frozen_windows_reject_overload_while_live_producers_wait_and_cleanup_st
         before: 0,
         after: 49,
     };
-    let frozen = market_gifts::SnapshotWindowQuery {
-        query: query.clone(),
+    let frozen = market_gifts::OrderReadQuery {
+        consistency: market_gifts::ReadView::Snapshot,
+        query: query.clone().query(),
         snapshot: None,
     };
-    let first = service
-        .handle
-        .snapshot_window(frozen.clone())
-        .await
-        .unwrap();
+    let first = service.handle.read_orders(frozen.clone()).await.unwrap();
     let permit = service.handle.orderbooks.budget.try_query().unwrap();
     let error = tokio::time::timeout(
         Duration::from_millis(100),
-        service.handle.snapshot_window(frozen),
+        service.handle.read_orders(frozen),
     )
     .await
     .expect("Foreground reads must reject overload without waiting")
@@ -1092,16 +1101,101 @@ async fn frozen_windows_reject_overload_while_live_producers_wait_and_cleanup_st
     // Cleanup and cheap status do not require read slots.
     service
         .handle
-        .release_window_snapshot(first.snapshot)
+        .release_read_snapshot(first.snapshot.unwrap())
         .await
         .unwrap();
     assert!(service.handle.status().await.unwrap().ready);
-    let (lease, mut updates) = service.handle.subscribe_window(query).await.unwrap();
+    let (lease, mut updates) = service.handle.test_seed_watch(query).await.unwrap();
     assert!(matches!(*updates.borrow(), DataUpdate::Connecting));
     drop(permit);
-    assert_eq!(next_window(&mut updates, "c0").await.data.len(), 1);
+    assert_eq!(
+        next_window(&mut updates, &writer.reader()).await.data.len(),
+        1
+    );
     drop(lease);
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn identical_dataset_replacement_changes_watch_epoch_without_losing_coverage() {
+    let (_dir, mut writer) = fixture();
+    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
+    let (lease, mut updates) = service.handle.test_window(gift_query()).await.unwrap();
+    let first = next_window(&mut updates, &writer.reader()).await;
+    let DataUpdate::Orders {
+        epoch: initial_epoch,
+        ..
+    } = updates.borrow_and_update().clone()
+    else {
+        panic!("missing range")
+    };
+    let page = writer
+        .reader()
+        .read(w::ReadRequest {
+            mode: w::ReadMode::Live as i32,
+            limit: 500,
+            ..Default::default()
+        })
+        .unwrap()
+        .page;
+    let mut builder = writer.begin_snapshot().unwrap();
+    builder
+        .append(
+            &page
+                .entities
+                .into_iter()
+                .map(|entity| w::Change {
+                    change: Some(w::change::Change::Upsert(entity)),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    writer
+        .install_snapshot(builder.finish("replaced").unwrap())
+        .unwrap();
+    let next = next_window(&mut updates, &writer.reader()).await;
+    let DataUpdate::Orders { epoch, .. } = updates.borrow_and_update().clone() else {
+        panic!("missing range")
+    };
+    assert_ne!(epoch, initial_epoch);
+    assert!(
+        Arc::ptr_eq(&first, &next),
+        "unchanged rows can share data while the transport emits an explicit reset"
+    );
+    assert_eq!(next.range, first.range);
+    drop(lease);
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+}
+
+#[test]
+fn query_projection_rejects_duplicate_identities_instead_of_silently_collapsing_changes() {
+    let (_dir, writer) = fixture();
+    let mut request = raw_query();
+    request.mode = w::ReadMode::Live as i32;
+    let mut read = writer
+        .reader()
+        .read_window_checked(
+            request,
+            market_replica::WindowRequest {
+                fill_edges: true,
+                anchor: None,
+                before: 0,
+                after: 1,
+                snapshot: None,
+            },
+            crate::query::validate_order_collection,
+            crate::protocol::include_order,
+        )
+        .unwrap();
+    read.entries.push(read.entries[0].clone());
+    assert_eq!(
+        crate::protocol::order_result(read, None)
+            .unwrap_err()
+            .code(),
+        crate::error::DataErrorCode::Unavailable
+    );
 }

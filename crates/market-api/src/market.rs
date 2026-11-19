@@ -8,17 +8,17 @@ use tokio::sync::watch;
 pub struct MarketApi {
     data: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
-    encoder: Arc<crate::encoding::WindowEncoder>,
+    encoder: Arc<crate::encoding::OrderEncoder>,
 }
 impl MarketApi {
     pub fn new(data: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
-        Self::with_window_limit(
+        Self::with_order_limit(
             data,
             valuation,
-            crate::config::WebSocketLimits::default().window_bytes,
+            crate::config::WebSocketLimits::default().order_bytes,
         )
     }
-    pub(crate) fn with_window_limit(
+    pub(crate) fn with_order_limit(
         data: MarketDataHandle,
         valuation: market_valuation::ValuationHandle,
         limit: usize,
@@ -26,20 +26,20 @@ impl MarketApi {
         Self {
             data,
             valuation,
-            encoder: Arc::new(crate::encoding::WindowEncoder::new(limit)),
+            encoder: Arc::new(crate::encoding::OrderEncoder::new(limit)),
         }
     }
-    pub(crate) async fn encode_window(
+    pub(crate) async fn encode_orders(
         &self,
-        window: Arc<market_gifts::OrderWindow>,
+        event: crate::encoding::OrderEvent,
     ) -> Result<Arc<str>> {
-        self.encoder.encode_window(window).await
+        self.encoder.encode(event).await
     }
-    pub(crate) async fn subscribe_window(
+    pub(crate) async fn watch_orders(
         &self,
-        query: market_gifts::GiftOrderWindowQuery,
+        params: market_gifts::OrderWatchQuery,
     ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
-        Ok(self.data.subscribe_window(query).await?)
+        Ok(self.data.watch_orders(params).await?)
     }
     pub(crate) async fn shutdown(&self) {
         self.encoder.shutdown().await;
@@ -74,14 +74,14 @@ impl MarketApi {
     pub(crate) async fn media_document(&self, target: MediaTarget) -> Result<TelegramDocumentId> {
         Ok(self.data.media_document(target).await?)
     }
-    pub(crate) async fn snapshot_window(
+    pub(crate) async fn read_orders(
         &self,
-        query: market_gifts::SnapshotWindowQuery,
-    ) -> Result<market_gifts::SnapshotWindow> {
-        Ok(self.data.snapshot_window(query).await?)
+        query: market_gifts::OrderReadQuery,
+    ) -> Result<market_gifts::OrderRead> {
+        Ok(self.data.read_orders(query).await?)
     }
-    pub(crate) async fn release_window_snapshot(&self, snapshot: String) -> Result<()> {
-        Ok(self.data.release_window_snapshot(snapshot).await?)
+    pub(crate) async fn release_read_snapshot(&self, snapshot: String) -> Result<()> {
+        Ok(self.data.release_read_snapshot(snapshot).await?)
     }
     pub async fn orders(&self, query: GiftOrdersQuery) -> Result<Page<GiftOrder>> {
         Ok(self.data.orders(query).await?)

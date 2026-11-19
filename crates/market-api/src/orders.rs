@@ -104,56 +104,59 @@ impl<'a> From<&'a Page<GiftOrder>> for OrderPageResponse<'a> {
         }
     }
 }
-/// One order and its opaque, query-bound scroll position.
+/// One order with query-bound navigation and an ASCII ordering key.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct WindowOrderResponse<'a> {
+pub struct OrderedOrderResponse<'a> {
     #[serde(flatten)]
     pub order: OrderResponse<'a>,
-    /// Opaque, query-bound live scroll anchor; never an HTTP page token.
     pub position: &'a str,
+    pub sort_key: &'a str,
 }
-#[derive(Debug, Serialize, ToSchema)]
-pub struct OrderWindowResponse<'a> {
-    pub data: Vec<WindowOrderResponse<'a>>,
-    pub anchor: Option<&'a str>,
-    pub has_before: bool,
-    pub has_after: bool,
-    pub cursor: &'a str,
-}
-impl<'a> From<&'a market_gifts::OrderWindow> for OrderWindowResponse<'a> {
-    fn from(window: &'a market_gifts::OrderWindow) -> Self {
+impl<'a> From<&'a market_gifts::OrderedEntry<GiftOrder>> for OrderedOrderResponse<'a> {
+    fn from(row: &'a market_gifts::OrderedEntry<GiftOrder>) -> Self {
         Self {
-            data: window
-                .data
-                .iter()
-                .map(|entry| WindowOrderResponse {
-                    order: (&entry.order).into(),
-                    position: &entry.position,
-                })
-                .collect(),
-            anchor: window.anchor.as_deref(),
-            has_before: window.has_before,
-            has_after: window.has_after,
-            cursor: &window.cursor,
+            order: (&row.order).into(),
+            position: &row.position,
+            sort_key: &row.sort_key,
         }
     }
 }
 #[derive(Debug, Serialize, ToSchema)]
-pub struct SnapshotWindowResponse<'a> {
-    pub window: OrderWindowResponse<'a>,
-    pub snapshot: &'a str,
+pub struct OrderResultResponse<'a> {
+    pub data: Vec<OrderedOrderResponse<'a>>,
+    /// Fixed, inclusive coverage. Null boundaries include the open head/tail.
+    pub range: &'a market_gifts::OrderRange,
+}
+impl<'a> From<&'a market_gifts::OrderResult> for OrderResultResponse<'a> {
+    fn from(result: &'a market_gifts::OrderResult) -> Self {
+        Self {
+            data: result.data.iter().map(Into::into).collect(),
+            range: &result.range,
+        }
+    }
+}
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OrderReadResponse<'a> {
+    pub result: OrderResultResponse<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<&'a str>,
     pub sync: &'a SyncStatus,
     pub revision: &'a str,
 }
-impl<'a> From<&'a market_gifts::SnapshotWindow> for SnapshotWindowResponse<'a> {
-    fn from(value: &'a market_gifts::SnapshotWindow) -> Self {
+impl<'a> From<&'a market_gifts::OrderRead> for OrderReadResponse<'a> {
+    fn from(read: &'a market_gifts::OrderRead) -> Self {
         Self {
-            window: (&value.window).into(),
-            snapshot: &value.snapshot,
-            sync: &value.sync,
-            revision: &value.revision,
+            result: (&read.result).into(),
+            snapshot: read.snapshot.as_deref(),
+            sync: &read.sync,
+            revision: &read.revision,
         }
     }
+}
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OrderIdentity<'a> {
+    pub venue_id: &'a market_gifts::VenueId,
+    pub id: &'a OrderId,
 }
 fn market_link(value: &str) -> Option<String> {
     if value.chars().any(char::is_control) {

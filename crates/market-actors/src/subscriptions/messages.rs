@@ -14,7 +14,8 @@ pub(crate) struct SubscribeCatalog(pub Vec<market_gifts::CollectionId>);
 
 #[derive(Message)]
 #[rtype(result = "Result<(Arc<DataSubscription>,watch::Receiver<DataUpdate>),Status>")]
-pub(crate) struct SubscribeWindow {
+pub(crate) struct WatchOrders {
+    pub range: Option<market_gifts::OrderRange>,
     pub request: w::ReadRequest,
     pub window: market_replica::WindowRequest,
 }

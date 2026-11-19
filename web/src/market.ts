@@ -30,7 +30,7 @@ export type FeedQuery =
   | {
       kind: "orders";
       query: Pick<
-        components["schemas"]["GiftOrderWindowQuery"],
+        components["schemas"]["GiftOrdersQuery"],
         "filters" | "side" | "sort"
       >;
     }

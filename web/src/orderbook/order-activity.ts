@@ -15,11 +15,7 @@ export class OrderActivityTracker {
   rebase() {
     this.baseline = true;
   }
-  update(
-    orders: Order[],
-    edges: { before: boolean; after: boolean },
-    now = Date.now(),
-  ) {
+  update(orders: Order[], now = Date.now()) {
     this.expire(now);
     const present = new Set(orders.map(orderKey));
     const before = this.previous;
@@ -28,44 +24,15 @@ export class OrderActivityTracker {
       this.transitions.clear();
       this.removed.clear();
     } else {
-      // Only the overlap is confirmed coverage; crossing either window edge
-      // never proves that a listing arrived or disappeared.
-      const first = edges.before
-        ? orders.findIndex((row) => known.has(orderKey(row)))
-        : 0;
-      const last = edges.after
-        ? orders.reduce(
-            (last, row, index) => (known.has(orderKey(row)) ? index : last),
-            -1,
-          )
-        : orders.length - 1;
-      for (const order of first < 0 ? [] : orders.slice(first, last + 1)) {
+      // The range controller rebases on navigation; missing cached rows are explicit range removals.
+      for (const order of orders) {
         const key = orderKey(order);
         if (!known.has(key) || this.transitions.get(key)?.state === "removed")
           this.transitions.set(key, { state: "new", since: now });
       }
-      const firstCovered = edges.before
-        ? before.findIndex((row) => present.has(orderKey(row)))
-        : 0;
-      const lastCovered = edges.after
-        ? before.reduce(
-            (last, row, index) => (present.has(orderKey(row)) ? index : last),
-            -1,
-          )
-        : before.length - 1;
-      const candidates = new Set(
-        (firstCovered < 0
-          ? []
-          : before.slice(firstCovered, lastCovered + 1)
-        ).map(orderKey),
-      );
       before.forEach((order, index) => {
         const key = orderKey(order);
-        if (
-          !present.has(key) &&
-          candidates.has(key) &&
-          !this.removed.has(key)
-        ) {
+        if (!present.has(key) && !this.removed.has(key)) {
           this.removed.set(key, { order, index });
           this.transitions.set(key, { state: "removed", since: now });
         }

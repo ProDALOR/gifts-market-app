@@ -16,7 +16,10 @@ export function useOrderFeed(
   const frozen = query?.kind === "orders" && paused;
   useEffect(() => {
     const same = saved.current.signature === signature;
-    if (!same) setState(emptyFeed());
+    if (!same) {
+      saved.current = { signature };
+      setState(emptyFeed());
+    }
     if (!query) {
       setState({ ...emptyFeed(), status: "Choose a collection" });
       return;

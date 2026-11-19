@@ -25,7 +25,7 @@ const retry = get<HTMLButtonElement>("retry-catalog"),
 const stop = new AbortController();
 const log = new ConsoleLog();
 let state: ConnectionState = "closed";
-let template: Extract<Command, { type: "subscribe_window" }> | undefined;
+let template: Extract<Command, { type: "orders.watch" }> | undefined;
 let loading: AbortController | undefined;
 const url = new URL("/ws", location.href);
 url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -100,13 +100,16 @@ function command(): Command {
   return {
     ...template,
     id: id.value,
-    query: {
-      ...template.query,
-      side: side.value as "ask" | "bid",
-      filters: {
-        ...template.query.filters,
-        collection_id: collection.value,
-        currency_id: currency.value,
+    params: {
+      ...template.params,
+      query: {
+        ...template.params.query,
+        source: side.value === "bid" ? "bids" : "asks",
+        filters: {
+          ...template.params.query.filters,
+          collection_id: collection.value,
+          currency_id: currency.value,
+        },
       },
     },
   };
@@ -182,7 +185,7 @@ async function loadCatalog() {
       throw new Error("The WebSocket specification is unavailable.");
     const spec = await response.json();
     signal.throwIfAborted();
-    template = spec.components.messages.subscribe_window.examples[0].payload;
+    template = spec.components.messages["orders.watch"].examples[0].payload;
     const fill = (
       select: HTMLSelectElement,
       rows: { id: string; name: string }[],

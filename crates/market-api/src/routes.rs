@@ -85,23 +85,23 @@ pub(crate) async fn gift_valuation(
         .json(GiftValuationResponse::from(result.as_ref())))
 }
 
-#[utoipa::path(post,path="/orders/window",tag="Orders",summary="Open or navigate a frozen order window",request_body=market_gifts::SnapshotWindowQuery,responses((status=200,body=crate::orders::SnapshotWindowResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub(crate) async fn snapshot_window(
+#[utoipa::path(post,path="/orders/read",tag="Orders",summary="Read a latest or frozen ordered slice",description="Latest is the default and retains no view. Set consistency to snapshot to open or reuse a snapshot lease. Positions are portable across latest, frozen and WebSocket reads. The server enforces read budgets. Expired leases return restart_read.",request_body=market_gifts::OrderReadQuery,responses((status=200,body=crate::orders::OrderReadResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+pub(crate) async fn read_orders(
     state: web::Data<MarketApi>,
-    query: web::Json<market_gifts::SnapshotWindowQuery>,
+    query: web::Json<market_gifts::OrderReadQuery>,
 ) -> Result<HttpResponse> {
-    let result = state.snapshot_window(query.into_inner()).await?;
+    let result = state.read_orders(query.into_inner()).await?;
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(crate::orders::SnapshotWindowResponse::from(&result)))
+        .json(crate::orders::OrderReadResponse::from(&result)))
 }
-#[utoipa::path(delete,path="/orders/window",tag="Orders",summary="Release a frozen window",request_body=market_gifts::ReleaseWindowSnapshot,responses((status=204,description="Released or already expired"),(status=400,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub(crate) async fn release_window(
+#[utoipa::path(delete,path="/orders/read",tag="Orders",summary="Release a frozen read",request_body=market_gifts::ReleaseReadSnapshot,responses((status=204,description="Released or already expired"),(status=400,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+pub(crate) async fn release_read(
     state: web::Data<MarketApi>,
-    query: web::Json<market_gifts::ReleaseWindowSnapshot>,
+    query: web::Json<market_gifts::ReleaseReadSnapshot>,
 ) -> Result<HttpResponse> {
     state
-        .release_window_snapshot(query.into_inner().snapshot)
+        .release_read_snapshot(query.into_inner().snapshot)
         .await?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -128,9 +128,9 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
     .route("/collections/{id}", web::get().to(collection))
     .route("/orders/query", web::post().to(orders))
     .service(
-        web::resource("/orders/window")
-            .route(web::post().to(snapshot_window))
-            .route(web::delete().to(release_window)),
+        web::resource("/orders/read")
+            .route(web::post().to(read_orders))
+            .route(web::delete().to(release_read)),
     )
     .route("/history/query", web::post().to(executions))
     .route("/valuations/gift", web::post().to(gift_valuation))

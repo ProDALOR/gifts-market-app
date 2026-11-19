@@ -17,6 +17,7 @@ pub(crate) struct Revisions {
     pub sequence: u64,
     pub dataset: u64,
     pub catalog: u64,
+    history: u64,
     pub directory: u64,
     metadata: [u64; 5],
     option_groups: OrdMap<String, OptionGroup>,
@@ -30,6 +31,12 @@ pub struct ReadRevision {
     data: u64,
 }
 impl ReadRevision {
+    pub fn dataset_token(&self) -> String {
+        format!("{}:{}", self.instance, self.dataset)
+    }
+    pub fn same_dataset(&self, other: &Self) -> bool {
+        self.instance == other.instance && self.dataset == other.dataset
+    }
     /// Compare only dataset and selected data; callers must track metadata dependencies separately.
     pub fn same_data(&self, other: &Self) -> bool {
         self.instance == other.instance && self.dataset == other.dataset && self.data == other.data
@@ -112,6 +119,7 @@ impl Revisions {
             sequence,
             dataset: sequence,
             catalog: sequence,
+            history: sequence,
             directory: sequence,
             metadata: [sequence; 5],
             option_groups,
@@ -130,6 +138,10 @@ impl Revisions {
         let mut orders = BTreeSet::new();
         let mut changed_options = BTreeSet::new();
         for change in changes {
+            if matches!(&change.change, Some(w::change::Change::Upsert(entity)) if matches!(&entity.entity, Some(w::entity::Entity::Order(order)) if order.mode == w::OrderMode::Executed as i32))
+            {
+                next.history = next.sequence;
+            }
             let key = match &change.change {
                 Some(w::change::Change::Upsert(value)) => state::entity_key(value)?,
                 Some(w::change::Change::Remove(value)) => Key::try_from(
@@ -233,6 +245,15 @@ impl ReplicaReader {
             .as_ref()
             .and_then(|selection| selection.source.as_ref())
         {
+            Some(w::selection::Source::Scope(scope))
+                if scope.modes.contains(&(w::OrderMode::Executed as i32))
+                    || request
+                        .selection
+                        .as_ref()
+                        .is_some_and(|selection| selection.executed_at.is_some()) =>
+            {
+                revisions.history
+            }
             Some(w::selection::Source::Scope(scope))
                 if request
                     .selection

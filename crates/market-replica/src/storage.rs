@@ -357,6 +357,30 @@ impl Snapshot {
         limit: usize,
         include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<RankedHistoryPage, Status> {
+        self.ranked_history_between(filter, after, None, limit, include)
+    }
+    pub fn execution(&self, position: &Position) -> Result<Option<w::Entity>, Status> {
+        let table = self.read.open_table(EXECUTIONS).map_err(failure)?;
+        table
+            .get(position.stored())
+            .map_err(failure)?
+            .map(|raw| {
+                let order = w::Order::decode(raw.value()).map_err(failure)?;
+                Ok(w::Entity {
+                    entity: Some(w::entity::Entity::Order(order)),
+                })
+            })
+            .transpose()
+    }
+    /// Scan an indexed, closed upper boundary in the requested ordering direction.
+    pub fn ranked_history_between(
+        &self,
+        filter: &Filter,
+        after: Option<(String, Position)>,
+        end: Option<(String, Position)>,
+        limit: usize,
+        include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
+    ) -> Result<RankedHistoryPage, Status> {
         use std::ops::Bound::{Excluded, Included};
         let scope = filter
             .scope
@@ -391,11 +415,34 @@ impl Snapshot {
                     position.stored(),
                 )
             });
-        let lower = if !filter.sort.descending() {
-            previous.map(Excluded)
+        let end_encoded = end
+            .as_ref()
+            .map(|(value, _)| state::decimal(value).map(crate::ranking::ordered_decimal))
+            .transpose()?;
+        let end_key = end_encoded
+            .as_ref()
+            .zip(end.as_ref())
+            .map(|(encoded, (_, position))| {
+                (
+                    criterion,
+                    item,
+                    currency,
+                    encoded.as_slice(),
+                    position.stored(),
+                )
+            });
+        let lower = if filter.sort.descending() {
+            end_key.map(Included)
         } else {
             None
         }
+        .or_else(|| {
+            if !filter.sort.descending() {
+                previous.map(Excluded)
+            } else {
+                None
+            }
+        })
         .unwrap_or(Included((
             criterion,
             item,
@@ -403,11 +450,18 @@ impl Snapshot {
             minimum.as_slice(),
             (i64::MIN, "", ""),
         )));
-        let upper = if filter.sort.descending() {
-            previous.map(Excluded)
+        let upper = if !filter.sort.descending() {
+            end_key.map(Included)
         } else {
             None
         }
+        .or_else(|| {
+            if filter.sort.descending() {
+                previous.map(Excluded)
+            } else {
+                None
+            }
+        })
         .unwrap_or(Included((
             criterion,
             item,
@@ -425,7 +479,7 @@ impl Snapshot {
         let mut bytes = 0;
         let mut position = after;
         for (count, row) in rows.enumerate() {
-            if count == 10_000 {
+            if count == crate::READ_LIMITS.max_scan_candidates {
                 return Ok((data, position));
             }
             let (key, _) = row.map_err(failure)?;
@@ -445,7 +499,7 @@ impl Snapshot {
                         return Ok((data, position));
                     }
                     let size = entity.encoded_len() + 8;
-                    if bytes + size > 512 * 1024 {
+                    if bytes + size > crate::READ_LIMITS.max_read_bytes {
                         if data.is_empty() {
                             return Err(Status::resource_exhausted("order exceeds page budget"));
                         }
@@ -541,7 +595,7 @@ impl Snapshot {
         let mut bytes = 0;
         for (count, row) in rows.enumerate() {
             let row = row?;
-            if count == 10_000 {
+            if count == crate::READ_LIMITS.max_scan_candidates {
                 return Ok((data, position));
             }
             let raw = executions
@@ -558,7 +612,7 @@ impl Snapshot {
                         return Ok((data, position));
                     }
                     let size = entity.encoded_len() + 8;
-                    if bytes + size > 512 * 1024 {
+                    if bytes + size > crate::READ_LIMITS.max_read_bytes {
                         if data.is_empty() {
                             return Err(Status::resource_exhausted("order exceeds page budget"));
                         }

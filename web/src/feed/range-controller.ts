@@ -1,3 +1,5 @@
+import { LoadedOrders } from "./loaded-orders.ts";
+import type { Order } from "../market.ts";
 import { OrderActivityTracker, orderKey } from "../orderbook/order-activity.ts";
 import {
   emptyFeed,
@@ -6,20 +8,27 @@ import {
   type Bookmark,
 } from "./types.ts";
 import {
-  LiveWindows,
-  FrozenWindows,
-  type WindowData,
-  type WindowQuery,
-  type WindowSource,
+  LiveRanges,
+  FrozenReads,
+  type OrderData,
+  type OrderQuery,
+  type RangeSource,
   type Sync,
-} from "./window-source.ts";
-export type WindowSelection = Pick<WindowQuery, "filters" | "side" | "sort">;
-/** Owns navigation and visual state; the server owns ordering and window reconciliation. */
-export class WindowController implements FeedController {
+} from "./range-source.ts";
+export type RangeSelection = {
+  filters: OrderQuery["filters"];
+  side?: "ask" | "bid";
+  sort?: OrderQuery["sort"];
+};
+/** Owns navigation and visual state; the server owns ordering and range reconciliation. */
+export class RangeController implements FeedController {
   private state = emptyFeed();
   private activity = new OrderActivityTracker();
-  private source: WindowSource;
-  private window?: WindowData;
+  private source: RangeSource;
+  private current?: OrderData;
+  private activeStart = 0;
+  private cache: LoadedOrders;
+  private projected = new WeakMap<OrderData["data"][number], Order>();
   private anchor?: string;
   private visibleKey?: string;
   private requested?: string;
@@ -30,14 +39,18 @@ export class WindowController implements FeedController {
   private movement?: ReturnType<typeof setTimeout>;
   ready = false;
   constructor(
-    private selection: WindowSelection,
+    private selection: RangeSelection,
     private frozen: boolean,
     private changed: (state: FeedState) => void,
     bookmark?: Bookmark,
   ) {
-    this.requested = bookmark?.kind === "window" ? bookmark.anchor : undefined;
+    this.cache =
+      bookmark?.kind === "range"
+        ? (bookmark.cache ?? new LoadedOrders())
+        : new LoadedOrders();
+    this.requested = bookmark?.kind === "range" ? bookmark.anchor : undefined;
     const callbacks = {
-      window: (data: WindowData, sync: Sync) => this.accept(data, sync),
+      result: (data: OrderData, sync: Sync) => this.accept(data, sync),
       sync: (sync: Sync) =>
         this.emit({ sync, status: sync.state === "live" ? "Live" : "Stale" }),
       status: (status: string) => {
@@ -57,11 +70,15 @@ export class WindowController implements FeedController {
       reset: () => this.activity.rebase(),
     };
     this.source = frozen
-      ? new FrozenWindows(callbacks)
-      : new LiveWindows(callbacks);
+      ? new FrozenReads(callbacks)
+      : new LiveRanges(callbacks);
   }
   get bookmark(): Bookmark {
-    return { kind: "window", anchor: this.anchor ?? this.requested };
+    return {
+      kind: "range",
+      anchor: this.anchor ?? this.requested,
+      cache: this.cache,
+    };
   }
   start() {
     this.working = true;
@@ -72,6 +89,7 @@ export class WindowController implements FeedController {
     this.source.start(this.query());
   }
   close() {
+    if (this.closed) return;
     this.closed = true;
     this.source.close();
     clearTimeout(this.expiry);
@@ -83,34 +101,42 @@ export class WindowController implements FeedController {
   setVisibleRange(start: number, end: number, anchor = start) {
     const range = this.activity.liveRange(start, end);
     const point = this.activity.liveRange(anchor, anchor).start;
-    const row = this.window?.data[point];
+    const row = this.cache.rows[point];
     if (row) {
       this.anchor = row.position;
       this.visibleKey = orderKey(row);
-      this.source.remember?.({ ...this.query(), anchor: row.position });
+      this.source.remember?.({ ...this.query(), position: row.position });
     }
-    if (!this.window || this.working || this.state.error) return;
+    if (!this.current || this.working || this.state.error) return;
     clearTimeout(this.movement);
+    const activeStart = this.activeStart;
+    const activeEnd = activeStart + this.current.data.length;
     if (
-      (this.window.has_before && point < 25) ||
-      (this.window.has_after && range.end > this.window.data.length - 25)
+      (!this.current.data.length && row !== undefined) ||
+      (this.current.range.start !== null && point < activeStart + 25) ||
+      (this.current.range.end !== null && range.end > activeEnd - 25)
     )
       this.movement = setTimeout(() => this.move(), 80);
   }
-  private query(): WindowQuery {
+  private query(): OrderQuery {
     const { filters, side, sort } = this.selection;
     return {
       filters,
-      side,
+      source: side === "bid" ? "bids" : "asks",
       sort,
-      anchor: this.requested ?? null,
-      before: 50,
-      after: 99,
+      position: this.requested ?? null,
+      limit: 150,
+      direction: "around",
+      period: null,
     };
   }
   private move() {
-    if (!this.window || this.working || this.closed) return;
-    const anchor = this.anchor ?? this.window.data[0]?.position;
+    if (!this.current || this.working || this.closed) return;
+    const anchor =
+      this.anchor ??
+      this.current.data[0]?.position ??
+      this.current.range.end?.position ??
+      this.current.range.start?.position;
     if (!anchor || anchor === this.requested) return;
     this.requested = anchor;
     this.movingTo = this.visibleKey;
@@ -119,53 +145,66 @@ export class WindowController implements FeedController {
     this.emit({ loadingMore: true, error: "" });
     this.source.move(this.query());
   }
-  private accept(window: WindowData, sync: Sync) {
+  private accept(current: OrderData, sync: Sync) {
     if (this.closed) return;
     if (
       this.working &&
       this.movingTo &&
       this.visibleKey !== this.movingTo &&
       this.visibleKey &&
-      !window.data.some((row) => orderKey(row) === this.visibleKey)
+      !current.data.some((row) => orderKey(row) === this.visibleKey)
     ) {
       this.working = false;
       this.move();
       return;
     }
     this.movingTo = undefined;
-    this.window = window;
+    this.cache.merge(current);
+    this.current = current;
+    this.activeStart = Math.max(
+      0,
+      this.cache.rows.findIndex(
+        (row) => row.position === current.data[0]?.position,
+      ),
+    );
     this.working = false;
     this.ready = true;
-    if (this.requested && window.anchor) {
-      this.requested = window.anchor;
+    this.anchor =
+      this.cache.rows.find((row) => orderKey(row) === this.visibleKey)
+        ?.position ?? current.data[0]?.position;
+    if (this.requested && this.anchor) {
+      this.requested = this.anchor;
       this.source.remember?.(this.query());
     }
-    this.anchor =
-      window.data.find((row) => orderKey(row) === this.visibleKey)?.position ??
-      window.anchor ??
-      undefined;
-    const previous = new Map(
-      this.state.orders.map((row) => [orderKey(row), row]),
-    );
-    const orders = window.data.map(({ position: _, ...row }) => {
-      const old = previous.get(orderKey(row));
-      return old && JSON.stringify(old) === JSON.stringify(row) ? old : row;
+    const orders = this.cache.rows.map((entry) => {
+      let order = this.projected.get(entry);
+      if (!order) {
+        const { position: _, sort_key: __, ...data } = entry;
+        order = data;
+        this.projected.set(entry, order);
+      }
+      return order;
     });
     if (this.frozen) this.activity.rebase();
     this.emit({
       orders,
-      ...this.activity.update(orders, {
-        before: window.has_before,
-        after: window.has_after,
-      }),
+      ...this.activity.update(orders),
       sync,
-      cursor: window.cursor,
-      hasMore: window.has_after,
+
+      hasMore: this.cache.hasAfter,
       loadingMore: false,
       error: "",
       status: this.frozen ? "Paused" : sync.state === "live" ? "Live" : "Stale",
     });
     this.scheduleExpiry();
+    if (
+      !current.data.length &&
+      !this.cache.rows.length &&
+      (current.range.start || current.range.end)
+    ) {
+      clearTimeout(this.movement);
+      this.movement = setTimeout(() => this.move(), 80);
+    }
   }
   private scheduleExpiry() {
     clearTimeout(this.expiry);

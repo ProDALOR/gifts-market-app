@@ -145,20 +145,20 @@ try {
     .waitFor();
   await page
     .locator("#asyncapi-reference")
-    .getByText(/Subscribe to one atomic live order window/)
+    .getByText(/Watch a fixed ordered range/)
     .first()
     .waitFor();
   await page
-    .locator("#ws-message-subscribe_window td code")
-    .filter({ hasText: /^query$/ })
+    .locator('[id="ws-message-orders.watch"] td code')
+    .filter({ hasText: /^params$/ })
     .waitFor();
   await page
-    .locator("#ws-message-subscribe_window a[data-schema]")
-    .filter({ hasText: "GiftOrderWindowQuery" })
+    .locator('[id="ws-message-orders.watch"] a[data-schema]')
+    .filter({ hasText: "OrderWatchQuery" })
     .click();
   assert.equal(
     await page
-      .locator("#ws-schema-GiftOrderWindowQuery")
+      .locator("#ws-schema-OrderWatchQuery")
       .evaluate((node) => node.open),
     true,
   );
@@ -174,12 +174,13 @@ try {
     ["request", "params"],
     ["result", "data"],
     ["cancel", "id"],
-    ["subscribe_window", "query"],
-    ["window", "window"],
+    ["orders.watch", "params"],
+    ["orders.snapshot", "result"],
   ]) {
     await page
-      .locator(`#ws-message-${message} td code`)
+      .locator(`[id="ws-message-${message}"] td code`)
       .filter({ hasText: new RegExp(`^${field}$`) })
+      .first()
       .waitFor();
   }
   await page

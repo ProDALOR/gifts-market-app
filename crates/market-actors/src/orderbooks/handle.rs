@@ -47,6 +47,22 @@ impl OrderbooksHandle {
             .map_err(closed)?
     }
 
+    pub async fn range_wait(
+        &self,
+        request: w::ReadRequest,
+        range: market_replica::WindowRange,
+    ) -> Result<market_replica::WindowReadResult, Status> {
+        let permit = self.budget.wait().await?;
+        let _cancel = permit.cancel_on_drop();
+        self.address
+            .send(super::messages::ReadRange {
+                request,
+                range,
+                permit,
+            })
+            .await
+            .map_err(closed)?
+    }
     pub async fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         let permit = self.budget.try_query()?;
         let _cancel = permit.cancel_on_drop();

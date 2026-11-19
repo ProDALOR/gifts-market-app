@@ -3,6 +3,40 @@ import type { Order } from "../market";
 import type { ComponentProps } from "react";
 import { GiftCard } from "./gift-card";
 import { orderKey } from "./order-activity";
+type Range = { start: number; end: number; top: number; bottom: number };
+function rowsRange(
+  length: number,
+  columns: number,
+  stride: number,
+  gap: number,
+  start: number,
+  end: number,
+): Range {
+  const rows = Math.ceil(length / columns);
+  start = Math.max(0, Math.min(start, rows));
+  end = Math.max(start, Math.min(end, rows));
+  return {
+    start: Math.min(length, start * columns),
+    end: Math.min(length, end * columns),
+    top: start * stride - (start === end && start > 0 && length ? gap : 0),
+    bottom: Math.max(0, rows - end) * stride,
+  };
+}
+function locateAnchor(orders: Order[], previous: Order[], key: string) {
+  const index = orders.findIndex((order) => orderKey(order) === key);
+  if (index >= 0 || !orders.length) return index;
+  const keys = new Map(orders.map((order, index) => [orderKey(order), index]));
+  const old = previous.findIndex((order) => orderKey(order) === key);
+  const nearby = [
+    ...previous.slice(Math.max(0, old)),
+    ...previous.slice(0, Math.max(0, old)).reverse(),
+  ];
+  return (
+    nearby
+      .map((order) => keys.get(orderKey(order)))
+      .find((index) => index !== undefined) ?? 0
+  );
+}
 /** Window rows, not individual cards, so columns and scroll geometry stay stable. */
 export function GiftGrid({
   orders,
@@ -17,8 +51,33 @@ export function GiftGrid({
 }) {
   const host = useRef<HTMLUListElement>(null);
   const anchor = useRef<{ key: string; offset: number } | undefined>(undefined);
-  const geometry = useRef({ columns: 3, stride: 118 });
+  const geometry = useRef({ columns: 3, stride: 118, gap: 6 });
   const [range, setRange] = useState({ start: 0, end: 30, top: 0, bottom: 0 });
+  const previous = useRef(orders);
+  const saved = anchor.current;
+  const nextAnchor =
+    previous.current !== orders && saved
+      ? locateAnchor(orders, previous.current, saved.key)
+      : -1;
+  let rendered = range;
+  if (nextAnchor >= 0 && saved) {
+    const { columns, stride, gap } = geometry.current;
+    const old = previous.current.findIndex(
+      (order) => orderKey(order) === saved.key,
+    );
+    const shift =
+      Math.floor(nextAnchor / columns) - Math.floor(Math.max(0, old) / columns);
+    // Rebase before React commits the new data, so visible keys never unmount
+    // under obsolete virtual row indices and restart their artwork.
+    rendered = rowsRange(
+      orders.length,
+      columns,
+      stride,
+      gap,
+      Math.floor(range.start / columns) + shift,
+      Math.ceil(range.end / columns) + shift,
+    );
+  }
   const measure = useCallback(() => {
     const element = host.current;
     if (!element) return;
@@ -26,7 +85,7 @@ export function GiftGrid({
     const columns = style.gridTemplateColumns.split(" ").length;
     const stride = parseFloat(style.gridAutoRows) + parseFloat(style.rowGap);
     if (!stride || !Number.isFinite(stride)) return;
-    geometry.current = { columns, stride };
+    geometry.current = { columns, stride, gap: parseFloat(style.rowGap) };
     const top = element.getBoundingClientRect().top;
     const first = Math.max(0, Math.floor(-top / stride));
     const startRow = Math.min(
@@ -40,16 +99,14 @@ export function GiftGrid({
         Math.ceil((innerHeight - top) / stride) + 3,
       ),
     );
-    const start = Math.min(orders.length, startRow * columns);
-    const end = Math.max(start, Math.min(orders.length, endRow * columns));
-    const gap = parseFloat(style.rowGap);
-    const empty = start === end && orders.length > 0;
-    const next = {
-      start,
-      end,
-      top: startRow * stride - (empty && startRow > 0 ? gap : 0),
-      bottom: Math.max(0, Math.ceil(orders.length / columns) - endRow) * stride,
-    };
+    const next = rowsRange(
+      orders.length,
+      columns,
+      stride,
+      parseFloat(style.rowGap),
+      startRow,
+      endRow,
+    );
     setRange((old) =>
       Object.keys(next).every(
         (k) => old[k as keyof typeof old] === next[k as keyof typeof next],
@@ -57,7 +114,7 @@ export function GiftGrid({
         ? old
         : next,
     );
-    visible(start, end, Math.min(orders.length - 1, first * columns));
+    visible(next.start, next.end, Math.min(orders.length - 1, first * columns));
     const index = first * columns;
     // A scrolled viewer can still see the grid below the header. Preserve that
     // first row when a preceding window arrives; keep the unscrolled head free.
@@ -66,27 +123,10 @@ export function GiftGrid({
         ? { key: orderKey(orders[index]), offset: top + first * stride }
         : undefined;
   }, [orders, visible]);
-  const previous = useRef(orders);
   useLayoutEffect(() => {
     const saved = anchor.current;
     if (saved && host.current) {
-      let index = orders.findIndex((order) => orderKey(order) === saved.key);
-      if (index < 0 && orders.length) {
-        const keys = new Map(
-          orders.map((order, index) => [orderKey(order), index]),
-        );
-        const old = previous.current.findIndex(
-          (order) => orderKey(order) === saved.key,
-        );
-        const nearby = [
-          ...previous.current.slice(Math.max(0, old)),
-          ...previous.current.slice(0, Math.max(0, old)).reverse(),
-        ];
-        index =
-          nearby
-            .map((order) => keys.get(orderKey(order)))
-            .find((index) => index !== undefined) ?? 0;
-      }
+      const index = locateAnchor(orders, previous.current, saved.key);
       if (index >= 0) {
         const { columns, stride } = geometry.current;
         const offset =
@@ -123,14 +163,14 @@ export function GiftGrid({
       data-order-count={orders.length}
       aria-label="Gift listings"
       aria-busy={busy}
-      style={{ paddingTop: range.top, paddingBottom: range.bottom }}
+      style={{ paddingTop: rendered.top, paddingBottom: rendered.bottom }}
     >
-      {orders.slice(range.start, range.end).map((order, index) => (
+      {orders.slice(rendered.start, rendered.end).map((order, index) => (
         <GiftCard
           key={orderKey(order)}
           order={order}
           {...card(order)}
-          position={range.start + index + 1}
+          position={rendered.start + index + 1}
           total={orders.length}
         />
       ))}

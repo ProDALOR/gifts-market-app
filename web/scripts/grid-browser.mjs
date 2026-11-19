@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { orderWindow } from "./window-fixture.mjs";
+import { orderResult } from "./range-fixture.mjs";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 const root = new URL("..", import.meta.url).pathname;
@@ -14,7 +14,7 @@ let rows=Array.from({length:10000},(_,i)=>make(i));
 const options=new Map();const open=()=>{};const visible=(start,end)=>{window.range=[start,end]};
 const card=()=>({options,collectionName:'Gift',venueName:'Venue',selected:false,open});
 const render=()=>root.render(React.createElement('div',{className:'workspace'},React.createElement('div',{style:{height:72}},'Header'),React.createElement(GiftGrid,{orders:rows,card,busy:false,visible})));
-window.prepend=()=>{rows=[make(-3),make(-2),make(-1),...rows];render()};
+window.prepend=()=>{rows=[...Array.from({length:300},(_,i)=>make(i-300)),...rows];render()};
 window.unmount=()=>root.unmount();
 render();
 </script></body></html>`;
@@ -98,11 +98,12 @@ try {
   await page.waitForFunction(() => window.range?.[0] > 1000);
   const before = await page.locator(".card-open").evaluateAll((nodes) => {
     const node = nodes.find((node) => node.getBoundingClientRect().top >= 0);
+    window.beforeNode = node;
     return { id: node.dataset.orderId, top: node.getBoundingClientRect().top };
   });
   await page.evaluate(() => window.prepend());
   await page.waitForFunction(
-    () => document.querySelector(".gift-grid")?.dataset.orderCount === "10003",
+    () => document.querySelector(".gift-grid")?.dataset.orderCount === "10300",
   );
   const after = await page
     .locator(`[data-order-id="${before.id}"]`)
@@ -110,6 +111,13 @@ try {
   assert.ok(
     Math.abs(after - before.top) < 2,
     `Scroll anchor moved by ${after - before.top}px`,
+  );
+  assert.equal(
+    await page
+      .locator(`[data-order-id="${before.id}"]`)
+      .evaluate((node) => node === window.beforeNode),
+    true,
+    "Large prepends must retain visible card DOM and artwork",
   );
   await page.setViewportSize({ width: 360, height: 500 });
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -124,6 +132,7 @@ try {
   // A live window slides atomically in both directions without any HTTP pages.
   let requests = 0,
     subscriptions = 0;
+  let lastAnchor;
   const sync = { ready: true, state: "live", updated_at: null };
   const rows = Array.from({ length: 1000 }, (_, i) => ({
     id: String(i),
@@ -149,27 +158,37 @@ try {
         if (current === incoming.id) current = undefined;
         return;
       }
-      if (incoming.type === "subscribe_window") current = incoming.id;
+      if (incoming.type === "orders.watch") current = incoming.id;
       const work = (async () => {
         const command = incoming;
-        if (command.type !== "subscribe_window") return;
+        if (command.type !== "orders.watch") return;
         subscriptions++;
-        const marker = await page.locator(".card-open").evaluateAll((cards) => {
-          const row = cards.find((el) => {
-            const r = el.getBoundingClientRect();
-            return r.bottom > 0 && r.top < innerHeight;
-          });
-          return row
-            ? { id: row.dataset.orderId, top: row.getBoundingClientRect().top }
-            : null;
-        });
+        lastAnchor = command.params.query.position;
+        const marker = await page
+          .locator(".card-open")
+          .evaluateAll((cards, operation) => {
+            const row = cards.find((el) => {
+              const r = el.getBoundingClientRect();
+              return r.bottom > 0 && r.top < innerHeight;
+            });
+            window.anchorNodes ??= new Map();
+            window.anchorNodes.set(operation, row);
+            return row
+              ? {
+                  id: row.dataset.orderId,
+                  top: row.getBoundingClientRect().top,
+                }
+              : null;
+          }, command.id);
         if (current !== command.id) return;
-        const window = orderWindow(command.query, rows);
+        const window = orderResult(command.params.query, rows);
         socket.send(
           JSON.stringify({
-            type: "window",
+            type: "orders.snapshot",
+            sequence: 0,
+            reset: false,
             id: command.id,
-            window,
+            result: window,
             sync,
             revision: "view",
           }),
@@ -177,28 +196,36 @@ try {
         if (marker && window.data.some((row) => row.id === marker.id)) {
           await page.waitForFunction(
             (first) =>
-              window.feedView?.().orders[0]?.id === first &&
+              window.feedView?.().orders.some((row) => row.id === first) &&
               !window.feedView().loadingMore,
             window.data[0].id,
           );
           await page.evaluate(() => new Promise(requestAnimationFrame));
           if (current !== command.id) return;
-          const actual = await page.evaluate((id) => {
-            const row = document.querySelector(`[data-order-id="${id}"]`);
-            return {
-              top: row?.getBoundingClientRect().top,
-              first: window.feedView().orders[0]?.id,
-              loading: window.feedView().loadingMore,
-              scroll: scrollY,
-              rendered: [...document.querySelectorAll(".card-open")]
-                .slice(0, 4)
-                .map((el) => el.dataset.orderId),
-            };
-          }, marker.id);
+          const actual = await page.evaluate(
+            ({ id, operation }) => {
+              const row = document.querySelector(`[data-order-id="${id}"]`);
+              return {
+                top: row?.getBoundingClientRect().top,
+                preserved: row === window.anchorNodes.get(operation),
+                first: window.feedView().orders[0]?.id,
+                loading: window.feedView().loadingMore,
+                scroll: scrollY,
+                rendered: [...document.querySelectorAll(".card-open")]
+                  .slice(0, 4)
+                  .map((el) => el.dataset.orderId),
+              };
+            },
+            { id: marker.id, operation: command.id },
+          );
+          assert.ok(
+            actual.preserved,
+            `Window replacement remounted visible card ${marker.id}`,
+          );
           assert.notEqual(
             actual.top,
             undefined,
-            `Missing active anchor: ${JSON.stringify({ marker, actual, query: command.query })}`,
+            `Missing active anchor: ${JSON.stringify({ marker, actual, query: command.params.query })}`,
           );
           const top = actual.top;
           anchorChecks++;
@@ -220,7 +247,7 @@ try {
   let nextSnapshot = 0;
   const released = [];
   const frozenRequests = [];
-  await page.route("**/orders/window", (route) => {
+  await page.route("**/orders/read", (route) => {
     const body = route.request().postDataJSON();
     if (route.request().method() === "DELETE") {
       released.push(body.snapshot);
@@ -232,7 +259,7 @@ try {
     if (!frozen.has(snapshot)) frozen.set(snapshot, rows.slice());
     return route.fulfill({
       json: {
-        window: orderWindow(body.query, frozen.get(snapshot)),
+        result: orderResult(body.query, frozen.get(snapshot)),
         snapshot,
         sync,
         revision: "frozen",
@@ -258,9 +285,7 @@ try {
   await page.evaluate(() =>
     window.scrollTo(0, document.body.scrollHeight - 600),
   );
-  await page.waitForFunction(
-    () => Number(window.feedView?.().orders[0]?.id) > 0,
-  );
+  await page.waitForFunction(() => window.feedView?.().orders.length > 150);
   await page.waitForTimeout(200);
   const count = subscriptions;
   await page.waitForTimeout(500);
@@ -270,9 +295,27 @@ try {
     "One scroll must settle without draining the book",
   );
   await Promise.all(checks);
+  for (let i = 0; i < 3; i++) {
+    const loaded = await page.evaluate(() => window.feedView().orders.length);
+    await page.evaluate(() =>
+      window.scrollTo(0, document.body.scrollHeight - 600),
+    );
+    await page.waitForFunction(
+      (count) => window.feedView().orders.length > count,
+      loaded,
+    );
+    await page.waitForTimeout(200);
+    await Promise.all(checks);
+    assert.equal(
+      await page.evaluate(() => window.feedView().orders[0].id),
+      "0",
+      "Every visited prefix stays loaded",
+    );
+    assert.ok((await page.locator(".gift-card").count()) < 60);
+  }
   const liveAnchor = await anchor();
   assert.ok(liveAnchor);
-  assert.equal(await page.evaluate(() => window.feedView().orders.length), 150);
+  assert.ok(await page.evaluate(() => window.feedView().orders.length > 150));
   assert.ok((await page.locator(".gift-card").count()) < 60);
   assert.equal(requests, 0);
   const anchorBeforePause = await anchor();
@@ -287,9 +330,7 @@ try {
     Math.abs(pausedTop - anchorBeforePause.top) < 2,
     "Pausing preserves the visible anchor instead of restarting at the head",
   );
-  assert.ok(
-    Number(await page.evaluate(() => window.feedView().orders[0].id)) > 0,
-  );
+  assert.ok(await page.evaluate(() => window.feedView().orders[0].id === "0"));
   assert.equal(
     subscriptions,
     liveSubscriptions,
@@ -305,15 +346,22 @@ try {
     "Resuming releases the frozen snapshot lease",
   );
   // Scrolling back toward the first buffered row asks for preceding orders.
-  const previousStart = await page.evaluate(() =>
-    Number(window.feedView().orders[0].id),
+  const previousSubscriptions = subscriptions;
+  const loadedCount = await page.evaluate(
+    () => window.feedView().orders.length,
   );
   await page.evaluate(() => window.scrollTo(0, 80));
-  await page.waitForFunction(
-    (start) => Number(window.feedView().orders[0].id) < start,
-    previousStart,
-  );
   await page.waitForTimeout(400);
+  assert.ok(
+    subscriptions > previousSubscriptions,
+    "Returning to cached rows refreshes their live window",
+  );
+  assert.equal(lastAnchor, JSON.stringify(["v", "0"]));
+  assert.equal(
+    await page.evaluate(() => window.feedView().orders.length),
+    loadedCount,
+    "Scrolling backward must retain the loaded tail",
+  );
   assert.equal(requests, 0);
   await Promise.all(checks);
   assert.deepEqual(anchorErrors, []);

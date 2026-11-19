@@ -7,15 +7,15 @@ pub use crate::catalog::{
     GiftCatalog, GiftCollection, GiftCollectionCatalog, GiftMedia, GiftModel, GiftPattern,
 };
 pub use crate::orders::{
-    OrderPageResponse, OrderResponse, OrderTargetResponse, OrderWindowResponse,
-    SnapshotWindowResponse, UnsupportedTargetReason, WindowOrderResponse,
+    OrderIdentity, OrderPageResponse, OrderReadResponse, OrderResponse, OrderResultResponse,
+    OrderTargetResponse, OrderedOrderResponse, UnsupportedTargetReason,
 };
 pub use market_gifts::{
     Amount, BackdropId, BackdropPalette, CatalogVersions, CollectibleGift, CollectionId,
     CollectionSlug, Currency, CurrencyId, GiftBackdrop, GiftBook, GiftCriteria, GiftFilters,
-    GiftHistoryQuery, GiftNumber, GiftNumberRange, GiftOrderKind, GiftOrderWindowQuery,
-    GiftOrdersQuery, GiftSide, GiftSlug, GiftSort, GiftTraits, ModelId, OrderId, PatternId, Period,
-    PriceRange, ReadConsistency, SyncState, SyncStatus, UnsupportedGiftReason, Venue, VenueId,
+    GiftHistoryQuery, GiftNumber, GiftNumberRange, GiftOrderKind, GiftOrderQuery, GiftOrdersQuery,
+    GiftSide, GiftSlug, GiftSort, GiftTraits, ModelId, OrderId, PatternId, Period, PriceRange,
+    ReadConsistency, SyncState, SyncStatus, UnsupportedGiftReason, Venue, VenueId,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -23,10 +23,11 @@ use utoipa::ToSchema;
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Request(ApiRequest),
-    SubscribeWindow {
+    #[serde(rename = "orders.watch")]
+    WatchOrders {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
-        query: Box<market_gifts::GiftOrderWindowQuery>,
+        params: Box<market_gifts::OrderWatchQuery>,
     },
     Cancel {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
@@ -42,6 +43,11 @@ pub enum Command {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "method", deny_unknown_fields)]
 pub enum ApiRequest {
+    #[serde(rename = "orders.query")]
+    Orders {
+        id: String,
+        params: Box<market_gifts::OrderReadQuery>,
+    },
     #[serde(rename = "valuation.evaluate")]
     Valuation {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
@@ -52,7 +58,7 @@ pub enum ApiRequest {
 impl ApiRequest {
     pub(crate) fn id(&self) -> &str {
         match self {
-            Self::Valuation { id, .. } => id,
+            Self::Valuation { id, .. } | Self::Orders { id, .. } => id,
         }
     }
 }
@@ -65,11 +71,23 @@ pub enum ServerFrame<'a> {
         id: String,
         error: crate::error::ApiError,
     },
-    Window {
+    #[serde(rename = "orders.snapshot")]
+    OrdersSnapshot {
         id: String,
-        window: crate::orders::OrderWindowResponse<'a>,
-        sync: SyncStatus,
-        revision: String,
+        sequence: u64,
+        reset: bool,
+        #[serde(flatten)]
+        data: crate::orders::OrderReadResponse<'a>,
+    },
+    #[serde(rename = "orders.changed")]
+    OrdersChanged {
+        id: String,
+        sequence: u64,
+        base_sequence: u64,
+        upserts: Vec<crate::orders::OrderedOrderResponse<'a>>,
+        removed: Vec<crate::orders::OrderIdentity<'a>>,
+        sync: &'a SyncStatus,
+        revision: &'a str,
     },
     Status {
         id: String,
@@ -92,6 +110,11 @@ pub enum ServerFrame<'a> {
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "method")]
 pub enum ApiResult<'a> {
+    #[serde(rename = "orders.query")]
+    Orders {
+        id: String,
+        data: crate::orders::OrderReadResponse<'a>,
+    },
     #[serde(rename = "valuation.evaluate")]
     Valuation {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]

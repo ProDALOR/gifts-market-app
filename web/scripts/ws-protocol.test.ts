@@ -90,7 +90,7 @@ test("invalid JSON, envelope identities and malformed payloads are rejected befo
     assert.throws(() => parseFrame(raw));
 });
 
-test("atomic windows validate identities, positions, bounds and anchor membership", () => {
+test("range snapshots and atomic changes validate identities, coverage and sequences", () => {
   const row = {
     id: "a",
     book: { venue_id: "v", collection_id: "gift", currency_id: "GRAM" },
@@ -103,28 +103,64 @@ test("atomic windows validate identities, positions, bounds and anchor membershi
       criteria: { models: [], backdrops: [], patterns: [], number: null },
     },
     position: "p.a",
+    sort_key: "00001",
   };
   const frame = {
-    type: "window",
+    type: "orders.snapshot",
     id: "op.1",
+    sequence: 0,
+    reset: false,
     sync,
     revision: "r",
-    window: {
-      data: [row],
-      anchor: "p.a",
-      has_before: true,
-      has_after: true,
-      cursor: "r",
-    },
+    result: { data: [row], range: { start: null, end: null } },
   };
   assert.deepEqual(parseFrame(JSON.stringify(frame)), frame);
-  for (const window of [
-    { ...frame.window, data: [row, row] },
-    { ...frame.window, anchor: "missing" },
-    { ...frame.window, data: [{ ...row, position: "" }] },
-    { ...frame.window, data: [] },
-    { ...frame.window, data: Array(201).fill(row) },
-    { ...frame.window, data: [{ ...row, kind: "executed" }] },
+  for (const invalid of [
+    { ...frame, sequence: -1 },
+    { ...frame, sequence: Number.MAX_SAFE_INTEGER + 1 },
+    { ...frame, result: { ...frame.result, data: [row, row] } },
+    { ...frame, result: { ...frame.result, data: [{ ...row, position: "" }] } },
+    {
+      ...frame,
+      result: {
+        data: [row],
+        range: { start: { position: "p.b", sort_key: "00002" }, end: null },
+      },
+    },
+    { ...frame, result: { data: [row], range: { start: null } } },
   ])
-    assert.throws(() => parseFrame(JSON.stringify({ ...frame, window })));
+    assert.throws(() => parseFrame(JSON.stringify(invalid)));
+  const change = {
+    type: "orders.changed",
+    id: "op.1",
+    sequence: 1,
+    base_sequence: 0,
+    upserts: [row],
+    removed: [],
+    sync,
+    revision: "r2",
+  };
+  assert.deepEqual(parseFrame(JSON.stringify(change)), change);
+  for (const invalid of [
+    { ...change, sequence: 2 },
+    { ...change, upserts: [row, row] },
+    { ...change, removed: [{ venue_id: "v", id: "a" }] },
+    { ...change, removed: [{ id: "a" }] },
+  ])
+    assert.throws(() => parseFrame(JSON.stringify(invalid)));
+  const history = {
+    ...frame,
+    result: {
+      ...frame.result,
+      data: [{ ...row, kind: "executed", executed_at: "2026-11-18T12:00:00Z" }],
+    },
+  };
+  assert.deepEqual(parseFrame(JSON.stringify(history)), history);
+  const finite = {
+    type: "result",
+    id: "q",
+    method: "orders.query",
+    data: { result: frame.result, sync, revision: "r" },
+  };
+  assert.deepEqual(parseFrame(JSON.stringify(finite)), finite);
 });

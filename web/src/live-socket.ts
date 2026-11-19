@@ -14,7 +14,8 @@ type Call = RequestCall extends infer R
     ? Omit<R, "id">
     : never
   : never;
-type Result<M> = Extract<RequestResult, { method: M }>["data"];
+type Results = { [R in RequestResult as R["method"]]: R["data"] };
+type Result<M extends keyof Results> = Results[M];
 type Subscription = {
   kind: "subscription";
   command: SubscriptionCommand;
@@ -317,8 +318,9 @@ export class LiveSocket {
         value.type === "result" ||
         (value.type === "catalog" &&
           operation.command.type !== "watch_catalog") ||
-        (value.type === "window" &&
-          operation.command.type !== "subscribe_window") ||
+        ((value.type === "orders.snapshot" ||
+          value.type === "orders.changed") &&
+          operation.command.type !== "orders.watch") ||
         (value.type === "sync" && operation.command.type === "watch_catalog")
       ) {
         this.disconnected(socket);

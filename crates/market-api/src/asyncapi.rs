@@ -105,8 +105,9 @@ fn summary(name: &str) -> &'static str {
         "command_error" => "Rejected command; the existing operation continues unchanged.",
         "result" => "Typed request result; valuation uses the same response as HTTP.",
         "cancel" => "Cancel a pending request or subscription. No acknowledgement is sent.",
-        "subscribe_window" => "Subscribe to one atomic live order window around an opaque anchor.",
-        "window" => "Replace the whole live window atomically; preserve the scroll anchor.",
+        "orders.watch" => "Watch a fixed ordered range with an atomic initial snapshot.",
+        "orders.snapshot" => "Initialize or reset range state atomically.",
+        "orders.changed" => "Apply removals and upserts atomically after checking base_sequence.",
         "watch_catalog" => {
             "Watch catalog content revisions for up to eight collections, without polling."
         }
@@ -115,7 +116,7 @@ fn summary(name: &str) -> &'static str {
         }
         "status" => "The subscription is connecting.",
         "sync" => {
-            "Update freshness and revision without replacing orders. The server has checked the entire subscribed window."
+            "Update freshness and revision without replacing orders. The server has checked the subscribed range."
         }
         "error" => {
             "A request, subscription or connection-level error. Inspect code and operation ID."
@@ -168,23 +169,37 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
                 },
             }))?
         }
-        "subscribe_window" => serde_json::to_value(Command::SubscribeWindow {
-            id: "window.1".into(),
-            query: Box::new(serde_json::from_value(
-                json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"side":"ask","sort":"price_asc","anchor":null,"before":50,"after":99}),
+        "orders.watch" => serde_json::to_value(Command::WatchOrders {
+            id: "orders.1".into(),
+            params: Box::new(serde_json::from_value(
+                json!({"query":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","sort":"price_asc","position":null,"limit":150,"direction":"around"}}),
             )?),
         })?,
-        "window" => serde_json::to_value(ServerFrame::Window {
-            id: "window.1".into(),
-            window: OrderWindowResponse {
-                data: vec![],
-                anchor: None,
-                has_before: false,
-                has_after: false,
-                cursor: "checkpoint",
+        "orders.snapshot" => serde_json::to_value(ServerFrame::OrdersSnapshot {
+            id: "orders.1".into(),
+            sequence: 0,
+            reset: false,
+            data: OrderReadResponse {
+                result: OrderResultResponse {
+                    data: vec![],
+                    range: &market_gifts::OrderRange {
+                        start: None,
+                        end: None,
+                    },
+                },
+                snapshot: None,
+                sync: &sync,
+                revision: "opaque-revision",
             },
-            sync,
-            revision: "opaque-revision".into(),
+        })?,
+        "orders.changed" => serde_json::to_value(ServerFrame::OrdersChanged {
+            id: "orders.1".into(),
+            sequence: 1,
+            base_sequence: 0,
+            upserts: vec![],
+            removed: vec![],
+            sync: &sync,
+            revision: "opaque-revision-2",
         })?,
         "watch_catalog" => serde_json::to_value(Command::WatchCatalog {
             id: "catalog".into(),
@@ -244,7 +259,7 @@ mod tests {
         assert!(refs.iter().all(|name| names.contains(name)));
         assert!(!names.contains("GiftCatalog"));
         assert!(!names.contains("Session"));
-        for command in ["watch_catalog", "subscribe_window", "request", "cancel"] {
+        for command in ["watch_catalog", "orders.watch", "request", "cancel"] {
             serde_json::from_value::<Command>(
                 spec["components"]["messages"][command]["examples"][0]["payload"].clone(),
             )
@@ -262,7 +277,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            7
+            8
         );
     }
 }

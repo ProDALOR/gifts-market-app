@@ -8,7 +8,7 @@ use market_actors::DataUpdate;
 use tokio_util::sync::CancellationToken;
 pub(super) enum Operation {
     Request(crate::models::ApiRequest),
-    Window(Box<market_gifts::GiftOrderWindowQuery>),
+    Orders(Box<market_gifts::OrderWatchQuery>),
     Catalog(Vec<market_gifts::CollectionId>),
 }
 #[derive(Debug)]
@@ -37,6 +37,13 @@ pub(super) async fn run(
     if let Operation::Request(request) = query {
         let work = async {
             match request {
+                crate::models::ApiRequest::Orders { id, params } => {
+                    let read = market.read_orders(*params).await?;
+                    market
+                        .encode_orders(crate::encoding::OrderEvent::Read { id, read })
+                        .await
+                        .map(Payload::Orders)
+                }
                 crate::models::ApiRequest::Valuation { params, .. } => {
                     market.gift_valuation(*params).await.map(Payload::Result)
                 }
@@ -52,7 +59,7 @@ pub(super) async fn run(
     let setup = async {
         match query {
             Operation::Request(_) => unreachable!("requests handled above"),
-            Operation::Window(query) => market.subscribe_window(*query).await,
+            Operation::Orders(query) => market.watch_orders(*query).await,
             Operation::Catalog(ids) => market.subscribe_catalog(ids).await,
         }
     };
@@ -68,35 +75,65 @@ pub(super) async fn run(
                 .await);
         }
     };
-    let mut previous_window = None;
+    let mut previous = None;
+    let mut epoch = None;
+    let mut sequence = 0u64;
     loop {
         let update = updates.borrow_and_update().clone();
         let (payload, terminal) = match update {
             DataUpdate::Connecting => (Payload::Connecting, false),
             DataUpdate::Catalog(versions) => (Payload::Catalog(versions), false),
             DataUpdate::Error(error) => (Payload::Error(error.into()), true),
-            DataUpdate::Window {
-                window,
+            DataUpdate::Orders {
+                result,
+                epoch: next_epoch,
                 sync,
                 revision,
             } => {
-                if previous_window
-                    .as_ref()
-                    .is_some_and(|old| std::sync::Arc::ptr_eq(old, &window))
+                let reset = epoch.as_ref().is_some_and(|old| old != &next_epoch);
+                if !reset
+                    && previous
+                        .as_ref()
+                        .is_some_and(|old| std::sync::Arc::ptr_eq(old, &result))
                 {
                     (Payload::Sync { sync, revision }, false)
                 } else {
-                    previous_window = Some(window.clone());
-                    let result = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=market.encode_window(window)=>result};
-                    match result {
-                        Ok(window) => (
-                            Payload::Window {
-                                window,
-                                sync,
-                                revision,
-                            },
-                            false,
-                        ),
+                    let next_sequence = if previous.is_none() {
+                        Some(0)
+                    } else {
+                        sequence
+                            .checked_add(1)
+                            .filter(|n| *n <= 9_007_199_254_740_991)
+                    };
+                    let Some(next_sequence) = next_sequence else {
+                        return end(tx
+                            .send(
+                                Scope::Operation(key),
+                                Payload::Error(ApiError::unavailable(
+                                    "Subscription sequence exhausted; restart read",
+                                )),
+                                true,
+                                &cancel,
+                            )
+                            .await);
+                    };
+                    let event = crate::encoding::OrderEvent::Update {
+                        id: key.id.as_str().into(),
+                        previous: previous.clone(),
+                        current: result.clone(),
+                        sequence: next_sequence,
+                        reset,
+                        sync,
+                        revision,
+                    };
+                    let encoded = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=market.encode_orders(event)=>result};
+                    match encoded {
+                        Ok(encoded) => {
+                            previous = Some(result);
+                            epoch = Some(next_epoch);
+                            sequence = next_sequence;
+                            (Payload::Orders(encoded), false)
+                        }
                         Err(error) => (Payload::Error(error), true),
                     }
                 }

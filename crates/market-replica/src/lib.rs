@@ -1,12 +1,14 @@
 //! Protocol-native, disposable read replica. No hub implementation dependencies.
 mod book_index;
+mod limits;
 mod query;
 mod ranking;
 mod reader;
+pub use limits::{READ_LIMITS, ReadLimits};
 mod window;
 #[cfg(test)]
 mod window_tests;
-pub use window::{WindowEntity, WindowReadResult, WindowRequest};
+pub use window::{WindowEntity, WindowRange, WindowReadResult, WindowRequest, position_sort_key};
 mod revisions;
 pub use revisions::{DirectoryRevision, MetadataDependencies, MetadataRevision, ReadRevision};
 mod replication;

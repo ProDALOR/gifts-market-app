@@ -47,27 +47,48 @@ fn order_entity(entity: w::Entity) -> Result<GiftOrder> {
         _ => Err(invalid("expected a gift order")),
     }
 }
-pub(crate) fn window(
+pub(crate) fn order_result(
     result: market_replica::WindowReadResult,
-) -> Result<(OrderWindow, SyncStatus)> {
+    coverage: Option<OrderRange>,
+) -> Result<(OrderResult, SyncStatus)> {
     let sync = sync(result.sync)?;
-    let window = OrderWindow {
-        data: result
-            .entries
-            .into_iter()
-            .map(|entry| {
-                Ok(WindowEntry {
-                    order: order_entity(entry.entity)?,
-                    position: entry.position,
-                })
+    let data: Vec<_> = result
+        .entries
+        .into_iter()
+        .map(|entry| {
+            Ok(OrderedEntry {
+                order: order_entity(entry.entity)?,
+                position: entry.position,
+                sort_key: entry.sort_key,
             })
-            .collect::<Result<_>>()?,
-        anchor: result.anchor,
-        has_before: result.has_before,
-        has_after: result.has_after,
-        cursor: result.cursor,
+        })
+        .collect::<Result<_>>()?;
+    let mut identities = std::collections::HashSet::new();
+    if data
+        .iter()
+        .any(|entry| !identities.insert((&entry.order.book.venue_id, &entry.order.id)))
+    {
+        return Err(DataError::unavailable(
+            "Duplicate order identities in query result",
+        ));
+    }
+    let boundary = |entry: &OrderedEntry<GiftOrder>| OrderBoundary {
+        position: entry.position.clone(),
+        sort_key: entry.sort_key.clone(),
     };
-    Ok((window, sync))
+    let range = coverage.unwrap_or_else(|| OrderRange {
+        start: if result.has_before {
+            data.first().map(boundary)
+        } else {
+            None
+        },
+        end: if result.has_after {
+            data.last().map(boundary)
+        } else {
+            None
+        },
+    });
+    Ok((OrderResult { data, range }, sync))
 }
 
 /// Gift-specific eligibility belongs outside the generic replica's bounded scan.

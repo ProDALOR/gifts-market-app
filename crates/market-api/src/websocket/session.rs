@@ -191,7 +191,7 @@ fn schedule(
     start: &Start,
 ) -> Result<(), queue::QueueError> {
     let (id, query) = match command {
-        Command::SubscribeWindow { id, query } => (id, Some(operations::Operation::Window(query))),
+        Command::WatchOrders { id, params } => (id, Some(operations::Operation::Orders(params))),
         Command::WatchCatalog { id, collection_ids } => {
             (id, Some(operations::Operation::Catalog(collection_ids)))
         }

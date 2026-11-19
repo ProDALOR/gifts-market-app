@@ -88,15 +88,19 @@ pub(super) fn start_catalog(
     environment.jobs.spawn_on(work, &environment.runtime);
 }
 
-pub(super) fn start_window(
+pub(super) fn start_orders(
     environment: &ActorEnvironment,
     feed: &Arc<QueryFeed>,
     orders: OrderbooksHandle,
-    request: w::ReadRequest,
-    mut window: market_replica::WindowRequest,
+    selection: super::types::OrdersFeed,
     reader: market_replica::ReplicaReader,
     permit: OwnedSemaphorePermit,
 ) {
+    let super::types::OrdersFeed {
+        request,
+        window,
+        range: mut coverage,
+    } = selection;
     let sender = feed.sender.clone();
     let stop = feed.stop.clone();
     let completion = Completion {
@@ -108,31 +112,36 @@ pub(super) fn start_window(
         let _permit = permit;
         let mut changed = reader.changes();
         let work = async {
-            let mut previous: Option<Arc<market_gifts::OrderWindow>> = None;
+            let mut previous: Option<Arc<market_gifts::OrderResult>> = None;
             let mut revision = None;
             let mut freshness = None;
             loop {
                 changed.borrow_and_update();
                 let current = reader.read_revision(&request)?;
                 if revision != Some(current) {
-                    let result = tokio::select! {biased;_=stop.cancelled()=>return Ok(()),_=sender.closed()=>return Ok(()),result=orders.window_wait(request.clone(),window.clone())=>result?};
-                    if window.anchor.is_some() {
-                        window.anchor = result.anchor.clone();
-                    }
+                    let read = async {
+                        if let Some(range) = &coverage {
+                            let range = market_replica::WindowRange {
+                                start: range.start.as_ref().map(|b| b.position.clone()),
+                                end: range.end.as_ref().map(|b| b.position.clone()),
+                            };
+                            orders.range_wait(request.clone(), range).await
+                        } else {
+                            orders.window_wait(request.clone(), window.clone()).await
+                        }
+                    };
+                    let result = tokio::select! {biased;_=stop.cancelled()=>return Ok(()),_=sender.closed()=>return Ok(()),result=read=>result?};
                     let current = result.revision;
-                    let (next, sync) = crate::protocol::window(result)?;
-                    if previous.as_ref().is_none_or(|old| {
-                        old.data != next.data
-                            || old.anchor != next.anchor
-                            || old.has_before != next.has_before
-                            || old.has_after != next.has_after
-                    }) {
+                    let (next, sync) = crate::protocol::order_result(result, coverage.clone())?;
+                    coverage = Some(next.range.clone());
+                    if previous.as_ref().is_none_or(|old| **old != next) {
                         previous = Some(Arc::new(next));
                     }
                     revision = Some(current);
                     freshness = Some(sync.clone());
-                    sender.send_replace(DataUpdate::Window {
-                        window: previous.as_ref().expect("window loaded").clone(),
+                    sender.send_replace(DataUpdate::Orders {
+                        epoch: current.dataset_token(),
+                        result: previous.as_ref().expect("window loaded").clone(),
                         sync,
                         revision: current.token(),
                     });
@@ -140,8 +149,9 @@ pub(super) fn start_window(
                     let sync = crate::protocol::sync(reader.status())?;
                     if freshness.as_ref() != Some(&sync) {
                         freshness = Some(sync.clone());
-                        sender.send_replace(DataUpdate::Window {
-                            window: previous.as_ref().expect("window loaded").clone(),
+                        sender.send_replace(DataUpdate::Orders {
+                            epoch: revision.expect("revision loaded").dataset_token(),
+                            result: previous.as_ref().expect("window loaded").clone(),
                             sync,
                             revision: revision.expect("revision loaded").token(),
                         });

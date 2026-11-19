@@ -1,6 +1,6 @@
 // Full UI workflow with an isolated local catalog/feed; no Telegram or hub login.
 import assert from "node:assert/strict";
-import { orderWindow } from "./window-fixture.mjs";
+import { orderResult } from "./range-fixture.mjs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
@@ -78,7 +78,11 @@ let revision = 0;
 const sync = { ready: true, state: "live", updated_at: "2026-11-17T00:00:00Z" };
 function result(query, executed = false) {
   const filters = query.filters;
-  const mode = executed ? "executed" : query.side || "ask";
+  const mode = executed
+    ? "executed"
+    : query.source === "bids"
+      ? "bid"
+      : query.side || "ask";
   let rows = Array.from(
     { length: executed ? 75 : mode === "bid" ? 4 : 125 },
     (_, index) => ({
@@ -419,7 +423,7 @@ try {
   );
   const snapshots = new Map();
   let snapshotSequence = 0;
-  await page.route("**/orders/window", (route) => {
+  await page.route("**/orders/read", (route) => {
     const body = route.request().postDataJSON();
     if (route.request().method() === "DELETE") {
       snapshots.delete(body.snapshot);
@@ -430,7 +434,7 @@ try {
       snapshots.set(id, result({ ...body.query, limit: 10000 }).data);
     return route.fulfill({
       json: {
-        window: orderWindow(body.query, snapshots.get(id)),
+        result: orderResult(body.query, snapshots.get(id)),
         snapshot: id,
         sync,
         revision: String(revision),
@@ -463,18 +467,20 @@ try {
         catalogPeers.add(catalogPeer);
         sendCatalog(catalogPeer);
       }
-      if (frame.type === "subscribe_window") {
+      if (frame.type === "orders.watch") {
         orderSubscriptions++;
         connections.delete(connection);
-        connection = { socket, id: frame.id, query: frame.query };
+        connection = { socket, id: frame.id, query: frame.params.query };
         connections.add(connection);
         socket.send(
           JSON.stringify({
-            type: "window",
+            type: "orders.snapshot",
+            sequence: 0,
+            reset: false,
             id: frame.id,
-            window: orderWindow(
-              frame.query,
-              result({ ...frame.query, limit: 10000 }).data,
+            result: orderResult(
+              frame.params.query,
+              result({ ...frame.params.query, limit: 10000 }).data,
             ),
             sync,
             revision: String(revision),
@@ -857,9 +863,8 @@ try {
   for (const { socket, query, id } of connections)
     socket.send(
       JSON.stringify({
-        type: "page",
+        type: "sync",
         id,
-        page: result(query),
         sync,
         revision: String(revision),
       }),

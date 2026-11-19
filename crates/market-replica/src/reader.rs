@@ -23,7 +23,7 @@ struct Continuation {
     snapshot: Option<String>,
 }
 fn decode(text: &str) -> Result<Continuation, Status> {
-    if text.len() > 8192 {
+    if text.len() > READ_LIMITS.max_position_bytes {
         return Err(Status::invalid_argument("page token too large"));
     }
     let bytes = URL_SAFE_NO_PAD
@@ -65,11 +65,11 @@ impl ReplicaReader {
             Err(_) => return Err(Status::invalid_argument("unknown read mode")),
         };
         let limit = if request.limit == 0 {
-            200
+            READ_LIMITS.max_rows as usize
         } else {
             request.limit as usize
         };
-        if limit > 500 {
+        if limit > READ_LIMITS.max_batch_rows as usize {
             return Err(Status::invalid_argument("invalid page size"));
         }
         self.expire();
@@ -87,7 +87,8 @@ impl ReplicaReader {
             let retained = views.get_mut(id).ok_or_else(|| {
                 Status::failed_precondition("snapshot expired or app restarted; restart read")
             })?;
-            retained.until = Instant::now() + Duration::from_secs(60);
+            retained.until =
+                Instant::now() + Duration::from_secs(READ_LIMITS.snapshot_idle_seconds);
             retained.view.clone()
         } else {
             self.view()?
@@ -143,14 +144,15 @@ impl ReplicaReader {
         let next_page_token = if let Some(position) = next {
             if let Some(id) = &id {
                 let mut views = self.0.views.lock().map_err(storage::failure)?;
-                if views.len() >= 128 && !views.contains_key(id) {
+                if views.len() >= READ_LIMITS.max_retained_snapshots && !views.contains_key(id) {
                     return Err(Status::resource_exhausted("snapshot capacity reached"));
                 }
                 views.insert(
                     id.clone(),
                     RetainedView {
                         view: view.clone(),
-                        until: Instant::now() + Duration::from_secs(60),
+                        until: Instant::now()
+                            + Duration::from_secs(READ_LIMITS.snapshot_idle_seconds),
                     },
                 );
             }
@@ -280,7 +282,7 @@ fn scan(
         if count % 64 == 0 {
             check()?;
         }
-        if count == 10_000 {
+        if count == READ_LIMITS.max_scan_candidates {
             return Ok((data, Some(boundary)));
         }
         if let Some(entity) = entity
@@ -291,7 +293,7 @@ fn scan(
                 return Ok((data, Some(boundary)));
             }
             let size = entity.encoded_len() + 8;
-            if bytes + size > 512 * 1024 {
+            if bytes + size > READ_LIMITS.max_read_bytes {
                 if data.is_empty() {
                     return Err(Status::resource_exhausted("order exceeds page budget"));
                 }

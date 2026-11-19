@@ -25,3 +25,11 @@ pub(crate) struct ReadWindow {
 pub(crate) struct ReleaseSnapshot {
     pub snapshot: String,
 }
+
+#[derive(Message)]
+#[rtype(result = "Result<market_replica::WindowReadResult,Status>")]
+pub(crate) struct ReadRange {
+    pub request: w::ReadRequest,
+    pub range: market_replica::WindowRange,
+    pub permit: market_replica::ReadPermit,
+}
