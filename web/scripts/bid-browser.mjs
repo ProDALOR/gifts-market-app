@@ -26,7 +26,12 @@ const missing={...base,id:'missing',quantity:2,target:{kind:'criteria',models:['
 const concrete={...base,id:'concrete',quantity:1,target:{kind:'gift',id:'gift-42',number:42,traits:{model:'model-0',backdrop:'backdrop-0',pattern:'pattern-0'}}};
 const single={...base,id:'single',target:{kind:'criteria',models:['model-0'],backdrops:['backdrop-0'],patterns:['pattern-0']}};
 const backdrop={...base,id:'backdrop',target:{kind:'criteria',models:[],backdrops:['backdrop-1'],patterns:['pattern-1']}};
-function App(){const[selected,select]=useState();window.selectBid=select;return React.createElement('main',{className:'orderbook'},React.createElement('section',{className:'market-results'},React.createElement('h1',null,'Bids'),React.createElement(GiftGrid,{orders:[base,any,missing,concrete,single,backdrop],busy:false,visible:()=>{},card:()=>({options,collectionName:'Liberty Figure',venueName:'MRKT',selected:false,open:select})})),selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Liberty Figure',close:()=>select(undefined)}));}
+const largeModels=Array.from({length:200},(_,i)=>({kind:'model',id:'large-model-'+i,name:'Large model '+i,media:{preview_url:'/media/large-model-'+i+'/preview',thumbnail_url:'/media/large-model-'+i+'/thumbnail',animation_url:'/media/large-model-'+i+'/animation'}}));
+const largeBackdrops=Array.from({length:10},(_,i)=>({...backdrops[i%3],id:'large-backdrop-'+i,name:'Large backdrop '+i}));
+const largePatterns=Array.from({length:10},(_,i)=>({...patterns[i%4],id:'large-pattern-'+i,name:'Large symbol '+i,media:{thumbnail_url:'/media/large-pattern-'+i+'/thumbnail'}}));
+for(const o of [...largeModels,...largeBackdrops,...largePatterns]){options.set(o.id,o);names.set(o.id,o.name);}names.set('known-missing','Remembered model');
+const large={...base,id:'large',target:{kind:'criteria',models:[...largeModels.map(o=>o.id),'known-missing'],backdrops:[...largeBackdrops.map(o=>o.id),'missing-backdrop'],patterns:[...largePatterns.map(o=>o.id),'missing-pattern'],number:base.target.number}};
+function App(){const[selected,select]=useState();const[catalog,setCatalog]=useState(options);const[largeMode,setLargeMode]=useState(false);window.selectBid=select;window.showLargeCard=()=>setLargeMode(true);window.restoreCatalog=()=>setCatalog(previous=>new Map([...previous,['known-missing',{kind:'model',id:'known-missing',name:'Restored model',media:{preview_url:'/media/restored-model/preview',thumbnail_url:'/media/restored-model/thumbnail'}}]]));return React.createElement('main',{className:'orderbook'},React.createElement('section',{className:'market-results'},React.createElement('h1',null,'Bids'),React.createElement(GiftGrid,{orders:largeMode?[large]:[base,any,missing,concrete,single,backdrop],busy:false,visible:()=>{},card:()=>({options:catalog,collectionName:'Liberty Figure',venueName:'MRKT',selected:false,open:select})})),selected&&React.createElement(OrderDetails,{selected,options:catalog,names,collectionName:'Liberty Figure',close:()=>select(undefined)}));}
 createRoot(document.getElementById('fixture')).render(React.createElement(App));
 </script></body></html>`;
 let symbol;
@@ -51,7 +56,7 @@ const server = await createServer({
             !req.url.endsWith("/animation"),
             "Bids must not load animations",
           );
-          const pattern = req.url.includes("/pattern-");
+          const pattern = req.url.includes("pattern-");
           res.setHeader(
             "Content-Type",
             pattern ? "image/png" : "image/svg+xml",
@@ -191,7 +196,7 @@ try {
     await page
       .locator(".gift-grid")
       .evaluate((c) => getComputedStyle(c).gridAutoRows),
-    "168px",
+    "180px",
   );
   await card.hover();
   await checkLayout();
@@ -202,6 +207,25 @@ try {
   await page.keyboard.press("Enter");
   await page.locator(".detail-criteria").waitFor();
   const details = page.locator(".detail-criteria");
+  const detailPreview = details.locator(".bid-detail-preview");
+  await detailPreview.locator("img.loaded").first().waitFor();
+  assert.equal(await detailPreview.locator(".preview-model").count(), 8);
+  assert.equal(await detailPreview.locator(".preview-band").count(), 3);
+  assert.equal(
+    await detailPreview.locator(".preview-symbols canvas").count(),
+    1,
+  );
+  assert.equal(
+    await detailPreview.locator(".bid-preview-summary span").count(),
+    0,
+  );
+  await detailPreview.hover();
+  await details.evaluate((el) => {
+    el.scrollTop = 0;
+    el.querySelector(".detail-content").scrollTop = 0;
+  });
+  assert.equal(await details.locator(".bid-detail-heading").isVisible(), true);
+  assert.equal(await details.locator(".model-animation").count(), 0);
   assert.equal(await details.locator(".condition-chip").count(), 15);
   assert.equal(await details.locator(".condition-overflow").count(), 0);
   assert.equal(
@@ -217,7 +241,10 @@ try {
     await details.locator('[data-condition="model"] .condition-chip').count(),
     8,
   );
-  await details.getByText("Model 7", { exact: true }).waitFor();
+  await details
+    .locator(".condition-chip")
+    .getByText("Model 7", { exact: true })
+    .waitFor();
   assert.equal(
     await details.evaluate((c) => c.scrollWidth <= c.clientWidth),
     true,
@@ -249,6 +276,7 @@ try {
   await card.locator(".card-open").click();
   await details.waitFor();
   assert.ok((await details.boundingBox()).width <= 640);
+  assert.equal(await detailPreview.locator(".preview-model").count(), 8);
   await details.evaluate(async (el) => {
     await Promise.all(
       el.getAnimations().map((a) => a.finished.catch(() => {})),
@@ -261,6 +289,15 @@ try {
     "Criteria details fit their content instead of keeping an empty artwork-sized pane",
   );
   await page.screenshot({ path: join(output, "bid-details-desktop.png") });
+  await details.locator('[data-condition="quantity"]').scrollIntoViewIfNeeded();
+  await details.locator(".detail-actions").scrollIntoViewIfNeeded();
+  const visibleDialog = await details.boundingBox();
+  const visibleActions = await details.locator(".detail-actions").boundingBox();
+  assert.ok(
+    visibleActions.y >= visibleDialog.y &&
+      visibleActions.y + visibleActions.height <=
+        visibleDialog.y + visibleDialog.height,
+  );
   await page
     .getByRole("button", { name: "Close details", exact: true })
     .click();
@@ -268,9 +305,165 @@ try {
   await page.locator('[data-order-id="missing"]').click();
   await details.waitFor();
   assert.equal(
-    await details.getByText("Unavailable model", { exact: true }).count(),
+    await details
+      .locator(".condition-chip")
+      .getByText("Unavailable model", { exact: true })
+      .count(),
     2,
     "Wrong trait kinds are unavailable, not displayed as accepted models",
+  );
+  await detailPreview.getByText("Unavailable model", { exact: true }).waitFor();
+  assert.equal(await detailPreview.locator(".preview-model").count(), 0);
+  await page
+    .getByRole("button", { name: "Close details", exact: true })
+    .click();
+  await details.waitFor({ state: "detached" });
+  // A large bid must keep its summaries visible without downloading every condition icon.
+  await page.evaluate(() => {
+    window.showLargeCard();
+    window.scrollTo(0, 0);
+  });
+  const largeCard = page
+    .locator(".gift-card")
+    .filter({ has: page.locator('[data-order-id="large"]') });
+  await largeCard.locator(".preview-model").first().waitFor();
+  assert.deepEqual(
+    await largeCard.locator(".bid-preview-summary span").allTextContents(),
+    ["+208 choices", "3 unavailable"],
+  );
+  assert.match(
+    await largeCard
+      .locator(".bid-preview-summary span")
+      .first()
+      .getAttribute("title"),
+    /\+196 models, \+6 backdrops, \+6 symbols/,
+  );
+  for (const width of [390, 1200]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(
+      await largeCard.evaluate((el) => {
+        const models = el
+          .querySelector(".preview-models")
+          .getBoundingClientRect();
+        const summary = el
+          .querySelector(".bid-preview-summary")
+          .getBoundingClientRect();
+        const number = el.querySelector(".bid-number").getBoundingClientRect();
+        return (
+          models.bottom <= summary.top &&
+          summary.bottom <= number.top &&
+          [...el.querySelectorAll(".bid-preview-summary span")].every(
+            (span) => {
+              const r = span.getBoundingClientRect();
+              return (
+                r.top >= summary.top &&
+                r.bottom <= summary.bottom &&
+                span.scrollWidth <= span.clientWidth
+              );
+            },
+          )
+        );
+      }),
+      true,
+      "All compact counts must fit without overlapping models or price",
+    );
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: join(output, "bid-large-mobile.png") });
+  await largeCard.locator(".card-open").click();
+  await details.waitFor();
+  assert.equal(await details.locator(".condition-chip").count(), 223);
+  assert.equal(await detailPreview.locator(".preview-model").count(), 16);
+  await detailPreview.locator("img.loaded").first().waitFor();
+  await page.waitForTimeout(200);
+  assert.equal(
+    await details
+      .locator(".condition-chip")
+      .filter({ hasText: "Remembered model" })
+      .getAttribute("title"),
+    "Remembered model — unavailable",
+  );
+  assert.match(
+    await detailPreview.locator("figure").getAttribute("aria-label"),
+    /Remembered model \(unavailable\)/,
+  );
+  const mountedChipImages = await details
+    .locator(".condition-chip img")
+    .count();
+  assert.ok(mountedChipImages < 50, "Offscreen chip images remain unmounted");
+  assert.ok(
+    !requests.some((url) => url.includes("/large-model-199/")),
+    "The unvisited tail must not request images",
+  );
+  assert.ok(
+    new Set(requests.filter((url) => url.includes("/large-model-"))).size < 50,
+    "Opening details must not preload all 200 models",
+  );
+  assert.equal(
+    await detailPreview.evaluate((el) => {
+      const models = el
+        .querySelector(".preview-models")
+        .getBoundingClientRect();
+      const summary = el
+        .querySelector(".bid-preview-summary")
+        .getBoundingClientRect();
+      const figure = el.querySelector("figure").getBoundingClientRect();
+      return (
+        models.bottom <= summary.top &&
+        summary.bottom <= figure.bottom &&
+        el.scrollHeight <= el.clientHeight
+      );
+    }),
+    true,
+    "Expanded overflow follows the artwork in normal layout flow",
+  );
+  const warmRequests = requests.length;
+  await page.screenshot({ path: join(output, "bid-large-details-mobile.png") });
+  await page
+    .getByRole("button", { name: "Close details", exact: true })
+    .click();
+  await details.waitFor({ state: "detached" });
+  await largeCard.locator(".card-open").click();
+  await detailPreview.locator("img.loaded").first().waitFor();
+  await page.waitForTimeout(200);
+  assert.equal(
+    requests.length,
+    warmRequests,
+    "Reopening unchanged details reuses warm media",
+  );
+  await details.evaluate((el) => {
+    window.firstChipImage = el.querySelector(".condition-chip img");
+  });
+  const tail = details
+    .locator(".condition-chip")
+    .filter({ hasText: /^Large model 199$/ });
+  await tail.scrollIntoViewIfNeeded();
+  await tail.locator("img.loaded").waitFor();
+  assert.equal(
+    requests.filter((url) => url.includes("/large-model-199/")).length,
+    1,
+    "Scrolling admits the previously deferred image once",
+  );
+  await page.evaluate(() => window.restoreCatalog());
+  const restored = details
+    .locator(".condition-chip")
+    .filter({ hasText: "Restored model" });
+  await restored.locator("img.loaded").waitFor();
+  assert.equal(await restored.getAttribute("title"), "Restored model");
+  assert.match(
+    await detailPreview.locator("figure").getAttribute("aria-label"),
+    /Restored model/,
+  );
+  await details.evaluate((el) => {
+    el.querySelector(".detail-content").scrollTop = 0;
+  });
+  assert.equal(
+    await details.evaluate(
+      (el) => el.querySelector(".condition-chip img") === window.firstChipImage,
+    ),
+    true,
+    "Previously admitted artwork survives scrolling and catalog updates",
   );
   await page
     .getByRole("button", { name: "Close details", exact: true })
@@ -288,7 +481,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "Bid browser passed: shared picker composition, static SVG models, backdrop bands, tiled symbols, compact overflow, complete conditions, unknown traits and no valuation/animation requests.",
+    `Bid browser passed: normal-flow summaries, partial catalog recovery, ${mountedChipImages}/210 chip images admitted on opening a large bid, scroll admission, warm reopening and no valuation/animation requests.`,
   );
 } finally {
   await browser?.close();

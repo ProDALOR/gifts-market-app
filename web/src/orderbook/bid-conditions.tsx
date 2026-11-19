@@ -1,5 +1,6 @@
 import type { CatalogOption } from "../market";
-import { traits, giftNumberRange } from "../orderbook";
+import { giftNumberRange } from "../orderbook";
+import { resolveTraits } from "../catalog/traits";
 import type { BidCriteria } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
 
@@ -18,27 +19,23 @@ export function BidConditions({
   const number = giftNumberRange(criteria.number);
   return (
     <dl className="bid-conditions" aria-label="Bid conditions">
-      {traits.map((trait) => {
-        const ids = criteria[trait.id];
+      {resolveTraits(criteria, options, names).map((trait) => {
         return (
           <div key={trait.id} data-condition={trait.kind}>
             <dt>{trait.label}</dt>
             <dd>
-              {!ids.length && (
+              {!trait.entries.length && (
                 <span className="condition-any">
                   Any {trait.label.toLowerCase()}
                 </span>
               )}
-              {ids.map((id) => {
-                const candidate = options.get(id);
-                const option =
-                  candidate?.kind === trait.kind ? candidate : undefined;
-                const name =
-                  option?.name ||
-                  (!candidate ? names?.get(id) : undefined) ||
-                  `Unavailable ${trait.label.toLowerCase()}`;
+              {trait.entries.map(({ id, name, option }) => {
                 return (
-                  <span className="condition-chip" key={id} title={name}>
+                  <span
+                    className="condition-chip"
+                    key={id}
+                    title={option ? name : `${name} — unavailable`}
+                  >
                     {option && <OptionArt option={option} />}
                     <span className="condition-name">{name}</span>
                   </span>

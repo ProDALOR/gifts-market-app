@@ -7,6 +7,7 @@ import { GiftValuationSummary } from "./gift-valuations";
 import { Quote } from "../ui/market-controls";
 import { VenueIcon } from "../ui/icons";
 import { OrderAttributes } from "./order-attributes";
+import { BidPreview } from "./bid-preview";
 import { useGiftValuation } from "../valuation/use-gift-valuation";
 import { priceComparison } from "../valuation/price-comparison";
 export function OrderDetails({
@@ -85,6 +86,16 @@ export function OrderDetails({
       )}
       <div className="detail-content">
         <div className="detail-body">
+          {selected.target.kind === "criteria" && (
+            <div className="bid-detail-preview">
+              <BidPreview
+                criteria={selected.target}
+                options={options}
+                names={names}
+                compact={false}
+              />
+            </div>
+          )}
           <div className="detail-pricing">
             <section className="listing-price" aria-label="Listing price">
               <h3>

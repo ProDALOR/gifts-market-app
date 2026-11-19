@@ -1,5 +1,10 @@
 import type { CatalogOption } from "../market";
 import { GiftArtwork } from "./gift-artwork";
+import { useEffect, useRef, useState } from "react";
+import {
+  usePreviewVisibility,
+  usePreviewEnvironment,
+} from "./preview-environment";
 
 /** Static catalog visuals shared by pickers and order conditions. */
 export function OptionArt({ option }: { option: CatalogOption }) {
@@ -18,18 +23,37 @@ export function OptionArt({ option }: { option: CatalogOption }) {
       />
     );
   }
+  return <OptionImage option={option} />;
+}
+
+/** Mount native images only after visibility admission; retain them for scroll-back reuse. */
+function OptionImage({
+  option,
+}: {
+  option: Exclude<CatalogOption, { kind: "backdrop" }>;
+}) {
+  const host = useRef<HTMLSpanElement>(null);
+  const visible = usePreviewVisibility(host);
+  const { pageVisible } = usePreviewEnvironment();
+  const [requested, setRequested] = useState(false);
+  useEffect(() => {
+    if (visible && pageVisible) setRequested(true);
+  }, [visible, pageVisible]);
   return (
     <span
+      ref={host}
       className={`option-art${option.kind === "pattern" ? " symbol-thumb" : ""}`}
       aria-hidden="true"
     >
-      <GiftArtwork
-        media={option.media || undefined}
-        fallback=""
-        label={option.name}
-        playback="static"
-        placeholderKind={option.kind === "pattern" ? "symbol" : "gift"}
-      />
+      {requested && (
+        <GiftArtwork
+          media={option.media || undefined}
+          fallback=""
+          label={option.name}
+          playback="static"
+          placeholderKind={option.kind === "pattern" ? "symbol" : "gift"}
+        />
+      )}
     </span>
   );
 }

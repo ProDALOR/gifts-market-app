@@ -33,6 +33,20 @@
   z-index: -1;
   background: linear-gradient(0deg, #1e17274a, transparent 55%);
 }
+.trait-preview-with-footer {
+  display: flex;
+  flex-direction: column;
+  height: auto;
+}
+.trait-preview-with-footer .preview-models {
+  flex: 1;
+  height: auto;
+  padding-bottom: 4px;
+}
+.preview-footer {
+  flex: none;
+  padding: 0 4px 4px;
+}
 .preview-model {
   align-self: center;
   margin: 0 4px;

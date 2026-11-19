@@ -10,20 +10,25 @@ import {
   usePreviewEnvironment,
 } from "./preview-environment";
 import type { CatalogOption } from "../market";
+import type { PlaybackPolicy } from "./use-playback";
 export function TraitComposition({
   models,
   backdrops,
   patterns,
   compact = false,
+  playback = compact ? "static" : "selected",
   label = "Virtual gift preview",
   children,
+  footer,
 }: {
   models: CatalogOption[];
   backdrops: CatalogOption[];
   patterns: CatalogOption[];
   compact?: boolean;
+  playback?: PlaybackPolicy;
   label?: string;
   children?: ReactNode;
+  footer?: ReactNode;
 }) {
   const host = useRef<HTMLElement>(null),
     visible = usePreviewVisibility(host);
@@ -60,12 +65,13 @@ export function TraitComposition({
   };
   return (
     <figure
-      className={`trait-preview${compact ? " trait-preview-compact" : ""}`}
+      className={`trait-preview${compact ? " trait-preview-compact" : ""}${footer ? " trait-preview-with-footer" : ""}`}
       ref={host}
       aria-label={label}
       style={
         {
-          height: compact ? undefined : layout.height,
+          height: compact || footer ? undefined : layout.height,
+          minHeight: !compact && footer ? layout.height : undefined,
           "--preview-model-size": `${modelSize}px`,
           "--preview-model-row-height": `${compact ? modelSize + 14 : layout.modelRowHeight}px`,
         } as CSSProperties
@@ -128,7 +134,7 @@ export function TraitComposition({
                 }
                 label={model.name}
                 fallback={model.name[0] || "◇"}
-                playback={compact ? "static" : "selected"}
+                playback={playback}
               />
               <span title={model.name}>{model.name}</span>
             </div>
@@ -136,6 +142,7 @@ export function TraitComposition({
         </div>
       )}
       {children}
+      {footer && <figcaption className="preview-footer">{footer}</figcaption>}
     </figure>
   );
 }

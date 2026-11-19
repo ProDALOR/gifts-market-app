@@ -717,7 +717,7 @@
 
 /* Bid cards share the picker composition; all alternatives remain in details. */
 .gift-grid-bids {
-  grid-auto-rows: 168px;
+  grid-auto-rows: 180px;
 }
 .card-preview.bid-card {
   isolation: isolate;
@@ -739,12 +739,16 @@
   height: 100%;
   border-radius: inherit;
   pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 24px 3px 46px;
 }
 .bid-card .preview-models {
-  position: absolute;
-  inset: 24px 0 64px;
+  flex: 1;
+  min-height: 0;
   height: auto;
-  padding: 0 3px;
+  padding: 0;
 }
 .bid-card .preview-model {
   margin-inline: 2px;
@@ -816,25 +820,20 @@
   font-size: 12px;
 }
 .bid-preview-empty {
-  position: absolute;
-  inset: 24px 5px 64px;
   display: grid;
   place-items: center;
+  flex: 1;
+  min-height: 84px;
   text-align: center;
   font-size: 12px;
   font-weight: 650;
   text-shadow: 0 1px 3px #251a27;
 }
 .bid-preview-summary {
-  position: absolute;
-  bottom: 50px;
-  inset-inline: 5px;
   display: flex;
   justify-content: center;
   flex-wrap: wrap;
   gap: 2px;
-  max-height: 28px;
-  overflow: hidden;
 }
 .bid-preview-summary span,
 .bid-number {
@@ -851,6 +850,21 @@
 }
 .bid-number {
   display: block;
+}
+.bid-card .bid-preview-empty {
+  min-height: 0;
+}
+.bid-card .preview-footer {
+  padding: 0;
+}
+.bid-detail-preview {
+  margin-bottom: 18px;
+}
+.bid-detail-preview > .trait-preview {
+  margin: 0;
+  min-height: 128px;
+  display: flex;
+  flex-direction: column;
 }
 .detail.detail-criteria[open] {
   display: flex;
@@ -876,6 +890,8 @@
 }
 .detail-criteria .detail-content {
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 @media (min-width: 960px) {
   .detail.detail-criteria[open] {
