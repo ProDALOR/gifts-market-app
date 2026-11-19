@@ -110,8 +110,10 @@ fn summary(name: &str) -> &'static str {
         }
         "result" => "Typed request result; valuation uses the same response as HTTP.",
         "cancel" => "Cancel a pending request or subscription. No acknowledgement is sent.",
-        "orders.watch" => "Watch a fixed ordered range with an atomic initial snapshot.",
-        "orders.snapshot" => "Initialize or reset range state atomically.",
+        "orders.watch" => "Read up to limit rows, then watch the initialized coverage atomically.",
+        "orders.snapshot" => {
+            "Initialize or reset range state atomically, including coverage and continuation."
+        }
         "orders.changed" => {
             "Apply removals and upserts atomically after checking sequence continuity."
         }
@@ -177,6 +179,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         "orders.snapshot" => serde_json::to_value(ServerFrame::OrdersSnapshot {
             id: "orders.1".into(),
             sequence: 0,
+            next: None,
             data: OrderSnapshotResponse {
                 data: vec![],
                 range: crate::orders::OrderRangeResponse {

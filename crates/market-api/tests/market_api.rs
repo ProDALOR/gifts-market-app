@@ -2193,6 +2193,44 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
         .await
         .unwrap();
+    // A watch alone seeds the same bounded page and continuation as REST.
+    let mut seed_query = query();
+    seed_query["limit"] = 1.into();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::json!({"type":"orders.watch","id":"seed","params":seed_query})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let seed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                socket.next().await
+            {
+                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if frame["id"] == "seed" {
+                    assert_eq!(frame["type"], "orders.snapshot", "{frame}");
+                    break frame;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(seed["sequence"], 0);
+    for field in ["data", "range", "next"] {
+        assert_eq!(seed[field], first[field], "{field}");
+    }
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::json!({"type":"cancel","id":"seed"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
     let mut watch_query = slice_query();
     watch_query["filters"]["venue_id"] = "test".into();
     socket
@@ -2211,7 +2249,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
                 let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
                 assert_ne!(frame["type"], "error", "{frame}");
                 if frame["type"] == "orders.snapshot" {
-                    assert!(frame.get("next").is_none());
+                    assert_eq!(frame["next"], serde_json::Value::Null);
                     assert!(frame.get("snapshot").is_none());
                     break serde_json::json!({"data":frame["data"],"range":frame["range"]});
                 }
@@ -2249,7 +2287,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
 }
 
 #[actix_web::test]
-async fn atomic_range_changes_share_public_presentation_without_http_continuations() {
+async fn atomic_range_changes_keep_continuations_only_in_the_initial_snapshot() {
     let (_state, runtime, peer, stop) = setup().await;
     let web_dir = peer._directory.path().join("window-web");
     std::fs::create_dir_all(&web_dir).unwrap();
@@ -2302,6 +2340,9 @@ async fn atomic_range_changes_share_public_presentation_without_http_continuatio
     assert_ne!(first["data"][0]["key"], next["upserts"][0]["key"]);
     assert_eq!(first["type"], "orders.snapshot");
     assert_eq!(next["type"], "orders.changed");
+    assert_eq!(first.get("next"), Some(&serde_json::Value::Null));
+    assert!(next.get("next").is_none());
+    assert!(next.get("range").is_none());
     assert_eq!(
         next["sequence"].as_u64(),
         first["sequence"].as_u64().map(|n| n + 1)

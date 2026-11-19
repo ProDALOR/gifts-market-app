@@ -113,6 +113,7 @@ test("range snapshots and atomic changes validate identities, coverage and seque
   };
   const frame = {
     type: "orders.snapshot",
+    next: null,
     id: "op.1",
     sequence: 0,
     data: [row],
@@ -127,7 +128,8 @@ test("range snapshots and atomic changes validate identities, coverage and seque
       versions: { directory: "old", collections: {} },
     },
     { ...frame, sequence: -1 },
-    { ...frame, next: null },
+    { ...frame, next: undefined },
+    { ...frame, next: "invalid!" },
     { ...frame, snapshot: "unused" },
     { ...frame, sequence: Number.MAX_SAFE_INTEGER + 1 },
     { ...frame, data: [row, row] },
@@ -150,6 +152,9 @@ test("range snapshots and atomic changes validate identities, coverage and seque
   assert.deepEqual(parseFrame(JSON.stringify(change)), change);
   for (const invalid of [
     { ...change, sequence: -1 },
+    { ...change, next: null },
+    { ...change, range: { start: null, end: null } },
+    { ...change, snapshot: "unused" },
     { ...change, upserts: [row, row] },
     { ...change, removed: [{ venue_id: "v", id: "a" }] },
     { ...change, removed: [{ id: "a" }] },
@@ -245,6 +250,7 @@ test("flat targets accept sparse description and reject retired nested payloads"
   };
   const frame = (target: unknown, key = row.key) => ({
     type: "orders.snapshot",
+    next: null,
     id: "flat",
     sequence: 0,
     data: [{ ...row, target, key }],

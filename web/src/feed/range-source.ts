@@ -7,7 +7,7 @@ export type OrderQuery = components["schemas"]["GiftOrderQuery"];
 export type OrderData = components["schemas"]["OrderSnapshotResponse"];
 export type Snapshot = components["schemas"]["OrderReadResponse"];
 export type Callbacks = {
-  result: (result: OrderData) => void;
+  result: (result: OrderData, next?: string | null) => void;
   status: (status: string) => void;
   error: (error: unknown) => void;
   reset: () => void;
@@ -28,6 +28,7 @@ export class LiveRanges implements RangeSource {
   private state = new WatchedOrders();
   private recovery?: ReturnType<typeof setTimeout>;
   private failures = 0;
+  private failed = false;
   constructor(private callbacks: Callbacks) {}
   query(query: OrderQuery, signal: AbortSignal) {
     return liveSocket.request(
@@ -37,7 +38,15 @@ export class LiveRanges implements RangeSource {
   }
   watch(query: OrderQuery) {
     if (this.unsubscribe) {
-      if (liveSocket.update(command(query))) this.state.clear();
+      const changed = liveSocket.update(command(query));
+      if (changed || this.failed) {
+        this.state.clear();
+        clearTimeout(this.recovery);
+        this.recovery = undefined;
+        const retry = !changed && this.failed;
+        this.failed = false;
+        if (retry) liveSocket.retry("offers");
+      }
       return;
     }
     this.unsubscribe = liveSocket.subscribe(
@@ -64,10 +73,15 @@ export class LiveRanges implements RangeSource {
             clearTimeout(this.recovery);
             this.recovery = undefined;
             this.failures = 0;
+            this.failed = false;
             this.callbacks.reset();
           }
-          this.callbacks.result(result);
+          this.callbacks.result(
+            result,
+            frame.type === "orders.snapshot" ? frame.next : undefined,
+          );
         } else if (frame.type === "error") {
+          this.failed = true;
           this.state.clear();
           this.callbacks.error(
             new ApiFailure(frame.error.code, frame.error.message),

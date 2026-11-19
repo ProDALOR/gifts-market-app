@@ -102,52 +102,58 @@
         <h2 id="protocol-heading">How the stream works</h2>
         <ul>
           <li>
-            <code>orders.watch</code> starts an atomic ordered-range watch. Use
-            a fresh operation ID for each subscription, replacement or request.
-            <code>cancel</code>
-            stops requests and subscriptions without an acknowledgement. Ignore
-            frames for canceled IDs.
+            Start with <code>orders.watch</code>; no preliminary query is
+            needed. It reads up to <code>limit</code> rows (default and maximum
+            100), then watches the actual coverage returned in
+            <code>orders.snapshot</code>. Use a smaller initial limit to leave
+            room for arrivals under the 100-row live cap.
+          </li>
+          <li>
+            Snapshots contain <code>data</code>, <code>range</code> and
+            <code>next</code>. Range bounds are inclusive; null means an open
+            head or tail. Keep the returned bounds even when a boundary listing
+            disappears. Keys are opaque and compare in ordinary ASCII order.
+          </li>
+          <li>
+            To load another page, set <code>range.start</code> to
+            <code>next</code> and preserve the original end bound. WebSocket
+            method <code>orders.query</code> and
+            <code>POST /orders/query</code> share the query model. Paused views
+            and history use finite queries with
+            <code>view: {kind: "snapshot"}</code> and reuse the returned
+            snapshot ID; release it with <code>DELETE /orders/query</code>.
+          </li>
+          <li>
+            A snapshot replaces subscribed state. Apply
+            <code>orders.changed</code> removals and upserts atomically,
+            checking that each sequence increases by one. Bounds stay fixed;
+            changes do not repeat <code>range</code> or <code>next</code>. On a
+            sequence gap or disconnect, start a fresh watch. On a capacity
+            error, restart with narrower coverage.
           </li>
           <li>
             <code>request</code> with method
-            <code>valuation.evaluate</code> accepts the same parameters as HTTP
-            <code>/valuations/gift</code>. One <code>result</code> or
-            <code>error</code> completes the request. The server permits eight
-            concurrent requests with a 30-second deadline. Requests fail on
-            disconnect and are never replayed automatically. Copy request and
-            cancellation examples from the message reference below.
+            <code>valuation.evaluate</code> shares the HTTP
+            <code>/valuations/gift</code> handler. One <code>result</code> or
+            <code>error</code> completes a request. Requests fail on disconnect
+            and are never replayed automatically. Copy typed command examples
+            from the reference below.
           </li>
           <li>
-            <code>orders.snapshot</code> initializes range state.
-            <code>orders.changed</code> applies removals and upserts atomically
-            after checking its sequence. Use the frame-level
-            <code>sync</code> for current freshness.
+            <code>market.status</code> reports current market availability,
+            independently of subscriptions. <code>catalog.watch</code> sends
+            <code>catalog.versions</code> tokens matching unquoted HTTP
+            <code>ETag</code> values, so only changed catalog data needs
+            reloading.
           </li>
           <li>
-            <code>sync</code> leaves orders unchanged. The server checks the
-            subscribed range before sending <code>sync</code>.
-          </li>
-          <li>
-            Query around a row’s opaque <code>position</code> when changing
-            coverage. Cancel the old subscription, use a fresh ID and replace
-            rows atomically while preserving the scroll anchor. History uses
-            HTTP snapshot pagination. Paused asks/bids use frozen slices via
-            <code>POST /orders/read</code>.
-          </li>
-          <li>
-            Browsers answer WebSocket pings automatically. After a disconnect,
-            reconnect with backoff and resubscribe. This console connects only
-            on demand and closes when you leave.
-          </li>
-          <li>
-            Slow consumers close with code <code>1013</code>. Error frames
-            include an operation ID, or an empty ID for connection-level errors.
-          </li>
-          <li>
-            <code>watch_catalog</code> watches catalog revisions for up to eight
-            collections. Compare <code>catalog</code> frames with HTTP
-            <code>ETag</code> headers to reload changed choices without polling.
-            Reconnects send the complete current revision set.
+            Use a fresh ID for every operation. <code>cancel</code> stops it
+            without acknowledgement; ignore late frames for retired IDs.
+            Terminal <code>error</code> frames have an operation ID.
+            <code>command_error</code> rejects a command while preserving active
+            work. Slow consumers close with code <code>1013</code>; reconnect
+            with backoff and resubscribe. This console connects on demand and
+            closes when you leave.
           </li>
         </ul>
       </section>

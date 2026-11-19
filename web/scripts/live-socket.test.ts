@@ -376,11 +376,9 @@ test("resume anchors do not suppress navigation and reconnect uses the latest vi
     type: "orders.watch" as const,
     id: "offers",
     params: {
-      query: {
-        filters: { collection_id: "gift", currency_id: "GRAM" },
-        position: null as string | null,
-        limit: 150,
-      },
+      filters: { collection_id: "gift", currency_id: "GRAM" },
+      range: { start: null as string | null, end: null },
+      limit: 80,
     },
   };
   const stop = live.subscribe(command, () => {});
@@ -389,7 +387,7 @@ test("resume anchors do not suppress navigation and reconnect uses the latest vi
   first.open();
   const next = {
     ...command,
-    params: { query: { ...command.params.query, position: "visible" } },
+    params: { ...command.params, range: { start: "visible", end: null } },
   };
   live.remember(next);
   assert.equal(first.commands("orders.watch").length, 1);
@@ -397,16 +395,13 @@ test("resume anchors do not suppress navigation and reconnect uses the latest vi
   assert.equal(first.commands("orders.watch").length, 2);
   live.remember({
     ...next,
-    params: { query: { ...next.params.query, position: "latest" } },
+    params: { ...next.params, range: { start: "latest", end: null } },
   });
   first.close();
   t.mock.timers.tick(1000);
   const second = Socket.all[1];
   second.open();
-  assert.equal(
-    second.commands("orders.watch")[0].params.query.position,
-    "latest",
-  );
+  assert.equal(second.commands("orders.watch")[0].params.range.start, "latest");
 });
 
 test("command rejections do not complete or cancel the original request", async (t) => {

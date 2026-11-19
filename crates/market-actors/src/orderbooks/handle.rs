@@ -23,8 +23,9 @@ impl OrderbooksHandle {
         &self,
         request: w::ReadRequest,
         read: market_replica::RangeRequest,
+        complete: bool,
     ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
-        self.read_range(request, read, true, self.budget.wait().await?)
+        self.read_range(request, read, complete, self.budget.wait().await?)
             .await
     }
     async fn read_range(

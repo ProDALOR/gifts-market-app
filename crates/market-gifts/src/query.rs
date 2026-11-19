@@ -138,6 +138,7 @@ pub struct GiftOrderQuery {
     pub period: Option<Period>,
     #[serde(default)]
     pub range: crate::OrderRange,
+    /// Maximum rows for a finite query or a watch's initial read. Live coverage may grow to 100 rows.
     #[serde(default = "default_limit")]
     #[cfg_attr(feature = "schema", schema(minimum = 1, maximum = 100, default = 100))]
     pub limit: u32,

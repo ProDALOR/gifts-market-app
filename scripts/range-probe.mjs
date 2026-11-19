@@ -121,6 +121,11 @@ try {
     409,
   );
   assert.equal(expired.error.code, "restart_read");
+  const seeded = await watch("seed", { ...query, limit: 1 });
+  const finiteSeed = await api("POST", { ...query, limit: 1 });
+  for (const field of ["data", "range", "next"])
+    assert.deepEqual(seeded[field], finiteSeed[field]);
+  socket.send(JSON.stringify({ type: "cancel", id: "seed" }));
   const selection = {
     ...query,
     range: { start: selected.key, end: first.data.at(-1).key },

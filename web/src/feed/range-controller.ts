@@ -58,9 +58,19 @@ export class RangeController implements FeedController {
     this.anchor = bookmark?.kind === "range" ? bookmark.anchor : undefined;
     this.next = bookmark?.kind === "range" ? bookmark.next : undefined;
     const callbacks = {
-      result: (data: OrderData) => {
+      result: (data: OrderData, next?: string | null) => {
+        if (this.closed) return;
+        if (next !== undefined) this.continueAfter(data, next);
         this.watchRange = data.range;
         this.accept(data);
+        if (!this.working) this.emit({ loadingMore: false });
+        if (next && !this.cache.rows.length) {
+          clearTimeout(this.movement);
+          this.movement = setTimeout(() => {
+            if (!this.cache.rows.length)
+              void this.load({ start: next, end: null });
+          }, 80);
+        }
         if (data.data.length >= 90) this.watchKnown();
       },
       status: (status: string) => {
@@ -73,7 +83,7 @@ export class RangeController implements FeedController {
           this.overflow = true;
           if (!this.working) {
             this.overflow = false;
-            void this.load(this.initialRange());
+            this.seedWatch();
           }
         } else this.failed(error);
       },
@@ -97,7 +107,8 @@ export class RangeController implements FeedController {
         this.availability = status;
         this.emit({ status: this.marketLabel() });
       });
-    void this.load(this.initialRange());
+    if (this.frozen) void this.load(this.initialRange());
+    else this.seedWatch();
   }
   close() {
     this.closed = true;
@@ -138,14 +149,30 @@ export class RangeController implements FeedController {
       }, 80);
     }
   }
-  private query(range: OrderData["range"]): OrderQuery {
+  private query(range: OrderData["range"], limit = PAGE_SIZE): OrderQuery {
     return {
       filters: this.selection.filters,
       source: this.selection.side === "bid" ? "bids" : "asks",
       sort: this.selection.sort,
       range,
-      limit: PAGE_SIZE,
+      limit,
     };
+  }
+  private seedWatch() {
+    if (this.closed) return;
+    this.watchRange = undefined;
+    this.activity.rebase();
+    this.emit({ loadingMore: true, error: "", status: "Connecting" });
+    this.source.watch?.(this.query(this.initialRange(), WATCH_SIZE));
+  }
+  private continueAfter(data: OrderData, next: string | null) {
+    // A null continuation on a bounded viewport says nothing about the market tail.
+    const tail = this.cache.rows.at(-1)?.key;
+    if (
+      data.range.end === null ||
+      (next !== null && (!tail || data.range.end >= tail))
+    )
+      this.next = next;
   }
   private initialRange(): OrderData["range"] {
     const index = this.cache.rows.findIndex((row) => row.key === this.anchor);
@@ -186,7 +213,7 @@ export class RangeController implements FeedController {
     const range = this.knownRange();
     if (JSON.stringify(range) === JSON.stringify(this.watchRange)) return;
     this.watchRange = range;
-    this.source.watch?.(this.query(range));
+    this.source.watch?.(this.query(range, WATCH_SIZE));
   }
   private async load(range: OrderData["range"]) {
     if (this.closed || this.working) return;
@@ -201,19 +228,17 @@ export class RangeController implements FeedController {
     const stop = new AbortController();
     this.pending = stop;
     try {
-      const tail = this.cache.rows.at(-1)?.key;
       const page = await this.source.query(this.query(range), stop.signal);
       if (this.closed || stop.signal.aborted) return;
-      if (!tail || page.range.end === null || page.range.end >= tail)
-        this.next = page.next;
+      this.continueAfter(page, page.next);
       this.failures = 0;
       this.accept(page);
       this.watchRange = this.frozen ? page.range : undefined;
-      if (!this.frozen) {
+      if (!this.frozen && !this.overflow) {
         if (this.cache.rows.length) this.watchKnown();
         else if (!page.next) {
           this.watchRange = page.range;
-          this.source.watch?.(this.query(page.range));
+          this.source.watch?.(this.query(page.range, WATCH_SIZE));
         }
       }
       if (!page.data.length && page.next) {
@@ -238,7 +263,7 @@ export class RangeController implements FeedController {
         this.emit({ loadingMore: false });
         if (this.overflow && !this.closed) {
           this.overflow = false;
-          void this.load(this.initialRange());
+          this.seedWatch();
         }
       }
     }

@@ -1346,3 +1346,106 @@ async fn queries_and_watches_enforce_the_same_hundred_order_limit() {
     stop.cancel();
     service.task.run(stop).await.unwrap();
 }
+
+#[tokio::test]
+async fn watches_seed_one_page_then_reconcile_fixed_coverage_with_stable_continuation() {
+    let (_dir, mut writer) = fixture();
+    let named = |id: &str, price: &str| {
+        let mut change = order(price);
+        if let Some(w::change::Change::Upsert(entity)) = &mut change.change
+            && let Some(w::entity::Entity::Order(order)) = &mut entity.entity
+        {
+            order.id = id.into();
+        }
+        change
+    };
+    writer
+        .apply(w::Batch {
+            cursor: "seed".into(),
+            changes: (1..=130)
+                .map(|i| named(&format!("o{i}"), &i.to_string()))
+                .collect(),
+        })
+        .unwrap();
+    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
+    let mut query = gift_query();
+    query.sort = Some(market_gifts::GiftSort::PriceAsc);
+    query.limit = 2;
+    let page = service.handle.query_orders(query.clone()).await.unwrap();
+    let (lease, mut updates) = service.handle.watch_orders(query.clone()).await.unwrap();
+    let seed = next_window(&mut updates, &writer.reader()).await;
+    assert_eq!(*seed, page.result);
+    assert!(seed.range.start.is_none());
+    assert_eq!(
+        seed.range.end.as_ref(),
+        seed.data.last().map(|row| &row.key)
+    );
+    let DataUpdate::Orders { next, .. } = updates.borrow().clone() else {
+        unreachable!()
+    };
+    assert_eq!(next, page.next);
+    assert!(next.is_some());
+    // Seed size is not the live capacity: arrivals can grow coverage above two rows.
+    writer
+        .apply(w::Batch {
+            cursor: "arrival".into(),
+            changes: vec![named("new", "0.5")],
+        })
+        .unwrap();
+    let grown = next_window(&mut updates, &writer.reader()).await;
+    assert_eq!(grown.data.len(), 3);
+    assert_eq!(grown.range, seed.range);
+    // A departing boundary must not change coverage or skip the next unseen order.
+    writer
+        .apply(w::Batch {
+            cursor: "departure".into(),
+            changes: vec![named("o2", "1000")],
+        })
+        .unwrap();
+    let changed = next_window(&mut updates, &writer.reader()).await;
+    assert_eq!(changed.data.len(), 2);
+    assert_eq!(changed.range, seed.range);
+    let (other, late) = service.handle.watch_orders(query.clone()).await.unwrap();
+    assert!(updates.same_channel(&late));
+    let DataUpdate::Orders {
+        next: late_next,
+        result,
+        ..
+    } = late.borrow().clone()
+    else {
+        unreachable!()
+    };
+    assert_eq!(late_next, next);
+    assert_eq!(*result, *changed);
+    let mut continuation = query.clone();
+    continuation.range.start = next.clone().map(|p| p.encode().try_into().unwrap());
+    let remaining = service.handle.query_orders(continuation).await.unwrap();
+    assert_eq!(
+        remaining.result.data.first().unwrap().order.price.as_str(),
+        "3"
+    );
+    // Later updates are complete or fail; they must never silently clip coverage.
+    writer
+        .apply(w::Batch {
+            cursor: "overflow".into(),
+            changes: (0..101)
+                .map(|i| named(&format!("burst{i}"), "0.25"))
+                .collect(),
+        })
+        .unwrap();
+    terminal(&mut updates).await;
+    let DataUpdate::Error(error) = updates.borrow().clone() else {
+        unreachable!()
+    };
+    assert_eq!(error.code(), crate::error::DataErrorCode::CapacityExceeded);
+    drop((lease, other));
+    let (retry, mut updates) = service.handle.watch_orders(query).await.unwrap();
+    assert_eq!(
+        next_window(&mut updates, &writer.reader()).await.data.len(),
+        2
+    );
+    drop(retry);
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+}

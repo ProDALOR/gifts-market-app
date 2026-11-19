@@ -91,6 +91,11 @@ try {
     await page.locator("#connection-state").textContent(),
     "Disconnected",
   );
+  assert.doesNotMatch(
+    await page.locator(".protocol-notes").innerText(),
+    /orders\/read|watch_catalog|frame-level sync/,
+    "The quick guide must describe the current public protocol",
+  );
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   await page.getByText("Connected", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Subscribe", exact: true }).click();
@@ -146,11 +151,6 @@ try {
     .first()
     .waitFor();
   await page
-    .locator("#asyncapi-reference")
-    .getByText(/Watch a fixed ordered range/)
-    .first()
-    .waitFor();
-  await page
     .locator('[id="ws-message-orders.watch"] td code')
     .filter({ hasText: /^params$/ })
     .waitFor();
@@ -178,6 +178,8 @@ try {
     ["cancel", "id"],
     ["orders.watch", "params"],
     ["orders.snapshot", "data"],
+    ["orders.snapshot", "range"],
+    ["orders.snapshot", "next"],
     ["market.status", "status"],
   ]) {
     await page

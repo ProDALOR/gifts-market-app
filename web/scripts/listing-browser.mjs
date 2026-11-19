@@ -17,7 +17,7 @@ import {Modal} from '/src/ui/modal.tsx';
 import {OrderDetails} from '/src/orderbook/order-details.tsx';
 import {orderKey} from '/src/orderbook/order-activity.ts';
 import '/src/style.css';
-const query={kind:'orders',query:{filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},side:'ask',sort:'time_desc',consistency:'live',limit:50,page_token:''}};
+const query={kind:'orders',query:{filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},side:'ask',sort:'time_desc'}};
 const options=new Map([
 ['gold',{kind:'model',id:'gold',name:'Gold',media:{thumbnail_url:'/__gift.svg',animation_url:null}}],
 ['symbol',{kind:'pattern',id:'symbol',name:'Star',media:{thumbnail_url:'/__symbol.svg',animation_url:'/__symbol-motion'}}],

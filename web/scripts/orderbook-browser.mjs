@@ -528,7 +528,7 @@ try {
     }
     await cards(count);
   };
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await price("0.500000001");
@@ -674,11 +674,11 @@ try {
     );
   await page.emulateMedia({ reducedMotion: "reduce" });
   await button("Jelly Bunny").click();
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await price("0.500000001");
-  await scrollMore(100);
+  await scrollMore(80);
   await scrollMore(125);
   assert.equal(
     new Set(
@@ -712,7 +712,7 @@ try {
   assert.equal(await page.locator(".collection-tile").count(), 1);
   await page.getByLabel("Filter collections").press("Enter");
   await page.waitForURL(/collection=pepe/);
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   assert.equal(
@@ -747,7 +747,7 @@ try {
   await button("Search collections").click();
   await page.getByLabel("Filter collections").fill("bunny");
   await page.getByLabel("Filter collections").press("Enter");
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   assert.equal(
@@ -787,11 +787,11 @@ try {
   await button("Symbol").click();
   for (const pattern of patterns) await button(pattern.name).click();
   await page.keyboard.press("Escape");
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await button("Reset traits").click();
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await button("Model").click();
@@ -802,13 +802,13 @@ try {
   await cards(25);
   assert.ok(page.url().includes("filters="));
   await button("Reset traits").click();
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await button("Telegram").click();
   await cards(42);
   await button("All venues").click();
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await button("Reverse sort direction").click();
@@ -856,7 +856,7 @@ try {
   );
   await cards(3);
   await currency("XTR");
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   assert.equal(
@@ -960,7 +960,7 @@ try {
   );
   await page.keyboard.press("Escape");
   await button("Asks").click();
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await price("0.250000001");
@@ -1055,7 +1055,7 @@ try {
     window.catalogDocument = "same-document";
   });
   await page.reload();
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForFunction(() =>
@@ -1065,7 +1065,7 @@ try {
     await button("Search collections").click();
     await page.getByLabel("Filter collections").fill(name);
     await page.getByLabel("Filter collections").press("Enter");
-    await cards(100);
+    await cards(80);
     await scrollMore(125);
     await page.evaluate(() => window.scrollTo(0, 0));
   };
@@ -1130,7 +1130,7 @@ try {
     "same-document",
   );
   await button("Asks").click();
-  await cards(100);
+  await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(150);

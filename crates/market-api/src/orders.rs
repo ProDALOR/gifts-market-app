@@ -134,7 +134,7 @@ pub struct OrderReadResponse<'a> {
     #[schema(value_type=Option<market_gifts::ReadSnapshotId>)]
     pub snapshot: Option<String>,
 }
-/// Complete live coverage, without finite-query continuation or snapshot leases.
+/// Ordered rows and the exact coverage reconciled by this result.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OrderSnapshotResponse<'a> {
     pub data: Vec<OrderedOrderResponse<'a>>,

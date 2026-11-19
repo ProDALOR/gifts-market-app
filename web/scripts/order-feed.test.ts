@@ -63,14 +63,22 @@ function fixture(t: TestContext, frozen = false) {
     sequence = 0,
     status: (value: string) => void = () => {};
   let failure: Error | undefined, held: Promise<void> | undefined;
+  let emptySeed = false;
   const snapshot = () => {
     if (!active) return;
-    const range = active.params.range;
-    const data = rows.filter(
-      (r) =>
-        (range.start == null || r.key >= range.start) &&
-        (range.end == null || r.key <= range.end),
-    );
+    const seed = previous ? undefined : page(active.params, rows);
+    if (seed && emptySeed) {
+      emptySeed = false;
+      seed.data = [];
+    }
+    const range = previous?.range ?? seed!.range;
+    const data =
+      seed?.data ??
+      rows.filter(
+        (r) =>
+          (range.start == null || r.key >= range.start) &&
+          (range.end == null || r.key <= range.end),
+      );
     if (data.length > 100) {
       receive({
         type: "error",
@@ -79,7 +87,7 @@ function fixture(t: TestContext, frozen = false) {
       });
       return;
     }
-    const next = { data, range };
+    const next = { data, range, next: previous?.next ?? seed?.next ?? null };
     if (!previous)
       receive({ type: "orders.snapshot", id: "offers", sequence: 0, ...next });
     else
@@ -184,6 +192,9 @@ function fixture(t: TestContext, frozen = false) {
       rows = value;
     },
     deliver: snapshot,
+    skipSeed: () => {
+      emptySeed = true;
+    },
     reconnect: () => {
       previous = undefined;
       sequence = 0;
@@ -198,55 +209,83 @@ function fixture(t: TestContext, frozen = false) {
     },
   };
 }
-test("live initialization uses one 100-row query then watches explicit bounds", async (t) => {
+test("live initialization sends one watch without a preliminary query", async (t) => {
   const f = fixture(t);
   await f.start();
-  assert.equal(f.queries.length, 1);
-  assert.equal(f.queries[0].limit, 100);
-  assert.deepEqual(f.queries[0].range, { start: null, end: null });
-  assert.equal(f.state.orders.length, 100);
+  assert.equal(f.queries.length, 0);
+  assert.equal(f.commands.length, 1);
+  assert.equal(f.commands[0].params.limit, 80);
+  assert.deepEqual(f.commands[0].params.range, { start: null, end: null });
+  assert.equal(f.state.orders.length, 80);
   assert.equal(f.commands[0].params.query, undefined);
   assert.equal(f.commands[0].params.navigation, undefined);
-  assert.equal(f.commands[0].params.range.start, null);
-  assert.equal(f.commands[0].params.range.end, row(79).key);
   assert.equal(f.state.hasMore, true);
   await tick();
   assert.equal(
     f.queries.length,
-    1,
-    "Loading the first page must not drain the market",
+    0,
+    "The initial snapshot must not drain the market",
   );
+  assert.equal(
+    f.commands.length,
+    1,
+    "Do not replace the initial coverage immediately",
+  );
+});
+test("empty filtered seed coverage continues without declaring the market empty", async (t) => {
+  const f = fixture(t);
+  f.skipSeed();
+  await f.start();
+  assert.equal(f.queries.length, 0);
+  assert.equal(f.state.orders.length, 0);
+  assert.equal(f.state.hasMore, true);
+  t.mock.timers.tick(80);
+  await until(() => f.state.orders.length === 100 && !f.state.loadingMore);
+  assert.equal(f.queries[0].range!.start, key(1159));
 });
 test("pagination preserves every loaded row and uses the exclusive continuation", async (t) => {
   const f = fixture(t);
   await f.start();
   f.feed.loadMore();
-  await until(() => f.state.orders.length === 200);
-  assert.equal(f.queries[1].range!.start, key(1199));
+  await until(() => f.state.orders.length === 180);
+  assert.equal(f.queries[0].range!.start, key(1159));
   f.feed.loadMore();
   await until(() => f.state.orders.length === 250);
   assert.equal(f.state.hasMore, false);
   assert.equal(new Set(f.state.orders.map((r) => r.id)).size, 250);
   f.feed.loadMore();
   await tick();
-  assert.equal(f.queries.length, 3);
+  assert.equal(f.queries.length, 2);
 });
 test("scrolling cached rows changes watch bounds without querying or dropping pages", async (t) => {
   const f = fixture(t);
   await f.start();
   f.feed.loadMore();
-  await until(() => f.state.orders.length === 200);
+  await until(() => f.state.orders.length === 180);
   f.feed.setVisibleRange(120, 140, 120);
   t.mock.timers.tick(80);
   await tick();
-  assert.equal(f.queries.length, 2);
+  assert.equal(f.queries.length, 1);
   assert.equal(f.commands.at(-1).params.range.start, row(100).key);
-  assert.equal(f.state.orders.length, 200);
+  assert.equal(f.state.orders.length, 180);
   f.feed.setVisibleRange(0, 20, 0);
   t.mock.timers.tick(80);
   await tick();
   assert.equal(f.commands.at(-1).params.range.start, null);
-  assert.equal(f.state.orders.length, 200);
+  assert.equal(f.state.orders.length, 180);
+});
+test("a bounded tail watch does not discard the global exclusive continuation", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 180);
+  f.feed.setVisibleRange(170, 179, 170);
+  t.mock.timers.tick(80);
+  await tick();
+  assert.equal(f.commands.at(-1).params.range.end, row(179).key);
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 250);
+  assert.equal(f.queries[1].range!.start, key(1359));
 });
 test("live additions and removals reconcile only the covered range", async (t) => {
   const f = fixture(t);
@@ -277,14 +316,14 @@ test("reconnect replaces watched state and retains all previously loaded pages",
   const f = fixture(t);
   await f.start();
   f.feed.loadMore();
-  await until(() => f.state.orders.length === 200);
+  await until(() => f.state.orders.length === 180);
   f.reconnect();
   await tick();
-  assert.equal(f.queries.length, 2);
-  assert.equal(f.state.orders.length, 200);
+  assert.equal(f.queries.length, 1);
+  assert.equal(f.state.orders.length, 180);
   assert.equal(f.state.activity.size, 0);
 });
-test("a burst beyond watch capacity reloads and narrows coverage", async (t) => {
+test("a burst beyond watch capacity re-seeds coverage without a query", async (t) => {
   const f = fixture(t);
   await f.start();
   f.setRows([
@@ -296,28 +335,35 @@ test("a burst beyond watch capacity reloads and narrows coverage", async (t) => 
     ...f.rows,
   ]);
   f.deliver();
-  await until(
-    () => f.queries.length === 2 && !f.state.error && !f.state.loadingMore,
+  await until(() => !f.state.error && !f.state.loadingMore);
+  assert.equal(f.queries.length, 0, "Capacity recovery re-seeds with a watch");
+  assert.equal(
+    f.commands.length,
+    1,
+    "An identical watch is retried with a fresh operation ID",
   );
-  await tick();
-  assert.ok(f.commands.length >= 2);
-  assert.equal(f.commands.at(-1).params.range.end, row(59).key);
+  assert.equal(
+    f.state.orders.some((r) => r.id === "new0"),
+    true,
+  );
 });
-test("transient query failure retries the current range with bounded backoff", async (t) => {
+test("transient pagination failure retries the current range with bounded backoff", async (t) => {
   const f = fixture(t);
+  await f.start();
   f.fail(new ApiFailure("unavailable", "offline"));
-  f.feed.start();
+  f.feed.loadMore();
   await until(() => !!f.state.error);
   assert.equal(f.queries.length, 1);
   t.mock.timers.tick(2000);
-  await until(() => f.feed.ready);
+  await until(() => f.state.orders.length === 180 && !f.state.error);
   assert.equal(f.queries.length, 2);
 });
-test("closing cancels a pending query and ignores its late result", async (t) => {
+test("closing cancels pending pagination and ignores its late result", async (t) => {
   const f = fixture(t);
+  await f.start();
   let finish!: () => void;
   f.hold(new Promise<void>((r) => (finish = r)));
-  f.feed.start();
+  f.feed.loadMore();
   await until(() => f.signals.length === 1);
   const old = f.state;
   f.feed.close();
@@ -325,7 +371,7 @@ test("closing cancels a pending query and ignores its late result", async (t) =>
   finish();
   await tick();
   assert.equal(f.state, old);
-  assert.equal(f.commands.length, 0);
+  assert.equal(f.commands.length, 1);
 });
 test("paused range queries reuse and release their snapshot without starting watches", async (t) => {
   const f = fixture(t, true);
@@ -365,6 +411,7 @@ test("unchanged watch bounds preserve sequence continuity", (t) => {
     type: "orders.snapshot",
     id: "offers",
     sequence: 0,
+    next: null,
     data: [row(0)],
     range: q.range,
   });
@@ -389,7 +436,7 @@ test("watch overflow during pagination schedules recovery after the pending read
     }),
   );
   f.feed.loadMore();
-  await until(() => f.queries.length === 2);
+  await until(() => f.queries.length === 1);
   f.setRows([
     ...Array.from({ length: 30 }, (_, i) => ({
       ...row(i),
@@ -399,10 +446,11 @@ test("watch overflow during pagination schedules recovery after the pending read
     ...f.rows,
   ]);
   f.deliver();
-  assert.equal(f.queries.length, 2);
+  assert.equal(f.queries.length, 1);
   f.hold();
   finish();
-  await until(() => f.queries.length === 3 && !f.state.loadingMore);
+  await until(() => !f.state.loadingMore);
+  assert.equal(f.queries.length, 1);
   assert.equal(f.state.error, "");
   assert.equal(
     f.state.orders.some((r) => r.id === "new0"),

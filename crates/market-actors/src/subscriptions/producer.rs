@@ -115,7 +115,7 @@ pub(super) fn start_orders(
     reader: market_replica::ReplicaReader,
     permit: OwnedSemaphorePermit,
 ) {
-    let super::types::OrdersFeed { request, read } = selection;
+    let super::types::OrdersFeed { request, mut read } = selection;
     let sender = feed.sender.clone();
     let stop = feed.stop.clone();
     let completion = Completion::new(feed, permit);
@@ -124,6 +124,7 @@ pub(super) fn start_orders(
         let mut changed = reader.changes();
         let work = async {
             let mut previous: Option<Arc<crate::OrderResult>> = None;
+            let mut continuation = None;
             let mut revision = None;
             loop {
                 if stop.is_cancelled() || sender.is_closed() {
@@ -135,9 +136,16 @@ pub(super) fn start_orders(
                     let result = tokio::select! {biased;
                         _=stop.cancelled()=>return Ok(()),
                         _=sender.closed()=>return Ok(()),
-                        result=orders.range_wait(request.clone(), read.clone())=>result
+                        result=orders.range_wait(request.clone(), read.clone(), previous.is_some())=>result
                     };
                     let (next, current) = result?;
+                    if previous.is_none() {
+                        // Pin coverage and continuation from the same paginated read.
+                        // Later reads reconcile the entire coverage; never silently truncate it.
+                        read.range = next.result.range.clone();
+                        read.limit = market_gifts::ORDER_LIMIT;
+                        continuation = next.next;
+                    }
                     let next = next.result;
                     if previous.as_ref().is_none_or(|old| **old != next) {
                         previous = Some(Arc::new(next));
@@ -145,6 +153,7 @@ pub(super) fn start_orders(
                     revision = Some(current);
                     sender.send_replace(DataUpdate::Orders {
                         version: current,
+                        next: continuation.clone(),
                         result: previous.as_ref().expect("range loaded").clone(),
                     });
                 }

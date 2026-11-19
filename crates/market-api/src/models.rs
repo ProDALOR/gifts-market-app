@@ -77,6 +77,9 @@ pub enum ServerFrame<'a> {
     OrdersSnapshot {
         id: String,
         sequence: u64,
+        /// Exclusive continuation beyond the initialized live coverage.
+        #[schema(value_type = Option<market_gifts::OrderKey>, required = true)]
+        next: Option<&'a market_actors::ReadPosition>,
         #[serde(flatten)]
         data: crate::orders::OrderSnapshotResponse<'a>,
     },

@@ -15,7 +15,7 @@ pub(super) enum Payload {
 impl Payload {
     #[cfg(test)]
     pub fn test_orders(result: Arc<str>) -> Self {
-        Self::Orders(serde_json::json!({"type":"orders.snapshot","id":"offers","sequence":0,"data":[],"range":{"start":null,"end":null},"padding":&*result}).to_string().into())
+        Self::Orders(serde_json::json!({"type":"orders.snapshot","id":"offers","sequence":0,"next":null,"data":[],"range":{"start":null,"end":null},"padding":&*result}).to_string().into())
     }
     pub fn text(&self, id: &str) -> String {
         match self {

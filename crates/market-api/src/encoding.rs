@@ -21,6 +21,7 @@ pub(crate) enum OrderEvent {
         id: String,
         previous: Option<Arc<OrderResult>>,
         current: Arc<OrderResult>,
+        next: Option<market_actors::ReadPosition>,
         sequence: u64,
         reset: bool,
     },
@@ -95,6 +96,7 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
             id,
             previous,
             current,
+            next,
             sequence,
             reset,
         } => {
@@ -136,6 +138,7 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
                     &ServerFrame::OrdersSnapshot {
                         id,
                         sequence,
+                        next: next.as_ref(),
                         data: (&*current).into(),
                     },
                 )
@@ -192,6 +195,7 @@ mod tests {
                 id: "x".into(),
                 previous: None,
                 current: Arc::new(empty()),
+                next: None,
                 sequence: 0,
                 reset: false,
             })
@@ -199,7 +203,22 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&snapshot).unwrap(),
-            serde_json::json!({"type":"orders.snapshot","id":"x","sequence":0,"data":[],"range":{"start":null,"end":null}})
+            serde_json::json!({"type":"orders.snapshot","id":"x","sequence":0,"next":null,"data":[],"range":{"start":null,"end":null}})
+        );
+        let delta = encoder
+            .encode(OrderEvent::Update {
+                id: "x".into(),
+                previous: Some(Arc::new(empty())),
+                current: Arc::new(empty()),
+                next: None,
+                sequence: 1,
+                reset: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&delta).unwrap(),
+            serde_json::json!({"type":"orders.changed","id":"x","sequence":1,"upserts":[],"removed":[]})
         );
         let small = OrderEncoder::new(8);
         assert!(
@@ -208,6 +227,7 @@ mod tests {
                     id: "x".into(),
                     previous: None,
                     current: Arc::new(empty()),
+                    next: None,
                     sequence: 0,
                     reset: false,
                 })

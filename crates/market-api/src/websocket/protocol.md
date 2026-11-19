@@ -22,31 +22,33 @@ HTTP queries, WebSocket queries, snapshots and upserts share the same `OrderedOr
 
 An order gift's collection is `book.collection_id`; standalone valuation gifts retain their own `collection_id`. Unknown gift numbers and trait IDs are omitted. Missing `market_url`, `expires_at` and `executed_at` are omitted too; executions always include `executed_at`. The dedicated `market_url` is a validated absolute HTTP(S) link without embedded credentials or control characters. Unsupported codes are typed; arbitrary source metadata is not exposed.
 
-Protocol nulls retain meaning: `range.start`/`range.end` are always present and null denotes an open bound; finite query `next` is always present and null denotes traversal completion. An absent `snapshot` means no frozen view was retained.
+Protocol nulls retain meaning: `range.start`/`range.end` are always present and null denotes an open bound; query and watch-snapshot `next` is always present and null denotes traversal completion. An absent `snapshot` means no frozen view was retained.
 
 ## Range subscriptions
 
-REST `POST /orders/query`, WebSocket method `orders.query`, and `orders.watch` accept the same query model. First query a page, then watch its returned coverage:
+REST `POST /orders/query`, WebSocket method `orders.query`, and `orders.watch` accept the same query model. Start a watch directly; no preliminary query is needed:
 
 ```json
-{"type":"orders.watch","id":"orders.1","params":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","range":{"start":null,"end":"<returned end key>"},"limit":100}}
+{"type":"orders.watch","id":"orders.1","params":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","range":{"start":null,"end":null},"limit":80}}
 ```
 
-A watch returns complete coverage or a capacity error; it never silently clips its range. Its limit defaults to 100 and cannot exceed 100, including when the range grows. Narrow the bounds on capacity errors. The initial complete snapshot reconciles changes between the finite query and subscription. Bounds stay fixed as prices change; removal from coverage does not imply a sale. There is no `navigation`, `around` operation, nested `params.query` or separate watch range. Watches require the default latest view. Inverted bounds and sort/source mismatches are rejected.
+A watch reads up to `limit` rows (default and maximum 100) and atomically establishes the actual covered range from that read. The initial snapshot includes `range` and the exclusive continuation `next`, just like a finite query. Follow `next` with `orders.query` to load more without replacing the watch. `limit` controls initialization; later updates reconcile the complete fixed coverage, up to the 100-row live cap. Leave headroom for arrivals by initializing fewer rows, such as 80. If coverage grows beyond capacity, the operation terminates with a capacity error; restart a watch with narrower coverage. Updates never silently clip coverage.
 
-The first data frame is `{type:"orders.snapshot",id,sequence:0,data,range}`. Subsequent frames are `{type:"orders.changed",id,sequence,upserts,removed}`. Require `sequence === lastSequence + 1` for changes. Apply each batch atomically: remove both deleted and replaced identities first, then merge all upserts in `key` order. Multiple orders can exchange ranks in the same batch. Removals and upserts have disjoint identities. Removal means an order left the matching range and does not imply a sale.
+Bounds stay fixed as prices change, even if a boundary listing disappears. Keep the returned range rather than deriving it from first/last rows: open bounds, filtered scans and empty results carry meaningful coverage. Watching is registered before initialization so changes during that read are reconciled. There is no `navigation`, `around` operation, nested `params.query` or separate watch range. Watches require the default latest view. Inverted bounds and sort/source mismatches are rejected.
 
-Live snapshots contain only `type`, `id`, `sequence`, `data` and `range`. Continuations and frozen-view IDs belong to finite query results.
+The first data frame is `{type:"orders.snapshot",id,sequence:0,data,range,next}`. Subsequent frames are `{type:"orders.changed",id,sequence,upserts,removed}`. Require `sequence === lastSequence + 1` for changes. Apply each batch atomically: remove both deleted and replaced identities first, then merge all upserts in `key` order. Multiple orders can exchange ranks in the same batch. Removals and upserts have disjoint identities. Removal means an order left the matching range and does not imply a sale.
+
+Live snapshots include `next` (null when traversal is complete); `orders.changed` frames do not repeat coverage or continuation. Frozen-view IDs belong only to finite query results.
 
 Every `orders.snapshot` replaces the complete subscribed state, including when a dataset is replaced. Its sequence advances within that operation. Reconnect or sequence gaps require a new watch initialized from sequence zero. Watches can coalesce intermediate observations; they are current state, not a durable event journal. Live history includes late backfills within coverage.
 
 ## Frozen traversal
 
-`view` defaults to `{kind:"latest"}` and retains no server state. Set `{kind:"snapshot"}` to pin an immutable view. The response includes a `snapshot` ID; send `view:{kind:"snapshot",id}` for subsequent reads. Follow `next` by setting `range.start` to that key until null, keeping the original end bound. A bounded scan may return a short or empty slice with a non-null `next`; continue until null even if `data` is empty. Watched ranges always return complete coverage or an explicit capacity error. No separate history endpoint or page token is needed.
+`view` defaults to `{kind:"latest"}` and retains no server state. Set `{kind:"snapshot"}` to pin an immutable view. The response includes a `snapshot` ID; send `view:{kind:"snapshot",id}` for subsequent reads. Follow `next` by setting `range.start` to that key until null, keeping the original end bound. A bounded scan may return a short or empty slice with a non-null `next`; continue until null even if `data` is empty. After initialization, watched ranges always return complete coverage or an explicit capacity error. No separate history endpoint or page token is needed.
 
 Release with `DELETE /orders/query` and `{snapshot}`. Views expire after 60 seconds idle or application restart, share bounded capacity, and require instance affinity behind a load balancer. An expired/released ID returns HTTP 409 `restart_read`; reopening at the visible key establishes a fresh baseline. Release is idempotent and an in-flight read cannot resurrect a released view.
 
-The GUI keeps all visited listings and virtualizes mounted cards. The GUI uses WebSocket queries for live paging, watches up to 80 cached viewport rows with headroom below the 100-row cap, and narrows/requeries after capacity errors. Only the active range is live; cached regions refresh on revisit. Pausing retains visited rows and uses a frozen view. The History tab uses forward snapshot traversal through the same query endpoint.
+The GUI keeps all visited listings and virtualizes mounted cards. The GUI initializes with one 80-row watch, uses WebSocket queries for additional live pages, watches cached viewport coverage with headroom below the 100-row cap, and re-seeds a watch after capacity errors. Only the active range is live; cached regions refresh on revisit. Pausing retains visited rows and uses a frozen view. The History tab uses forward snapshot traversal through the same query endpoint.
 
 ## Status, operations and budgets
 
@@ -62,7 +64,7 @@ Subscriptions return an initial snapshot, catalog version manifest or error; the
 
 The GUI bounds connection handshakes to ten seconds, cancels reconnect timers when its final observer leaves, and retries persistent subscriptions with fresh wire IDs. One-shot requests are never replayed after disconnect. Terminal operation IDs are retired before callbacks run, so late frames cannot revive completed work or suppress a retry. Query updates with unchanged parameters preserve the current subscription and its sequence.
 
-Reads, scans, range membership, encoded bytes, concurrency, outgoing queues and retained views remain bounded. Budget failures are explicit errors, never incomplete ranges presented as complete. Narrow coverage or reduce the slice size on capacity errors. Slow consumers close with code 1013; reconnect and initialize again. Cancellation, command ingress and supervision continue while data frames are written. Shutdown cancels operations and drains tracked reads and encoders.
+Reads, scans, range membership, encoded bytes, concurrency, outgoing queues and retained views remain bounded. Initialization and finite reads report their actual coverage and continuation. Later watch budget failures are explicit errors, never incomplete ranges presented as complete. Narrow coverage or reduce the slice size on capacity errors. Slow consumers close with code 1013; reconnect and initialize again. Cancellation, command ingress and supervision continue while data frames are written. Shutdown cancels operations and drains tracked reads and encoders.
 
 ## Catalog updates
 

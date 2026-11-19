@@ -36,14 +36,7 @@ export function orderResult(query, rows) {
 }
 export class RangeWatch {
   constructor(query, rows) {
-    this.initial = {
-      data: ordered(rows).filter(
-        (row) =>
-          (query.range?.start == null || row.key >= query.range.start) &&
-          (query.range?.end == null || row.key <= query.range.end),
-      ),
-      range: query.range ?? { start: null, end: null },
-    };
+    this.initial = orderResult(query, rows);
     this.sequence = -1;
   }
   frame(id, rows) {
@@ -69,6 +62,7 @@ export class RangeWatch {
         sequence,
         data: next.data,
         range: next.range,
+        next: next.next,
       };
     const previous = new Map(old.data.map((row) => [position(row), row])),
       current = new Set(next.data.map(position));
@@ -88,12 +82,5 @@ export class RangeWatch {
 }
 
 export function orderSnapshot(query, rows) {
-  return {
-    data: ordered(rows).filter(
-      (row) =>
-        (query.range?.start == null || row.key >= query.range.start) &&
-        (query.range?.end == null || row.key <= query.range.end),
-    ),
-    range: query.range ?? { start: null, end: null },
-  };
+  return orderResult(query, rows);
 }

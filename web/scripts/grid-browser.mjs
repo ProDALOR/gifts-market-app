@@ -204,6 +204,7 @@ try {
             id: command.id,
             data: window.data,
             range: window.range,
+            next: window.next,
           }),
         );
         if (marker && window.data.some((row) => row.id === marker.id)) {
@@ -280,7 +281,7 @@ try {
   await page.goto(
     `http://127.0.0.1:${server.httpServer.address().port}/__scroll_test`,
   );
-  await page.waitForFunction(() => window.feedView?.().orders.length === 100);
+  await page.waitForFunction(() => window.feedView?.().orders.length === 80);
   assert.equal(requests, 0);
   assert.equal(subscriptions, 1);
   const anchor = async () =>

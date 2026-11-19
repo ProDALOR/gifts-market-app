@@ -216,7 +216,7 @@ export function parseFrame(raw: unknown): LiveFrame {
       valid =
         sequence(value.sequence) &&
         snapshot(value) &&
-        value.next === undefined &&
+        boundary(value.next) &&
         value.snapshot === undefined;
       break;
     case "orders.changed": {
@@ -224,6 +224,9 @@ export function parseFrame(raw: unknown): LiveFrame {
       const upserts = value.upserts;
       valid =
         sequence(value.sequence) &&
+        value.range === undefined &&
+        value.next === undefined &&
+        value.snapshot === undefined &&
         orderedRows(upserts) &&
         Array.isArray(removed) &&
         removed.every(

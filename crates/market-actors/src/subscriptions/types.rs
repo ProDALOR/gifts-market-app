@@ -8,6 +8,7 @@ pub enum DataUpdate {
     Catalog(market_gifts::CatalogVersions),
     Orders {
         result: Arc<crate::OrderResult>,
+        next: Option<market_replica::ReadPosition>,
         version: market_replica::ReadRevision,
     },
     Error(DataError),

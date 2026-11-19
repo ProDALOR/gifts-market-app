@@ -89,6 +89,7 @@ pub(super) async fn run(
             DataUpdate::Error(error) => Some((Payload::Error(error.into()), true)),
             DataUpdate::Orders {
                 result,
+                next,
                 version: next_epoch,
             } => {
                 let reset = epoch
@@ -124,6 +125,7 @@ pub(super) async fn run(
                         id: key.id.as_str().into(),
                         previous: previous.clone(),
                         current: result.clone(),
+                        next,
                         sequence: next_sequence,
                         reset,
                     };
