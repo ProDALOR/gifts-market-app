@@ -277,6 +277,8 @@ async fn malformed_commands_fail_validation_without_interrupting_existing_work()
         serde_json::json!({"type":"request","id":"x","method":"unknown","params":{}}),
         serde_json::json!({"type":"request","id":"x","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM","unexpected":true}}),
         serde_json::json!({"type":"cancel","id":"x","unexpected":true}),
+        serde_json::json!({"type":"request","id":"pending","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM","unexpected":true}}),
+        serde_json::json!({"type":"cancel","id":"offers","unexpected":true}),
     ] {
         socket
             .send(Message::Text(invalid.to_string().into()))
@@ -286,10 +288,26 @@ async fn malformed_commands_fail_validation_without_interrupting_existing_work()
             panic!("error expected")
         };
         let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(frame["type"], "command_error");
-        assert_eq!(frame["id"], "");
+        let id = invalid["id"].as_str().unwrap();
+        if id == "bad id" {
+            assert_eq!(frame["type"], "command_error");
+            assert_eq!(frame["id"], "");
+        } else {
+            assert_eq!(
+                frame["type"],
+                if id == "x" { "error" } else { "command_error" }
+            );
+            assert_eq!(frame["id"], id);
+        }
         assert_eq!(frame["error"]["code"], "invalid_query");
     }
+    socket.send(Message::Text("{".into())).await.unwrap();
+    let Message::Text(text) = next(&mut socket).await else {
+        panic!("command rejection expected")
+    };
+    let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(frame["type"], "command_error");
+    assert_eq!(frame["id"], "");
     assert!(
         tokio::time::timeout(
             std::time::Duration::from_millis(20),

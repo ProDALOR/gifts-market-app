@@ -146,7 +146,7 @@ async fn drive_with_writer(
                     seen=Instant::now();
                     let command=match serde_json::from_str::<Command>(&text) {
                         Ok(command)=>command,
-                        Err(_)=>{if tx.reject(Scope::Global,ApiError::invalid("invalid API message")).is_err(){break CloseCode::Again;}continue;}
+                        Err(_)=>{if reject_invalid(&text,&registry,&tx).is_err(){break CloseCode::Again;}continue;}
                     };
                     if schedule(command,&mut registry,&mut jobs,&tx,&limits,&stop,&start).is_err(){break CloseCode::Again;}
                 }
@@ -209,6 +209,30 @@ fn control(
     }
     .boxed_local()
 }
+fn reject_invalid(
+    text: &str,
+    registry: &Registry,
+    tx: &queue::Sender,
+) -> Result<(), queue::QueueError> {
+    // Preserve correlation on validation failures without disturbing an existing operation.
+    let id = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(|id| id.as_str())
+                .map(str::to_owned)
+        })
+        .and_then(|id| OperationId::parse(id).ok());
+    let error = ApiError::invalid("invalid API message");
+    match id {
+        Some(id) => match registry.key(&id) {
+            Some(key) => tx.reject(Scope::Operation(key), error),
+            None => tx.error(id, error),
+        },
+        None => tx.reject(Scope::Global, error),
+    }
+}
 fn schedule(
     command: Command,
     registry: &mut Registry,
@@ -257,7 +281,7 @@ fn schedule(
     };
     let (key, cancel) = match reserved {
         Ok(value) => value,
-        Err(error) => return tx.error(Scope::Absent(id), error),
+        Err(error) => return tx.error(id, error),
     };
     let work = start(key.clone(), query, tx.clone(), cancel, limits.clone());
     jobs.push(

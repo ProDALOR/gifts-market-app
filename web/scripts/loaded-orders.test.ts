@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LoadedOrders } from "../src/feed/loaded-orders.ts";
 import type { components } from "../src/gen/api.ts";
-type Window = components["schemas"]["OrderReadResponse"];
+type Window = components["schemas"]["OrderSnapshotResponse"];
 const row = (id: number, rank = id): Window["data"][number] => ({
   id: String(id),
   key: `${String(rank * 1000).padStart(16, "0")}:${String(id).padStart(16, "0")}`,
@@ -18,7 +18,6 @@ const row = (id: number, rank = id): Window["data"][number] => ({
 });
 const view = (data: Window["data"], before = true, after = true): Window => ({
   data,
-  next: null,
   range: {
     start: before && data.length ? data[0].key : null,
     end: after && data.length ? data.at(-1)!.key : null,
@@ -89,7 +88,6 @@ test("an empty bounded result clears its full coverage while retaining visited n
   cache.merge(view(rows, false, false));
   cache.merge({
     data: [],
-    next: null,
     range: {
       start: rows[3].key,
       end: rows[6].key,

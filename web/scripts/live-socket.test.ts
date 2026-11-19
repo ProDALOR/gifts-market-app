@@ -429,6 +429,26 @@ test("command rejections do not complete or cancel the original request", async 
   assert.deepEqual(await promise, report);
 });
 
+test("correlated validation errors fail requests immediately without reconnecting", async (t) => {
+  const { Socket, live } = setup(t);
+  const stop = live.subscribe(catalog(), () => {});
+  t.after(stop);
+  const pending = live.request(call);
+  const rejected = assert.rejects(pending, { code: "invalid_query" });
+  const socket = Socket.all[0];
+  socket.open();
+  socket.receive({
+    type: "error",
+    id: socket.commands("request")[0].id,
+    error: { code: "invalid_query", message: "Invalid parameters" },
+  });
+  await rejected;
+  t.mock.timers.tick(60000);
+  assert.equal(socket.closed, false);
+  assert.equal(Socket.all.length, 1);
+  assert.equal(socket.commands("cancel").length, 0);
+});
+
 test("malformed command rejections leave pending requests and subscriptions running", async (t) => {
   const { Socket, live } = setup(t);
   let updates = 0,
@@ -482,31 +502,24 @@ test("retrying inside a terminal error callback starts one fresh operation", (t)
   stop();
 });
 
-test("connection errors retire old work before error callbacks queue replacements", async (t) => {
+test("uncorrelated operation errors are invalid and cannot reach live subscriptions", async (t) => {
   const { Socket, live } = setup(t);
-  let recovery: Promise<unknown> | undefined;
-  const stop = live.subscribe(catalog(), (frame) => {
-    if (frame.type === "error") recovery = live.request(call);
-  });
-  const old = live.request(call);
-  const rejected = assert.rejects(old, { code: "timed_out" });
-  const first = Socket.all[0];
-  first.open();
-  first.receive({
+  const stop = live.subscribe(catalog(), () =>
+    assert.fail("Invalid frames must not reach subscribers"),
+  );
+  t.after(stop);
+  const pending = live.request(call);
+  const rejected = assert.rejects(pending, { code: "unavailable" });
+  const socket = Socket.all[0];
+  socket.open();
+  socket.receive({
     type: "error",
     id: "",
-    error: { code: "timed_out", message: "Connection failed" },
+    error: { code: "timed_out", message: "Invalid uncorrelated error" },
   });
   await rejected;
-  assert.ok(recovery);
-  assert.equal(Socket.all.length, 1);
-  t.mock.timers.tick(1000);
-  const second = Socket.all[1];
-  second.open();
-  assert.equal(second.commands("request").length, 1);
-  second.receive(result(second.commands("request")[0].id));
-  assert.deepEqual(await recovery, report);
-  stop();
+  assert.equal(socket.closed, true);
+  assert.equal(socket.commands("cancel").length, 0);
 });
 
 test("one connection status stream is shared, replayed and released independently", (t) => {

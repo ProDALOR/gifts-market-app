@@ -56,7 +56,7 @@ test("gaps and invalid coverage leave the previous state and sequence intact", (
   assert.equal(state.apply(snapshot([row("fresh", "2")])).data[0].id, "fresh");
 });
 
-test("rank collision failures preserve both indexes for the next valid atomic batch", () => {
+test("rank collision failures preserve the snapshot for the next valid atomic batch", () => {
   const state = new WatchedOrders();
   state.apply(snapshot([row("a", "1"), row("b", "2")]));
   assert.throws(() =>
@@ -65,5 +65,39 @@ test("rank collision failures preserve both indexes for the next valid atomic ba
   assert.deepEqual(
     state.apply(change(0, [row("a", "3")])).data.map((row) => row.id),
     ["b", "a"],
+  );
+});
+
+test("simultaneous repricing merges atomically and preserves unaffected rows", () => {
+  const state = new WatchedOrders();
+  const untouched = row("d", "44");
+  state.apply(
+    snapshot([row("a", "11"), row("b", "22"), row("c", "33"), untouched]),
+  );
+  const swapped = state.apply(change(0, [row("b", "12"), row("a", "21")]));
+  assert.deepEqual(
+    swapped.data.map((row) => row.id),
+    ["b", "a", "c", "d"],
+  );
+  assert.equal(swapped.data[3], untouched);
+  const cycled = state.apply(
+    change(1, [row("c", "13"), row("b", "22"), row("a", "31")]),
+  );
+  assert.deepEqual(
+    cycled.data.map((row) => row.id),
+    ["c", "b", "a", "d"],
+  );
+  assert.equal(cycled.data[3], untouched);
+});
+
+test("one batch can remove an order and move another order into its former rank", () => {
+  const state = new WatchedOrders();
+  state.apply(snapshot([row("a", "11"), row("b", "22"), row("c", "33")]));
+  const result = state.apply(
+    change(0, [row("b", "12")], [{ venue_id: "v", id: "a" }]),
+  );
+  assert.deepEqual(
+    result.data.map((row) => row.id),
+    ["b", "c"],
   );
 });

@@ -97,6 +97,7 @@ pub enum ServerFrame<'a> {
         versions: CatalogVersions,
     },
     Error {
+        #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
         error: crate::error::ApiError,
     },

@@ -16,7 +16,7 @@ Send `{"type":"orders.watch","id":"orders.1","params":{"query":{"filters":{"coll
 
 Optional `params.range` instead watches that explicit query-bound coverage from the outset. The server rejects inverted ranges and keys from another query. Replace coverage by cancelling the operation and starting a fresh ID, keeping visible data until the new snapshot arrives. Watches require `view:{kind:"latest"}` (the default).
 
-The first data frame is `{type:"orders.snapshot",id,sequence:0,data,range}`. Subsequent frames are `{type:"orders.changed",id,sequence,upserts,removed}`. Require `sequence === lastSequence + 1` for changes. Apply each batch atomically: remove identities, replace upserts by identity, and sort by `key`. Removals and upserts have disjoint identities. Removal means an order left the matching range and does not imply a sale.
+The first data frame is `{type:"orders.snapshot",id,sequence:0,data,range}`. Subsequent frames are `{type:"orders.changed",id,sequence,upserts,removed}`. Require `sequence === lastSequence + 1` for changes. Apply each batch atomically: remove both deleted and replaced identities first, then merge all upserts in `key` order. Multiple orders can exchange ranks in the same batch. Removals and upserts have disjoint identities. Removal means an order left the matching range and does not imply a sale.
 
 Live snapshots contain only `type`, `id`, `sequence`, `data` and `range`. Continuations and frozen-view IDs belong to finite query results.
 
@@ -38,7 +38,7 @@ Valuation results contain `strategy`, `evaluated_at`, `stale`, typed calculation
 
 `GET /sync` is removed. Operational `/healthz` and `/readyz` remain for deployments and stay out of the consumer schema. Readiness remains successful while saved market data can be served during delays.
 
-Operation IDs use 1..64 ASCII letters, digits, `_`, `-` or `.` and are unique while active. `{"type":"cancel","id":"orders.1"}` cancels without acknowledgement. A frame already being written can still arrive, so use fresh IDs for replacements and ignore retired IDs. Malformed commands and duplicate IDs yield `command_error` while active operations continue unchanged; its ID is empty when no valid command identity was parsed. Terminal `error` ends the operation; an empty ID denotes a connection-level failure. Method `valuation.evaluate` shares its handler and response with HTTP.
+Operation IDs use 1..64 ASCII letters, digits, `_`, `-` or `.` and are unique while active. `{"type":"cancel","id":"orders.1"}` cancels without acknowledgement. A frame already being written can still arrive, so use fresh IDs for replacements and ignore retired IDs. Validation failures with a valid, unused ID return a correlated terminal `error`, so requests can fail immediately. A command that reuses an active ID returns nonterminal `command_error` and preserves the active operation. When no valid ID can be parsed, `command_error` has an empty ID. Every `error` has a nonempty operation ID; connection failures use WebSocket close frames. Method `valuation.evaluate` shares its handler and response with HTTP.
 
 Subscriptions return an initial snapshot, catalog version manifest or error; there is no separate connecting acknowledgement.
 

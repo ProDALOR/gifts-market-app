@@ -139,8 +139,8 @@ impl Sender {
         };
         tokio::select! {biased;_=cancel.cancelled()=>Err(QueueError::Cancelled),result=tokio::time::timeout(self.limits.write_timeout,work)=>result.unwrap_or(Err(QueueError::SlowConsumer))}
     }
-    pub fn error(&self, scope: Scope, error: ApiError) -> Result<(), QueueError> {
-        self.try_payload(scope, Payload::Error(error))
+    pub fn error(&self, id: OperationId, error: ApiError) -> Result<(), QueueError> {
+        self.try_payload(Scope::Absent(id), Payload::Error(error))
     }
     pub fn reject(&self, scope: Scope, error: ApiError) -> Result<(), QueueError> {
         self.try_payload(scope, Payload::CommandError(error))

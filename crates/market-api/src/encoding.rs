@@ -174,6 +174,10 @@ mod tests {
             next: None,
         };
         let expected = serde_json::to_value(OrderReadResponse::from(&read)).unwrap();
+        assert_eq!(
+            expected,
+            serde_json::json!({"data":[],"range":{"start":null,"end":null},"next":null})
+        );
         let text = encoder
             .encode(OrderEvent::Read {
                 id: "x".into(),

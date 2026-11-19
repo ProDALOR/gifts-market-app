@@ -794,3 +794,150 @@ fn bounded_empty_slices_return_a_progress_key_without_claiming_unscanned_coverag
     assert_eq!(ids(&second), ["10001", "10002"]);
     assert!(second.next.is_none());
 }
+
+#[test]
+fn serialized_compact_keys_preserve_bidirectional_pages_around_reads_and_ranges() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut writer = ReplicaWriter::open(directory.path(), "serialized-keys").unwrap();
+    let mut changes = catalog();
+    for history in [false, true] {
+        for i in 0..18 {
+            let mut value = order(
+                &format!("{}-{i:02}", if history { "h" } else { "a" }),
+                ["1.0000000000000000000000000001", "2", "10.000000001"][i % 3],
+                history.then_some(100 + (i / 3) as i64),
+            );
+            value.observed_at_ms = 100 + (i / 4) as i64;
+            if i % 4 != 0 {
+                value.attributes.insert(
+                    "tg.number".into(),
+                    w::AttributePredicate {
+                        predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                            value: Some(w::attribute_value::Value::Integer((i % 5) as i64)),
+                        })),
+                    },
+                );
+            }
+            changes.push(upsert(entity(E::Order(value))));
+        }
+    }
+    let mut builder = writer.begin_snapshot().unwrap();
+    builder.append(&changes).unwrap();
+    writer
+        .install_snapshot(builder.finish("serialized").unwrap())
+        .unwrap();
+    let reader = writer.reader();
+    let wire = |key: &ReadPosition| ReadPosition::decode(&key.encode()).unwrap();
+    for history in [false, true] {
+        for sort in 0..=6 {
+            let mut request = read(1, history);
+            request.sort = sort;
+            let full = reader
+                .read_slice_checked(
+                    request.clone(),
+                    SliceRequest {
+                        navigation: Navigation::Head,
+                        limit: 200,
+                        snapshot: None,
+                    },
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
+                .unwrap();
+            assert_eq!(full.entries.len(), 18);
+            let expected = ids(&full);
+            for backwards in [false, true] {
+                let mut navigation = if backwards {
+                    Navigation::Before(wire(&full.entries.last().unwrap().key.after()))
+                } else {
+                    Navigation::Head
+                };
+                let mut pages = Vec::new();
+                loop {
+                    assert!(pages.len() < 20, "navigation must make progress");
+                    let page = reader
+                        .read_slice_checked(
+                            request.clone(),
+                            SliceRequest {
+                                navigation,
+                                limit: 4,
+                                snapshot: None,
+                            },
+                            |_, _| Ok(()),
+                            |_| Ok(true),
+                        )
+                        .unwrap();
+                    pages.push(ids(&page));
+                    let Some(next) = page.next else {
+                        break;
+                    };
+                    navigation = if backwards {
+                        Navigation::Before(wire(&next))
+                    } else {
+                        Navigation::After(wire(&next))
+                    };
+                }
+                if backwards {
+                    pages.reverse();
+                }
+                assert_eq!(
+                    pages.into_iter().flatten().collect::<Vec<_>>(),
+                    expected,
+                    "sort={sort} history={history} backwards={backwards}"
+                );
+            }
+            let anchor = &full.entries[8].key;
+            let around = reader
+                .read_slice_checked(
+                    request.clone(),
+                    SliceRequest {
+                        navigation: Navigation::Around(wire(anchor)),
+                        limit: 5,
+                        snapshot: None,
+                    },
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
+                .unwrap();
+            assert!(around.entries.iter().any(|row| &row.key == anchor));
+            let range = reader
+                .read_range_checked(
+                    request.clone(),
+                    KeyRange {
+                        start: Some(wire(&full.entries[4].key)),
+                        end: Some(wire(&full.entries[10].key)),
+                    },
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
+                .unwrap();
+            assert_eq!(ids(&range), expected[4..=10]);
+            let mut different = request;
+            let w::selection::Source::Scope(scope) = different
+                .selection
+                .as_mut()
+                .unwrap()
+                .source
+                .as_mut()
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            scope.currency_id = Some("XTR".into());
+            assert!(
+                reader
+                    .read_slice_checked(
+                        different,
+                        SliceRequest {
+                            navigation: Navigation::After(wire(anchor)),
+                            limit: 4,
+                            snapshot: None,
+                        },
+                        |_, _| Ok(()),
+                        |_| Ok(true)
+                    )
+                    .is_err()
+            );
+        }
+    }
+}

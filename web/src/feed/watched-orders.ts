@@ -32,7 +32,7 @@ export class WatchedOrders {
     }
     if (!this.result || frame.sequence !== this.sequence! + 1)
       throw new Error("Order subscription sequence gap");
-    // Validate the entire batch before mutating either index.
+    // Build the entire batch before committing the snapshot or its lookup index.
     for (const row of frame.upserts)
       if (
         (this.result.range.start !== null &&
@@ -50,8 +50,9 @@ export class WatchedOrders {
     };
     for (const row of frame.removed)
       remove(JSON.stringify([row.venue_id, row.id]));
+    // Remove every affected identity first, so insertion never depends on update order.
+    for (const row of frame.upserts) remove(orderKey(row));
     for (const row of frame.upserts) {
-      remove(orderKey(row));
       const i = lowerBound(data, row.key);
       if (data[i]?.key === row.key) throw new Error("Duplicate order rank");
       data.splice(i, 0, row);

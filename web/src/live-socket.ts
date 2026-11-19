@@ -249,10 +249,7 @@ export class LiveSocket {
     socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
     socket.close();
   }
-  private disconnected(
-    socket: WebSocket,
-    failure?: Extract<LiveFrame, { type: "error" }>,
-  ) {
+  private disconnected(socket: WebSocket) {
     if (this.socket !== socket) return;
     this.detach();
     // Detach old work before notifying callers: callbacks may enqueue new work.
@@ -270,23 +267,14 @@ export class LiveSocket {
         retryDelay(this.failures++, this.random),
       );
     this.publishStatus("unavailable");
-    const error = failure
-      ? new ApiFailure(
-          failure.error.code,
-          failure.error.message,
-          failure.error.details ?? undefined,
-        )
-      : new ApiFailure(
-          "unavailable",
-          "WebSocket disconnected; retry the request",
-        );
+    const error = new ApiFailure(
+      "unavailable",
+      "WebSocket disconnected; retry the request",
+    );
     for (const operation of pending) operation.finish(error);
-    for (const listener of listeners) {
-      if (failure && this.listeners.get(listener.command.id) === listener)
-        listener.frame(failure);
+    for (const listener of listeners)
       if (this.listeners.get(listener.command.id) === listener)
         listener.status?.("Reconnecting");
-    }
   }
   private connect() {
     this.timer = undefined;
@@ -345,10 +333,6 @@ export class LiveSocket {
       }
       if (value.type === "command_error") {
         this.onCommandError?.(value);
-        return;
-      }
-      if (value.type === "error" && !value.id) {
-        this.disconnected(socket, value);
         return;
       }
       const operation = this.operations.get(value.id);

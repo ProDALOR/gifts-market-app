@@ -126,9 +126,8 @@ fn serialize_bound<S: serde::Serializer>(
 }
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OrderReadResponse<'a> {
-    pub data: Vec<OrderedOrderResponse<'a>>,
-    #[schema(value_type=market_gifts::OrderRange)]
-    pub range: OrderRangeResponse<'a>,
+    #[serde(flatten)]
+    pub orders: OrderSnapshotResponse<'a>,
     #[serde(serialize_with = "serialize_bound")]
     #[schema(value_type=Option<market_gifts::OrderKey>, required=true)]
     pub next: Option<&'a market_actors::ReadPosition>,
@@ -156,10 +155,8 @@ impl<'a> From<&'a market_actors::OrderResult> for OrderSnapshotResponse<'a> {
 }
 impl<'a> From<&'a market_actors::OrderRead> for OrderReadResponse<'a> {
     fn from(read: &'a market_actors::OrderRead) -> Self {
-        let data = OrderSnapshotResponse::from(&read.result);
         Self {
-            data: data.data,
-            range: data.range,
+            orders: (&read.result).into(),
             next: read.next.as_ref(),
             snapshot: read.snapshot.map(|id| id.to_string()),
         }

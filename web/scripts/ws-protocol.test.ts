@@ -51,11 +51,6 @@ test("typed envelopes preserve opaque revisions and exact decimal strings", () =
       versions: { directory: "d", collections: { gift: null } },
     },
     {
-      type: "error",
-      id: "",
-      error: { code: "invalid_query", message: "Invalid command" },
-    },
-    {
       type: "command_error",
       id: "",
       error: { code: "invalid_query", message: "Invalid command" },
@@ -73,6 +68,11 @@ test("invalid JSON, envelope identities and malformed payloads are rejected befo
     { ...page, id: "bad id" },
     { ...page, id: "x".repeat(65) },
     { ...page, type: "unknown" },
+    {
+      type: "error",
+      id: "",
+      error: { code: "invalid_query", message: "Uncorrelated" },
+    },
     { ...page, sync: null },
     { ...page, sync: { ...sync, state: ["live"] } },
     { ...page, page: { ...page.page, data: null } },
@@ -180,4 +180,49 @@ test("market status has an app-facing contract and valuation results reject oper
     { ...result, data: { ...result.data, stale: undefined } },
   ])
     assert.throws(() => parseFrame(JSON.stringify(frame)));
+});
+
+test("retired fields are rejected in envelopes, query results and order rows", () => {
+  const row = {
+    id: "order",
+    key: "0001",
+    book: { venue_id: "v", collection_id: "g", currency_id: "GRAM" },
+    kind: "ask",
+    quantity: 1,
+    price: "1",
+    observed_at: "2026-11-19T00:00:00Z",
+    target: {
+      kind: "criteria",
+      criteria: { models: [], backdrops: [], patterns: [], number: null },
+    },
+  };
+  const data = { data: [row], range: { start: null, end: null }, next: null };
+  const finite = { type: "result", method: "orders.query", id: "q", data };
+  const changed = {
+    type: "orders.changed",
+    id: "q",
+    sequence: 1,
+    upserts: [row],
+    removed: [],
+  };
+  for (const field of [
+    "sync",
+    "revision",
+    "cursor",
+    "page_token",
+    "next_page_token",
+    "base_sequence",
+    "reset",
+    "position",
+    "sort_key",
+  ]) {
+    for (const frame of [
+      { ...changed, [field]: null },
+      { ...finite, data: { ...data, [field]: null } },
+      { ...changed, upserts: [{ ...row, [field]: null }] },
+    ])
+      assert.throws(() => parseFrame(JSON.stringify(frame)), field);
+  }
+  assert.deepEqual(parseFrame(JSON.stringify(finite)), finite);
+  assert.deepEqual(parseFrame(JSON.stringify(changed)), changed);
 });

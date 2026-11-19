@@ -13,6 +13,19 @@ const oneOf = (value: unknown, choices: readonly string[]) =>
   text(value) && choices.includes(value);
 const nullableText = (value: unknown) => value == null || text(value);
 const strings = (value: unknown) => Array.isArray(value) && value.every(text);
+const legacyFields = [
+  "sync",
+  "revision",
+  "cursor",
+  "page_token",
+  "next_page_token",
+  "base_sequence",
+  "reset",
+  "position",
+  "sort_key",
+] as const;
+const hasNoLegacyFields = (value: Record<string, unknown>) =>
+  legacyFields.every((field) => !Object.hasOwn(value, field));
 const id = (value: unknown) =>
   text(value) && /^[A-Za-z0-9_.-]{1,64}$/.test(value);
 const integer = (value: unknown) =>
@@ -35,6 +48,7 @@ const range = (value: unknown) =>
 function order(value: unknown) {
   if (
     !record(value) ||
+    !hasNoLegacyFields(value) ||
     !text(value.id) ||
     !record(value.book) ||
     ![
@@ -140,7 +154,12 @@ function orderedRows(value: unknown): value is Record<string, unknown>[] {
   );
 }
 function snapshot(value: unknown) {
-  if (!record(value) || !orderedRows(value.data) || !record(value.range))
+  if (
+    !record(value) ||
+    !hasNoLegacyFields(value) ||
+    !orderedRows(value.data) ||
+    !record(value.range)
+  )
     return false;
   const { start, end } = value.range;
   return (
@@ -169,10 +188,10 @@ export function parseFrame(raw: unknown): LiveFrame {
   const value: unknown = JSON.parse(raw);
   if (
     !record(value) ||
+    !hasNoLegacyFields(value) ||
     !(
       id(value.id) ||
-      ((value.type === "error" || value.type === "command_error") &&
-        value.id === "") ||
+      (value.type === "command_error" && value.id === "") ||
       (value.type === "market.status" && value.id === undefined)
     )
   )
@@ -188,11 +207,7 @@ export function parseFrame(raw: unknown): LiveFrame {
         (value.error.details == null || record(value.error.details));
       break;
     case "market.status":
-      valid =
-        value.id === undefined &&
-        marketStatus(value.status) &&
-        value.sync === undefined &&
-        value.revision === undefined;
+      valid = value.id === undefined && marketStatus(value.status);
       break;
     case "orders.snapshot":
       valid =
@@ -237,13 +252,12 @@ export function parseFrame(raw: unknown): LiveFrame {
           ? readResult(d)
           : value.method === "valuation.evaluate" &&
             record(d) &&
+            hasNoLegacyFields(d) &&
             text(d.strategy) &&
             text(d.evaluated_at) &&
             text(d.currency_id) &&
             gift(d.gift) &&
             typeof d.stale === "boolean" &&
-            d.sync === undefined &&
-            d.revision === undefined &&
             display(d.display);
       break;
     }

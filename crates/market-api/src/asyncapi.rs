@@ -48,7 +48,7 @@ pub fn document() -> serde_json::Result<Value> {
                 "examples": examples(name)?
             });
             if name != "market.status" {
-                message["correlationId"] = json!({"location":"$message.payload#/id","description":"Unique operation ID. Empty on connection-level errors."});
+                message["correlationId"] = json!({"location":"$message.payload#/id","description":"Unique operation ID. Empty on command rejections without a valid identity."});
             }
             messages.insert(name.into(), message);
             channel_messages.insert(
@@ -124,9 +124,7 @@ fn summary(name: &str) -> &'static str {
         "market.status" => {
             "Market availability: available, delayed or unavailable, independent of query lifetimes."
         }
-        "error" => {
-            "A request, subscription or connection-level error. Inspect code and operation ID."
-        }
+        "error" => "A terminal request or subscription error, correlated by operation ID.",
         _ => "Protocol message.",
     }
 }
