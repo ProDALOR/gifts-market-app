@@ -1,16 +1,14 @@
 import { retryDelay } from "../retry.ts";
 import { WatchedOrders } from "./watched-orders.ts";
 import { liveSocket } from "../live-socket.ts";
-import { request, ApiFailure } from "../market.ts";
+import { request, ApiFailure, type OrderQuery } from "../market.ts";
 import type { components } from "../gen/api.ts";
-export type OrderQuery = components["schemas"]["GiftOrderQuery"];
 export type OrderData = components["schemas"]["OrderSnapshotResponse"];
 export type Snapshot = components["schemas"]["OrderReadResponse"];
 export type Callbacks = {
   result: (result: OrderData, requested?: OrderData["range"]) => void;
-  status: (status: string) => void;
+  status: (status: "connecting" | "reconnecting") => void;
   error: (error: unknown) => void;
-  reset: () => void;
 };
 /** A page may be empty, but partial coverage must advance within the requested bounds. */
 export function checkedRange<T extends OrderData>(
@@ -77,8 +75,7 @@ export class LiveRanges {
               checkedRange(result, requested);
           } catch {
             this.state.clear();
-            this.callbacks.reset();
-            this.callbacks.status("Reconnecting");
+            this.callbacks.status("reconnecting");
             this.recovery ??= setTimeout(() => {
               this.recovery = undefined;
               liveSocket.retry("offers");
@@ -89,7 +86,6 @@ export class LiveRanges {
             clearTimeout(this.recovery);
             this.recovery = undefined;
             this.failures = 0;
-            this.callbacks.reset();
           }
           this.callbacks.result(
             result,
@@ -109,7 +105,9 @@ export class LiveRanges {
         clearTimeout(this.recovery);
         this.recovery = undefined;
         this.state.clear();
-        this.callbacks.status(status);
+        this.callbacks.status(
+          status === "Reconnecting" ? "reconnecting" : "connecting",
+        );
       },
     );
   }

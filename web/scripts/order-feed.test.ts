@@ -3,8 +3,9 @@ import { test, type TestContext } from "node:test";
 import { createOrderFeed, type FeedState } from "../src/order-feed.ts";
 import { liveSocket } from "../src/live-socket.ts";
 import { LiveRanges, checkedRange } from "../src/feed/range-source.ts";
+import { LoadedOrders } from "../src/feed/loaded-orders.ts";
 import { ApiFailure } from "../src/market.ts";
-import type { OrderQuery, OrderQueryResult } from "../src/market.ts";
+import type { FeedQuery, OrderQuery, OrderQueryResult } from "../src/market.ts";
 const tick = () => new Promise<void>((r) => setImmediate(r));
 async function until(check: () => boolean) {
   for (let i = 0; i < 100; i++) {
@@ -31,7 +32,7 @@ const row = (n: number) => ({
 });
 const query = {
   filters: { collection_id: "gift", currency_id: "GRAM" },
-  side: "ask" as const,
+  source: "asks" as const,
   sort: "price_asc" as const,
 };
 function page(q: OrderQuery, rows: ReturnType<typeof row>[]): OrderQueryResult {
@@ -51,9 +52,17 @@ function page(q: OrderQuery, rows: ReturnType<typeof row>[]): OrderQueryResult {
     },
   };
 }
-function fixture(t: TestContext, frozen = false) {
+const historyRow = (n: number) => ({
+  ...row(n),
+  kind: "executed" as const,
+  executed_at: "2026-11-18T12:00:00Z",
+  target: { kind: "gift" as const, id: `gift-${n}`, number: n + 1, traits: {} },
+});
+function fixture(t: TestContext, frozen = false, selection: FeedQuery = query) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  let rows = Array.from({ length: 250 }, (_, i) => row(i)),
+  let rows = Array.from({ length: 250 }, (_, i) =>
+      selection.source === "history" ? historyRow(i) : row(i),
+    ),
     state: FeedState;
   const states: FeedState[] = [];
   const queries: OrderQuery[] = [],
@@ -177,7 +186,7 @@ function fixture(t: TestContext, frozen = false) {
     const result = await read(q, init.signal as AbortSignal);
     return new Response(JSON.stringify({ ...result, snapshot: "lease" }));
   });
-  const feed = createOrderFeed({ kind: "orders", query }, frozen, (next) => {
+  const feed = createOrderFeed(selection, frozen, (next) => {
     state = next;
     states.push(next);
   });
@@ -404,7 +413,6 @@ test("unchanged watch bounds preserve sequence continuity", (t) => {
   const results: any[] = [];
   const source = new LiveRanges({
     result: (r) => results.push(r),
-    reset: () => {},
     status: () => {},
     error: (e) => assert.fail(String(e)),
   });
@@ -434,7 +442,7 @@ test("unchanged watch bounds preserve sequence continuity", (t) => {
   assert.equal(results.at(-1).data.length, 2);
 });
 
-test("history continues by range and rebuilds frozen pages after lease expiry", async (t) => {
+test("explicitly paused history rebuilds frozen pages after lease expiry", async (t) => {
   let state: FeedState,
     expired = false;
   const bodies: any[] = [],
@@ -470,10 +478,11 @@ test("history continues by range and rebuilds frozen pages after lease expiry", 
   });
   const feed = createOrderFeed(
     {
-      kind: "history",
-      query: { filters: query.filters, sort: "time_desc", limit: 100 },
+      source: "history",
+      filters: query.filters,
+      sort: "time_desc",
     },
-    false,
+    true,
     (next) => {
       state = next;
     },
@@ -503,7 +512,7 @@ test("history continues by range and rebuilds frozen pages after lease expiry", 
   );
 });
 
-test("closed history releases a late snapshot without publishing stale rows", async (t) => {
+test("closed paused history releases a late snapshot without publishing stale rows", async (t) => {
   let finish!: () => void, state: FeedState;
   const pending = new Promise<void>((resolve) => {
     finish = resolve;
@@ -526,8 +535,8 @@ test("closed history releases a late snapshot without publishing stale rows", as
     );
   });
   const feed = createOrderFeed(
-    { kind: "history", query: { filters: query.filters, limit: 100 } },
-    false,
+    { source: "history", filters: query.filters },
+    true,
     (next) => {
       state = next;
     },
@@ -636,6 +645,41 @@ test("half-open bounds exclude the end and allow empty equal-bound ranges", () =
   );
 });
 
+test("freezing cached islands fills gaps without truncating the visited tail", async (t) => {
+  const old = Array.from({ length: 250 }, (_, i) => row(i));
+  const fresh = Array.from({ length: 200 }, (_, i) => ({
+    ...row(10000 + i),
+    key: key(i + 1),
+  }));
+  const cache = new LoadedOrders();
+  cache.merge({ data: old, range: { start: null, end: null } });
+  cache.merge(page({ ...query, limit: 80 }, [...fresh, ...old]), {
+    start: null,
+    end: null,
+  });
+  assert.equal(cache.rows.length, 330);
+  const queries: OrderQuery[] = [];
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    if (init?.method === "DELETE") return new Response();
+    const q = JSON.parse(String(init?.body));
+    queries.push(q);
+    return new Response(
+      JSON.stringify({ ...page(q, [...fresh, ...old]), snapshot: "lease" }),
+    );
+  });
+  let state: FeedState | undefined;
+  const feed = createOrderFeed(query, true, (next) => (state = next), {
+    cache,
+  });
+  t.after(() => feed.close());
+  feed.start();
+  await until(() => state?.status === "Paused");
+  assert.equal(state?.orders.length, 450);
+  assert.equal(state?.orders.at(-1)?.id, old.at(-1)?.id);
+  assert.equal(state?.hasMore, false);
+  assert.equal(queries.length, 5);
+});
+
 test("retired collection sources ignore late frames and cannot restart a replacement", (t) => {
   let receive: (frame: any) => void = () => {};
   let results = 0;
@@ -650,7 +694,6 @@ test("retired collection sources ignore late frames and cannot restart a replace
   const source = new LiveRanges({
     result: () => results++,
     status: () => {},
-    reset: () => {},
     error: () => assert.fail("Late error"),
   });
   const q = { ...query, source: "asks", limit: 80 } as OrderQuery;
@@ -757,19 +800,27 @@ test("a manual page supersedes an already scheduled empty scan", async (t) => {
   assert.equal(reads, 2, "The retired continuation must not run again");
 });
 
-test("reconnect coverage does not move a sparse pagination frontier backward", async (t) => {
+test("reconnect rechecks a formerly empty region instead of skipping backfilled rows", async (t) => {
   const f = fixture(t);
   await f.start();
-  t.mock.method(liveSocket, "request", async (call: any) => ({
-    data: [],
-    range: { start: call.params.range.start, end: key(2000) },
-  }));
+  let calls = 0;
+  t.mock.method(liveSocket, "request", async (call: any) =>
+    ++calls === 1
+      ? { data: [], range: { start: call.params.range.start, end: key(2000) } }
+      : page(call.params, f.rows),
+  );
   f.feed.loadMore();
   await until(() => !f.state.loadingMore);
-  assert.equal((f.feed.bookmark as any).end, key(2000));
+  assert.equal(f.feed.bookmark.cache?.unread?.start, key(2000));
   f.reconnect();
   await tick();
-  assert.equal((f.feed.bookmark as any).end, key(2000));
+  assert.equal(f.feed.bookmark.cache?.unread?.start, key(1159));
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 180 && !f.state.loadingMore);
+  assert.equal(
+    f.state.orders.some((row) => row.id === "150"),
+    true,
+  );
 });
 
 test("a reconnect reaching the tail cancels the need for a pending page retry", async (t) => {
@@ -839,11 +890,11 @@ test("replacement baselines cancel pending pages before stale tail coverage can 
   f.reconnect();
   await tick();
   assert.equal(signal.aborted, true);
-  const freshEnd = (f.feed.bookmark as any).end;
+  const freshEnd = f.feed.bookmark.cache?.unread?.start;
   assert.ok(freshEnd > key(1159));
   resolve({ data: [], range: { start: reads[0].range!.start, end: null } });
   await until(() => !f.state.loadingMore);
-  assert.equal((f.feed.bookmark as any).end, freshEnd);
+  assert.equal(f.feed.bookmark.cache?.unread?.start, freshEnd);
   t.mock.timers.tick(80);
   await until(() => reads.length === 2 && !f.state.loadingMore);
   assert.equal(reads[1].range!.start, freshEnd);
@@ -862,4 +913,252 @@ test("live updates do not clear an outstanding pagination failure", async (t) =>
   t.mock.timers.tick(2000);
   await until(() => f.state.orders.length === 180 && !f.state.loadingMore);
   assert.equal(f.state.error, "");
+});
+
+test("history initializes with one live watch and keeps its execution period through pagination and reconnect", async (t) => {
+  const period = {
+    from: "2026-11-18T00:00:00Z",
+    until: "2026-11-19T00:00:00Z",
+  };
+  const f = fixture(t, false, {
+    source: "history",
+    filters: query.filters,
+    sort: "time_desc",
+    period,
+  });
+  await f.start();
+  assert.equal(f.commands.length, 1);
+  assert.equal(
+    f.queries.length,
+    0,
+    "History must not read a snapshot before watching",
+  );
+  assert.equal(f.commands[0].params.source, "history");
+  assert.deepEqual(f.commands[0].params.period, period);
+  assert.equal(f.state.status, "Live");
+  assert.ok(f.state.orders.every((row) => row.kind === "executed"));
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 180 && !f.state.loadingMore);
+  assert.equal(f.queries[0].source, "history");
+  assert.deepEqual(f.queries[0].period, period);
+  assert.equal(f.queries[0].view, undefined);
+  const fresh = { ...historyRow(999), id: "new-execution", key: key(999) };
+  const late = { ...historyRow(1000), id: "late-backfill", key: key(1021) };
+  f.setRows([fresh, ...f.rows, late].sort((a, b) => (a.key < b.key ? -1 : 1)));
+  f.deliver();
+  assert.equal(f.state.orders[0].id, "new-execution");
+  assert.ok(f.state.orders.some((row) => row.id === "late-backfill"));
+  assert.ok(
+    f.state.orders.some((row) => row.id === "179"),
+    "Previously loaded history stays available",
+  );
+  assert.equal(
+    new Set(f.state.orders.map((row) => row.id)).size,
+    f.state.orders.length,
+  );
+  f.feed.setVisibleRange(120, 135, 128);
+  t.mock.timers.tick(80);
+  await until(() => f.commands.length > 1);
+  f.reconnect();
+  await tick();
+  await tick();
+  assert.equal(f.state.status, "Live");
+  assert.equal(f.commands.at(-1).params.source, "history");
+  assert.deepEqual(f.commands.at(-1).params.period, period);
+  assert.ok(f.state.orders.some((row) => row.id === "new-execution"));
+  assert.equal(
+    new Set(f.state.orders.map((row) => row.id)).size,
+    f.state.orders.length,
+  );
+  assert.equal(
+    f.state.activity.size,
+    0,
+    "A reconnect baseline must not replay freshness ribbons",
+  );
+});
+
+test("closing live history cancels its page and ignores late results without creating a snapshot lease", async (t) => {
+  const f = fixture(t, false, {
+    source: "history",
+    filters: query.filters,
+    sort: "time_desc",
+  });
+  await f.start();
+  let finish!: () => void;
+  f.hold(
+    new Promise<void>((resolve) => {
+      finish = resolve;
+    }),
+  );
+  f.feed.loadMore();
+  await until(() => f.queries.length === 1);
+  f.feed.close();
+  const last = f.states.at(-1);
+  assert.ok(f.signals[0].aborted);
+  finish();
+  await tick();
+  await tick();
+  assert.equal(f.states.at(-1), last);
+  assert.equal(f.releases.length, 0);
+});
+
+test("empty history stays subscribed and displays its first execution without polling", async (t) => {
+  const f = fixture(t, false, {
+    source: "history",
+    filters: query.filters,
+    sort: "time_desc",
+  });
+  f.setRows([]);
+  await f.start();
+  assert.equal(f.state.orders.length, 0);
+  assert.equal(f.state.hasMore, false);
+  f.setRows([historyRow(0)]);
+  f.deliver();
+  assert.equal(f.state.orders.length, 1);
+  assert.equal(f.state.orders[0].kind, "executed");
+  assert.equal(f.state.activity.size, 1);
+  assert.equal(f.queries.length, 0);
+  assert.equal(f.commands.length, 1);
+});
+
+for (const interruption of ["reconnect", "capacity"] as const)
+  test(`${interruption} recovers a large execution burst without losing cached history or skipping unread rows`, async (t) => {
+    const f = fixture(t, false, {
+      ...query,
+      source: "history",
+      sort: "time_desc",
+    });
+    await f.start();
+    f.feed.loadMore();
+    await until(() => f.state.orders.length === 180);
+    f.feed.loadMore();
+    await until(() => f.state.orders.length === 250 && !f.state.loadingMore);
+    const previous = f.rows;
+    const fresh = Array.from({ length: 200 }, (_, i) => ({
+      ...historyRow(10000 + i),
+      id: `fresh-${i}`,
+      key: key(i + 1),
+    }));
+    f.setRows([...fresh, ...previous]);
+    if (interruption === "capacity") {
+      f.deliver();
+      assert.ok(f.state.error);
+    }
+    f.reconnect();
+    await tick();
+    assert.equal(f.state.orders.length, 330);
+    assert.equal(
+      f.state.hasMore,
+      true,
+      "A known tail cannot hide a gap before cached rows",
+    );
+    assert.ok(f.state.orders.some((row) => row.id === "249"));
+    const before = f.queries.length;
+    f.feed.loadMore();
+    await until(() => f.state.orders.length === 430 && !f.state.loadingMore);
+    assert.deepEqual(f.queries[before].range, {
+      start: key(81),
+      end: previous[0].key,
+    });
+    f.feed.loadMore();
+    await until(() => f.state.orders.length === 450 && !f.state.loadingMore);
+    assert.equal(f.state.hasMore, false);
+    assert.equal(new Set(f.state.orders.map((row) => row.id)).size, 450);
+    assert.equal(
+      f.queries.length - before,
+      2,
+      "Read only the missing 120 rows, not the cached 250",
+    );
+  });
+
+test("load-more during reconnect waits for its baseline and issues one current page", async (t) => {
+  const f = fixture(t, false, {
+    ...query,
+    source: "history",
+    sort: "time_desc",
+  });
+  await f.start();
+  f.reconnect();
+  f.feed.loadMore();
+  assert.equal(
+    f.queries.length,
+    0,
+    "Do not enqueue a page before watch initialization",
+  );
+  await until(() => f.state.orders.length === 180 && !f.state.loadingMore);
+  assert.equal(f.queries.length, 1);
+  assert.equal(f.signals[0].aborted, false);
+});
+
+test("market availability cannot label a failed or reconnecting history subscription live", async (t) => {
+  const f = fixture(t, false, {
+    ...query,
+    source: "history",
+    sort: "time_desc",
+  });
+  await f.start();
+  const market = (liveSocket.watchStatus as any).mock.calls[0].arguments[0];
+  f.failWatch();
+  const error = f.state.error;
+  market("delayed");
+  market("available");
+  assert.equal(f.state.status, "Unavailable");
+  assert.equal(f.state.error, error);
+  f.reconnect();
+  market("available");
+  assert.equal(f.state.status, "Reconnecting");
+  await tick();
+  assert.equal(f.state.status, "Live");
+});
+
+test("retiring a history feed discards reconnect pagination intent", async (t) => {
+  const f = fixture(t, false, {
+    ...query,
+    source: "history",
+    sort: "time_desc",
+  });
+  await f.start();
+  f.reconnect();
+  f.feed.loadMore();
+  f.feed.close();
+  const before = f.states.at(-1);
+  await tick();
+  t.mock.timers.tick(2000);
+  await tick();
+  assert.equal(f.queries.length, 0);
+  assert.equal(f.states.at(-1), before);
+});
+
+test("scrolling across an unread history gap fills it without watching across unknown density", async (t) => {
+  const f = fixture(t, false, {
+    ...query,
+    source: "history",
+    sort: "time_desc",
+  });
+  await f.start();
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 180);
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 250);
+  const old = f.rows;
+  f.setRows([
+    ...Array.from({ length: 200 }, (_, i) => ({
+      ...historyRow(i + 10000),
+      id: `fresh-${i}`,
+      key: key(i + 1),
+    })),
+    ...old,
+  ]);
+  f.reconnect();
+  await tick();
+  f.feed.setVisibleRange(70, 100, 80);
+  t.mock.timers.tick(80);
+  await until(() => f.state.orders.length === 430 && !f.state.loadingMore);
+  assert.equal(f.queries.at(-1)?.range?.end, old[0].key);
+  assert.equal(f.state.error, "");
+  assert.equal(
+    f.commands.length,
+    1,
+    "A gap needs a finite read, not a broad watch which exceeds capacity",
+  );
 });

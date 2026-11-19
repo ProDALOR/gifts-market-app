@@ -163,22 +163,20 @@ function App({ context }: { context: TelegramContext }) {
   const query: FeedQuery | null =
     !choice.collection || !choice.currency
       ? null
-      : choice.mode === "executed"
-        ? {
-            kind: "history",
-            query: {
-              ...base,
-              limit: 100,
-              period:
-                choice.from || choice.until
-                  ? { from: choice.from || null, until: choice.until || null }
-                  : null,
-            },
-          }
-        : {
-            kind: "orders",
-            query: { ...base, side: choice.mode },
-          };
+      : {
+          ...base,
+          source:
+            choice.mode === "executed"
+              ? "history"
+              : choice.mode === "bid"
+                ? "bids"
+                : "asks",
+          period:
+            choice.mode === "executed" && (choice.from || choice.until)
+              ? { from: choice.from || null, until: choice.until || null }
+              : undefined,
+        };
+
   const {
     orders,
     displayOrders,

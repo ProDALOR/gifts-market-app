@@ -3,38 +3,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import type { TraitFilters, TraitKey } from "../market";
 import { traits } from "../orderbook";
 import type { CatalogOption, Collection } from "../orderbook";
-import { GiftArtwork } from "../previews/gift-artwork";
-function OptionArt({ option }: { option: CatalogOption }) {
-  if (option.kind === "backdrop") {
-    const colors = option.palette;
-    return (
-      <span
-        className="option-art swatch"
-        style={
-          colors
-            ? {
-                background: `radial-gradient(ellipse at 40% 30%,${colors.center},${colors.edge})`,
-              }
-            : undefined
-        }
-      />
-    );
-  }
-  return (
-    <span
-      className={`option-art${option.kind === "pattern" ? " symbol-thumb" : ""}`}
-      aria-hidden="true"
-    >
-      <GiftArtwork
-        media={option.media || undefined}
-        fallback=""
-        label={option.name}
-        playback="static"
-        placeholderKind={option.kind === "pattern" ? "symbol" : "gift"}
-      />
-    </span>
-  );
-}
+import { OptionArt } from "../previews/option-art";
 export const TraitPickers = memo(function TraitPickers({
   collection,
   loading = false,

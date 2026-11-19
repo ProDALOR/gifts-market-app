@@ -17,7 +17,9 @@
     "test:orderbook": "node scripts/orderbook-browser.mjs",
     "test:grid": "node scripts/grid-browser.mjs",
     "test:traits": "node scripts/trait-preview-browser.mjs",
-    "test:listings": "node scripts/listing-browser.mjs"
+    "test:listings": "node scripts/listing-browser.mjs",
+    "test:bids": "node scripts/bid-browser.mjs",
+    "test:live-feed": "node scripts/live-feed-browser.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

@@ -17,7 +17,7 @@ import {Modal} from '/src/ui/modal.tsx';
 import {OrderDetails} from '/src/orderbook/order-details.tsx';
 import {orderKey} from '/src/orderbook/order-activity.ts';
 import '/src/style.css';
-const query={kind:'orders',query:{filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},side:'ask',sort:'time_desc'}};
+const query={filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},source:'asks',sort:'time_desc'};
 const options=new Map([
 ['gold',{kind:'model',id:'gold',name:'Gold',media:{thumbnail_url:'/__gift.svg',animation_url:null}}],
 ['symbol',{kind:'pattern',id:'symbol',name:'Star',media:{thumbnail_url:'/__symbol.svg',animation_url:'/__symbol-motion'}}],
@@ -1158,16 +1158,10 @@ try {
       number: null,
     },
   });
-  await page
-    .getByText("Choose a numbered collectible to see an estimate.", {
-      exact: true,
-    })
-    .waitFor();
+  await page.locator(".detail-criteria").waitFor();
+  assert.equal(await page.locator(".detail .valuation-summary").count(), 0);
   assert.equal(await page.locator(".attribute-visual").count(), 0);
-  assert.equal(
-    await page.locator(".detail dd").getByText("Any", { exact: true }).count(),
-    3,
-  );
+  assert.equal(await page.locator(".detail .condition-any").count(), 3);
   assert.equal(requests.length, countBeforeCriteria);
   assert.equal(
     await page.locator(".detail-caption p").count(),
@@ -1197,11 +1191,8 @@ try {
       }),
     b,
   );
-  await page
-    .getByText("Choose a numbered collectible to see an estimate.", {
-      exact: true,
-    })
-    .waitFor();
+  await page.locator(".detail-criteria").waitFor();
+  assert.equal(await page.locator(".detail .valuation-summary").count(), 0);
   await page.waitForTimeout(50);
   assert.equal(connections, connectionsBeforeCriteria);
   assert.equal(

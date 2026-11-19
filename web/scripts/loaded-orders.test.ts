@@ -99,3 +99,29 @@ test("an empty bounded result clears its full coverage while retaining visited n
   );
   assert.equal(cache.hasBefore, false);
 });
+
+test("a truncated reconnect retains old rows and reopens only the unread interval before them", () => {
+  const cache = new LoadedOrders();
+  const old = Array.from({ length: 250 }, (_, i) => row(i, 1000 + i));
+  const fresh = Array.from({ length: 200 }, (_, i) => row(10000 + i, i));
+  cache.merge({ data: old, range: { start: null, end: null } });
+  cache.merge(
+    { data: fresh.slice(0, 80), range: { start: null, end: fresh[80].key } },
+    { start: null, end: null },
+  );
+  assert.equal(cache.rows.length, 330);
+  assert.equal(cache.rows.at(-1), old.at(-1));
+  assert.deepEqual(cache.unread, { start: fresh[80].key, end: old[0].key });
+  cache.merge({
+    data: fresh.slice(80, 180),
+    range: { start: fresh[80].key, end: fresh[180].key },
+  });
+  assert.deepEqual(cache.unread, { start: fresh[180].key, end: old[0].key });
+  cache.merge({
+    data: fresh.slice(180),
+    range: { start: fresh[180].key, end: old[0].key },
+  });
+  assert.equal(cache.unread, undefined);
+  assert.equal(cache.rows.length, 450);
+  assert.equal(new Set(cache.rows.map((row) => row.id)).size, 450);
+});

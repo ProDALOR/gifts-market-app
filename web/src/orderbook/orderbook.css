@@ -294,16 +294,16 @@
     rgba(19, 12, 27, 0.56)
   );
 }
-.card-preview .gift-loading-placeholder,
-.card-preview .gift-model-image,
-.card-preview .model-animation {
+.card-preview > .gift-loading-placeholder,
+.card-preview > .gift-model-image,
+.card-preview > .model-animation {
   inset: var(--card-art-top, 8px) auto auto
     calc(50% - var(--card-art-size, 44px) / 2);
   width: var(--card-art-size, 44px);
   height: var(--card-art-size, 44px);
   filter: drop-shadow(0 2px 2px #21132638);
 }
-.card-preview .gift-preview-fallback {
+.card-preview > .gift-preview-fallback {
   position: absolute;
   top: 13px;
   left: 0;
@@ -713,4 +713,183 @@
   transition:
     filter 250ms ease-out,
     opacity 250ms ease-out;
+}
+
+/* Bids describe accepted alternatives using the same static art as the pickers. */
+.gift-grid-bids {
+  grid-auto-rows: 156px;
+}
+.card-preview.bid-card {
+  isolation: isolate;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 5px;
+  border-radius: 13px;
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--surface);
+}
+.bid-card::after {
+  content: none;
+}
+.bid-card .serial {
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: var(--tint);
+  color: var(--accent);
+}
+.bid-card .card-head {
+  height: 22px;
+  flex: none;
+}
+.bid-card .card-copy {
+  flex: none;
+  padding-top: 3px;
+}
+.bid-conditions {
+  display: grid;
+  gap: 14px;
+  margin: 18px 0 0;
+  min-width: 0;
+}
+.bid-conditions > div {
+  min-width: 0;
+}
+.bid-conditions dt {
+  margin-bottom: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.bid-conditions dd {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+}
+.condition-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  font-size: 12px;
+}
+.condition-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.condition-any {
+  color: var(--muted);
+  font-size: 12px;
+}
+.condition-overflow {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: var(--tint);
+  font-size: 10px;
+  font-weight: 650;
+}
+.bid-conditions.compact {
+  flex: 1;
+  align-content: center;
+  width: 100%;
+  gap: 3px;
+  margin: 0;
+  pointer-events: none;
+}
+.bid-conditions.compact dt {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.bid-conditions.compact dd {
+  flex-wrap: nowrap;
+  gap: 3px;
+  min-height: 20px;
+}
+.bid-conditions.compact .condition-chip {
+  padding: 1px 3px;
+  gap: 3px;
+  border-color: transparent;
+  font-size: 10px;
+  line-height: 18px;
+  flex: 0 1 auto;
+}
+.bid-conditions.compact .option-art {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+.bid-conditions.compact .condition-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bid-conditions.compact .condition-any,
+.bid-conditions.compact .condition-range {
+  font-size: 10px;
+  line-height: 20px;
+}
+.detail.detail-criteria[open] {
+  display: flex;
+  flex-direction: column;
+  height: fit-content;
+}
+.bid-detail-heading {
+  flex: none;
+  padding: 24px 54px 0 18px;
+}
+.bid-detail-heading p {
+  font-size: 11px;
+  color: var(--muted);
+}
+.bid-detail-heading h2 {
+  margin-top: 4px;
+  font-size: 24px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.detail-criteria .detail-pricing {
+  grid-template-columns: minmax(0, 1fr);
+}
+.detail-criteria .detail-content {
+  min-height: 0;
+}
+@media (min-width: 960px) {
+  .detail.detail-criteria[open] {
+    width: min(640px, calc(100% - 48px));
+  }
+  .detail.detail-criteria > .modal-close {
+    left: auto;
+    right: 12px;
+  }
+  .bid-detail-heading {
+    padding: 28px 64px 0 24px;
+  }
+  .market-results .bid-card .option-art {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+.bid-conditions.compact .condition-range {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }

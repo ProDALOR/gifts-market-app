@@ -1,11 +1,13 @@
 // Full UI workflow with an isolated local catalog/feed; no Telegram or hub login.
 import assert from "node:assert/strict";
-import { orderResult, orderSnapshot } from "./range-fixture.mjs";
+import { orderResult, RangeWatch } from "./range-fixture.mjs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 const server = await createServer({
   root: fileURLToPath(new URL("..", import.meta.url)),
+  // This fixture explicitly exercises Mini App behavior, even with API-only schemas.
+  define: { "import.meta.env.VITE_MARKET_MINIAPP": JSON.stringify("true") },
   server: { host: "127.0.0.1", port: 0 },
 });
 let browser;
@@ -74,6 +76,7 @@ const venues = ["Telegram", "Portals", "MRKT"].map((name) => ({
   id: name.toLowerCase(),
   name,
 }));
+let historyExtras = [];
 function result(query, executed = query.source === "history") {
   const filters = query.filters;
   const mode = executed ? "executed" : query.source === "bids" ? "bid" : "ask";
@@ -133,6 +136,7 @@ function result(query, executed = query.source === "history") {
           : "https://t.me/market/app?startapp=gift42",
     }),
   );
+  if (executed) rows.push(...historyExtras);
   rows = rows.filter(
     (order) =>
       (!filters.venue_id || filters.venue_id === order.book.venue_id) &&
@@ -449,19 +453,15 @@ try {
       if (frame.type === "orders.watch") {
         orderSubscriptions++;
         connections.delete(connection);
-        connection = { socket, id: frame.id, query: frame.params };
+        const rows = result({ ...frame.params, limit: 10000 }).data;
+        connection = {
+          socket,
+          id: frame.id,
+          query: frame.params,
+          watch: new RangeWatch(frame.params, rows),
+        };
         connections.add(connection);
-        socket.send(
-          JSON.stringify({
-            type: "orders.snapshot",
-            sequence: 0,
-            id: frame.id,
-            ...orderSnapshot(
-              frame.params,
-              result({ ...frame.params, limit: 10000 }).data,
-            ),
-          }),
-        );
+        socket.send(JSON.stringify(connection.watch.frame(frame.id, rows)));
       }
     });
     socket.onClose(() => {
@@ -1002,8 +1002,67 @@ try {
   await page.waitForFunction(
     () => document.querySelector(".gift-card .serial")?.textContent === "#1926",
   );
-  await page.getByText("Snapshot", { exact: true }).waitFor();
+  await page.locator(".feed-status .status.live").waitFor();
   await scrollMore(75);
+  assert.equal(snapshotSequence, 0, "GUI history uses no frozen REST lease");
+  await page.evaluate(() => window.scrollTo(0, 700));
+  await page.waitForTimeout(150);
+  const anchor = await page.locator(".card-open").evaluateAll((nodes) => {
+    const node = nodes.find((node) => {
+      const r = node.getBoundingClientRect();
+      return r.bottom > 0 && r.top < innerHeight;
+    });
+    return { id: node.dataset.orderId, top: node.getBoundingClientRect().top };
+  });
+  const historyPeer = [...connections].find(
+    (candidate) => candidate.query.source === "history",
+  );
+  assert.ok(historyPeer, "History has an active orders.watch");
+  const template = result({ ...historyPeer.query, limit: 10000 }).data[0];
+  historyExtras = [
+    {
+      ...template,
+      id: "execution-new",
+      target: { ...template.target, id: "gift-1100", number: 1900 },
+      executed_at: new Date(
+        Date.parse(template.executed_at) + 1000,
+      ).toISOString(),
+    },
+    {
+      ...template,
+      id: "execution-backfill",
+      target: { ...template.target, id: "gift-1099", number: 1901 },
+      executed_at: new Date(
+        Date.parse(template.executed_at) - 5500,
+      ).toISOString(),
+    },
+  ];
+  historyPeer.socket.send(
+    JSON.stringify(
+      historyPeer.watch.frame(
+        historyPeer.id,
+        result({ ...historyPeer.query, limit: 10000 }).data,
+      ),
+    ),
+  );
+  await cards(77);
+  const top = await page
+    .locator(`[data-order-id="${anchor.id}"]`)
+    .evaluate((node) => node.getBoundingClientRect().top);
+  assert.ok(
+    Math.abs(top - anchor.top) < 2,
+    "Live execution inserts preserve the visible scroll anchor",
+  );
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForFunction(
+    () => document.querySelector(".gift-card .serial")?.textContent === "#1900",
+  );
+  assert.ok((await page.locator(".gift-card.is-new").count()) > 0);
+  assert.equal(
+    snapshotSequence,
+    0,
+    "Live history does not poll or open snapshot reads",
+  );
   await page.locator(".card-open").first().click();
   await page
     .locator(".detail dt")
@@ -1017,6 +1076,7 @@ try {
     0,
   );
   await page.keyboard.press("Escape");
+  historyExtras = [];
   await button("Asks").click();
   await cards(80);
   await scrollMore(125);
@@ -1263,7 +1323,7 @@ try {
   assert.equal(new URL(page.url()).searchParams.get("sort"), "time_asc");
   assert.deepEqual(errors, []);
   console.log(
-    "Orderbook browser passed: unlimited trait previews, infinite scroll, Time/Gift #/Price sorting, currencies, URL restore, modes, accessible details and automatic Mini App catalog updates.",
+    "Orderbook browser passed: unlimited trait previews, infinite scroll, Time/Gift #/Price sorting, currencies, URL restore, modes, live history/backfills with scroll anchors, accessible details and automatic Mini App catalog updates.",
   );
 } finally {
   await browser?.close();

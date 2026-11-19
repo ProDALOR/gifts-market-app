@@ -27,11 +27,11 @@ import {useOrderFeed} from '/src/use-order-feed.ts';
 import {GiftGrid} from '/src/orderbook/gift-grid.tsx';
 import {ScrollLoader} from '/src/orderbook/scroll-loader.tsx';
 import '/src/style.css';
-const query={kind:'orders',query:{filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},side:'ask',sort:'price_asc'}};
+const query={filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},source:'asks',sort:'price_asc'};
 const options=new Map(),open=()=>{};
 const card=()=>({options,collectionName:'Gift',venueName:'Venue',selected:false,open});
-function App(){const [paused,setPaused]=React.useState(false);const [selection,setSelection]=React.useState(query);window.setPaused=setPaused;window.selectCollection=id=>setSelection(id?{...query,query:{...query.query,filters:{...query.query.filters,collection_id:id}}}:null);const feed=useOrderFeed(selection,paused,0);window.feedView=()=>feed;
-React.useLayoutEffect(()=>{const selected=selection?.query.filters.collection_id??null;window.scopeFrames??=[];window.scopeFrames.push({selected,collections:[...new Set(feed.orders.map(o=>o.book.collection_id))]});if(selected==='other'){feed.loadMore();feed.setVisibleRange(0,5);}},[selection,feed.orders]);
+function App(){const [paused,setPaused]=React.useState(false);const [selection,setSelection]=React.useState(query);window.setPaused=setPaused;window.selectCollection=id=>setSelection(id?{...query,filters:{...query.filters,collection_id:id}}:null);const feed=useOrderFeed(selection,paused,0);window.feedView=()=>feed;
+React.useLayoutEffect(()=>{const selected=selection?.filters.collection_id??null;window.scopeFrames??=[];window.scopeFrames.push({selected,collections:[...new Set(feed.orders.map(o=>o.book.collection_id))]});if(selected==='other'){feed.loadMore();feed.setVisibleRange(0,5);}},[selection,feed.orders]);
 return React.createElement('main',{className:'workspace'},React.createElement('div',{className:'orderbook'},
 React.createElement('header',{style:{height:72}},'Market'),
 React.createElement('section',{className:'orders'},

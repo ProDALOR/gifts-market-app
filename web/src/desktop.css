@@ -193,7 +193,7 @@
     padding: 8px;
     border-radius: 16px;
   }
-  .market-results .card-preview .gift-preview-fallback {
+  .market-results .card-preview > .gift-preview-fallback {
     top: 34px;
     font-size: 48px;
   }

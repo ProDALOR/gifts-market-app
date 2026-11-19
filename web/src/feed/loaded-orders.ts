@@ -1,4 +1,5 @@
 import type { components } from "../gen/api.ts";
+import { OrderCoverage, type OrderRange } from "./coverage.ts";
 import { orderKey } from "../orderbook/order-activity.ts";
 type Result = components["schemas"]["OrderSnapshotResponse"];
 type Entry = Result["data"][number];
@@ -16,12 +17,30 @@ export function lowerBound(rows: readonly Entry[], key: string) {
 export class LoadedOrders {
   rows: Entry[] = [];
   private identities = new Map<string, Entry>();
-  private start?: string | null;
+  private coverage = new OrderCoverage();
   get hasBefore() {
-    return this.start != null;
+    return this.coverage.hasBefore;
   }
-  merge(view: Result) {
+  get unread() {
+    return this.coverage.gap();
+  }
+  unreadWithin(range: OrderRange) {
+    return this.coverage.gap(range);
+  }
+  coveredRange(key: string) {
+    return this.coverage.containing(key);
+  }
+  merge(view: Result, requested?: OrderRange) {
     const { start, end } = view.range;
+    // A limited baseline certifies only its returned coverage. Retain rows
+    // beyond it, but reopen the interval before the next cached row.
+    if (requested && end !== null && end !== requested.end) {
+      let join = this.rows[lowerBound(this.rows, end)]?.key ?? requested.end;
+      if (requested.end !== null && (join === null || join > requested.end))
+        join = requested.end;
+      if (join === null || end < join)
+        this.coverage.remove({ start: end, end: join });
+    }
     const first = start === null ? 0 : lowerBound(this.rows, start);
     const last = end === null ? this.rows.length : lowerBound(this.rows, end);
     const moved = new Set<Entry>();
@@ -44,11 +63,6 @@ export class LoadedOrders {
       incoming,
       moved.size ? tail.filter((row) => !moved.has(row)) : tail,
     );
-    if (
-      this.start === undefined ||
-      start === null ||
-      (this.start !== null && start < this.start)
-    )
-      this.start = start;
+    this.coverage.add(view.range);
   }
 }

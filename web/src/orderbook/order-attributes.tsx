@@ -1,4 +1,5 @@
 import type { Order, CatalogOption, ValuationView } from "../market";
+import { BidConditions } from "./bid-conditions";
 import { giftDetails } from "../orderbook";
 import { GiftArtwork } from "../previews/gift-artwork";
 import { ValuationFields } from "../valuation/display";
@@ -17,6 +18,15 @@ export function OrderAttributes({
   fields?: ValuationView["display"]["fields"];
   summary?: string | null;
 }) {
+  if (order.target.kind === "criteria")
+    return (
+      <BidConditions
+        criteria={order.target}
+        options={options}
+        names={names}
+        quantity={order.quantity}
+      />
+    );
   const rows = giftDetails(order, names, options);
   const attributes = new Set(rows.map((row) => row.attribute));
   const general = fields.filter(

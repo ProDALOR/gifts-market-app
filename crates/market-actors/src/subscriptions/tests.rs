@@ -589,3 +589,75 @@ async fn catalog_joins_leave_the_current_manifest_as_the_only_initial_data_updat
     drop((first, joined));
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn live_history_publishes_new_executions_and_late_backfills_within_its_period() {
+    use market_hub_protocol::wire as w;
+    let (_directory, mut writer) = fixture();
+    let h = Harness::new(writer.reader(), 2).await;
+    let mut history = query("gift");
+    history.source = market_gifts::OrderSource::History;
+    history.period = Some(market_gifts::Period {
+        from: Some("1970-01-01T00:00:01Z".parse().unwrap()),
+        until: Some("1970-01-01T00:00:05Z".parse().unwrap()),
+    });
+    let mut watch = h.service.handle.watch_orders(history).await.unwrap();
+    assert!(matches!(&watch.initial, DataUpdate::Orders { result, .. } if result.data.is_empty()));
+    let execution = |id: &str, at: i64| {
+        let mut change = order("2");
+        if let Some(w::change::Change::Upsert(w::Entity {
+            entity: Some(w::entity::Entity::Order(order)),
+        })) = &mut change.change
+        {
+            order.id = id.into();
+            order.mode = w::OrderMode::Executed as i32;
+            order.executed_at_ms = Some(at);
+        }
+        change
+    };
+    writer
+        .apply(w::Batch {
+            cursor: "executions".into(),
+            changes: vec![execution("new", 3000), execution("outside-period", 6000)],
+        })
+        .unwrap();
+    price(&mut watch.updates, "2").await;
+    assert!(
+        matches!(&*watch.updates.borrow(), DataUpdate::Orders { result, .. }
+        if result.data.len() == 1 && result.data[0].order.id.as_str() == "new")
+    );
+    writer
+        .apply(w::Batch {
+            cursor: "backfill".into(),
+            changes: vec![execution("late", 2000), execution("newest", 4000)],
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let DataUpdate::Orders { result, .. } = watch.updates.borrow_and_update().clone()
+                && result.data.len() == 3
+            {
+                assert_eq!(
+                    result
+                        .data
+                        .iter()
+                        .map(|row| row.order.id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["newest", "new", "late"]
+                );
+                assert!(
+                    result
+                        .data
+                        .iter()
+                        .all(|row| row.order.kind == market_gifts::GiftOrderKind::Executed)
+                );
+                break;
+            }
+            watch.updates.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    drop(watch);
+    h.shutdown().await;
+}

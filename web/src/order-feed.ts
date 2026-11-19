@@ -10,19 +10,7 @@ export function createOrderFeed(
   changed: (state: FeedState) => void,
   bookmark?: Bookmark,
 ): FeedController {
-  if (query.kind === "history")
-    return new SnapshotController(
-      { ...query.query, source: "history" },
-      changed,
-      bookmark,
-    );
-  if (paused) {
-    const { side, ...params } = query.query;
-    return new SnapshotController(
-      { ...params, source: side === "bid" ? "bids" : "asks", limit: 100 },
-      changed,
-      bookmark,
-    );
-  }
-  return new RangeController(query.query, changed, bookmark);
+  return paused
+    ? new SnapshotController({ ...query, limit: 100 }, changed, bookmark)
+    : new RangeController(query, changed, bookmark);
 }

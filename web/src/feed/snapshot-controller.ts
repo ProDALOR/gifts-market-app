@@ -1,5 +1,5 @@
-import { FrozenReads, type OrderQuery, type Snapshot } from "./range-source.ts";
-import { ApiFailure } from "../market.ts";
+import { FrozenReads, type Snapshot } from "./range-source.ts";
+import { ApiFailure, type OrderQuery } from "../market.ts";
 import { LoadedOrders } from "./loaded-orders.ts";
 import { orderKey } from "../orderbook/order-activity.ts";
 import {
@@ -8,7 +8,7 @@ import {
   type FeedController,
   type FeedState,
 } from "./types.ts";
-/** One immutable view for paused listings and history. Expiry rebuilds all visited rows before publishing. */
+/** One immutable view for explicitly paused reads. Expiry rebuilds all visited rows before publishing. */
 export class SnapshotController implements FeedController {
   private stop = new AbortController();
   private source = new FrozenReads();
@@ -16,9 +16,9 @@ export class SnapshotController implements FeedController {
   private pages: Snapshot[] = [];
   private cache: LoadedOrders;
   private anchor?: string;
-  private end?: string | null;
   private working = false;
   private wanted: number;
+  private through?: string;
   private readonly size: number;
   ready = false;
   constructor(
@@ -27,29 +27,16 @@ export class SnapshotController implements FeedController {
     bookmark?: Bookmark,
   ) {
     this.size = query.limit ?? 100;
-    this.cache =
-      bookmark?.kind === "range"
-        ? (bookmark.cache ?? new LoadedOrders())
-        : new LoadedOrders();
-    this.anchor = bookmark?.kind === "range" ? bookmark.anchor : undefined;
-    this.end = bookmark?.kind === "range" ? bookmark.end : undefined;
-    this.wanted =
-      bookmark?.kind === "history"
-        ? bookmark.depth * this.size
-        : Math.max(1, this.cache.rows.length);
+    this.cache = bookmark?.cache ?? new LoadedOrders();
+    this.anchor = bookmark?.anchor;
+    this.wanted = Math.max(1, this.cache.rows.length);
+    this.through = this.cache.rows.at(-1)?.key;
   }
   get bookmark(): Bookmark {
-    return this.query.source === "history"
-      ? {
-          kind: "history",
-          depth: Math.max(1, Math.ceil(this.wanted / this.size)),
-        }
-      : {
-          kind: "range",
-          cache: this.cache,
-          anchor: this.anchor,
-          end: this.end,
-        };
+    return {
+      cache: this.cache,
+      anchor: this.anchor,
+    };
   }
   start() {
     void this.load();
@@ -74,9 +61,17 @@ export class SnapshotController implements FeedController {
     let restarted = false;
     try {
       let count = this.pages.reduce((n, p) => n + p.data.length, 0);
-      while (count < this.wanted) {
+      while (true) {
         const start = this.pages.at(-1)?.range.end ?? null;
-        if (this.pages.length && start === null) break;
+        // Cached islands can contain unread gaps: row count alone can stop
+        // before the previously visited tail when a frozen view is rebuilt.
+        if (
+          this.pages.length &&
+          (start === null ||
+            (count >= this.wanted &&
+              (this.through === undefined || start > this.through)))
+        )
+          break;
         try {
           const page = await this.source.query(
             { ...this.query, limit: this.size, range: { start, end: null } },
@@ -108,17 +103,18 @@ export class SnapshotController implements FeedController {
           return true;
         }),
       );
-      this.end = this.pages.at(-1)?.range.end ?? null;
+      const end = this.pages.at(-1)?.range.end ?? null;
       const cache = new LoadedOrders();
-      cache.merge({ data, range: { start: null, end: this.end } });
+      cache.merge({ data, range: { start: null, end } });
       this.cache = cache;
+      this.through = cache.rows.at(-1)?.key;
       const orders = cache.rows.map(({ key: _, ...row }) => row);
       this.ready = true;
       this.emit({
         orders,
         displayOrders: orders,
-        hasMore: this.end !== null,
-        status: this.query.source === "history" ? "Snapshot" : "Paused",
+        hasMore: end !== null,
+        status: "Paused",
         error: "",
       });
     } catch (error) {

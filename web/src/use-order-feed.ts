@@ -13,14 +13,13 @@ export function useOrderFeed(
   const saved = useRef<{ signature: string; bookmark?: Bookmark }>({
     signature: "",
   });
-  const frozen = query?.kind === "orders" && paused;
   useLayoutEffect(() => {
     const same = saved.current.signature === signature;
     if (!same) saved.current = { signature };
     if (!query) return;
     const current = createOrderFeed(
       query,
-      frozen,
+      paused,
       (next) => {
         const ready = current.ready;
         setView((previous) => {
@@ -52,7 +51,7 @@ export function useOrderFeed(
       current.close();
       if (feed.current === current) feed.current = undefined;
     };
-  }, [signature, frozen, refresh]);
+  }, [signature, paused, refresh]);
   const loadMore = useCallback(() => {
     if (saved.current.signature === signature) feed.current?.loadMore();
   }, [signature]);

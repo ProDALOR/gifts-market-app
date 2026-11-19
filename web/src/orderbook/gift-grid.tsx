@@ -180,7 +180,7 @@ export function GiftGrid({
   return (
     <ul
       ref={host}
-      className="gift-grid"
+      className={`gift-grid${orders[0]?.kind === "bid" ? " gift-grid-bids" : ""}`}
       data-order-count={orders.length}
       aria-label="Gift listings"
       aria-busy={busy}

@@ -45,6 +45,14 @@ export function listingLink(order: Order): string | undefined {
   } catch {}
 }
 
+export type BidCriteria = Extract<Order["target"], { kind: "criteria" }>;
+export function giftNumberRange(range: BidCriteria["number"]) {
+  if (!range || (range.min == null && range.max == null)) return;
+  return range.min === range.max
+    ? String(range.min)
+    : `${range.min ?? "Any"} – ${range.max ?? "Any"}`;
+}
+
 export type GiftDetail = {
   label: string;
   value: string;
@@ -77,18 +85,8 @@ export function giftDetails(
     });
   }
   const criteria = target.kind === "criteria" ? target : undefined;
-  if (
-    criteria &&
-    criteria.number &&
-    (criteria.number.min != null || criteria.number.max != null)
-  )
-    rows.push({
-      label: "Gift #",
-      value:
-        criteria.number.min === criteria.number.max
-          ? String(criteria.number.min)
-          : `${criteria.number.min ?? "Any"} – ${criteria.number.max ?? "Any"}`,
-    });
+  const number = giftNumberRange(criteria?.number);
+  if (number) rows.push({ label: "Gift #", value: number });
   if (target.kind === "criteria" && order.quantity > 1)
     rows.push({ label: "Quantity", value: String(order.quantity) });
   return rows;

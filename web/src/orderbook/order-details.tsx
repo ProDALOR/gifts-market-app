@@ -25,6 +25,7 @@ export function OrderDetails({
   close: () => void;
 }) {
   const state = useGiftValuation(selected);
+  const criteria = selected.target.kind === "criteria";
   const selectedSerial = serial(selected),
     model =
       selected.target.kind === "gift" ? modelName(selected, options, "") : "",
@@ -45,34 +46,43 @@ export function OrderDetails({
   return (
     <Modal
       close={close}
-      className="detail"
+      className={`detail${criteria ? " detail-criteria" : ""}`}
       label="Order details"
       closeLabel="Close details"
       describedBy="detail-title"
     >
-      <div className="detail-art">
-        <GiftPreview
-          order={selected}
-          options={options}
-          fallback={collectionName[0] || "◇"}
-          size="large"
-          playback="detail"
-        />
-        <div className="detail-caption">
+      {criteria ? (
+        <header className="bid-detail-heading">
+          <p>Bid conditions</p>
           <h2 id="detail-title">
             {names.get(selected.book.collection_id) || collectionName}
-            {selectedSerial && (
-              <>
-                {" "}
-                <span>
-                  #{selectedSerial.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0")}
-                </span>
-              </>
-            )}
           </h2>
-          {model && <p>{model}</p>}
+        </header>
+      ) : (
+        <div className="detail-art">
+          <GiftPreview
+            order={selected}
+            options={options}
+            fallback={collectionName[0] || "◇"}
+            size="large"
+            playback={selected.kind === "bid" ? "static" : "detail"}
+          />
+          <div className="detail-caption">
+            <h2 id="detail-title">
+              {names.get(selected.book.collection_id) || collectionName}
+              {selectedSerial && (
+                <>
+                  {" "}
+                  <span>
+                    #{selectedSerial.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0")}
+                  </span>
+                </>
+              )}
+            </h2>
+            {model && <p>{model}</p>}
+          </div>
         </div>
-      </div>
+      )}
       <div className="detail-content">
         <div className="detail-body">
           <div className="detail-pricing">
@@ -90,9 +100,10 @@ export function OrderDetails({
                   currency={selected.book.currency_id}
                 />
               </div>
+              {criteria && <p className="valuation-note">Price per gift</p>}
               {comparison && <p className="price-comparison">{comparison}</p>}
             </section>
-            <GiftValuationSummary state={state} />
+            {!criteria && <GiftValuationSummary state={state} />}
           </div>
           <OrderAttributes
             order={selected}
