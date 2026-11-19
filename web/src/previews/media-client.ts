@@ -57,12 +57,14 @@ async function download(
       type &&
       !(kind === "tgs"
         ? type === "application/x-tgsticker"
-        : ["image/png", "image/jpeg", "image/webp"].includes(type))
+        : ["image/png", "image/jpeg", "image/webp", "image/svg+xml"].includes(
+            type,
+          ))
     ) {
       await response.body?.cancel();
       throw new Error("Invalid media type");
     }
-    const limit = 256 * 1024;
+    const limit = type === "image/svg+xml" ? 1024 * 1024 : 256 * 1024;
     if (
       Number(response.headers.get("Content-Length")) > limit ||
       !response.body
@@ -96,9 +98,14 @@ async function download(
 }
 // Native <img loading=lazy> remains the fast path. Failed images use the same
 // status-aware retry policy, warming the HTTP cache before one remount.
-const imageRecovery = new ResourceCache(async (url, signal) => {
-  await fetchMedia(url, signal, "image");
-  return { value: true, bytes: 1 };
-}, 64);
+const imageRecovery = new ResourceCache(
+  async (url, signal) => {
+    await fetchMedia(url, signal, "image");
+    return { value: true, bytes: 1 };
+  },
+  64,
+  4,
+  30_000,
+);
 export const recoverImage = (url: string, signal: AbortSignal) =>
   imageRecovery.get(url, signal);

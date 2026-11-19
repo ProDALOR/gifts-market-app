@@ -9,6 +9,8 @@
     "build": "npm run generate && tsc --noEmit && vite build",
     "test": "node --experimental-transform-types --test scripts/*.test.ts",
     "benchmark:query": "node --experimental-transform-types scripts/query-benchmark.mjs",
+    "benchmark:previews": "node scripts/preview-benchmark.mjs",
+    "validate:previews": "node scripts/svg-validation.mjs",
     "test:previews": "node scripts/preview-browser.mjs",
     "test:orderbook": "node scripts/orderbook-browser.mjs",
     "test:grid": "node scripts/grid-browser.mjs",

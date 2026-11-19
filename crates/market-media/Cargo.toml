@@ -12,9 +12,12 @@ tokio.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
+roxmltree = "0.21"
 tempfile = "3"
+
+velato = { version = "=0.12.0", default-features = false }
+kurbo = "=0.13.0"
+peniko = "=0.6.0"
 
 [lints]
 workspace = true

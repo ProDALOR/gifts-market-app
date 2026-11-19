@@ -34,6 +34,7 @@ pub(crate) async fn deadline<B: MessageBody + 'static>(
 }
 
 pub(crate) fn etag_matches(req: &HttpRequest, etag: &str) -> bool {
+    let etag = etag.trim_start_matches("W/");
     req.headers()
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())

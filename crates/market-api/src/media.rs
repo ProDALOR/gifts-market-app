@@ -41,6 +41,22 @@ pub(crate) async fn model_animation(
     let target = MediaTarget::Model(id.into_inner());
     catalog_media(market, media, target, request, MediaKind::Animation).await
 }
+#[utoipa::path(get,tag="Media",path="/media/models/{id}/preview",params(("id"=String,Path,description="Catalog model ID")),responses((status=200,description="Cached Rust first-frame SVG"),(status=304,description="Cached preview unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
+pub(crate) async fn model_preview(
+    market: web::Data<MarketApi>,
+    media: Option<web::Data<MediaApi>>,
+    id: web::Path<ModelId>,
+    request: HttpRequest,
+) -> Result<HttpResponse> {
+    catalog_media(
+        market,
+        media,
+        MediaTarget::Model(id.into_inner()),
+        request,
+        MediaKind::Preview,
+    )
+    .await
+}
 #[utoipa::path(get,tag="Media",path="/media/patterns/{id}",params(("id"=String,Path,description="Catalog pattern ID")),responses((status=200,description="PNG, JPEG or WebP gift pattern thumbnail"),(status=304,description="Cached pattern unchanged"),(status=400,body=crate::error::ErrorResponse),(status=404,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn pattern_thumbnail(
     market: web::Data<MarketApi>,
@@ -66,11 +82,12 @@ async fn catalog_media(
         .map_err(|_| ApiError::capacity("Media service is busy"))?;
     let document = market.media_document(target).await?;
     let document = market_media::DocumentId::new(document.get()).ok_or_else(ApiError::not_found)?;
-    let key = match kind {
-        MediaKind::Thumbnail => MediaKey::thumbnail(document),
-        MediaKind::Animation => MediaKey::animation(document),
+    let asset = match kind {
+        MediaKind::Thumbnail => media.cache.get(MediaKey::thumbnail(document)).await,
+        MediaKind::Animation => media.cache.get(MediaKey::animation(document)).await,
+        MediaKind::Preview => media.cache.preview(document).await,
     };
-    let image = match media.cache.get(key).await {
+    let image = match asset {
         Ok(image) => image,
         Err(error) => {
             let (code, message, retry) = match error {
@@ -118,6 +135,14 @@ async fn catalog_media(
     response
         .insert_header((header::ETAG, image.etag()))
         .insert_header((header::CACHE_CONTROL, "public,max-age=86400"));
+    if kind == MediaKind::Preview {
+        response
+            .insert_header((header::VARY, "Accept-Encoding"))
+            .insert_header((
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+            ));
+    }
     if unchanged {
         Ok(response.finish())
     } else {
@@ -202,6 +227,17 @@ mod tests {
         tokio::fs::write(media_path.join("42.tgs"), &tgs)
             .await
             .unwrap();
+        use sha2::Digest;
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">{}</svg>"##,
+            r##"<path d="M0 0L1 1" fill="#ffffff"/>"##.repeat(32)
+        );
+        tokio::fs::write(
+            media_path.join(format!("42.preview-2-{:x}.svg", sha2::Sha256::digest(&tgs))),
+            &svg,
+        )
+        .await
+        .unwrap();
         let app = test::init_service(
             App::new()
                 .wrap(crate::security_headers())
@@ -213,6 +249,52 @@ mod tests {
                 .configure(crate::configure),
         )
         .await;
+        let preview = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/media/models/model/preview")
+                .insert_header((header::ACCEPT_ENCODING, "gzip"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(preview.status(), 200);
+        assert_eq!(
+            preview.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/svg+xml"
+        );
+        assert_eq!(
+            preview.headers().get(header::CONTENT_ENCODING).unwrap(),
+            "gzip"
+        );
+        assert_eq!(
+            preview.headers().get(header::VARY).unwrap(),
+            "Accept-Encoding"
+        );
+        let preview_etag = preview
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(preview_etag.starts_with("W/"));
+        let compressed = test::read_body(preview).await;
+        let mut decoded = String::new();
+        std::io::Read::read_to_string(
+            &mut flate2::read::GzDecoder::new(compressed.as_ref()),
+            &mut decoded,
+        )
+        .unwrap();
+        assert_eq!(decoded, svg);
+        let unchanged = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/media/models/model/preview")
+                .insert_header((header::IF_NONE_MATCH, preview_etag))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(unchanged.status(), 304);
         let response = test::call_service(
             &app,
             test::TestRequest::get()

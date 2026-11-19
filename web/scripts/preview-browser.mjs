@@ -17,7 +17,7 @@ import { TraitPreview } from "/src/previews/trait-preview.tsx";
 import { VenueIcon } from "/src/ui/icons.tsx";
 const order={target:{kind:'gift',id:'gift-1',number:1,traits:{model:'model',backdrop:'backdrop',pattern:'pattern'}}};
 const options=new Map([
- ['model',{kind:'model',id:'model',name:'Model',media:{thumbnail_url:'/media/models/model',animation_url:'/media/models/model/animation'}}],
+ ['model',{kind:'model',id:'model',name:'Model',media:{thumbnail_url:'/media/models/model',preview_url:'/media/models/model/preview',animation_url:'/media/models/model/animation'}}],
  ['backdrop',{kind:'backdrop',id:'backdrop',name:'Backdrop',palette:{center:'#b789e4',edge:'#8a5abc',pattern:'#5b10ab'}}],
  ['pattern',{kind:'pattern',id:'pattern',name:'Pattern',media:{thumbnail_url:'/media/patterns/pattern',animation_url:null}}]
 ]);
@@ -52,9 +52,10 @@ window.preload=()=>Promise.all(bulk.map(item=>loadAnimationData('/media/models/'
 window.mountMany=(detail=false)=>{document.getElementById('fixture').style.margin='0';root.render(React.createElement(Many,{detail}));};
 window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i,animation_url:'/media/models/rail-'+i+'/animation'},model_ids:['rail-'+i],backdrop_ids:[],pattern_ids:[]}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
 window.mountReference=(animated=true)=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/custom-still?v=1',animation_url:animated?'/media/custom-motion.tgs?v=2':null},fallback:'R',playback:'detail'}));
-window.mountMixed=()=>root.render(React.createElement('div',{className:'mixed-renderers'},...Array.from({length:12},(_,index)=>React.createElement(GiftArtwork,{key:index,media:index%2?{thumbnail_url:'/media/gradient-still',animation_url:'/media/opacity-test/animation'}:options.get('model').media,fallback:'M',playback:'selected'}))));
-window.mountGradient=(playback='detail')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/gradient-still',animation_url:'/media/opacity-test/animation'},fallback:'G',playback}));
+window.mountMixed=()=>root.render(React.createElement('div',{className:'mixed-renderers'},...Array.from({length:12},(_,index)=>React.createElement(GiftArtwork,{key:index,media:index%2?{thumbnail_url:'/media/gradient-still',preview_url:'/media/opacity-test/preview',animation_url:'/media/opacity-test/animation'}:options.get('model').media,fallback:'M',playback:'selected'}))));
+window.mountGradient=(playback='detail')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/gradient-still',preview_url:'/media/opacity-test/preview',animation_url:'/media/opacity-test/animation'},fallback:'G',playback}));
 window.mountSource=(thumbnail,playback='static')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:thumbnail,animation_url:'/media/custom-motion.tgs?v=2'},fallback:'F',playback}));
+window.mountLarge=(playback='static',preview='/media/large-preview.svg')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/large-still',preview_url:preview,animation_url:'/media/custom-motion.tgs?v=2'},fallback:'L',size:'large',playback}));
 window.mount();
 </script></body></html>`;
 const server = await createServer({
@@ -210,11 +211,35 @@ try {
     return canvas.toDataURL("image/png").split(",")[1];
   });
   const image = Buffer.from(png, "base64");
+  let transientPreviews = 0;
   await page.route("**/media/**", async (route) => {
     const url = route.request().url();
     mediaRequests.push(new URL(url).pathname + new URL(url).search);
     if (url.endsWith("/broken-still")) {
       await route.fulfill({ status: 404, body: "Missing" });
+      return;
+    }
+    if (url.includes("/invalid-large/")) {
+      await route.fulfill({ contentType: "image/svg+xml", body: "<invalid" });
+      return;
+    }
+    if (url.includes("/missing-large/")) {
+      await route.fulfill({ status: 404, body: "Missing animation" });
+      return;
+    }
+    if (url.includes("/transient-large/") && ++transientPreviews <= 2) {
+      await route.fulfill({
+        status: 503,
+        headers: { "Retry-After": "1" },
+        body: "Busy",
+      });
+      return;
+    }
+    if (url.endsWith("/preview") || url.endsWith("/large-preview.svg")) {
+      await route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><path d="M96 224h64v64h-64z" fill="#ffffff"/></svg>',
+      });
       return;
     }
     if (
@@ -384,7 +409,7 @@ try {
     window.scrollTo(0, 0);
     window.mount(true);
   });
-  await preview.locator(".model-animation.ready canvas").waitFor();
+  await preview.locator(".model-animation.ready > svg").waitFor();
   await page.evaluate(() => window.unmount());
   assert.equal(await page.locator(".model-animation canvas").count(), 0);
   await page.evaluate(() => window.mountSelection());
@@ -475,7 +500,7 @@ try {
   );
   await page.mouse.move(479, 800);
   await page.evaluate(() => window.mountMany(true));
-  await page.locator(".detail-test .model-animation.ready canvas").waitFor();
+  await page.locator(".detail-test .model-animation.ready > svg").waitFor();
   assert.equal(
     await page.locator(".preview-model .model-animation.ready canvas").count(),
     0,
@@ -487,7 +512,8 @@ try {
     .getByRole("button", { name: "How is this calculated?", exact: true })
     .click();
   await page.waitForFunction(
-    () => !document.querySelector(".model-animation canvas"),
+    () =>
+      !document.querySelector(".model-animation canvas,.model-animation > svg"),
   );
   await page
     .getByRole("article", {
@@ -497,7 +523,7 @@ try {
     .waitFor();
   await page.keyboard.press("Escape");
   await page.locator(".valuation-popup").waitFor({ state: "detached" });
-  await page.locator(".detail-test .model-animation.ready canvas").waitFor();
+  await page.locator(".detail-test .model-animation.ready > svg").waitFor();
   assert.equal(
     animations,
     beforePopup,
@@ -554,7 +580,7 @@ try {
   );
   assert.equal(await page.locator(".model-animation").count(), 0);
   await page.evaluate(() => window.mountReference(true));
-  await page.locator(".model-animation.ready canvas").waitFor();
+  await page.locator(".model-animation.ready > svg").waitFor();
   assert.ok(
     mediaRequests.includes("/media/custom-motion.tgs?v=2"),
     "Use the supplied animation URL, including query parameters",
@@ -585,7 +611,7 @@ try {
     window.__trackPreviewTimers = false;
     window.mountSource("/media/static-source", "detail");
   });
-  await page.locator(".model-animation.ready canvas").waitFor();
+  await page.locator(".model-animation.ready > svg").waitFor();
   const downloaded = animations;
   await page.evaluate(() =>
     window.mountSource("/media/static-source", "static"),
@@ -671,6 +697,7 @@ try {
   await page.waitForFunction(
     () => !document.querySelector(".model-animation > svg"),
   );
+  await page.locator('img.loaded[src="/media/opacity-test/preview"]').waitFor();
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await svg.waitFor();
   await page.evaluate(() => window.scrollTo(0, 2000));
@@ -712,9 +739,116 @@ try {
   );
   await page.evaluate(() => window.unmount());
   assert.equal(await page.locator(".model-animation").count(), 0);
+  const beforeLarge = animations;
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    window.mountLarge();
+  });
+  const still = page.locator(
+    '.gift-preview-large img.loaded[src="/media/large-preview.svg"]',
+  );
+  await still.waitFor();
+  assert.equal(
+    await page.locator(".model-animation").count(),
+    0,
+    "Large static artwork uses an image without allocating a paused player",
+  );
+  assert.equal(
+    await still.evaluate((image) => image.naturalWidth),
+    512,
+    "The native SVG replaces the low-resolution thumbnail",
+  );
+  await page.locator(".gift-preview-large").evaluate((element) => {
+    element.style.width = element.style.height = "480px";
+  });
+  assert.equal(
+    await still.evaluate((image) => image.getBoundingClientRect().width),
+    478,
+  );
+  assert.equal(
+    animations,
+    beforeLarge,
+    "Static previews do not download TGS to the browser",
+  );
+  await page.evaluate(() => window.mountLarge("interaction"));
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.mouse.move(899, 20);
+  await still.waitFor();
+  await page.locator(".gift-preview-large").hover();
+  await page
+    .locator(".gift-preview-large .model-animation.ready > svg")
+    .waitFor();
+  await page.mouse.move(899, 20);
+  await page.waitForFunction(
+    () => !document.querySelector(".model-animation.ready"),
+  );
+  assert.equal(
+    await still.evaluate((image) => getComputedStyle(image).opacity),
+    "1",
+    "Leaving playback restores the native image",
+  );
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.waitForFunction(
+    () => !document.querySelector(".model-animation > svg"),
+  );
+  assert.equal(
+    animations,
+    beforeLarge,
+    "Playback shares the already cached TGS",
+  );
+  await page.evaluate(() =>
+    window.mountLarge("static", "/media/transient-large/preview"),
+  );
+  await page.locator('img.loaded[src="/media/large-still"]').waitFor();
+  await page
+    .locator('img.loaded[src="/media/transient-large/preview"]')
+    .waitFor();
+  assert.ok(
+    transientPreviews >= 3 && transientPreviews <= 4,
+    "SVG recovers after bounded transient retries",
+  );
+  assert.equal(
+    await page.locator(".model-animation").count(),
+    0,
+    "SVG recovery does not allocate a player",
+  );
+  await page.evaluate(() =>
+    window.mountLarge("static", "/media/invalid-large/preview"),
+  );
+  await page.locator('img.loaded[src="/media/large-still"]').waitFor();
+  await page.waitForFunction(
+    () => !document.querySelector('img[src="/media/invalid-large/preview"]'),
+  );
+  await page.waitForTimeout(150);
+  const invalidAttempts = mediaRequests.filter(
+    (url) => url === "/media/invalid-large/preview",
+  ).length;
+  assert.ok(
+    invalidAttempts >= 2 && invalidAttempts <= 3,
+    "Failed SVG decode has bounded recovery",
+  );
+  await page.waitForTimeout(200);
+  assert.equal(
+    mediaRequests.filter((url) => url === "/media/invalid-large/preview")
+      .length,
+    invalidAttempts,
+    "Invalid SVG does not cause a remount/recovery loop",
+  );
+  await page.evaluate(() =>
+    window.mountLarge("static", "/media/missing-large/preview"),
+  );
+  await page.locator('img.loaded[src="/media/large-still"]').waitFor();
+  assert.equal(
+    await page.locator(".model-animation").count(),
+    0,
+    "A failed SVG retains the thumbnail without a player",
+  );
+  await page.evaluate(() => window.unmount());
+  assert.equal(await page.locator(".model-animation").count(), 0);
   assert.deepEqual(errors, []);
   console.log(
-    "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details, bounded downloads/playback, stable reflow, long-rail initialization and unmount.",
+    "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details, sharp large stills, SVG retry/fallback, bounded downloads/playback, stable reflow, long-rail initialization and unmount.",
   );
 } finally {
   await browser?.close();

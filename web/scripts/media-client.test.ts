@@ -72,7 +72,7 @@ test("retry policy honors bounded Retry-After and never retries a missing asset"
 });
 test("downloads reject invalid types, declared oversize and chunked oversize", async (t) => {
   for (const response of [
-    new Response("<svg>", { headers: { "Content-Type": "image/svg+xml" } }),
+    new Response("<html>", { headers: { "Content-Type": "text/html" } }),
     new Response("small", {
       headers: { "Content-Length": String(256 * 1024 + 1) },
     }),
@@ -107,4 +107,28 @@ test("a transient response retries once and abort cancels backoff", async (t) =>
   await Promise.resolve();
   stop.abort();
   await assert.rejects(cancelled);
+});
+
+test("SVG recovery accepts the preview budget and keeps other image limits", async (t) => {
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () =>
+      new Response(new Uint8Array(512 * 1024), {
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+  );
+  assert.equal(
+    (await fetchMedia("/preview", signal(), "image")).length,
+    512 * 1024,
+  );
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () =>
+      new Response(new Uint8Array(1024 * 1024 + 1), {
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+  );
+  await assert.rejects(fetchMedia("/preview", signal(), "image"));
 });

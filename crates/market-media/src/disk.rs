@@ -1,6 +1,7 @@
 //! Concurrent validated reads, atomic writes and background quota maintenance. Work completes on blocking workers even
 //! if its async caller is cancelled, so index updates cannot be separated from a rename.
-use crate::{DocumentId, MediaAsset, MediaError, MediaKey, MediaLimits, MediaResult};
+use crate::{DocumentId, MediaAsset, MediaError, MediaKey, MediaKind, MediaLimits, MediaResult};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
@@ -15,8 +16,14 @@ struct Entry {
 }
 struct Index {
     files: HashMap<MediaKey, Entry>,
+    sources: HashMap<DocumentId, Source>,
     bytes: u64,
     generation: u64,
+}
+#[derive(Clone, Copy)]
+struct Source {
+    digest: [u8; 32],
+    stamp: Option<(SystemTime, u64)>,
 }
 pub(crate) struct DiskStore {
     directory: PathBuf,
@@ -37,12 +44,14 @@ impl DiskStore {
             limits,
             index: Mutex::new(Index {
                 files: HashMap::new(),
+                sources: HashMap::new(),
                 bytes: 0,
                 generation: 0,
             }),
         };
         let mut index = store.index.lock().unwrap();
         store.scan(&mut index)?;
+        store.prune_previews(&mut index)?;
         store.trim(&mut index, 0, None)?;
         drop(index);
         Ok(store)
@@ -53,6 +62,8 @@ impl DiskStore {
     }
     fn scan(&self, index: &mut Index) -> std::io::Result<()> {
         let mut files = HashMap::new();
+        let mut previews = HashMap::<DocumentId, (SystemTime, MediaKey)>::new();
+        let mut originals = HashMap::new();
         let mut bytes = 0;
         for item in fs::read_dir(&self.directory)? {
             let item = item?;
@@ -67,6 +78,17 @@ impl DiskStore {
             let name = item.file_name();
             let name = name.to_string_lossy();
             if let Some(key) = parse_name(&name) {
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                if key.kind() == MediaKind::Preview {
+                    let candidate = (modified, key);
+                    let entry = previews.entry(key.document()).or_insert(candidate);
+                    // A stable tie-break also handles old caches with multiple derivatives.
+                    if (modified, key.source()) > (entry.0, entry.1.source()) {
+                        *entry = candidate;
+                    }
+                } else if key.kind() == MediaKind::Animation {
+                    originals.insert(key.document(), (modified, metadata.len()));
+                }
                 bytes += metadata.len();
                 let accessed = index
                     .files
@@ -80,15 +102,101 @@ impl DiskStore {
                         accessed,
                     },
                 );
-            } else if stale_temporary(&name, &metadata, self.limits.temporary_ttl) {
+            } else if obsolete_preview(&name)
+                || stale_temporary(&name, &metadata, self.limits.temporary_ttl)
+            {
                 let _ = fs::remove_file(item.path());
             }
         }
+        let mut sources = HashMap::new();
+        for (document, (_, preview)) in &previews {
+            sources.insert(
+                *document,
+                Source {
+                    digest: preview.source().unwrap(),
+                    stamp: None,
+                },
+            );
+        }
+        for (document, stamp) in originals {
+            let previous = index.sources.get(&document).copied();
+            if previous.is_none() && !previews.contains_key(&document) {
+                continue;
+            }
+            let source =
+                if let Some(previous) = previous.filter(|source| source.stamp == Some(stamp)) {
+                    previous
+                } else {
+                    // Only changed originals with known derivatives need hashing. No decompression
+                    // or JSON parsing is needed to restore source identity after a restart.
+                    let mut bytes = Vec::new();
+                    match fs::File::open(self.path(MediaKey::animation(document))) {
+                        Ok(file) => {
+                            file.take(crate::MAX_ANIMATION_BYTES as u64 + 1)
+                                .read_to_end(&mut bytes)?;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error),
+                    }
+                    if bytes.len() > crate::MAX_ANIMATION_BYTES {
+                        sources.remove(&document);
+                        continue;
+                    }
+                    Source {
+                        digest: Sha256::digest(&bytes).into(),
+                        stamp: Some(stamp),
+                    }
+                };
+            sources.insert(document, source);
+        }
         *index = Index {
             files,
+            sources,
             bytes,
             generation: index.generation + 1,
         };
+        Ok(())
+    }
+    pub fn preview_key(&self, document: DocumentId) -> Option<MediaKey> {
+        self.index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sources
+            .get(&document)
+            .map(|source| MediaKey::preview(document, source.digest))
+    }
+    pub fn current_source(&self, document: DocumentId, digest: [u8; 32]) -> bool {
+        self.index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sources
+            .get(&document)
+            .is_none_or(|source| source.digest == digest)
+    }
+    fn prune_previews(&self, index: &mut Index) -> std::io::Result<()> {
+        let obsolete: Vec<_> = index
+            .files
+            .keys()
+            .copied()
+            .filter(|key| {
+                key.kind() == MediaKind::Preview
+                    && index
+                        .sources
+                        .get(&key.document())
+                        .is_some_and(|source| key.source() != Some(source.digest))
+            })
+            .collect();
+        for key in obsolete {
+            match fs::remove_file(self.path(key)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            if let Some(old) = index.files.remove(&key) {
+                index.bytes = index.bytes.saturating_sub(old.bytes);
+                index.generation += 1;
+            }
+        }
         Ok(())
     }
     fn trim(
@@ -155,15 +263,51 @@ impl DiskStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(_) => return Err(MediaError::Unavailable),
         };
+        let stamp = file
+            .metadata()
+            .ok()
+            .and_then(|metadata| Some((metadata.modified().ok()?, metadata.len())));
         let mut bytes = Vec::new();
         file.take(key.max_bytes() as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| MediaError::Unavailable)?;
         let asset = validate(bytes);
         let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        if generation != index.generation
+            && key.kind() == MediaKind::Animation
+            && let Some(asset) = &asset
+        {
+            if index
+                .sources
+                .get(&key.document())
+                .is_some_and(|source| source.digest != asset.digest)
+            {
+                return Err(MediaError::Busy);
+            }
+            // Unrelated writes must not prevent an original read from registering identity.
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                index.sources.entry(key.document())
+            {
+                entry.insert(Source {
+                    digest: asset.digest,
+                    stamp,
+                });
+                index.generation += 1;
+            }
+        }
         if generation == index.generation {
             match &asset {
                 Some(asset) => {
+                    if key.kind() == MediaKind::Animation {
+                        index.sources.insert(
+                            key.document(),
+                            Source {
+                                digest: asset.digest,
+                                stamp,
+                            },
+                        );
+                        index.generation += 1;
+                    }
                     if let Some(old) = index.files.insert(
                         key,
                         Entry {
@@ -195,6 +339,12 @@ impl DiskStore {
             .generation;
         let mut scanned = Index {
             files: HashMap::new(),
+            sources: self
+                .index
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .sources
+                .clone(),
             bytes: 0,
             generation,
         };
@@ -211,6 +361,8 @@ impl DiskStore {
             }
         }
         *index = scanned;
+        self.prune_previews(&mut index)
+            .map_err(|_| MediaError::Unavailable)?;
         self.trim(&mut index, 0, None)
             .map_err(|_| MediaError::Unavailable)
     }
@@ -225,9 +377,57 @@ impl DiskStore {
         )));
         fs::write(&temporary.0, asset.bytes()).map_err(|_| MediaError::Unavailable)?;
         let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
-        self.trim(&mut index, asset.bytes().len() as u64, Some(key))
-            .map_err(|_| MediaError::Unavailable)?;
-        fs::rename(&temporary.0, self.path(key)).map_err(|_| MediaError::Unavailable)?;
+        if key.kind() == MediaKind::Preview
+            && index
+                .sources
+                .get(&key.document())
+                .is_none_or(|source| key.source() != Some(source.digest))
+        {
+            // An older conversion cannot restore a derivative after its original was replaced.
+            return Err(MediaError::Unavailable);
+        }
+        let previous_source = index.sources.get(&key.document()).copied();
+        let replacing_source = key.kind() == MediaKind::Animation;
+        let write = (|| -> std::io::Result<()> {
+            if replacing_source {
+                index.sources.insert(
+                    key.document(),
+                    Source {
+                        digest: asset.digest,
+                        stamp: None,
+                    },
+                );
+                // Invalidate old derivatives before replacing the source, even across a crash.
+                self.prune_previews(&mut index)?;
+            }
+            self.trim(&mut index, asset.bytes().len() as u64, Some(key))?;
+            fs::rename(&temporary.0, self.path(key))
+        })();
+        if write.is_err() {
+            if replacing_source {
+                match previous_source {
+                    Some(source) => {
+                        index.sources.insert(key.document(), source);
+                    }
+                    None => {
+                        index.sources.remove(&key.document());
+                    }
+                }
+            }
+            return Err(MediaError::Unavailable);
+        }
+        if key.kind() == MediaKind::Animation {
+            let stamp = fs::metadata(self.path(key))
+                .ok()
+                .and_then(|metadata| Some((metadata.modified().ok()?, metadata.len())));
+            index.sources.insert(
+                key.document(),
+                Source {
+                    digest: asset.digest,
+                    stamp,
+                },
+            );
+        }
         if let Some(previous) = index.files.insert(
             key,
             Entry {
@@ -248,8 +448,33 @@ fn parse_name(name: &str) -> Option<MediaKey> {
     match extension {
         "thumb" => Some(MediaKey::thumbnail(id)),
         "tgs" => Some(MediaKey::animation(id)),
-        _ => None,
+        _ => {
+            let (version, hash) = preview_extension(extension)?;
+            (version == crate::asset::PREVIEW_VERSION).then(|| MediaKey::preview(id, hash))
+        }
     }
+}
+fn preview_extension(extension: &str) -> Option<(&str, [u8; 32])> {
+    let (version, encoded) = extension
+        .strip_prefix("preview-")?
+        .strip_suffix(".svg")?
+        .split_once('-')?;
+    if version.is_empty() || !version.bytes().all(|c| c.is_ascii_digit()) || encoded.len() != 64 {
+        return None;
+    }
+    let mut hash = [0; 32];
+    for (index, byte) in hash.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(encoded.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some((version, hash))
+}
+fn obsolete_preview(name: &str) -> bool {
+    let Some((id, extension)) = name.split_once('.') else {
+        return false;
+    };
+    id.parse().ok().and_then(DocumentId::new).is_some()
+        && preview_extension(extension)
+            .is_some_and(|(version, _)| version != crate::asset::PREVIEW_VERSION)
 }
 fn stale_temporary(name: &str, metadata: &fs::Metadata, ttl: Duration) -> bool {
     let mut parts = name.split('.');
@@ -270,6 +495,42 @@ mod tests {
     }
     fn image() -> MediaAsset {
         MediaAsset::thumbnail(b"\x89PNG\r\n\x1a\nsynthetic".to_vec()).unwrap()
+    }
+    #[test]
+    fn obsolete_preview_versions_are_removed_without_touching_other_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = format!("42.preview-0-{}.svg", "ab".repeat(32));
+        let current = format!(
+            "42.preview-{}-{}.svg",
+            crate::asset::PREVIEW_VERSION,
+            "cd".repeat(32)
+        );
+        for name in [&old, &current, "keep.svg", "42.preview-not-a-cache.svg"] {
+            fs::write(dir.path().join(name), b"cached").unwrap();
+        }
+        let store = DiskStore::open(dir.path().into(), MediaLimits::default()).unwrap();
+        assert!(!dir.path().join(old).exists());
+        assert!(dir.path().join(current).exists());
+        assert!(dir.path().join("keep.svg").exists());
+        assert!(dir.path().join("42.preview-not-a-cache.svg").exists());
+        assert_eq!(store.index.lock().unwrap().bytes, 6);
+    }
+    #[test]
+    fn corrupt_preview_is_discarded_and_can_be_atomically_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskStore::open(dir.path().into(), MediaLimits::default()).unwrap();
+        let key = MediaKey::preview(DocumentId::new(1).unwrap(), [7; 32]);
+        fs::write(store.path(key), b"<svg><script/></svg>").unwrap();
+        store.maintain().unwrap();
+        assert!(store.read(key).unwrap().is_none());
+        assert!(!store.path(key).exists());
+        assert_eq!(store.index.lock().unwrap().bytes, 0);
+        let asset = MediaAsset::preview(
+            br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"/>"##.to_vec(),
+        )
+        .unwrap();
+        store.write(key, &asset).unwrap();
+        assert_eq!(store.read(key).unwrap().unwrap().etag(), asset.etag());
     }
     #[test]
     fn validation_runs_concurrently_and_corrupt_reads_cannot_delete_replacements() {
@@ -307,6 +568,37 @@ mod tests {
             index.files.values().map(|entry| entry.bytes).sum::<u64>()
         );
         assert_eq!(index.files.len(), 2);
+    }
+    #[test]
+    fn unrelated_writes_do_not_lose_an_originals_source_identity() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            Arc::new(DiskStore::open(directory.path().into(), MediaLimits::default()).unwrap());
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(br#"{"v":"5.7.4","w":512,"h":512,"fr":60,"ip":0,"op":60,"layers":[]}"#)
+            .unwrap();
+        let original = MediaAsset::animation(gzip.finish().unwrap()).unwrap();
+        let animation = MediaKey::animation(DocumentId::new(1).unwrap());
+        fs::write(store.path(animation), original.bytes()).unwrap();
+        let (entered, waiting) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let reading = store.clone();
+        let thread = std::thread::spawn(move || {
+            reading.read_validated(animation, |bytes| {
+                entered.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(3)).unwrap();
+                MediaAsset::animation(bytes).ok()
+            })
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        store.write(key(2), &image()).unwrap();
+        release.send(()).unwrap();
+        thread.join().unwrap().unwrap().unwrap();
+        assert_eq!(
+            store.preview_key(animation.document()),
+            Some(MediaKey::preview(animation.document(), original.digest))
+        );
     }
     #[test]
     fn maintenance_reconciles_disk_quota_and_cleans_temporary_files_without_downloads() {

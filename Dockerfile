@@ -6,8 +6,9 @@ COPY crates/ crates/
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
-    cargo build --release --locked -p market-app --bin market-app --all-features \
-    && install -Dm755 target/release/market-app /out/market-app
+    cargo build --release --locked -p market-app -p market-media --bin market-app --bin market-media-render --all-features \
+    && install -Dm755 target/release/market-app /out/market-app \
+    && install -Dm755 target/release/market-media-render /out/market-media-render
 
 FROM node:24-bookworm-slim AS web-builder
 WORKDIR /web
@@ -24,6 +25,8 @@ RUN apt-get update \
     && install -d -o 10001 -g 10001 /data /bot-data
 WORKDIR /app
 COPY --from=binaries /out/market-app /usr/local/bin/market-app
+COPY --from=binaries /out/market-media-render /usr/local/bin/market-media-render
+COPY licenses/velato/ /usr/share/licenses/velato/
 COPY --from=web-builder /web/dist /app/web/dist
 ENV MARKET_DATA_DIR=/data \
     MARKET_BOT_DATA_DIR=/bot-data \

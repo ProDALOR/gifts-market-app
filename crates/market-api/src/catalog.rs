@@ -8,6 +8,8 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GiftMedia {
     pub thumbnail_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
     pub animation_url: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -57,9 +59,16 @@ impl From<gifts::GiftMedia> for GiftMedia {
         let id = percent_encoding::utf8_percent_encode(&id, COMPONENT);
         let thumbnail_url = format!("/media/{kind}/{id}");
         let animation_url = animated.then(|| format!("{thumbnail_url}/animation"));
+        let preview_url = animated.then(|| {
+            format!(
+                "{thumbnail_url}/preview?v={}",
+                market_media::PREVIEW_VERSION
+            )
+        });
         Self {
             thumbnail_url,
             animation_url,
+            preview_url,
         }
     }
 }
@@ -118,7 +127,7 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
     }
 }
 /// Internal representation namespace; update if URL/JSON mapping changes.
-const REPRESENTATION: &[u8] = b"gift-catalog:media-routes\0";
+const REPRESENTATION: &[u8] = b"gift-catalog:rust-previews\0";
 /// A stable 128-bit cache validator; tokens are opaque and provide no authentication.
 pub(crate) fn revision(domain: &str) -> String {
     let mut hash = Sha256::new();
@@ -140,7 +149,7 @@ mod tests {
     use super::*;
     #[test]
     fn revisions_are_short_stable_opaque_tokens_derived_from_the_full_content_version() {
-        assert_eq!(revision("content"), "f3MgDfNxr-4kEnhwdAqItQ");
+        assert_eq!(revision("content"), "VY_j-TppoSZgChtVxAWjjw");
         let original = "0".repeat(64);
         let mut changed = original.clone();
         changed.replace_range(63.., "1");
@@ -181,6 +190,14 @@ mod tests {
         });
         assert_eq!(model.thumbnail_url, "/media/models/a%2Fb%3F%23%F0%9F%92%8E");
         assert_eq!(
+            model.preview_url,
+            Some(format!(
+                "{}/preview?v={}",
+                model.thumbnail_url,
+                market_media::PREVIEW_VERSION
+            ))
+        );
+        assert_eq!(
             model.animation_url,
             Some(format!("{}/animation", model.thumbnail_url))
         );
@@ -189,8 +206,10 @@ mod tests {
         });
         assert_eq!(pattern.thumbnail_url, "/media/patterns/pattern");
         assert!(pattern.animation_url.is_none());
+        assert!(pattern.preview_url.is_none());
         let json = serde_json::to_value(pattern).unwrap();
         assert!(json.get("target").is_none());
+        assert!(json.get("preview_url").is_none());
         assert!(json["thumbnail_url"].is_string());
     }
 }

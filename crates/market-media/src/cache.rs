@@ -16,7 +16,7 @@ use tokio_util::task::TaskTracker;
 struct Resident {
     asset: MediaAsset,
     stamp: u64,
-    expires: Instant,
+    expires: Option<Instant>,
 }
 #[derive(Default)]
 struct Memory {
@@ -30,6 +30,7 @@ pub(crate) struct Counters {
     pub reads: AtomicU64,
     pub downloads: AtomicU64,
     pub skipped: AtomicU64,
+    pub renders: AtomicU64,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct MediaStats {
@@ -37,6 +38,7 @@ pub struct MediaStats {
     pub disk_reads: u64,
     pub downloads: u64,
     pub skipped_downloads: u64,
+    pub preview_generations: u64,
     pub memory_bytes: usize,
     pub queued: usize,
 }
@@ -48,10 +50,13 @@ pub(crate) struct Shared {
     memory: Mutex<Memory>,
     pending: Mutex<HashMap<MediaKey, Weak<Job>>>,
     failures: Mutex<HashMap<MediaKey, (Instant, MediaError)>>,
-    tasks: TaskTracker,
+    pub(crate) tasks: TaskTracker,
     io_slots: Arc<tokio::sync::Semaphore>,
-    admission: Mutex<()>,
-    closed: AtomicBool,
+    pub(crate) admission: Mutex<()>,
+    pub(crate) closed: AtomicBool,
+    pub(crate) stop: tokio_util::sync::CancellationToken,
+    pub(crate) preview_slots: Arc<tokio::sync::Semaphore>,
+    pub(crate) renderer: std::path::PathBuf,
 }
 #[derive(Clone)]
 pub struct MediaCache(pub(crate) Arc<Shared>);
@@ -62,6 +67,14 @@ impl MediaCache {
     pub async fn with_limits(
         directory: impl AsRef<Path>,
         limits: MediaLimits,
+    ) -> std::io::Result<(Self, MediaDownloader)> {
+        let renderer = std::env::current_exe()?.with_file_name("market-media-render");
+        Self::with_renderer(directory, limits, renderer).await
+    }
+    pub(crate) async fn with_renderer(
+        directory: impl AsRef<Path>,
+        limits: MediaLimits,
+        renderer: std::path::PathBuf,
     ) -> std::io::Result<(Self, MediaDownloader)> {
         limits.validate()?;
         let directory = directory.as_ref().to_owned();
@@ -81,18 +94,21 @@ impl MediaCache {
             io_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             admission: Mutex::new(()),
             closed: AtomicBool::new(false),
+            stop: tokio_util::sync::CancellationToken::new(),
+            preview_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            renderer,
         }));
         Ok((cache.clone(), MediaDownloader::new(cache)))
     }
-    fn resident(&self, key: MediaKey) -> Option<MediaAsset> {
+    pub(crate) fn resident(&self, key: MediaKey) -> Option<MediaAsset> {
         let mut memory = self.0.memory.lock().unwrap_or_else(|e| e.into_inner());
         memory.clock += 1;
         let stamp = memory.clock;
-        if memory
-            .assets
-            .get(&key)
-            .is_some_and(|entry| entry.expires <= Instant::now())
-            && let Some(old) = memory.assets.remove(&key)
+        if memory.assets.get(&key).is_some_and(|entry| {
+            entry
+                .expires
+                .is_some_and(|expires| expires <= Instant::now())
+        }) && let Some(old) = memory.assets.remove(&key)
         {
             memory.bytes -= old.asset.bytes().len();
         }
@@ -108,6 +124,12 @@ impl MediaCache {
     }
     pub(crate) fn remember(&self, key: MediaKey, asset: &MediaAsset) {
         let mut memory = self.0.memory.lock().unwrap_or_else(|e| e.into_inner());
+        // An older read/write may finish after a replacement has reached disk.
+        if key.kind() == crate::MediaKind::Animation
+            && !self.0.disk.current_source(key.document(), asset.digest)
+        {
+            return;
+        }
         if let Some(old) = memory.assets.remove(&key) {
             memory.bytes -= old.asset.bytes().len();
         }
@@ -135,11 +157,14 @@ impl MediaCache {
             Resident {
                 asset: asset.clone(),
                 stamp,
-                expires: Instant::now() + self.0.limits.memory_ttl,
+                // Derivatives are immutable by source hash and renderer version. Source
+                // changes select a new key; only originals need periodic revalidation.
+                expires: (key.kind() != crate::MediaKind::Preview)
+                    .then(|| Instant::now() + self.0.limits.memory_ttl),
             },
         );
     }
-    fn job(&self, key: MediaKey) -> Result<Arc<Job>, MediaError> {
+    pub(crate) fn job(&self, key: MediaKey) -> Result<Arc<Job>, MediaError> {
         if self.0.closed.load(Ordering::Acquire) {
             return Err(MediaError::Unavailable);
         }
@@ -164,7 +189,7 @@ impl MediaCache {
             pending.remove(&job.key);
         }
     }
-    async fn disk(&self, job: &Job) -> Result<Option<MediaAsset>, MediaError> {
+    pub(crate) async fn disk(&self, job: &Job) -> Result<Option<MediaAsset>, MediaError> {
         job.disk
             .get_or_init(|| async {
                 self.0.counters.reads.fetch_add(1, Ordering::Relaxed);
@@ -194,6 +219,9 @@ impl MediaCache {
             .await
     }
     pub async fn get_with_priority(&self, key: MediaKey, priority: MediaPriority) -> MediaResult {
+        if key.kind() == crate::MediaKind::Preview {
+            return Err(MediaError::InvalidMedia);
+        }
         if self.0.closed.load(Ordering::Acquire) {
             return Err(MediaError::Unavailable);
         }
@@ -208,28 +236,18 @@ impl MediaCache {
         if let Some(error) = self.failure(key) {
             return Err(error);
         }
-        let mut receiver = job.result.subscribe();
         if !job.queued.swap(true, Ordering::AcqRel)
             && !self.0.queue.push(job.clone(), self.0.limits.queue)
         {
             job.result.send_replace(Some(Err(MediaError::Unavailable)));
             self.retire(&job);
         }
-        tokio::time::timeout(self.0.limits.request_timeout, async {
-            loop {
-                if let Some(result) = receiver.borrow_and_update().clone() {
-                    return result;
-                }
-                receiver
-                    .changed()
-                    .await
-                    .map_err(|_| MediaError::Unavailable)?;
-            }
-        })
-        .await
-        .unwrap_or(Err(MediaError::Unavailable))
+        job.wait(self.0.limits.request_timeout).await
     }
-    fn failure(&self, key: MediaKey) -> Option<MediaError> {
+    pub(crate) fn preview_key(&self, document: crate::DocumentId) -> Option<MediaKey> {
+        self.0.disk.preview_key(document)
+    }
+    pub(crate) fn failure(&self, key: MediaKey) -> Option<MediaError> {
         let mut failures = self.0.failures.lock().unwrap_or_else(|e| e.into_inner());
         failures.retain(|_, (until, _)| *until > Instant::now());
         failures.get(&key).map(|(until, error)| match error {
@@ -268,7 +286,7 @@ impl MediaCache {
         self.remember(key, &saved);
         Ok(saved)
     }
-    async fn blocking<T: Send + 'static>(
+    pub(crate) async fn blocking<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> Result<T, MediaError> + Send + 'static,
     ) -> Result<T, MediaError> {
@@ -303,6 +321,7 @@ impl MediaCache {
         {
             let _guard = self.0.admission.lock().unwrap_or_else(|e| e.into_inner());
             self.0.closed.store(true, Ordering::Release);
+            self.0.stop.cancel();
             self.0.queue.close();
             for job in self
                 .0
@@ -325,6 +344,7 @@ impl MediaCache {
             disk_reads: self.0.counters.reads.load(Ordering::Relaxed),
             downloads: self.0.counters.downloads.load(Ordering::Relaxed),
             skipped_downloads: self.0.counters.skipped.load(Ordering::Relaxed),
+            preview_generations: self.0.counters.renders.load(Ordering::Relaxed),
             memory_bytes: self
                 .0
                 .memory

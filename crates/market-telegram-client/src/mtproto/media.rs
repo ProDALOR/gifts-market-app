@@ -114,6 +114,7 @@ async fn download_bytes(
         ttl_seconds: None,
     });
     let mut download = match key.kind() {
+        MediaKind::Preview => return Err(MediaError::InvalidMedia.into()),
         MediaKind::Thumbnail => {
             let thumb = media
                 .thumbs()
@@ -153,6 +154,7 @@ async fn download_bytes(
 }
 async fn asset(key: MediaKey, bytes: Vec<u8>) -> Result<MediaAsset, MediaError> {
     match key.kind() {
+        MediaKind::Preview => Err(MediaError::InvalidMedia),
         MediaKind::Thumbnail => MediaAsset::thumbnail(bytes),
         MediaKind::Animation => tokio::task::spawn_blocking(move || MediaAsset::animation(bytes))
             .await

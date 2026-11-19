@@ -4,6 +4,9 @@
 !Cargo.toml
 !Cargo.lock
 !market-hub.proto
+!licenses/
+!licenses/velato/
+!licenses/velato/**
 # Cargo validates declared test and example paths even when building only binaries.
 !crates/
 !crates/**

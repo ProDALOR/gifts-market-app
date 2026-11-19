@@ -14,6 +14,7 @@ use utoipa::OpenApi;
         crate::media::model_thumbnail,
         crate::media::pattern_thumbnail,
         crate::media::model_animation,
+        crate::media::model_preview,
         crate::websocket::connect
     ),
     tags(

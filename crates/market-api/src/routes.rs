@@ -119,6 +119,11 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
         "/media/models/{id}/animation",
         web::get().to(crate::media::model_animation),
     )
+    .service(
+        web::resource("/media/models/{id}/preview")
+            .wrap(actix_web::middleware::Compress::default())
+            .route(web::get().to(crate::media::model_preview)),
+    )
     .route(
         "/media/patterns/{id}",
         web::get().to(crate::media::pattern_thumbnail),

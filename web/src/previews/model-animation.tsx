@@ -7,25 +7,27 @@ export default function ModelAnimation({
   active,
   retain,
   priority,
+  vector = false,
 }: {
   url: string;
   active: boolean;
   retain: boolean;
   priority: number;
+  vector?: boolean;
 }) {
   const container = useRef<HTMLSpanElement>(null);
   const lifecycle = useRef<AnimationLifecycle | null>(null);
   const [failed, setFailed] = useState(false);
   const priorityRef = useRef(priority);
   priorityRef.current = priority;
-  useEffect(() => setFailed(false), [active, url]);
+  useEffect(() => setFailed(false), [active, url, vector]);
   useEffect(() => {
     const host = container.current;
     if (!host) return;
     const controller = new AnimationLifecycle(
       async (signal) => {
         const data = await loadAnimationData(url, signal, priorityRef.current);
-        const renderer = animationRenderer(data);
+        const renderer = vector ? "svg" : animationRenderer(data);
         signal.throwIfAborted();
         const player = await (renderer === "svg"
           ? import("lottie-web/build/player/lottie_light")
@@ -66,7 +68,7 @@ export default function ModelAnimation({
       controller.stop();
       lifecycle.current = null;
     };
-  }, [url]);
+  }, [url, vector]);
   useEffect(() => {
     const controller = lifecycle.current;
     if (!controller) return;
@@ -77,7 +79,7 @@ export default function ModelAnimation({
     return playbackBudget.request(priority, (granted, preempted) =>
       controller.setActive(granted, preempted ? false : retain),
     );
-  }, [url, active, retain, priority, failed]);
+  }, [url, active, retain, priority, failed, vector]);
   return (
     <span ref={container} className="model-animation" aria-hidden="true" />
   );

@@ -31,6 +31,9 @@ export const GiftArtwork = memo(function GiftArtwork(props: ArtworkProps) {
       key={JSON.stringify([
         props.media?.thumbnail_url,
         props.media?.animation_url,
+        props.size === "large" || props.playback === "detail"
+          ? props.media?.preview_url
+          : undefined,
       ])}
       {...props}
     />
@@ -48,7 +51,12 @@ function Artwork({
   className = "",
   children,
 }: ArtworkProps) {
-  const url = media?.thumbnail_url;
+  const highResolution = size === "large" || playback === "detail";
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const preferred = highResolution
+    ? (media?.preview_url ?? media?.thumbnail_url)
+    : media?.thumbnail_url;
+  const url = previewFailed ? media?.thumbnail_url : preferred;
   const animationUrl = media?.animation_url;
   const host = useRef<HTMLSpanElement>(null);
   const [hovered, setHovered] = useState(false);
@@ -73,9 +81,11 @@ function Artwork({
       ? 100
       : interactive
         ? 30
-        : playback === "selected"
-          ? 20
-          : 10;
+        : highResolution
+          ? 25
+          : playback === "selected"
+            ? 20
+            : 10;
   const shouldAnimate =
     canAnimate &&
     visible &&
@@ -84,27 +94,38 @@ function Artwork({
       (settled && playback !== "interaction"));
   useEffect(() => () => clearTimeout(hoverTimer.current), [canInteract]);
   const [attempt, setAttempt] = useState(0);
+  const [recovered, setRecovered] = useState<string[]>([]);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [requested, setRequested] = useState(false);
   useEffect(() => {
     if (shouldAnimate) setRequested(true);
   }, [shouldAnimate]);
+  const recoveryUrl =
+    previewFailed && preferred && !recovered.includes(preferred)
+      ? preferred
+      : failed && url && !recovered.includes(url)
+        ? url
+        : undefined;
   useEffect(() => {
-    if (!failed || attempt >= 1 || !url || !visible || !pageVisible) return;
+    if (!recoveryUrl || !visible || !pageVisible) return;
     const stop = new AbortController();
-    void recoverImage(url, stop.signal)
-      .then(() => {
-        if (!stop.signal.aborted) {
-          setFailed(false);
-          setAttempt((value) => value + 1);
-        }
-      })
-      .catch(() => {
-        /* Keep the fallback until the next page load. */
-      });
+    const settled = (success: boolean) => {
+      if (stop.signal.aborted) return;
+      setRecovered((urls) => [...urls, recoveryUrl]);
+      if (success) {
+        if (recoveryUrl === preferred) setPreviewFailed(false);
+        setFailed(false);
+        setLoaded(false);
+        setAttempt((value) => value + 1);
+      }
+    };
+    void recoverImage(recoveryUrl, stop.signal).then(
+      () => settled(true),
+      () => settled(false),
+    );
     return () => stop.abort();
-  }, [failed, attempt, url, visible, pageVisible]);
+  }, [recoveryUrl, preferred, visible, pageVisible]);
   return (
     <span
       ref={host}
@@ -154,7 +175,10 @@ function Artwork({
           onLoad={() => setLoaded(true)}
           onError={() => {
             setLoaded(false);
-            setFailed(true);
+            if (!previewFailed && preferred !== media?.thumbnail_url) {
+              setPreviewFailed(true);
+              setAttempt(0);
+            } else setFailed(true);
           }}
         />
       )}
@@ -163,6 +187,7 @@ function Artwork({
           <ModelAnimation
             url={animationUrl}
             active={shouldAnimate}
+            vector={highResolution}
             priority={priority}
             retain={visible && pageVisible && !reducedMotion}
           />

@@ -21,6 +21,7 @@ pub(crate) struct Job {
     pub queued: AtomicBool,
     waiters: AtomicUsize,
     priority: AtomicU8,
+    abandoned: Notify,
 }
 impl Job {
     pub fn new(key: MediaKey) -> Self {
@@ -31,6 +32,7 @@ impl Job {
             queued: AtomicBool::new(false),
             waiters: AtomicUsize::new(0),
             priority: AtomicU8::new(0),
+            abandoned: Notify::new(),
         }
     }
     pub fn demand(self: &Arc<Self>, priority: MediaPriority) -> Demand {
@@ -38,11 +40,41 @@ impl Job {
         self.priority.fetch_max(priority as u8, Ordering::AcqRel);
         Demand(self.clone())
     }
+    pub(crate) async fn abandoned(&self) {
+        loop {
+            let changed = self.abandoned.notified();
+            if self.waiters.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            changed.await;
+        }
+    }
+    pub(crate) fn has_demand(&self) -> bool {
+        self.waiters.load(Ordering::Acquire) > 0
+    }
+    pub(crate) async fn wait(&self, timeout: std::time::Duration) -> MediaResult {
+        let mut updates = self.result.subscribe();
+        tokio::time::timeout(timeout, async {
+            loop {
+                if let Some(result) = updates.borrow_and_update().clone() {
+                    return result;
+                }
+                updates
+                    .changed()
+                    .await
+                    .map_err(|_| MediaError::Unavailable)?;
+            }
+        })
+        .await
+        .unwrap_or(Err(MediaError::Unavailable))
+    }
 }
 pub(crate) struct Demand(Arc<Job>);
 impl Drop for Demand {
     fn drop(&mut self) {
-        self.0.waiters.fetch_sub(1, Ordering::AcqRel);
+        if self.0.waiters.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.abandoned.notify_waiters();
+        }
     }
 }
 #[derive(Default)]
@@ -132,11 +164,7 @@ impl MediaDownloader {
                     self.cache.retire(&job);
                     continue;
                 }
-                let guard = Running {
-                    cache: self.cache.clone(),
-                    job,
-                    complete: false,
-                };
+                let guard = Running::new(self.cache.clone(), job);
                 let future = fetch(guard.job.key);
                 let timeout = limits.download_timeout;
                 self.cache
@@ -145,7 +173,6 @@ impl MediaDownloader {
                     .downloads
                     .fetch_add(1, Ordering::Relaxed);
                 active.push(async move {
-                    let mut guard = guard;
                     let result = tokio::time::timeout(timeout, future)
                         .await
                         .unwrap_or(Err(MediaError::Unavailable));
@@ -153,17 +180,7 @@ impl MediaDownloader {
                         Ok(asset) => guard.cache.store(guard.job.key, asset).await,
                         Err(error) => Err(error),
                     };
-                    if let Err(error) = result {
-                        guard.cache.failed(guard.job.key, error);
-                        tracing::debug!(
-                            document_id = guard.job.key.document().get(),
-                            ?error,
-                            "media download failed"
-                        );
-                    }
-                    guard.job.result.send_replace(Some(result));
-                    guard.cache.retire(&guard.job);
-                    guard.complete = true;
+                    guard.finish(result);
                 });
                 next = tokio::time::Instant::now() + limits.start_interval;
             }
@@ -185,10 +202,35 @@ impl Drop for MediaDownloader {
         self.cache.0.queue.close();
     }
 }
-struct Running {
-    cache: MediaCache,
-    job: Arc<Job>,
+pub(crate) struct Running {
+    pub(crate) cache: MediaCache,
+    pub(crate) job: Arc<Job>,
     complete: bool,
+}
+impl Running {
+    pub(crate) fn new(cache: MediaCache, job: Arc<Job>) -> Self {
+        Self {
+            cache,
+            job,
+            complete: false,
+        }
+    }
+    pub(crate) fn finish(mut self, result: MediaResult) {
+        if let Err(error) = result
+            && self.job.has_demand()
+            && !self.cache.0.stop.is_cancelled()
+        {
+            self.cache.failed(self.job.key, error);
+            tracing::debug!(
+                document_id = self.job.key.document().get(),
+                ?error,
+                "media job failed"
+            );
+        }
+        self.job.result.send_replace(Some(result));
+        self.cache.retire(&self.job);
+        self.complete = true;
+    }
 }
 impl Drop for Running {
     fn drop(&mut self) {

@@ -1,0 +1,220 @@
+{
+  "description": "Real gift frame-zero regression corpus. Public document IDs and hashes only; assets remain in the local media cache.",
+  "gifts": [
+    {
+      "id": "5292185382744523854",
+      "composition": "_O_Squid_x_red",
+      "sourceSha256": "b32cf85f2413fcd0816d2aec18e579cea916d58c83a5d8e46c3379362b25fd35"
+    },
+    {
+      "id": "5233428718306749090",
+      "composition": "cookies 74",
+      "sourceSha256": "d7b67eefd295bfc992d5d791d51688246363ac1f9fde6b5f56c2c989123288e3"
+    },
+    {
+      "id": "5388924577579556827",
+      "composition": "Cap Purple",
+      "sourceSha256": "f4d2f59a56aae002abd9d4d6f774a57956e900796f30851f1c34b4c70728e546"
+    },
+    {
+      "id": "5438166716930626734",
+      "composition": "8",
+      "sourceSha256": "be56b94c183d3150e9e5781906b9b408a5dcf3f202ec234ce0e6b736d5046da1"
+    },
+    {
+      "id": "5429526363717526130",
+      "composition": "30 Cigaro Monocolor",
+      "sourceSha256": "10fdc65730fd8ddabbcc496cde7b800002c0ff3645acbffe47acc3eac6adb3cc"
+    },
+    {
+      "id": "5237814653010076467",
+      "composition": "15",
+      "sourceSha256": "74fe83fa524dcaea306c75051bc5ce60f9186e866633312898d0d5040121ae15"
+    },
+    {
+      "id": "5235686127347720748",
+      "composition": "silver tarrot",
+      "sourceSha256": "349aa28eed815cdcb39990b5e66ff0a735758a7672f1b2225906ff9e6d72871c"
+    },
+    {
+      "id": "5235978593145746862",
+      "composition": "cookies 80",
+      "sourceSha256": "95ba1e8ca692015fbd2f23a0e7431bcdc64510f5c0d9a6dfad282f65cc0b4420"
+    },
+    {
+      "id": "5233366797763241655",
+      "composition": "Comp 1",
+      "sourceSha256": "f0843b0fe2868418d9e3d8320bc2baae23205280730677420a4bae491a9bbfbf"
+    },
+    {
+      "id": "5231448231577154432",
+      "composition": "5_1",
+      "sourceSha256": "9b385afcc2335f31fb3e366307b4703fb0195508606b20b81c3e5c5a54dba69f"
+    },
+    {
+      "id": "5395471336099308503",
+      "composition": "🐸 Frog/Kiss",
+      "sourceSha256": "4aac382455f5e39ff2c5c5a5882f76eb396b76b06a119e32f769daeefd41156d"
+    },
+    {
+      "id": "5258293782926881895",
+      "composition": "Comp 1",
+      "sourceSha256": "452cf6f3230e1a92e64ac2a774c5fa696ae1fd527121f2469f7e934f569ddd98"
+    },
+    {
+      "id": "5235580664425769633",
+      "composition": "cookies",
+      "sourceSha256": "cc519d61fab6b69a7164336736f2492edc578e170450841442226b71f8c1829a"
+    },
+    {
+      "id": "5377665591396047794",
+      "composition": "samolet est\"",
+      "sourceSha256": "6766b020394b698e8d52adc3ec0098ddb1f2d943372c2d7d3bd90708a5d39e21"
+    },
+    {
+      "id": "5408924187282660100",
+      "composition": "14 flower_skull Cyan",
+      "sourceSha256": "68df41abf6c97b4b74593611254b6291f04c6aef85508464b10049a31af0b266"
+    },
+    {
+      "id": "5359640893554990559",
+      "composition": "25",
+      "sourceSha256": "21b4404a9e65ad127126439a6fadeef3f51703d7db80bae3206958f8eea4e30e"
+    },
+    {
+      "id": "5222196055977778464",
+      "composition": "cookies 18",
+      "sourceSha256": "a22b06cf43c01a9d8e3183162991468f205006f304a33453536e992746cabfaf"
+    },
+    {
+      "id": "5199470718294720164",
+      "composition": "12",
+      "sourceSha256": "785e25ae09a8757df722023a6deb7f1629c0dd84cd9219512337c4f533f0c8c9"
+    },
+    {
+      "id": "5224384659642672434",
+      "composition": "💀 Skull",
+      "sourceSha256": "f89b48d632eeabab473c8aadb8158999e08e7c9c671ab2b4c2048e69a842c894"
+    },
+    {
+      "id": "5393072253267106923",
+      "composition": "Siames",
+      "sourceSha256": "901ced72b25ee364a185f558fe0eb3f3b00631cbab7f31fae5e4c16e2cc0b5e0"
+    },
+    {
+      "id": "5384342564734272657",
+      "composition": "snakey",
+      "sourceSha256": "d4f92c40358224d70f4a6c4fabdfcf73205872a11be962347cb160d78453ba16"
+    },
+    {
+      "id": "5352858362805512179",
+      "composition": "Gift",
+      "sourceSha256": "c780bacdeea5c4769fa3069b9a40628cdaaa85d2b3280f3f7a15fe0a07d31838"
+    },
+    {
+      "id": "5375324580816651772",
+      "composition": "Comp 5",
+      "sourceSha256": "87dc80b5e6a89f8f03824b679d4749f8c08fe136c23f725b11a931e8c95da93d"
+    },
+    {
+      "id": "5188550089634768376",
+      "composition": "Cow Bell",
+      "sourceSha256": "99f6900427ab83cb561dca09bac3c8f2b487f96ed54d12b17c923294ab9d8b95"
+    },
+    {
+      "id": "5203984728922812638",
+      "composition": "Ghost Trap 3",
+      "sourceSha256": "c3610bf52054de94e42a959f0c2d4e622e6aa2edd914d0693164f6ac3a7bd23a"
+    },
+    {
+      "id": "5314366741344727072",
+      "composition": null,
+      "sourceSha256": "d9a0e4997534666ffef57229e3e4d51d947c54d45eac13e7dc3d54ec38723ac3"
+    },
+    {
+      "id": "5220048224437443866",
+      "composition": null,
+      "sourceSha256": "bc032f534894f51f81049413b6628e55f88ff5585e53c278806dbd2ee905fc49"
+    },
+    {
+      "id": "5291880311217489745",
+      "composition": "mangallo",
+      "sourceSha256": "f84c6ea0e30f26ba0b16954a86599a419b97f9476b263de0d5877d3f0da2f821"
+    },
+    {
+      "id": "5249171057641823601",
+      "composition": "Comp 1",
+      "sourceSha256": "f4b1071e63fb339a38bde62cf6cd49b8c832283503eb7f4c2c6826013c900705"
+    },
+    {
+      "id": "5357278159031001831",
+      "composition": "Gift",
+      "sourceSha256": "f9dd6bea2d2959b70b89fc46c6e02fb7ec218769e969cf6ebccff0251550bb8f"
+    },
+    {
+      "id": "5359672912536177173",
+      "composition": "Comp 1",
+      "sourceSha256": "5ea1e16b0d99fb1cdc54c2949af35c348eaf2c10985c0d4e3a29b6cf0e8c3734"
+    },
+    {
+      "id": "5228700814012345237",
+      "composition": "Sparkler",
+      "sourceSha256": "c25e8aeae6ea969be5763a0890d5f524446a2aee8394ebf3a43048433f37c9e4"
+    },
+    {
+      "id": "5204387450826284930",
+      "composition": "sly_pumpkin",
+      "sourceSha256": "fd06eced3042dcbb2c7bb49f6f6b01645381051317018e28602f011d1fad0ef1"
+    },
+    {
+      "id": "5350612283888267222",
+      "composition": "Forest Breeze",
+      "sourceSha256": "38a51c003d0b739300f0045a99e566d1fa9fff5db0f9512219358580530794a2"
+    },
+    {
+      "id": "5375247898470544118",
+      "composition": "BnW Ring",
+      "sourceSha256": "d78d2737f55f9b3a01996fb14b97feb422ddcd5963b1c1204d7c95ffabd0e4d0"
+    },
+    {
+      "id": "5352916946159430246",
+      "composition": "Gift",
+      "sourceSha256": "25f8521e638407b9f7e39a994f54ba7b2a0871386b8f28ba585b522966fd4563"
+    },
+    {
+      "id": "5472291932904397341",
+      "composition": "3",
+      "sourceSha256": "0eda9c39238af998024285b727a4d908bc62634772c066bcc7b2f89aa1d747ce"
+    },
+    {
+      "id": "5422880906849312934",
+      "composition": "1_Strawberries in chocolate 43",
+      "sourceSha256": "51afe7c361839d7c266e242c1047bdea77629fe0c71ae8ec329553867986c4d4"
+    },
+    {
+      "id": "5285093013054334905",
+      "composition": null,
+      "sourceSha256": "ca86d0f491ab79c7ddd8f8e97ab7b87750df8a8f6f948d18f17fa2372f2a3e40"
+    },
+    {
+      "id": "5375536850985318669",
+      "composition": "Lowres",
+      "sourceSha256": "02bb8c7f9cd705f9d33c0869998ff62459db55aafa512b07bcc58c52e23b21ef"
+    },
+    {
+      "id": "5195366267158033241",
+      "composition": "Hot video card",
+      "sourceSha256": "271c6f6cc31ccde63eb9d35b3cbd2aad88b17612b5ba3a4894044d8f3604cdc6"
+    },
+    {
+      "id": "5332398976853376314",
+      "composition": "figure_brick",
+      "sourceSha256": "8d9fb45110c395e78018db9a0fd98cafb411bb028c5de4d1032e0573733937fe"
+    },
+    {
+      "id": "5332609602049568703",
+      "composition": "grey_brick",
+      "sourceSha256": "287978ce8167a4c8c1831c7c4a20e8ac18775cd5bb9e635dae2f0ad60038c43c"
+    }
+  ]
+}

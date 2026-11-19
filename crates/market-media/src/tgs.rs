@@ -2,6 +2,10 @@
 use crate::{MAX_ANIMATION_BYTES, MAX_TGS_JSON_BYTES, MediaError};
 use std::io::Read;
 pub(crate) fn validate(bytes: &[u8]) -> Result<(), MediaError> {
+    let json = decode(bytes)?;
+    parse_json(&json).map(|_| ())
+}
+pub(crate) fn decode(bytes: &[u8]) -> Result<Vec<u8>, MediaError> {
     let invalid = MediaError::InvalidMedia;
     if bytes.len() > MAX_ANIMATION_BYTES || !bytes.starts_with(&[0x1f, 0x8b]) {
         return Err(invalid);
@@ -14,7 +18,14 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<(), MediaError> {
     if json.len() > MAX_TGS_JSON_BYTES {
         return Err(invalid);
     }
-    let data: serde_json::Value = serde_json::from_slice(&json).map_err(|_| invalid)?;
+    Ok(json)
+}
+pub(crate) fn parse_json(json: &[u8]) -> Result<serde_json::Value, MediaError> {
+    let invalid = MediaError::InvalidMedia;
+    if json.len() > MAX_TGS_JSON_BYTES {
+        return Err(invalid);
+    }
+    let data: serde_json::Value = serde_json::from_slice(json).map_err(|_| invalid)?;
     let number = |key: &str| data[key].as_f64().ok_or(invalid);
     let (width, height, fps, start, end) = (
         number("w")?,
@@ -53,5 +64,5 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<(), MediaError> {
             _ => {}
         }
     }
-    Ok(())
+    Ok(data)
 }
