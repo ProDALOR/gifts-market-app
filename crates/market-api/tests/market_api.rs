@@ -2086,11 +2086,16 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
         .await
         .unwrap();
+    let mut watch_query = slice_query();
+    watch_query["filters"]["venue_id"] = "test".into();
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
-            serde_json::json!({"type":"orders.watch","id":"orders","params":{"query":slice_query()}})
-                .to_string()
-                .into(),
+            serde_json::json!({"type":"orders.watch","id":"orders","params":{
+                "query":watch_query,
+                "range":{"start":rest["data"][0]["key"],"end":rest["data"][1]["key"]}
+            }})
+            .to_string()
+            .into(),
         ))
         .await
         .unwrap();
@@ -2451,6 +2456,33 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
         assert!(latest["data"][0].get(name).is_none());
     }
     assert!(latest["next"].is_null());
+    let mut narrower = query();
+    narrower["filters"]["venue_id"] = "test".into();
+    narrower["filters"]["price"] = serde_json::json!({"min":"1"});
+    narrower["navigation"] = serde_json::json!({"type":"around","key":latest["data"][0]["key"]});
+    let reused: serde_json::Value = test::call_and_read_body_json(&app, send(narrower)).await;
+    assert_eq!(reused["data"], latest["data"]);
+    for (source, sort) in [
+        ("asks", "price_desc"),
+        ("bids", "price_asc"),
+        ("history", "price_asc"),
+    ] {
+        let mut incompatible = query();
+        incompatible["source"] = source.into();
+        incompatible["sort"] = sort.into();
+        incompatible["navigation"] =
+            serde_json::json!({"type":"after","key":latest["data"][0]["key"]});
+        let response = test::call_service(&app, send(incompatible)).await;
+        assert_eq!(response.status(), 400);
+        let error: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(error["error"]["code"], "invalid_query");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("sort or source")
+        );
+    }
     let mut frozen_query = query();
     frozen_query["view"] = serde_json::json!({"kind":"snapshot"});
     let frozen: serde_json::Value =

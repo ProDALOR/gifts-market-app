@@ -47,6 +47,20 @@ A further run compares the preceding compact hexadecimal release binary with ver
 
 Key text shrinks by 33.1%, retaining the same binary fields. Unpadded Base64 uses the ASCII-ordered, URL-unreserved alphabet `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~`, so ordinary string comparison still follows native order. Repeated-character syntax such as `0{10}` would need a custom comparator; it is not used. Native keys own one Serde string converter shared by rows, range bounds and continuations. Decoding rejects old versions, padding, noncanonical trailing bits and invalid ranks. Regression tests cover every sort, ascending/descending ties, history, prefix/Unicode identities, before/at/after edges and JSON roundtrips. Deploy frontend/backend together and restart watches when upgrading.
 
+### Filter-independent positions
+
+Version 4 removes the 32-byte query fingerprint from every key. A three-byte header retains the format version, sort/direction and selected source, including active/history storage. Ranks, identity tie-breakers and before/at/after edges are unchanged. The following run compares the preceding version 3 release binary with version 4 using the same fixture:
+
+| Operation | With fingerprint | Without fingerprint |
+| --- | ---: | ---: |
+| Ordering-key bytes for 200 rows | 22,200 | 13,600 |
+| Head, 200 rows, including keys | 109.63 µs | 102.33 µs |
+| Fixed range, 200 rows, including keys | 158.67 µs | 144.75 µs |
+| Native head, before encoding | 61.96 µs | 61.54 µs |
+| Native range, before encoding | 107.29 µs | 105.08 µs |
+
+Key text shrinks by a further 38.7%. Timing remains a local microbenchmark. Positions can be reused across filters and execution periods with compatible sort/source; the supplied query always determines the returned rows. Price ranks use the new query's currency units without conversion or validation of the original currency. Internal generic read continuations retain their existing query validation. The key-only fingerprint type and hexadecimal parsing helpers are removed. Regression tests cover reuse in finite reads and fixed ranges for every sort, identical keys across filters, REST-to-WebSocket reuse, sort/direction/source mismatches and canonical encoding. Clients must discard version 3 keys and initialize fresh watches when upgrading.
+
 ## Visited-listing cache
 
 The frontend benchmark retains 10,000 or 100,000 visited rows, repeatedly refreshing a 200-row interior range while changing one listing price under number ordering. It excludes fixture generation, initial population, React rendering and activity/viewport projection. The new cache keeps an identity index, finds coverage by binary search and compares only incoming rows; producing the complete visited-row array still requires copying array references.

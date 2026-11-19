@@ -109,7 +109,7 @@ test("range snapshots and atomic changes validate identities, coverage and seque
       patterns: [],
       number: null,
     },
-    key: "000001",
+    key: "1001TW00OG00W0", // v4 identity key: asks, venue v, order a.
   };
   const frame = {
     type: "orders.snapshot",
@@ -135,7 +135,7 @@ test("range snapshots and atomic changes validate identities, coverage and seque
     {
       ...frame,
       data: [row],
-      range: { start: "000002", end: null },
+      range: { start: "1001TW00OW00W0", end: null },
     },
     { ...frame, range: { start: null } },
   ])

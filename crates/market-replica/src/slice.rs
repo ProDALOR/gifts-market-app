@@ -1,5 +1,5 @@
 //! Ordered slices and fixed ranges over one pinned active/history view.
-use crate::read_key::{Edge, QueryFingerprint};
+use crate::read_key::{Edge, PositionSource};
 use crate::{
     query::Filter,
     state,
@@ -173,9 +173,9 @@ impl ReplicaReader {
         {
             return Err(Status::invalid_argument("inverted order range"));
         }
-        let fingerprint = QueryFingerprint::parse(&filter.fingerprint)?;
+        let source = PositionSource::from_filter(&filter);
         let make_position = |key: Key, rank: Decimal, at: Option<i64>| ReadPosition {
-            selection: fingerprint,
+            source,
             sort: filter.sort,
             key,
             rank,
@@ -503,7 +503,7 @@ impl ReplicaReader {
 #[cfg(test)]
 pub(crate) fn ordering_key(rank: Decimal, key: &Key, sort: Sort) -> String {
     ReadPosition {
-        selection: QueryFingerprint::parse(&"00".repeat(32)).unwrap(),
+        source: PositionSource::decode(1).unwrap(),
         sort,
         key: key.clone(),
         rank,

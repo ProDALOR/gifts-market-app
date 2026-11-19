@@ -150,7 +150,7 @@ fn a_window_and_its_revision_are_pinned_even_when_a_commit_occurs_during_scan() 
     assert_ne!(ids(&window(&reader, 1, None, 2, 2)), ids(&expected));
 }
 #[test]
-fn anchors_are_query_bound_and_limits_and_cancellation_are_enforced() {
+fn anchors_validate_sort_and_source_and_enforce_limits_and_cancellation() {
     let (_dir, writer) = setup();
     let reader = writer.reader();
     let first = window(&reader, 1, None, 2, 2);
@@ -912,32 +912,118 @@ fn serialized_compact_keys_preserve_bidirectional_pages_around_reads_and_ranges(
                 )
                 .unwrap();
             assert_eq!(ids(&range), expected[4..=10]);
-            let mut different = request;
-            let w::selection::Source::Scope(scope) = different
-                .selection
-                .as_mut()
-                .unwrap()
-                .source
-                .as_mut()
-                .unwrap()
+            // Filter changes reuse the same numeric/identity boundary, including
+            // when the original row no longer matches the new selection.
+            let mut narrower = request.clone();
+            let Some(w::selection::Source::Scope(scope)) =
+                narrower.selection.as_mut().unwrap().source.as_mut()
             else {
                 unreachable!()
             };
-            scope.currency_id = Some("XTR".into());
-            assert!(
-                reader
+            scope.price = Some(w::PriceRange {
+                min: Some("2".into()),
+                max: None,
+            });
+            let matching = |row: &&ReadEntry| {
+                state::decimal(&state::order(&row.entity).unwrap().price).unwrap()
+                    >= Decimal::from(2)
+            };
+            let resumed = reader
+                .read_slice_checked(
+                    narrower.clone(),
+                    SliceRequest {
+                        navigation: Navigation::After(wire(anchor)),
+                        limit: 200,
+                        snapshot: None,
+                    },
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
+                .unwrap();
+            let expected_after = full
+                .entries
+                .iter()
+                .filter(matching)
+                .filter(|row| row.key > *anchor)
+                .map(|row| state::order(&row.entity).unwrap().id.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids(&resumed),
+                expected_after,
+                "sort={sort}, history={history}"
+            );
+            let narrowed_range = reader
+                .read_range_checked(
+                    narrower,
+                    KeyRange {
+                        start: Some(wire(&full.entries[4].key)),
+                        end: Some(wire(&full.entries[10].key)),
+                    },
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
+                .unwrap();
+            let expected_range = full.entries[4..=10]
+                .iter()
+                .filter(matching)
+                .map(|row| state::order(&row.entity).unwrap().id.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(ids(&narrowed_range), expected_range);
+            for row in &narrowed_range.entries {
+                assert_eq!(
+                    row.key,
+                    full.entries
+                        .iter()
+                        .find(|original| original.key.key == row.key.key)
+                        .unwrap()
+                        .key
+                );
+            }
+            // Direction, ranking kind and source remain part of key compatibility.
+            for wrong_sort in 0..=6 {
+                if wrong_sort == sort {
+                    continue;
+                }
+                let mut other = request.clone();
+                other.sort = wrong_sort;
+                let error = reader
                     .read_slice_checked(
-                        different,
+                        other,
                         SliceRequest {
                             navigation: Navigation::After(wire(anchor)),
                             limit: 4,
                             snapshot: None,
                         },
                         |_, _| Ok(()),
-                        |_| Ok(true)
+                        |_| Ok(true),
                     )
-                    .is_err()
-            );
+                    .err()
+                    .unwrap();
+                assert_eq!(error.code(), tonic::Code::InvalidArgument);
+            }
+            for modes in [vec![2], vec![1, 2], vec![if history { 1 } else { 3 }]] {
+                let mut other = request.clone();
+                let Some(w::selection::Source::Scope(scope)) =
+                    other.selection.as_mut().unwrap().source.as_mut()
+                else {
+                    unreachable!()
+                };
+                scope.modes = modes;
+                let error = reader
+                    .read_slice_checked(
+                        other,
+                        SliceRequest {
+                            navigation: Navigation::After(wire(anchor)),
+                            limit: 4,
+                            snapshot: None,
+                        },
+                        |_, _| Ok(()),
+                        |_| Ok(true),
+                    )
+                    .err()
+                    .unwrap();
+                assert_eq!(error.code(), tonic::Code::InvalidArgument);
+            }
         }
     }
 }

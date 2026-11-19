@@ -3,7 +3,7 @@ use crate::{
     READ_LIMITS,
     query::Filter,
     ranking::ordered_decimal,
-    types::{EntityKind, Key, Position as HistoryPosition, Sort},
+    types::{EntityKind, Key, OrderMode, Position as HistoryPosition, Sort},
 };
 use base64::{
     Engine,
@@ -21,12 +21,37 @@ const KEY_ALPHABET: Alphabet =
         Err(_) => panic!("valid ordered key alphabet"),
     };
 const KEY_ENCODING: GeneralPurpose = GeneralPurpose::new(&KEY_ALPHABET, NO_PAD);
+const KEY_VERSION: u8 = 4;
+const HEADER_LEN: usize = 3;
+/// Selected order modes and active/history storage, packed into one byte.
+/// Filters and query identity do not belong to an ordering position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct QueryFingerprint([u8; 32]);
-impl QueryFingerprint {
-    pub(crate) fn parse(value: &str) -> Result<Self, Status> {
-        let raw = unhex(value)?;
-        Ok(Self(raw.try_into().map_err(|_| invalid())?))
+pub(crate) struct PositionSource(u8);
+impl PositionSource {
+    pub(crate) fn from_filter(filter: &Filter) -> Self {
+        let modes = filter
+            .scope
+            .as_ref()
+            .filter(|scope| !scope.modes.is_empty())
+            .map_or(7, |scope| {
+                scope.modes.iter().fold(0, |bits, mode| {
+                    bits | match mode {
+                        OrderMode::Ask => 1,
+                        OrderMode::Bid => 2,
+                        OrderMode::Executed => 4,
+                    }
+                })
+            });
+        Self(modes | if filter.history() { 8 } else { 0 })
+    }
+    pub(crate) fn decode(value: u8) -> Result<Self, Status> {
+        if value & 7 == 0 || value > 15 {
+            return Err(invalid());
+        }
+        Ok(Self(value))
+    }
+    fn history(self) -> bool {
+        self.0 & 8 != 0
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,7 +63,7 @@ pub(crate) enum Edge {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReadPosition {
-    pub(crate) selection: QueryFingerprint,
+    pub(crate) source: PositionSource,
     pub(crate) sort: Sort,
     pub(crate) key: Key,
     pub(crate) rank: Decimal,
@@ -47,11 +72,9 @@ pub struct ReadPosition {
 }
 impl Ord for ReadPosition {
     fn cmp(&self, other: &Self) -> Ordering {
-        let context = self
-            .selection
-            .cmp(&other.selection)
-            .then((self.sort as i32).cmp(&(other.sort as i32)))
-            .then(self.at.is_some().cmp(&other.at.is_some()));
+        let context = (self.sort as i32)
+            .cmp(&(other.sort as i32))
+            .then(self.source.cmp(&other.source));
         if context != Ordering::Equal {
             return context;
         }
@@ -87,10 +110,7 @@ impl<'de> serde::Deserialize<'de> for ReadPosition {
 impl ReadPosition {
     pub fn encode(&self) -> String {
         let mut bytes = Vec::with_capacity(self.binary_len());
-        bytes.push(3);
-        bytes.extend(self.selection.0);
-        bytes.push(self.sort as u8);
-        bytes.push(u8::from(self.at.is_some()));
+        bytes.extend([KEY_VERSION, self.sort as u8, self.source.0]);
         match self.sort {
             Sort::Identity => {}
             Sort::TimeAsc | Sort::TimeDesc => bytes.extend(ordered_integer(integer(self.rank))),
@@ -118,7 +138,7 @@ impl ReadPosition {
             bytes.extend([0, 0]);
         }
         if self.sort.descending() {
-            for b in &mut bytes[35..] {
+            for b in &mut bytes[HEADER_LEN..] {
                 *b = 255 - *b;
             }
         }
@@ -130,18 +150,18 @@ impl ReadPosition {
             return Err(invalid());
         }
         let bytes = KEY_ENCODING.decode(value).map_err(|_| invalid())?;
-        if bytes.len() < 40 || bytes[0] != 3 || bytes[34] > 1 {
+        if bytes.len() < HEADER_LEN + 5 || bytes[0] != KEY_VERSION {
             return Err(invalid());
         }
-        let selection = QueryFingerprint(bytes[1..33].try_into().map_err(|_| invalid())?);
-        let sort = Sort::try_from(i32::from(bytes[33]))?;
+        let sort = Sort::try_from(i32::from(bytes[1]))?;
+        let source = PositionSource::decode(bytes[2])?;
         let edge = match bytes.last() {
             Some(0x7f) => Edge::Before,
             Some(0x80) => Edge::At,
             Some(0x81) => Edge::After,
             _ => return Err(invalid()),
         };
-        let mut payload = bytes[35..bytes.len() - 1].to_vec();
+        let mut payload = bytes[HEADER_LEN..bytes.len() - 1].to_vec();
         if sort.descending() {
             for b in &mut payload {
                 *b = 255 - *b;
@@ -167,7 +187,7 @@ impl ReadPosition {
                 expand_decimal(raw)?
             }
         };
-        let at = if bytes[34] == 1 {
+        let at = if source.history() {
             Some(if matches!(sort, Sort::TimeAsc | Sort::TimeDesc) {
                 integer(rank)
             } else {
@@ -187,7 +207,7 @@ impl ReadPosition {
             return Err(invalid());
         }
         let result = Self {
-            selection,
+            source,
             sort,
             key: Key {
                 kind: EntityKind::Order,
@@ -204,12 +224,9 @@ impl ReadPosition {
         Ok(result)
     }
     pub(crate) fn validate(&self, filter: &Filter) -> Result<(), Status> {
-        if self.selection != QueryFingerprint::parse(&filter.fingerprint)?
-            || self.sort != filter.sort
-            || self.at.is_some() != filter.history()
-        {
+        if self.sort != filter.sort || self.source != PositionSource::from_filter(filter) {
             return Err(Status::invalid_argument(
-                "ordering key belongs to another query",
+                "ordering key uses another sort or source",
             ));
         }
         Ok(())
@@ -242,12 +259,14 @@ impl ReadPosition {
         (self.binary_len() * 8).div_ceil(6)
     }
     fn binary_len(&self) -> usize {
-        35 + match self.sort {
-            Sort::Identity => 0,
-            Sort::TimeAsc | Sort::TimeDesc => 8,
-            Sort::NumberAsc | Sort::NumberDesc => 9,
-            Sort::PriceAsc | Sort::PriceDesc => 29,
-        } + usize::from(self.at.is_some() && !self.time_rank()) * 8
+        HEADER_LEN
+            + match self.sort {
+                Sort::Identity => 0,
+                Sort::TimeAsc | Sort::TimeDesc => 8,
+                Sort::NumberAsc | Sort::NumberDesc => 9,
+                Sort::PriceAsc | Sort::PriceDesc => 29,
+            }
+            + usize::from(self.at.is_some() && !self.time_rank()) * 8
             + self.key.venue_id.len()
             + self.key.id.len()
             + self
@@ -365,24 +384,6 @@ fn decode_decimal(raw: &[u8]) -> Result<Decimal, Status> {
     }
     Ok(value)
 }
-fn unhex(raw: &str) -> Result<Vec<u8>, Status> {
-    if !raw.len().is_multiple_of(2) {
-        return Err(invalid());
-    }
-    raw.as_bytes()
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|p| Ok((nibble(p[0])? << 4) | nibble(p[1])?))
-        .collect()
-}
-fn nibble(b: u8) -> Result<u8, Status> {
-    match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        _ => Err(invalid()),
-    }
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SnapshotId(uuid::Uuid);
 impl SnapshotId {
@@ -436,17 +437,17 @@ mod tests {
     #[test]
     fn compact_positions_remove_redundant_ranks_without_losing_history_identity() {
         for (sort, rank, history, expected) in [
-            (Sort::Identity, Decimal::ZERO, false, 56),
-            (Sort::Identity, Decimal::from(-1), true, 67),
-            (Sort::PriceAsc, Decimal::ONE, false, 95),
-            (Sort::PriceDesc, Decimal::ONE, true, 106),
-            (Sort::TimeAsc, Decimal::from(-1), false, 67),
-            (Sort::TimeDesc, Decimal::from(-1), true, 67),
-            (Sort::NumberAsc, Decimal::MAX, false, 68),
-            (Sort::NumberDesc, Decimal::from(i64::MIN), true, 79),
+            (Sort::Identity, Decimal::ZERO, false, 14),
+            (Sort::Identity, Decimal::from(-1), true, 24),
+            (Sort::PriceAsc, Decimal::ONE, false, 52),
+            (Sort::PriceDesc, Decimal::ONE, true, 63),
+            (Sort::TimeAsc, Decimal::from(-1), false, 24),
+            (Sort::TimeDesc, Decimal::from(-1), true, 24),
+            (Sort::NumberAsc, Decimal::MAX, false, 26),
+            (Sort::NumberDesc, Decimal::from(i64::MIN), true, 36),
         ] {
             let position = ReadPosition {
-                selection: QueryFingerprint([0; 32]),
+                source: PositionSource(if history { 12 } else { 1 }),
                 sort,
                 key: Key::order("v".into(), "x".into()),
                 rank,
@@ -456,7 +457,7 @@ mod tests {
             let key = position.encode();
             assert_eq!(key.len(), expected);
             assert_eq!(ReadPosition::decode(&key).unwrap(), position);
-            for version in [1, 2] {
+            for version in [1, 2, 3] {
                 let mut retired = KEY_ENCODING.decode(&key).unwrap();
                 retired[0] = version;
                 assert!(ReadPosition::decode(&KEY_ENCODING.encode(retired)).is_err());
@@ -474,7 +475,8 @@ mod tests {
             Sort::NumberAsc,
             Sort::NumberDesc,
         ] {
-            for history in [false, true] {
+            for source in [1, 2, 3, 7, 9, 10, 11, 12, 15].map(PositionSource) {
+                let history = source.history();
                 let mut keys = vec![];
                 let ranks = match sort {
                     Sort::Identity => vec![Decimal::ZERO],
@@ -506,7 +508,7 @@ mod tests {
                                 },
                             );
                             let key = ReadPosition {
-                                selection: QueryFingerprint([42; 32]),
+                                source,
                                 sort,
                                 key: Key::order("venue\0x".into(), text.into()),
                                 rank: if sort == Sort::Identity && history {
@@ -541,9 +543,9 @@ mod tests {
             assert!(ReadPosition::decode(input).is_err());
         }
         let key = ReadPosition {
-            selection: QueryFingerprint([0xab; 32]),
+            source: PositionSource(1),
             sort: Sort::PriceAsc,
-            key: Key::order("v".into(), "x".into()),
+            key: Key::order("v".into(), "xy".into()),
             rank: Decimal::ONE,
             at: None,
             edge: Edge::At,
@@ -552,16 +554,24 @@ mod tests {
         for i in 0..key.len() {
             assert!(ReadPosition::decode(&key[..i]).is_err());
         }
-        for (offset, value) in [(0, 255), (34, 2), (35, 0x20), (36, 0xfa)] {
+        for (offset, value) in [
+            (0, 255),
+            (1, 255),
+            (2, 0),
+            (2, 8),
+            (2, 16),
+            (3, 0x20),
+            (4, 0xfa),
+        ] {
             let mut malformed = KEY_ENCODING.decode(&key).unwrap();
             malformed[offset] = value;
             assert!(ReadPosition::decode(&KEY_ENCODING.encode(malformed)).is_err());
         }
         assert!(ReadPosition::decode(&(key.clone() + "=")).is_err());
         assert!(ReadPosition::decode(&(key.clone() + "0")).is_err());
-        // This payload leaves two padding bits. A second spelling of the same
+        // This payload leaves four padding bits. A second spelling of the same
         // bytes would break string equality and boundary comparisons.
-        assert_eq!(key.len() % 4, 3);
+        assert_eq!(key.len() % 4, 2);
         let last = KEY_ALPHABET
             .as_str()
             .find(key.chars().last().unwrap())
