@@ -21,7 +21,6 @@ pub(crate) enum OrderEvent {
         id: String,
         previous: Option<Arc<OrderResult>>,
         current: Arc<OrderResult>,
-        next: Option<market_actors::ReadPosition>,
         sequence: u64,
         reset: bool,
     },
@@ -96,7 +95,6 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
             id,
             previous,
             current,
-            next,
             sequence,
             reset,
         } => {
@@ -138,7 +136,6 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
                     &ServerFrame::OrdersSnapshot {
                         id,
                         sequence,
-                        next: next.as_ref(),
                         data: (&*current).into(),
                     },
                 )
@@ -174,12 +171,11 @@ mod tests {
         let read = OrderRead {
             result: empty(),
             snapshot: None,
-            next: None,
         };
         let expected = serde_json::to_value(OrderReadResponse::from(&read)).unwrap();
         assert_eq!(
             expected,
-            serde_json::json!({"data":[],"range":{"start":null,"end":null},"next":null})
+            serde_json::json!({"data":[],"range":{"start":null,"end":null}})
         );
         let text = encoder
             .encode(OrderEvent::Read {
@@ -189,13 +185,13 @@ mod tests {
             .await
             .unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["data"], expected);
+        assert_eq!(value["data"], expected["data"]);
+        assert_eq!(value["range"], expected["range"]);
         let snapshot = encoder
             .encode(OrderEvent::Update {
                 id: "x".into(),
                 previous: None,
                 current: Arc::new(empty()),
-                next: None,
                 sequence: 0,
                 reset: false,
             })
@@ -203,14 +199,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&snapshot).unwrap(),
-            serde_json::json!({"type":"orders.snapshot","id":"x","sequence":0,"next":null,"data":[],"range":{"start":null,"end":null}})
+            serde_json::json!({"type":"orders.snapshot","id":"x","sequence":0,"data":[],"range":{"start":null,"end":null}})
         );
         let delta = encoder
             .encode(OrderEvent::Update {
                 id: "x".into(),
                 previous: Some(Arc::new(empty())),
                 current: Arc::new(empty()),
-                next: None,
                 sequence: 1,
                 reset: false,
             })
@@ -227,7 +222,6 @@ mod tests {
                     id: "x".into(),
                     previous: None,
                     current: Arc::new(empty()),
-                    next: None,
                     sequence: 0,
                     reset: false,
                 })

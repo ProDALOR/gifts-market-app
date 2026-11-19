@@ -112,7 +112,7 @@ fn summary(name: &str) -> &'static str {
         "cancel" => "Cancel a pending request or subscription. No acknowledgement is sent.",
         "orders.watch" => "Read up to limit rows, then watch the initialized coverage atomically.",
         "orders.snapshot" => {
-            "Initialize or reset range state atomically, including coverage and continuation."
+            "Initialize or reset state atomically; the half-open coverage end also advances pagination."
         }
         "orders.changed" => {
             "Apply removals and upserts atomically after checking sequence continuity."
@@ -179,7 +179,6 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         "orders.snapshot" => serde_json::to_value(ServerFrame::OrdersSnapshot {
             id: "orders.1".into(),
             sequence: 0,
-            next: None,
             data: OrderSnapshotResponse {
                 data: vec![],
                 range: crate::orders::OrderRangeResponse {

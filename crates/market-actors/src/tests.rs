@@ -11,6 +11,11 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
+impl DataWatch {
+    pub(crate) fn test_parts(self) -> (Arc<DataSubscription>, watch::Receiver<DataUpdate>) {
+        (self.lease, self.updates)
+    }
+}
 pub(crate) fn entity(value: w::entity::Entity) -> w::Change {
     w::Change {
         change: Some(w::change::Change::Upsert(w::Entity {
@@ -196,7 +201,10 @@ async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription
     );
     next_window(&mut api_updates, &writer.reader()).await;
     let mut another = gift_query();
-    another.limit = 1;
+    let DataUpdate::Orders { result, .. } = api_updates.borrow().clone() else {
+        unreachable!()
+    };
+    another.range.end = Some(result.data[0].key.encode().try_into().unwrap());
     assert_eq!(
         api.test_window(another).await.err().unwrap().code(),
         crate::error::DataErrorCode::CapacityExceeded
@@ -352,14 +360,20 @@ async fn subscriptions_waiting_for_capacity_are_terminated_during_shutdown() {
     let (_directory, writer) = fixture();
     let service = TestData::start(writer.reader(), 1, 1).await.unwrap();
     let permit = service.handle.orderbooks.budget.try_query().unwrap();
-    let (_feed, updates) = service.handle.test_window(gift_query()).await.unwrap();
+    let handle = service.handle.clone();
+    let mut pending = tokio::spawn(async move { handle.watch_orders(gift_query()).await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut pending)
+            .await
+            .is_err()
+    );
     let stop = CancellationToken::new();
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(3), service.task.run(stop))
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(*updates.borrow(), DataUpdate::Error(_)));
+    assert!(pending.await.unwrap().is_err());
     drop(permit);
 }
 
@@ -439,7 +453,10 @@ async fn market_watch_leases_cancel_independently_and_release_capacity() {
     next_window(&mut api_updates, &writer.reader()).await;
     next_window(&mut bot_updates, &writer.reader()).await;
     let mut distinct = gift_query();
-    distinct.limit = 1;
+    let DataUpdate::Orders { result, .. } = api_updates.borrow().clone() else {
+        unreachable!()
+    };
+    distinct.range.end = Some(result.data[0].key.encode().try_into().unwrap());
     assert_eq!(
         service
             .handle
@@ -506,8 +523,8 @@ async fn gift_snapshot_pages_survive_requests_and_catalog_replacement() {
     history.sort = Some(market_gifts::GiftSort::Identity);
     history.view = ReadView::Snapshot { id: None };
     let first_history = service.handle.test_page(history.clone()).await.unwrap();
-    assert!(first.next.is_some());
-    assert!(first_history.next.is_some());
+    assert!(first.end.is_some());
+    assert!(first_history.end.is_some());
     // The current catalog no longer describes a gift, but the retained pages still do.
     writer
         .apply(w::Batch {
@@ -701,11 +718,11 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
                 query.limit = 2;
                 let first = service.handle.test_page(query.clone()).await.unwrap();
                 assert_eq!(first.data.len(), 2, "{side:?} {consistency:?} {sort:?}");
-                assert!(first.next.is_some());
+                assert!(first.end.is_some());
                 advance(&mut query, &first);
                 let second = service.handle.test_page(query).await.unwrap();
                 assert_eq!(second.data.len(), 1);
-                assert!(second.next.is_none());
+                assert!(second.end.is_none());
                 let ids: Vec<_> = first
                     .data
                     .iter()
@@ -736,7 +753,7 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
     query.view = ReadView::Snapshot { id: None };
     let retained = service.handle.test_page(query.clone()).await.unwrap();
     let mut watch_query = query.clone();
-    watch_query.range.end = retained.next.clone();
+    watch_query.range.end = retained.end.clone();
     let (lease, mut updates) = service.handle.test_window(watch_query).await.unwrap();
     let head = next_window(&mut updates, &writer.reader()).await;
     assert_eq!(head.data.len(), 2);
@@ -990,14 +1007,14 @@ impl MarketDataHandle {
             };
         }
         query.limit = 100;
-        self.watch_orders(query).await
+        self.watch_orders(query).await.map(DataWatch::test_parts)
     }
     async fn test_window(
         &self,
         mut query: market_gifts::GiftOrderQuery,
     ) -> crate::error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
         query.view = market_gifts::ReadView::Latest {};
-        self.watch_orders(query).await
+        self.watch_orders(query).await.map(DataWatch::test_parts)
     }
 }
 
@@ -1136,9 +1153,15 @@ async fn frozen_windows_reject_overload_while_live_producers_wait_and_cleanup_st
         .await
         .unwrap();
     assert!(service.handle.status().await.unwrap().ready);
-    let (lease, mut updates) = service.handle.test_seed_watch(query).await.unwrap();
-    assert!(matches!(*updates.borrow(), DataUpdate::Connecting));
+    let handle = service.handle.clone();
+    let mut seed = tokio::spawn(async move { handle.test_seed_watch(query).await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut seed)
+            .await
+            .is_err()
+    );
     drop(permit);
+    let (lease, mut updates) = seed.await.unwrap().unwrap();
     assert_eq!(
         next_window(&mut updates, &writer.reader()).await.data.len(),
         1
@@ -1230,7 +1253,7 @@ fn query_projection_rejects_duplicate_identities_instead_of_silently_collapsing_
 #[derive(Debug)]
 struct TestPage {
     data: Vec<market_gifts::GiftOrder>,
-    next: Option<market_gifts::OrderKey>,
+    end: Option<market_gifts::OrderKey>,
     snapshot: Option<market_gifts::ReadSnapshotId>,
 }
 impl MarketDataHandle {
@@ -1241,13 +1264,17 @@ impl MarketDataHandle {
         let read = self.query_orders(query).await?;
         Ok(TestPage {
             data: read.result.data.into_iter().map(|e| e.order).collect(),
-            next: read.next.map(|k| k.encode().try_into().unwrap()),
+            end: read
+                .result
+                .range
+                .end
+                .map(|k| k.encode().try_into().unwrap()),
             snapshot: read.snapshot.map(|id| id.to_string().try_into().unwrap()),
         })
     }
 }
 fn advance(query: &mut market_gifts::GiftOrderQuery, page: &TestPage) {
-    query.range.start = page.next.clone();
+    query.range.start = page.end.clone();
     if page.snapshot.is_some() {
         query.view = market_gifts::ReadView::Snapshot {
             id: page.snapshot.clone(),
@@ -1260,9 +1287,19 @@ async fn identical_explicit_ranges_share_a_producer_with_independent_leases() {
     let (_dir, mut writer) = fixture();
     let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let params = gift_query();
-    let (a, mut ax) = service.handle.watch_orders(params.clone()).await.unwrap();
+    let (a, mut ax) = service
+        .handle
+        .watch_orders(params.clone())
+        .await
+        .unwrap()
+        .test_parts();
     let first = next_window(&mut ax, &writer.reader()).await;
-    let (b, mut bx) = service.handle.watch_orders(params.clone()).await.unwrap();
+    let (b, mut bx) = service
+        .handle
+        .watch_orders(params.clone())
+        .await
+        .unwrap()
+        .test_parts();
     let second = next_window(&mut bx, &writer.reader()).await;
     assert!(Arc::ptr_eq(&first, &second));
     let mut different = params;
@@ -1348,7 +1385,7 @@ async fn queries_and_watches_enforce_the_same_hundred_order_limit() {
 }
 
 #[tokio::test]
-async fn watches_seed_one_page_then_reconcile_fixed_coverage_with_stable_continuation() {
+async fn watches_seed_per_caller_then_share_fixed_half_open_coverage() {
     let (_dir, mut writer) = fixture();
     let named = |id: &str, price: &str| {
         let mut change = order(price);
@@ -1372,19 +1409,18 @@ async fn watches_seed_one_page_then_reconcile_fixed_coverage_with_stable_continu
     query.sort = Some(market_gifts::GiftSort::PriceAsc);
     query.limit = 2;
     let page = service.handle.query_orders(query.clone()).await.unwrap();
-    let (lease, mut updates) = service.handle.watch_orders(query.clone()).await.unwrap();
+    let (lease, mut updates) = service
+        .handle
+        .watch_orders(query.clone())
+        .await
+        .unwrap()
+        .test_parts();
     let seed = next_window(&mut updates, &writer.reader()).await;
     assert_eq!(*seed, page.result);
     assert!(seed.range.start.is_none());
-    assert_eq!(
-        seed.range.end.as_ref(),
-        seed.data.last().map(|row| &row.key)
-    );
-    let DataUpdate::Orders { next, .. } = updates.borrow().clone() else {
-        unreachable!()
-    };
-    assert_eq!(next, page.next);
-    assert!(next.is_some());
+    assert!(seed.range.end.as_ref().unwrap() > &seed.data.last().unwrap().key);
+    let end = page.result.range.end.clone();
+    assert!(end.is_some());
     // Seed size is not the live capacity: arrivals can grow coverage above two rows.
     writer
         .apply(w::Batch {
@@ -1395,6 +1431,21 @@ async fn watches_seed_one_page_then_reconcile_fixed_coverage_with_stable_continu
     let grown = next_window(&mut updates, &writer.reader()).await;
     assert_eq!(grown.data.len(), 3);
     assert_eq!(grown.range, seed.range);
+    let (limited, mut late) = service
+        .handle
+        .watch_orders(query.clone())
+        .await
+        .unwrap()
+        .test_parts();
+    assert!(!updates.same_channel(&late));
+    let capped = next_window(&mut late, &writer.reader()).await;
+    assert_eq!(
+        capped.data.len(),
+        2,
+        "A grown shared feed cannot bypass a new caller's seed limit"
+    );
+    drop(limited);
+    terminal(&mut late).await;
     // A departing boundary must not change coverage or skip the next unseen order.
     writer
         .apply(w::Batch {
@@ -1405,20 +1456,19 @@ async fn watches_seed_one_page_then_reconcile_fixed_coverage_with_stable_continu
     let changed = next_window(&mut updates, &writer.reader()).await;
     assert_eq!(changed.data.len(), 2);
     assert_eq!(changed.range, seed.range);
-    let (other, late) = service.handle.watch_orders(query.clone()).await.unwrap();
-    assert!(updates.same_channel(&late));
-    let DataUpdate::Orders {
-        next: late_next,
-        result,
-        ..
-    } = late.borrow().clone()
-    else {
+    let (other, late) = service
+        .handle
+        .watch_orders(query.clone())
+        .await
+        .unwrap()
+        .test_parts();
+    assert!(!updates.same_channel(&late));
+    let DataUpdate::Orders { result, .. } = late.borrow().clone() else {
         unreachable!()
     };
-    assert_eq!(late_next, next);
-    assert_eq!(*result, *changed);
+    assert_eq!(result.data, changed.data);
     let mut continuation = query.clone();
-    continuation.range.start = next.clone().map(|p| p.encode().try_into().unwrap());
+    continuation.range.start = end.clone().map(|p| p.encode().try_into().unwrap());
     let remaining = service.handle.query_orders(continuation).await.unwrap();
     assert_eq!(
         remaining.result.data.first().unwrap().order.price.as_str(),
@@ -1439,7 +1489,12 @@ async fn watches_seed_one_page_then_reconcile_fixed_coverage_with_stable_continu
     };
     assert_eq!(error.code(), crate::error::DataErrorCode::CapacityExceeded);
     drop((lease, other));
-    let (retry, mut updates) = service.handle.watch_orders(query).await.unwrap();
+    let (retry, mut updates) = service
+        .handle
+        .watch_orders(query)
+        .await
+        .unwrap()
+        .test_parts();
     assert_eq!(
         next_window(&mut updates, &writer.reader()).await.data.len(),
         2

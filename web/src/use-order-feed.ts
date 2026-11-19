@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { emptyFeed, createOrderFeed } from "./order-feed";
 import type { FeedController, Bookmark } from "./order-feed";
 import type { FeedQuery } from "./market";
@@ -8,37 +8,40 @@ export function useOrderFeed(
   refresh: number,
 ) {
   const signature = JSON.stringify(query);
-  const [state, setState] = useState(emptyFeed);
+  const [view, setView] = useState(() => ({ signature, state: emptyFeed() }));
   const feed = useRef<FeedController | undefined>(undefined);
   const saved = useRef<{ signature: string; bookmark?: Bookmark }>({
     signature: "",
   });
   const frozen = query?.kind === "orders" && paused;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const same = saved.current.signature === signature;
-    if (!same) {
-      saved.current = { signature };
-      setState(emptyFeed());
-    }
-    if (!query) {
-      setState({ ...emptyFeed(), status: "Choose a collection" });
-      return;
-    }
+    if (!same) saved.current = { signature };
+    if (!query) return;
     const current = createOrderFeed(
       query,
       frozen,
       (next) => {
-        setState((previous) =>
-          same && !current.ready
-            ? {
-                ...next,
-                orders: previous.orders,
-                displayOrders: previous.displayOrders,
-                activity: previous.activity,
-                hasMore: previous.hasMore,
-              }
-            : next,
-        );
+        const ready = current.ready;
+        setView((previous) => {
+          // A queued update from a retired collection must not replace the current view.
+          if (feed.current !== current) return previous;
+          const prior =
+            previous.signature === signature ? previous.state : emptyFeed();
+          return {
+            signature,
+            state:
+              same && !ready
+                ? {
+                    ...next,
+                    orders: prior.orders,
+                    displayOrders: prior.displayOrders,
+                    activity: prior.activity,
+                    hasMore: prior.hasMore,
+                  }
+                : next,
+          };
+        });
       },
       same ? saved.current.bookmark : undefined,
     );
@@ -50,11 +53,20 @@ export function useOrderFeed(
       if (feed.current === current) feed.current = undefined;
     };
   }, [signature, frozen, refresh]);
-  const loadMore = useCallback(() => feed.current?.loadMore(), []);
+  const loadMore = useCallback(() => {
+    if (saved.current.signature === signature) feed.current?.loadMore();
+  }, [signature]);
   const setVisibleRange = useCallback(
-    (start: number, end: number, anchor?: number) =>
-      feed.current?.setVisibleRange(start, end, anchor),
-    [],
+    (start: number, end: number, anchor?: number) => {
+      if (saved.current.signature === signature)
+        feed.current?.setVisibleRange(start, end, anchor);
+    },
+    [signature],
   );
+  const state = !query
+    ? { ...emptyFeed(), status: "Choose a collection" }
+    : view.signature === signature
+      ? view.state
+      : emptyFeed();
   return { ...state, loadMore, setVisibleRange };
 }

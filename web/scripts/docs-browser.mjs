@@ -175,11 +175,11 @@ try {
   for (const [message, field] of [
     ["request", "params"],
     ["result", "data"],
+    ["result", "range"],
     ["cancel", "id"],
     ["orders.watch", "params"],
     ["orders.snapshot", "data"],
     ["orders.snapshot", "range"],
-    ["orders.snapshot", "next"],
     ["market.status", "status"],
   ]) {
     await page

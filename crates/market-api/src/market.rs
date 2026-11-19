@@ -1,6 +1,6 @@
 //! Shared HTTP/WebSocket adapter over gift-domain actor capabilities.
 use super::{error::Result, models::*};
-use market_actors::{DataSubscription, DataUpdate, MarketDataHandle};
+use market_actors::{DataWatch, MarketDataHandle};
 use market_gifts::{MediaTarget, SyncStatus, TelegramDocumentId};
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -41,7 +41,7 @@ impl MarketApi {
     pub(crate) async fn watch_orders(
         &self,
         params: market_gifts::GiftOrderQuery,
-    ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
+    ) -> Result<DataWatch> {
         Ok(self.data.watch_orders(params).await?)
     }
     pub(crate) async fn shutdown(&self) {
@@ -65,10 +65,7 @@ impl MarketApi {
     ) -> Result<market_actors::CatalogSnapshot<market_gifts::GiftCollectionCatalog>> {
         Ok(self.data.collection_snapshot(id).await?)
     }
-    pub(crate) async fn subscribe_catalog(
-        &self,
-        ids: Vec<CollectionId>,
-    ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
+    pub(crate) async fn subscribe_catalog(&self, ids: Vec<CollectionId>) -> Result<DataWatch> {
         Ok(self.data.subscribe_catalog(ids).await?)
     }
     pub(crate) async fn media_document(&self, target: MediaTarget) -> Result<TelegramDocumentId> {

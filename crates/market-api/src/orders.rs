@@ -128,8 +128,6 @@ pub struct OrderRangeResponse<'a> {
 pub struct OrderReadResponse<'a> {
     #[serde(flatten)]
     pub orders: OrderSnapshotResponse<'a>,
-    #[schema(value_type=Option<market_gifts::OrderKey>, required=true)]
-    pub next: Option<&'a market_actors::ReadPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type=Option<market_gifts::ReadSnapshotId>)]
     pub snapshot: Option<String>,
@@ -156,7 +154,6 @@ impl<'a> From<&'a market_actors::OrderRead> for OrderReadResponse<'a> {
     fn from(read: &'a market_actors::OrderRead) -> Self {
         Self {
             orders: (&read.result).into(),
-            next: read.next.as_ref(),
             snapshot: read.snapshot.map(|id| id.to_string()),
         }
     }

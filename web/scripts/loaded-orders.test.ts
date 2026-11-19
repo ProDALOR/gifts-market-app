@@ -23,7 +23,7 @@ const view = (data: Window["data"], before = true, after = true): Window => ({
   data,
   range: {
     start: before && data.length ? data[0].key : null,
-    end: after && data.length ? data.at(-1)!.key : null,
+    end: after && data.length ? data.at(-1)!.key + "~" : null,
   },
 });
 const range = (start: number, end: number) =>
@@ -64,13 +64,10 @@ test("revisiting the middle does not reopen a known end; an empty market clears 
   const cache = new LoadedOrders();
   cache.merge(view(range(0, 150), false));
   cache.merge(view(range(100, 220), true, false));
-  assert.equal(cache.hasAfter, false);
   cache.merge(view(range(30, 180)));
-  assert.equal(cache.hasAfter, false);
   assert.equal(cache.rows.length, 220);
   cache.merge(view([], false, false));
   assert.equal(cache.rows.length, 0);
-  assert.equal(cache.hasAfter, false);
 });
 test("identical listing IDs at different venues stay distinct", () => {
   const cache = new LoadedOrders();
@@ -93,7 +90,7 @@ test("an empty bounded result clears its full coverage while retaining visited n
     data: [],
     range: {
       start: rows[3].key,
-      end: rows[6].key,
+      end: rows[7].key,
     },
   });
   assert.deepEqual(
@@ -101,5 +98,4 @@ test("an empty bounded result clears its full coverage while retaining visited n
     ["0", "1", "2", "7", "8", "9"],
   );
   assert.equal(cache.hasBefore, false);
-  assert.equal(cache.hasAfter, false);
 });

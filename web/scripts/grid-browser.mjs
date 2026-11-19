@@ -28,7 +28,8 @@ import '/src/style.css';
 const query={kind:'orders',query:{filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},side:'ask',sort:'price_asc'}};
 const options=new Map(),open=()=>{};
 const card=()=>({options,collectionName:'Gift',venueName:'Venue',selected:false,open});
-function App(){const [paused,setPaused]=React.useState(false);window.setPaused=setPaused;const feed=useOrderFeed(query,paused,0);window.feedView=()=>feed;
+function App(){const [paused,setPaused]=React.useState(false);const [selection,setSelection]=React.useState(query);window.setPaused=setPaused;window.selectCollection=id=>setSelection(id?{...query,query:{...query.query,filters:{...query.query.filters,collection_id:id}}}:null);const feed=useOrderFeed(selection,paused,0);window.feedView=()=>feed;
+React.useLayoutEffect(()=>{const selected=selection?.query.filters.collection_id??null;window.scopeFrames??=[];window.scopeFrames.push({selected,collections:[...new Set(feed.orders.map(o=>o.book.collection_id))]});if(selected==='other'){feed.loadMore();feed.setVisibleRange(0,5);}},[selection,feed.orders]);
 return React.createElement('main',{className:'workspace'},React.createElement('div',{className:'orderbook'},
 React.createElement('header',{style:{height:72}},'Market'),
 React.createElement('section',{className:'orders'},
@@ -153,6 +154,11 @@ try {
     checks = [];
   let anchorChecks = 0,
     nearTopChecks = 0;
+  let liveQueries = 0,
+    releaseOther;
+  const otherPending = new Promise((resolve) => {
+    releaseOther = resolve;
+  });
   await page.routeWebSocket("**/ws", (socket) => {
     socket.send(JSON.stringify({ type: "market.status", status: "available" }));
     let current;
@@ -163,12 +169,13 @@ try {
         return;
       }
       if (incoming.type === "request" && incoming.method === "orders.query") {
+        liveQueries++;
         socket.send(
           JSON.stringify({
             type: "result",
             id: incoming.id,
             method: incoming.method,
-            data: orderResult(incoming.params, rows),
+            ...orderResult(incoming.params, rows),
           }),
         );
         return;
@@ -178,6 +185,28 @@ try {
         const command = incoming;
         if (command.type !== "orders.watch") return;
         subscriptions++;
+        if (command.params.filters.collection_id !== "gift") {
+          if (command.params.filters.collection_id === "other")
+            await otherPending;
+          socket.send(
+            JSON.stringify({
+              type: "orders.snapshot",
+              id: command.id,
+              sequence: 0,
+              ...orderSnapshot(
+                command.params,
+                rows.map((row) => ({
+                  ...row,
+                  book: {
+                    ...row.book,
+                    collection_id: command.params.filters.collection_id,
+                  },
+                })),
+              ),
+            }),
+          );
+          return;
+        }
         lastAnchor = command.params.range?.start;
         const marker = await page
           .locator(".card-open")
@@ -204,7 +233,6 @@ try {
             id: command.id,
             data: window.data,
             range: window.range,
-            next: window.next,
           }),
         );
         if (marker && window.data.some((row) => row.id === marker.id)) {
@@ -330,6 +358,9 @@ try {
   assert.ok(await page.evaluate(() => window.feedView().orders.length > 100));
   assert.ok((await page.locator(".gift-card").count()) < 60);
   assert.equal(requests, 0);
+  const loadedBeforePause = await page.evaluate(
+    () => window.feedView().orders.length,
+  );
   const anchorBeforePause = await anchor();
   const liveSubscriptions = subscriptions;
   await page.evaluate(() => window.setPaused(true));
@@ -348,7 +379,13 @@ try {
     liveSubscriptions,
     "Paused navigation uses a frozen HTTP view",
   );
-  assert.equal(frozenRequests.length, 1);
+  assert.equal(frozenRequests.length, Math.ceil(loadedBeforePause / 100));
+  assert.ok(
+    frozenRequests
+      .slice(1)
+      .every((q) => q.view.id === frozenRequests[1].view.id),
+    "All paused rows share one immutable view",
+  );
   await page.evaluate(() => window.setPaused(false));
   await page.waitForFunction(() => window.feedView().status === "Live");
   await page.waitForTimeout(100);
@@ -385,6 +422,46 @@ try {
     nearTopChecks > 0,
     "Preserve a visible anchor below the header when loading preceding rows",
   );
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const beforeSwitch = liveQueries;
+  await page.evaluate(() => window.selectCollection("other"));
+  await page.waitForFunction(() =>
+    window.scopeFrames.some((frame) => frame.selected === "other"),
+  );
+  assert.equal(await page.evaluate(() => window.feedView().orders.length), 0);
+  assert.equal(
+    liveQueries,
+    beforeSwitch,
+    "Layout callbacks must not page the retired collection",
+  );
+  await page.evaluate(() => window.selectCollection("new"));
+  await page.waitForFunction(
+    () =>
+      window.feedView().orders.length > 0 &&
+      window.feedView().orders.every((row) => row.book.collection_id === "new"),
+  );
+  releaseOther();
+  await Promise.all(checks);
+  await page.waitForTimeout(100);
+  assert.ok(
+    await page.evaluate(() =>
+      window.scopeFrames.every((frame) =>
+        frame.collections.every((id) => id === frame.selected),
+      ),
+    ),
+    "Every render must match its selected collection, including before effect cleanup",
+  );
+  assert.ok(
+    await page.evaluate(() =>
+      window.feedView().orders.every((row) => row.book.collection_id === "new"),
+    ),
+    "A late canceled snapshot cannot replace the current collection",
+  );
+  await page.evaluate(() => window.selectCollection(null));
+  await page.waitForFunction(
+    () => window.feedView().status === "Choose a collection",
+  );
+  assert.equal(await page.evaluate(() => window.feedView().orders.length), 0);
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(

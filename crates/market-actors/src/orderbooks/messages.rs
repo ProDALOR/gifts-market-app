@@ -13,7 +13,7 @@ pub(crate) struct ReleaseSnapshot {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<(crate::OrderRead,market_replica::ReadRevision),Status>")]
+#[rtype(result = "Result<crate::OrderSnapshot,Status>")]
 pub(crate) struct ReadRange {
     pub request: w::ReadRequest,
     pub read: market_replica::RangeRequest,

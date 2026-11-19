@@ -594,7 +594,7 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
         match value {
             serde_json::Value::Object(object) => {
                 if let Some(properties) = object.get("properties").and_then(|v| v.as_object()) {
-                    for field in ["sync", "cursor", "revision", "updated_at"] {
+                    for field in ["sync", "cursor", "revision", "observed", "updated_at"] {
                         assert!(!properties.contains_key(field), "Public field {field}");
                     }
                 }
@@ -2150,8 +2150,8 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     assert_eq!(first.status(), 200);
     let first: serde_json::Value = test::read_body_json(first).await;
     assert_eq!(first["data"].as_array().unwrap().len(), 1);
-    assert!(!first["next"].as_str().unwrap().is_empty());
-    paged_query["range"] = serde_json::json!({"start":first["next"],"end":null});
+    assert!(!first["range"]["end"].as_str().unwrap().is_empty());
+    paged_query["range"] = serde_json::json!({"start":first["range"]["end"],"end":null});
     let second = test::call_service(
         &app,
         test::TestRequest::post()
@@ -2163,7 +2163,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     assert_eq!(second.status(), 200);
     let second: serde_json::Value = test::read_body_json(second).await;
     assert_eq!(second["data"].as_array().unwrap().len(), 1);
-    assert!(second["next"].is_null());
+    assert!(second["range"]["end"].is_null());
     assert_ne!(first["data"][0]["id"], second["data"][0]["id"]);
     let response = test::call_service(
         &app,
@@ -2220,7 +2220,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     .await
     .unwrap();
     assert_eq!(seed["sequence"], 0);
-    for field in ["data", "range", "next"] {
+    for field in ["data", "range"] {
         assert_eq!(seed[field], first[field], "{field}");
     }
     socket
@@ -2235,7 +2235,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     watch_query["filters"]["venue_id"] = "test".into();
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
-            serde_json::json!({"type":"orders.watch","id":"orders","params":with_range(watch_query, serde_json::json!({"start":rest["data"][0]["key"],"end":rest["data"][1]["key"]}))})
+            serde_json::json!({"type":"orders.watch","id":"orders","params":with_range(watch_query, serde_json::json!({"start":rest["data"][0]["key"],"end":rest["range"]["end"]}))})
             .to_string()
             .into(),
         ))
@@ -2249,7 +2249,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
                 let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
                 assert_ne!(frame["type"], "error", "{frame}");
                 if frame["type"] == "orders.snapshot" {
-                    assert_eq!(frame["next"], serde_json::Value::Null);
+                    assert!(frame.get("next").is_none());
                     assert!(frame.get("snapshot").is_none());
                     break serde_json::json!({"data":frame["data"],"range":frame["range"]});
                 }
@@ -2287,7 +2287,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
 }
 
 #[actix_web::test]
-async fn atomic_range_changes_keep_continuations_only_in_the_initial_snapshot() {
+async fn atomic_range_changes_keep_coverage_only_in_snapshots() {
     let (_state, runtime, peer, stop) = setup().await;
     let web_dir = peer._directory.path().join("window-web");
     std::fs::create_dir_all(&web_dir).unwrap();
@@ -2340,7 +2340,7 @@ async fn atomic_range_changes_keep_continuations_only_in_the_initial_snapshot() 
     assert_ne!(first["data"][0]["key"], next["upserts"][0]["key"]);
     assert_eq!(first["type"], "orders.snapshot");
     assert_eq!(next["type"], "orders.changed");
-    assert_eq!(first.get("next"), Some(&serde_json::Value::Null));
+    assert!(first.get("next").is_none());
     assert!(next.get("next").is_none());
     assert!(next.get("range").is_none());
     assert_eq!(
@@ -2600,12 +2600,16 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
     for name in ["position", "sort_key"] {
         assert!(latest["data"][0].get(name).is_none());
     }
-    assert!(latest["next"].is_null());
+    assert!(latest["range"]["end"].is_null());
     let mut narrower = query();
     narrower["filters"]["venue_id"] = "test".into();
     narrower["filters"]["price"] = serde_json::json!({"min":"1"});
     narrower["range"] =
         serde_json::json!({"start":latest["data"][0]["key"],"end":latest["data"][0]["key"]});
+    let empty: serde_json::Value =
+        test::call_and_read_body_json(&app, send(narrower.clone())).await;
+    assert!(empty["data"].as_array().unwrap().is_empty());
+    narrower["range"]["end"] = serde_json::Value::Null;
     let reused: serde_json::Value = test::call_and_read_body_json(&app, send(narrower)).await;
     assert_eq!(reused["data"], latest["data"]);
     for (source, sort) in [
@@ -2660,7 +2664,7 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
         let mut next = frozen_query.clone();
         next["range"] = serde_json::json!({"start":row_key,"end":row_key});
         let result: serde_json::Value = test::call_and_read_body_json(&app, send(next)).await;
-        assert_eq!(result["data"].as_array().unwrap().len(), 1);
+        assert!(result["data"].as_array().unwrap().is_empty());
     }
     let response = test::call_service(
         &app,

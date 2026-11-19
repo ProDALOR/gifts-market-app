@@ -70,7 +70,11 @@ pub(super) async fn run(
         _=cancel.cancelled()=>return End::Cancelled,
         result=tokio::time::timeout(limits.setup_timeout,setup)=>result.unwrap_or_else(|_|Err(ApiError::unavailable("Subscription setup timed out"))),
     };
-    let (_lease, mut updates) = match result {
+    let market_actors::DataWatch {
+        lease: _lease,
+        initial,
+        mut updates,
+    } = match result {
         Ok(subscription) => subscription,
         Err(error) => {
             return end(tx
@@ -78,19 +82,23 @@ pub(super) async fn run(
                 .await);
         }
     };
+    let mut initial = Some(initial);
     let mut previous = None;
     let mut epoch: Option<market_actors::ReadRevision> = None;
     let mut sequence = 0u64;
     loop {
-        let update = updates.borrow_and_update().clone();
+        let first = initial.is_some();
+        let update = initial
+            .take()
+            .unwrap_or_else(|| updates.borrow_and_update().clone());
         let message = match update {
             DataUpdate::Connecting => None,
             DataUpdate::Catalog(versions) => Some((Payload::Catalog(versions), false)),
             DataUpdate::Error(error) => Some((Payload::Error(error.into()), true)),
             DataUpdate::Orders {
                 result,
-                next,
                 version: next_epoch,
+                ..
             } => {
                 let reset = epoch
                     .as_ref()
@@ -125,7 +133,6 @@ pub(super) async fn run(
                         id: key.id.as_str().into(),
                         previous: previous.clone(),
                         current: result.clone(),
-                        next,
                         sequence: next_sequence,
                         reset,
                     };
@@ -149,6 +156,9 @@ pub(super) async fn run(
             if delivered.is_err() || terminal {
                 return end(delivered);
             }
+        }
+        if first {
+            continue;
         }
         let changed = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=updates.changed()=>result};
         if changed.is_err() {

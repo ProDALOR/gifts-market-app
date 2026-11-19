@@ -15,8 +15,8 @@ impl OrderbooksHandle {
         &self,
         request: w::ReadRequest,
         read: market_replica::RangeRequest,
-    ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
-        self.read_range(request, read, false, self.budget.try_query()?)
+    ) -> Result<crate::OrderSnapshot, Status> {
+        self.read_admitted(request, read, false, self.budget.try_query()?)
             .await
     }
     pub async fn range_wait(
@@ -24,17 +24,17 @@ impl OrderbooksHandle {
         request: w::ReadRequest,
         read: market_replica::RangeRequest,
         complete: bool,
-    ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
-        self.read_range(request, read, complete, self.budget.wait().await?)
+    ) -> Result<crate::OrderSnapshot, Status> {
+        self.read_admitted(request, read, complete, self.budget.wait().await?)
             .await
     }
-    async fn read_range(
+    pub(crate) async fn read_admitted(
         &self,
         request: w::ReadRequest,
         read: market_replica::RangeRequest,
         complete: bool,
         permit: market_replica::ReadPermit,
-    ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
+    ) -> Result<crate::OrderSnapshot, Status> {
         let _cancel = permit.cancel_on_drop();
         self.address
             .send(super::messages::ReadRange {

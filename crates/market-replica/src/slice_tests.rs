@@ -476,7 +476,7 @@ fn fixed_ranges_use_original_ordering_bounds_after_anchor_repricing() {
             |_| Ok(true),
         )
         .unwrap();
-    assert_eq!(ids(&current), ["new", "11", "12", "13", "14", "15"]);
+    assert_eq!(ids(&current), ["new", "11", "12", "13", "14"]);
     let mut foreign = read(1, false);
     foreign.sort = 2;
     assert_eq!(
@@ -526,7 +526,7 @@ fn history_slices_follow_all_ranked_indexes_and_include_late_backfills_in_covera
                 query.clone(),
                 KeyRange {
                     start: Some(slice.entries[1].key.clone()),
-                    end: Some(slice.entries[1].key.clone()),
+                    end: Some(slice.entries[1].key.after()),
                 },
                 |_, _| Ok(()),
                 |_| Ok(true),
@@ -556,7 +556,7 @@ fn history_slices_follow_all_ranked_indexes_and_include_late_backfills_in_covera
     assert_eq!(ids(&slice), ["h2", "h4"]);
     let coverage = KeyRange {
         start: None,
-        end: Some(slice.entries[1].key.clone()),
+        end: Some(slice.entries[1].key.after()),
     };
     writer
         .commit(
@@ -773,8 +773,51 @@ fn bounded_empty_slices_return_a_progress_key_without_claiming_unscanned_coverag
         )
         .unwrap();
     assert!(first.entries.is_empty());
+    let page = reader
+        .query_range_checked(
+            query.clone(),
+            RangeRequest {
+                range: KeyRange {
+                    start: None,
+                    end: None,
+                },
+                limit: 2,
+                snapshot: None,
+            },
+            false,
+            |_, _| Ok(()),
+            include,
+        )
+        .unwrap();
+    assert!(page.entries.is_empty());
+    let boundary = page
+        .range
+        .end
+        .clone()
+        .expect("An empty scan must advance its coverage");
+    let after = reader
+        .query_range_checked(
+            query.clone(),
+            RangeRequest {
+                range: KeyRange {
+                    start: Some(boundary),
+                    end: None,
+                },
+                limit: 2,
+                snapshot: None,
+            },
+            false,
+            |_, _| Ok(()),
+            include,
+        )
+        .unwrap();
+    assert_eq!(ids(&after), ["10001", "10002"]);
+    assert!(after.range.end.is_none());
     assert!(first.next.is_some());
-    assert_eq!(first.range.end, first.next);
+    assert_eq!(
+        first.range.end,
+        first.next.as_ref().map(ReadPosition::after)
+    );
     let complete = reader
         .read_range_checked(query.clone(), first.range, |_, _| Ok(()), include)
         .unwrap();
@@ -911,7 +954,7 @@ fn serialized_compact_keys_preserve_bidirectional_pages_around_reads_and_ranges(
                     |_| Ok(true),
                 )
                 .unwrap();
-            assert_eq!(ids(&range), expected[4..=10]);
+            assert_eq!(ids(&range), expected[4..10]);
             // Filter changes reuse the same numeric/identity boundary, including
             // when the original row no longer matches the new selection.
             let mut narrower = request.clone();
@@ -963,7 +1006,7 @@ fn serialized_compact_keys_preserve_bidirectional_pages_around_reads_and_ranges(
                     |_| Ok(true),
                 )
                 .unwrap();
-            let expected_range = full.entries[4..=10]
+            let expected_range = full.entries[4..10]
                 .iter()
                 .filter(matching)
                 .map(|row| state::order(&row.entity).unwrap().id.clone())
@@ -1064,7 +1107,7 @@ fn range_queries_page_without_duplicates_and_watches_reject_incomplete_coverage(
             let Some(next) = page.next else {
                 break;
             };
-            assert!(page.range.end.as_ref().unwrap() < &next);
+            assert_eq!(page.range.end.as_ref(), Some(&next));
             assert!(start.as_ref().is_none_or(|old| old < &next));
             start = Some(next);
         }
@@ -1107,4 +1150,154 @@ fn range_queries_page_without_duplicates_and_watches_reject_incomplete_coverage(
             tonic::Code::ResourceExhausted
         );
     }
+}
+
+#[test]
+fn half_open_bounded_queries_advance_to_the_original_end_for_every_source_and_sort() {
+    let (_dir, mut writer) = setup();
+    writer
+        .commit(
+            (1..=12)
+                .map(|i| {
+                    upsert(entity(E::Order(order(
+                        &format!("h{i:02}"),
+                        &i.to_string(),
+                        Some(i * 100),
+                    ))))
+                })
+                .collect(),
+            "history-bounds".into(),
+        )
+        .unwrap();
+    let reader = writer.reader();
+    for history in [false, true] {
+        for sort in 0..=6 {
+            let mut request = read(1, history);
+            request.sort = sort;
+            let full = reader
+                .query_range_checked(
+                    request.clone(),
+                    RangeRequest {
+                        range: KeyRange {
+                            start: None,
+                            end: None,
+                        },
+                        limit: 100,
+                        snapshot: None,
+                    },
+                    false,
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
+                .unwrap();
+            let end = Some(full.entries[8].key.clone());
+            let mut start = Some(full.entries[2].key.clone());
+            let mut seen = vec![];
+            loop {
+                let page = reader
+                    .query_range_checked(
+                        request.clone(),
+                        RangeRequest {
+                            range: KeyRange {
+                                start: start.clone(),
+                                end: end.clone(),
+                            },
+                            limit: 2,
+                            snapshot: None,
+                        },
+                        false,
+                        |_, _| Ok(()),
+                        |_| Ok(true),
+                    )
+                    .unwrap();
+                seen.extend(ids(&page));
+                if page.range.end == end {
+                    break;
+                }
+                assert!(page.range.end > start);
+                start = page.range.end;
+            }
+            assert_eq!(seen, ids(&full)[2..8]);
+            let empty = reader
+                .query_range_checked(
+                    request.clone(),
+                    RangeRequest {
+                        range: KeyRange {
+                            start: end.clone(),
+                            end: end.clone(),
+                        },
+                        limit: 2,
+                        snapshot: None,
+                    },
+                    false,
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
+                .unwrap();
+            assert!(empty.entries.is_empty());
+            assert_eq!(empty.range.start, end);
+            assert_eq!(empty.range.end, end);
+        }
+    }
+}
+
+#[test]
+fn read_observation_clocks_belong_to_the_pinned_view_including_retained_snapshots() {
+    let (_dir, mut writer) = setup();
+    let reader = writer.reader();
+    let mut request = read(1, false);
+    request.mode = w::ReadMode::Snapshot as i32;
+    let bounds = KeyRange {
+        start: None,
+        end: None,
+    };
+    let first = reader
+        .query_range_checked(
+            request.clone(),
+            RangeRequest {
+                range: bounds.clone(),
+                limit: 20,
+                snapshot: None,
+            },
+            false,
+            |_, _| Ok(()),
+            |_| Ok(true),
+        )
+        .unwrap();
+    writer
+        .commit(
+            vec![upsert(entity(E::Order(order("01", "0.5", None))))],
+            "new-observation".into(),
+        )
+        .unwrap();
+    let latest = reader
+        .query_range_checked(
+            read(1, false),
+            RangeRequest {
+                range: bounds.clone(),
+                limit: 20,
+                snapshot: None,
+            },
+            false,
+            |_, _| Ok(()),
+            |_| Ok(true),
+        )
+        .unwrap();
+    let retained = reader
+        .query_range_checked(
+            request,
+            RangeRequest {
+                range: bounds,
+                limit: 20,
+                snapshot: first.snapshot,
+            },
+            false,
+            |_, _| Ok(()),
+            |_| Ok(true),
+        )
+        .unwrap();
+    assert!(latest.observed > first.observed);
+    assert_eq!(retained.observed, first.observed);
+    assert_eq!(retained.revision, first.revision);
+    assert_ne!(latest.revision, first.revision);
 }

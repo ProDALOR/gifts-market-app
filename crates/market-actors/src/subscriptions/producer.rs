@@ -111,11 +111,19 @@ pub(super) fn start_orders(
     environment: &ActorEnvironment,
     feed: &QueryFeed,
     orders: OrderbooksHandle,
-    selection: super::types::OrdersFeed,
+    request: w::ReadRequest,
     reader: market_replica::ReplicaReader,
     permit: OwnedSemaphorePermit,
 ) {
-    let super::types::OrdersFeed { request, mut read } = selection;
+    let range = match &*feed.sender.borrow() {
+        DataUpdate::Orders { result, .. } => result.range.clone(),
+        _ => unreachable!("orders require an initial state"),
+    };
+    let read = market_replica::RangeRequest {
+        range,
+        limit: market_gifts::ORDER_LIMIT,
+        snapshot: None,
+    };
     let sender = feed.sender.clone();
     let stop = feed.stop.clone();
     let completion = Completion::new(feed, permit);
@@ -123,39 +131,59 @@ pub(super) fn start_orders(
         let mut completion = completion;
         let mut changed = reader.changes();
         let work = async {
-            let mut previous: Option<Arc<crate::OrderResult>> = None;
-            let mut continuation = None;
-            let mut revision = None;
             loop {
                 if stop.is_cancelled() || sender.is_closed() {
                     return Ok(());
                 }
                 changed.borrow_and_update();
                 let current = reader.read_revision(&request)?;
-                if revision != Some(current) {
-                    let result = tokio::select! {biased;
-                        _=stop.cancelled()=>return Ok(()),
-                        _=sender.closed()=>return Ok(()),
-                        result=orders.range_wait(request.clone(), read.clone(), previous.is_some())=>result
+                let published = match &*sender.borrow() {
+                    DataUpdate::Orders { version, .. } => *version,
+                    _ => return Ok(()),
+                };
+                if published != current {
+                    let permit = tokio::select! { biased;
+                        _ = stop.cancelled() => return Ok(()),
+                        _ = sender.closed() => return Ok(()),
+                        result = orders.budget.wait() => result?,
                     };
-                    let (next, current) = result?;
-                    if previous.is_none() {
-                        // Pin coverage and continuation from the same paginated read.
-                        // Later reads reconcile the entire coverage; never silently truncate it.
-                        read.range = next.result.range.clone();
-                        read.limit = market_gifts::ORDER_LIMIT;
-                        continuation = next.next;
+                    // A joining caller may already have refreshed this feed while admission waited.
+                    let observed = match &*sender.borrow() {
+                        DataUpdate::Orders {
+                            version, observed, ..
+                        } => {
+                            if *version == reader.read_revision(&request)? {
+                                continue;
+                            }
+                            *observed
+                        }
+                        _ => return Ok(()),
+                    };
+                    let result = tokio::select! {biased;
+                        _ = stop.cancelled() => return Ok(()),
+                        _ = sender.closed() => return Ok(()),
+                        result = orders.read_admitted(request.clone(), read.clone(), true, permit) => result,
+                    };
+                    match result {
+                        Ok(next) => {
+                            super::types::publish_orders(
+                                &sender,
+                                DataUpdate::Orders {
+                                    version: next.version,
+                                    observed: next.observed,
+                                    result: Arc::new(next.read.result),
+                                },
+                            );
+                        }
+                        Err(error) => {
+                            // A stale failed read cannot terminate a feed a newer seed has refreshed.
+                            if matches!(&*sender.borrow(), DataUpdate::Orders { observed: now, .. } if *now > observed)
+                            {
+                                continue;
+                            }
+                            return Err(error.into());
+                        }
                     }
-                    let next = next.result;
-                    if previous.as_ref().is_none_or(|old| **old != next) {
-                        previous = Some(Arc::new(next));
-                    }
-                    revision = Some(current);
-                    sender.send_replace(DataUpdate::Orders {
-                        version: current,
-                        next: continuation.clone(),
-                        result: previous.as_ref().expect("range loaded").clone(),
-                    });
                 }
                 if !wait_for_change(&mut changed, &stop, &sender).await? {
                     return Ok(());

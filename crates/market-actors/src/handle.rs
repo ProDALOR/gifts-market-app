@@ -5,12 +5,11 @@ use crate::{
     orderbooks::handle::OrderbooksHandle,
     protocol,
     runtime::closed,
-    subscriptions::{DataSubscription, DataUpdate, MarketSubscriptionsActor},
+    subscriptions::{DataWatch, MarketSubscriptionsActor},
 };
 use actix::Addr;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
-use std::sync::Arc;
 use tokio::sync::watch;
 #[derive(Clone)]
 pub struct MarketDataHandle {
@@ -23,24 +22,27 @@ impl MarketDataHandle {
     pub fn status_updates(&self) -> watch::Receiver<SyncStatus> {
         self.status_updates.clone()
     }
-    pub async fn watch_orders(
-        &self,
-        query: GiftOrderQuery,
-    ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
+    pub async fn watch_orders(&self, query: GiftOrderQuery) -> error::Result<DataWatch> {
         self.orderbooks.budget.check()?;
         let (request, read) = crate::query::compile(query)?;
         if request.mode != w::ReadMode::Live as i32 {
             return Err(error::DataError::invalid("watches require latest reads"));
         }
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let _cancel = cancel.clone().drop_guard();
         self.subscriptions
-            .send(crate::subscriptions::messages::WatchOrders { request, read })
+            .send(crate::subscriptions::messages::WatchOrders {
+                request,
+                read,
+                cancel,
+            })
             .await
             .map_err(closed)?
             .map_err(Into::into)
     }
     pub async fn query_orders(&self, query: GiftOrderQuery) -> error::Result<crate::OrderRead> {
         let (request, read) = crate::query::compile(query)?;
-        Ok(self.orderbooks.query(request, read).await?.0)
+        Ok(self.orderbooks.query(request, read).await?.read)
     }
     pub async fn release_read_snapshot(&self, snapshot: ReadSnapshotId) -> error::Result<()> {
         Ok(self
@@ -57,10 +59,7 @@ impl MarketDataHandle {
     ) -> error::Result<crate::CatalogSnapshot<GiftCollectionCatalog>> {
         Ok(self.catalog.collection(id).await?)
     }
-    pub async fn subscribe_catalog(
-        &self,
-        ids: Vec<CollectionId>,
-    ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
+    pub async fn subscribe_catalog(&self, ids: Vec<CollectionId>) -> error::Result<DataWatch> {
         self.catalog.budget.check()?;
         Ok(self
             .subscriptions

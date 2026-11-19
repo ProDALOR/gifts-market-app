@@ -85,7 +85,7 @@ impl From<ReadSnapshotId> for String {
         value.0
     }
 }
-/// Inclusive fixed bounds. Ordering keys may encode the point immediately before/after a row.
+/// Half-open fixed bounds: start is inclusive, end is exclusive. Null opens that boundary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

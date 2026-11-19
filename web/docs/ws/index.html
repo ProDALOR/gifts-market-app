@@ -109,17 +109,18 @@
             room for arrivals under the 100-row live cap.
           </li>
           <li>
-            Snapshots contain <code>data</code>, <code>range</code> and
-            <code>next</code>. Range bounds are inclusive; null means an open
-            head or tail. Keep the returned bounds even when a boundary listing
-            disappears. Keys are opaque and compare in ordinary ASCII order.
+            Snapshots contain <code>data</code> and <code>range</code>. Ranges
+            are half-open: start is inclusive, end is exclusive. Null means an
+            open head or tail. Keep the returned bounds even when a boundary
+            listing disappears. Keys are opaque and compare in ordinary ASCII
+            order.
           </li>
           <li>
-            To load another page, set <code>range.start</code> to
-            <code>next</code> and preserve the original end bound. WebSocket
-            method <code>orders.query</code> and
-            <code>POST /orders/query</code> share the query model. Paused views
-            and history use finite queries with
+            To load another page, set <code>range.start</code> to the returned
+            <code>range.end</code> and preserve the original end bound. Stop
+            when the returned end equals that original bound. WebSocket method
+            <code>orders.query</code> and <code>POST /orders/query</code> share
+            the query model. Paused views and history use finite queries with
             <code>view: {kind: "snapshot"}</code> and reuse the returned
             snapshot ID; release it with <code>DELETE /orders/query</code>.
           </li>
@@ -127,9 +128,9 @@
             A snapshot replaces subscribed state. Apply
             <code>orders.changed</code> removals and upserts atomically,
             checking that each sequence increases by one. Bounds stay fixed;
-            changes do not repeat <code>range</code> or <code>next</code>. On a
-            sequence gap or disconnect, start a fresh watch. On a capacity
-            error, restart with narrower coverage.
+            changes do not repeat <code>range</code>. On a sequence gap or
+            disconnect, start a fresh watch. On a capacity error, retry with
+            backoff and narrower coverage.
           </li>
           <li>
             <code>request</code> with method

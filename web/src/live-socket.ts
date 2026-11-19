@@ -14,14 +14,19 @@ type Call = RequestCall extends infer R
     ? Omit<R, "id">
     : never
   : never;
-type Results = { [R in RequestResult as R["method"]]: R["data"] };
+type ResultData<R> = R extends { method: "orders.query" }
+  ? Omit<R, "type" | "method" | "id">
+  : R extends { data: infer D }
+    ? D
+    : never;
+type Results = { [R in RequestResult as R["method"]]: ResultData<R> };
 type Result<M extends keyof Results> = Results[M];
 type Subscription = {
   kind: "subscription";
   command: SubscriptionCommand;
   resume?: SubscriptionCommand;
   wire?: string;
-  frame: (value: LiveFrame) => void;
+  frame: (value: LiveFrame, command: SubscriptionCommand) => void;
   status?: (value: string) => void;
   failures: number;
   retry?: ReturnType<typeof setTimeout>;
@@ -31,7 +36,7 @@ type Pending = {
   wire: string;
   call: Call;
   sent: boolean;
-  finish: (error?: unknown, result?: RequestResult["data"]) => void;
+  finish: (error?: unknown, result?: Results[keyof Results]) => void;
 };
 type Operation = Subscription | Pending;
 /** One bounded connection: persistent subscriptions reconnect; one-shot requests fail once. */
@@ -156,7 +161,7 @@ export class LiveSocket {
       let timeout: ReturnType<typeof setTimeout>;
       const finish = (
         error?: unknown,
-        result?: RequestResult["data"],
+        result?: Results[keyof Results],
         cancel = false,
       ) => {
         if (done) return;
@@ -218,6 +223,9 @@ export class LiveSocket {
       listener.command = listener.resume;
       listener.resume = undefined;
     }
+    listener.status?.("Connecting");
+    if (this.listeners.get(listener.command.id) !== listener || !this.opened)
+      return;
     const wire = this.id();
     listener.wire = wire;
     this.operations.set(wire, listener);
@@ -349,9 +357,12 @@ export class LiveSocket {
         else if (
           value.type === "result" &&
           value.method === operation.call.method
-        )
-          operation.finish(undefined, value.data);
-        else this.disconnected(socket);
+        ) {
+          if (value.method === "orders.query") {
+            const { type: _, method: __, id: ___, ...read } = value;
+            operation.finish(undefined, read);
+          } else operation.finish(undefined, value.data);
+        } else this.disconnected(socket);
         return;
       }
       if (
@@ -367,7 +378,10 @@ export class LiveSocket {
       }
       if (value.type === "error") {
         this.release(operation, false);
-        operation.frame({ ...value, id: operation.command.id });
+        operation.frame(
+          { ...value, id: operation.command.id },
+          operation.command,
+        );
         if (
           this.listeners.get(operation.command.id) !== operation ||
           operation.wire !== undefined ||
@@ -396,7 +410,10 @@ export class LiveSocket {
           );
         }
       } else {
-        operation.frame({ ...value, id: operation.command.id });
+        operation.frame(
+          { ...value, id: operation.command.id },
+          operation.command,
+        );
         if (this.operations.get(value.id) !== operation) return;
         clearTimeout(operation.retry);
         operation.retry = undefined;

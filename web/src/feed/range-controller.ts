@@ -9,13 +9,7 @@ import {
   type FeedState,
   type Bookmark,
 } from "./types.ts";
-import {
-  LiveRanges,
-  FrozenReads,
-  type OrderData,
-  type OrderQuery,
-  type RangeSource,
-} from "./range-source.ts";
+import { LiveRanges, type OrderData, type OrderQuery } from "./range-source.ts";
 export type RangeSelection = {
   filters: OrderQuery["filters"];
   side?: "ask" | "bid";
@@ -23,31 +17,33 @@ export type RangeSelection = {
 };
 const PAGE_SIZE = 100;
 const WATCH_SIZE = 80;
+const RESTART_PAGE = Symbol("Watch baseline replaced");
 /** Retain visited pages; query missing data and watch known viewport bounds. */
 export class RangeController implements FeedController {
   private state = emptyFeed();
   private activity = new OrderActivityTracker();
-  private source: RangeSource;
+  private source: LiveRanges;
   private unwatchStatus?: () => void;
   private availability: MarketStatus = "unavailable";
   private cache: LoadedOrders;
   private projected = new WeakMap<OrderData["data"][number], Order>();
   private anchor?: string;
   private visibleKey?: string;
-  private next?: string | null;
+  private end?: string | null;
+  private liveView?: OrderData;
+  private watchError = "";
+  private pageError = "";
   private watchRange?: OrderData["range"];
-  private working = false;
-  private overflow = false;
   private closed = false;
   private pending?: AbortController;
   private expiry?: ReturnType<typeof setTimeout>;
   private movement?: ReturnType<typeof setTimeout>;
+  private scan?: ReturnType<typeof setTimeout>;
   private retry?: ReturnType<typeof setTimeout>;
   private failures = 0;
   ready = false;
   constructor(
     private selection: RangeSelection,
-    private frozen: boolean,
     private changed: (state: FeedState) => void,
     bookmark?: Bookmark,
   ) {
@@ -56,21 +52,21 @@ export class RangeController implements FeedController {
         ? (bookmark.cache ?? new LoadedOrders())
         : new LoadedOrders();
     this.anchor = bookmark?.kind === "range" ? bookmark.anchor : undefined;
-    this.next = bookmark?.kind === "range" ? bookmark.next : undefined;
+    this.end = bookmark?.kind === "range" ? bookmark.end : undefined;
     const callbacks = {
-      result: (data: OrderData, next?: string | null) => {
+      result: (data: OrderData, requested?: OrderData["range"]) => {
         if (this.closed) return;
-        if (next !== undefined) this.continueAfter(data, next);
+        this.watchError = "";
+        if (requested) {
+          this.pending?.abort(RESTART_PAGE);
+          this.cover(data, requested);
+          if (this.end === null) this.pageError = "";
+        }
+        this.liveView = data;
         this.watchRange = data.range;
         this.accept(data);
-        if (!this.working) this.emit({ loadingMore: false });
-        if (next && !this.cache.rows.length) {
-          clearTimeout(this.movement);
-          this.movement = setTimeout(() => {
-            if (!this.cache.rows.length)
-              void this.load({ start: next, end: null });
-          }, 80);
-        }
+        if (requested && this.end && !this.cache.rows.length)
+          this.scanEmpty(this.end);
         if (data.data.length >= 90) this.watchKnown();
       },
       status: (status: string) => {
@@ -78,37 +74,32 @@ export class RangeController implements FeedController {
         this.emit({ status });
       },
       error: (error: unknown) => {
-        if (error instanceof ApiFailure && error.code === "capacity_exceeded") {
-          this.watchRange = undefined;
-          this.overflow = true;
-          if (!this.working) {
-            this.overflow = false;
-            this.seedWatch();
-          }
-        } else this.failed(error);
+        clearTimeout(this.movement);
+        clearTimeout(this.scan);
+        this.watchError =
+          error instanceof Error ? error.message : String(error);
+        // The socket owns subscription backoff; prepare narrower coverage for its next attempt.
+        this.source.remember(this.query(this.initialRange(), WATCH_SIZE));
+        this.failed(error);
       },
       reset: () => this.activity.rebase(),
     };
-    this.source = frozen
-      ? new FrozenReads(callbacks)
-      : new LiveRanges(callbacks);
+    this.source = new LiveRanges(callbacks);
   }
   get bookmark(): Bookmark {
     return {
       kind: "range",
       anchor: this.anchor,
-      next: this.next,
+      end: this.end,
       cache: this.cache,
     };
   }
   start() {
-    if (!this.frozen)
-      this.unwatchStatus = liveSocket.watchStatus((status) => {
-        this.availability = status;
-        this.emit({ status: this.marketLabel() });
-      });
-    if (this.frozen) void this.load(this.initialRange());
-    else this.seedWatch();
+    this.unwatchStatus = liveSocket.watchStatus((status) => {
+      this.availability = status;
+      this.emit({ status: this.marketLabel() });
+    });
+    this.seedWatch();
   }
   close() {
     this.closed = true;
@@ -117,11 +108,12 @@ export class RangeController implements FeedController {
     this.unwatchStatus?.();
     clearTimeout(this.expiry);
     clearTimeout(this.movement);
+    clearTimeout(this.scan);
     clearTimeout(this.retry);
   }
   loadMore() {
-    if (!this.working && !this.state.error && this.state.hasMore) {
-      const start = this.next ?? this.cache.rows.at(-1)?.key ?? null;
+    if (!this.pending && !this.state.error && this.state.hasMore) {
+      const start = this.end ?? null;
       void this.load({ start, end: null });
     }
   }
@@ -131,21 +123,22 @@ export class RangeController implements FeedController {
     if (!row) return;
     this.anchor = row.key;
     this.visibleKey = orderKey(row);
-    if (!this.ready || this.working || this.state.error) return;
+    this.source.remember(this.query(this.initialRange(), WATCH_SIZE));
+    if (!this.ready || this.pending || this.state.error) return;
     clearTimeout(this.movement);
     const visible = this.activity.liveRange(start, end);
     const first = this.cache.rows[visible.start],
-      last = this.cache.rows[Math.min(visible.end, this.cache.rows.length - 1)];
+      last =
+        this.cache.rows[Math.min(visible.end - 1, this.cache.rows.length - 1)];
     if (
       !this.watchRange ||
       (first &&
         this.watchRange.start !== null &&
-        first.key <= this.watchRange.start) ||
+        first.key < this.watchRange.start) ||
       (last && this.watchRange.end !== null && last.key >= this.watchRange.end)
     ) {
       this.movement = setTimeout(() => {
-        if (this.frozen) void this.load(this.knownRange());
-        else this.watchKnown();
+        this.watchKnown();
       }, 80);
     }
   }
@@ -163,16 +156,44 @@ export class RangeController implements FeedController {
     this.watchRange = undefined;
     this.activity.rebase();
     this.emit({ loadingMore: true, error: "", status: "Connecting" });
-    this.source.watch?.(this.query(this.initialRange(), WATCH_SIZE));
+    this.source.watch(this.query(this.initialRange(), WATCH_SIZE));
   }
-  private continueAfter(data: OrderData, next: string | null) {
-    // A null continuation on a bounded viewport says nothing about the market tail.
+  private cover(data: OrderData, requested: OrderData["range"]) {
     const tail = this.cache.rows.at(-1)?.key;
+    if (requested.end !== null) return;
+    const end = data.range.end;
     if (
-      data.range.end === null ||
-      (next !== null && (!tail || data.range.end >= tail))
+      this.end === undefined ||
+      end === null ||
+      (this.end !== null ? end > this.end : !tail || end > tail)
     )
-      this.next = next;
+      this.end = end;
+  }
+  private scanEmpty(start: string) {
+    clearTimeout(this.scan);
+    const count = this.cache.rows.length;
+    this.scan = setTimeout(() => {
+      this.scan = undefined;
+      if (
+        this.end === start &&
+        this.cache.rows.length === count &&
+        !this.state.error
+      )
+        void this.load({ start, end: null });
+    }, 80);
+  }
+  private retryPage(delay: number) {
+    clearTimeout(this.retry);
+    this.retry = setTimeout(() => {
+      this.retry = undefined;
+      if (
+        !this.closed &&
+        !this.pending &&
+        this.end !== null &&
+        !this.watchError
+      )
+        void this.load({ start: this.end ?? null, end: null });
+    }, delay);
   }
   private initialRange(): OrderData["range"] {
     const index = this.cache.rows.findIndex((row) => row.key === this.anchor);
@@ -202,75 +223,60 @@ export class RangeController implements FeedController {
         start === 0 && !this.cache.hasBefore
           ? null
           : (rows[start]?.key ?? null),
-      end:
-        end === rows.length && !this.cache.hasAfter
-          ? null
-          : (rows[end - 1]?.key ?? this.watchRange?.end ?? null),
+      end: end === rows.length ? (this.end ?? null) : rows[end].key,
     };
   }
   private watchKnown() {
-    if (this.closed || this.frozen || !this.cache.rows.length) return;
+    if (this.closed || !this.cache.rows.length) return;
     const range = this.knownRange();
     if (JSON.stringify(range) === JSON.stringify(this.watchRange)) return;
     this.watchRange = range;
-    this.source.watch?.(this.query(range, WATCH_SIZE));
+    this.source.watch(this.query(range, WATCH_SIZE));
   }
   private async load(range: OrderData["range"]) {
-    if (this.closed || this.working) return;
+    if (this.closed || this.pending) return;
     clearTimeout(this.retry);
-    this.working = true;
+    const stop = new AbortController();
+    this.pending = stop;
+    this.pageError = "";
     this.activity.rebase();
     this.emit({
       loadingMore: true,
-      error: "",
-      status: this.frozen ? "Loading" : "Connecting",
+      error: this.watchError,
+      status: "Loading",
     });
-    const stop = new AbortController();
-    this.pending = stop;
     try {
       const page = await this.source.query(this.query(range), stop.signal);
       if (this.closed || stop.signal.aborted) return;
-      this.continueAfter(page, page.next);
+      this.cover(page, range);
       this.failures = 0;
       this.accept(page);
-      this.watchRange = this.frozen ? page.range : undefined;
-      if (!this.frozen && !this.overflow) {
-        if (this.cache.rows.length) this.watchKnown();
-        else if (!page.next) {
-          this.watchRange = page.range;
-          this.source.watch?.(this.query(page.range, WATCH_SIZE));
-        }
-      }
-      if (!page.data.length && page.next) {
-        this.movement = setTimeout(() => {
-          void this.load({ start: page.next, end: range.end });
-        }, 80);
-      }
+      if (!page.data.length && page.range.end !== range.end && page.range.end)
+        this.scanEmpty(page.range.end);
     } catch (error) {
       if (this.closed || stop.signal.aborted) return;
+      this.pageError = error instanceof Error ? error.message : String(error);
       this.failed(error);
       if (
         !(error instanceof ApiFailure) ||
         ["unavailable", "timed_out", "capacity_exceeded"].includes(error.code)
       )
-        this.retry = setTimeout(() => {
-          void this.load(range);
-        }, retryDelay(this.failures++));
+        this.retryPage(retryDelay(this.failures++));
     } finally {
       if (this.pending === stop) {
         this.pending = undefined;
-        this.working = false;
         this.emit({ loadingMore: false });
-        if (this.overflow && !this.closed) {
-          this.overflow = false;
-          this.seedWatch();
-        }
+        if (!this.closed && stop.signal.reason === RESTART_PAGE)
+          this.retryPage(80);
       }
     }
   }
   private failed(error: unknown) {
     this.emit({
-      error: error instanceof Error ? error.message : String(error),
+      error:
+        this.watchError ||
+        this.pageError ||
+        (error instanceof Error ? error.message : String(error)),
       status: "Unavailable",
       loadingMore: false,
     });
@@ -278,6 +284,9 @@ export class RangeController implements FeedController {
   private accept(data: OrderData) {
     if (this.closed) return;
     this.cache.merge(data);
+    // A finite read can arrive after a newer live update; commit both atomically with live data winning.
+    if (this.liveView && data !== this.liveView)
+      this.cache.merge(this.liveView);
     this.ready = true;
     this.anchor =
       this.cache.rows.find((row) => orderKey(row) === this.visibleKey)?.key ??
@@ -292,13 +301,14 @@ export class RangeController implements FeedController {
       }
       return order;
     });
-    if (this.frozen) this.activity.rebase();
     this.emit({
       orders,
       ...this.activity.update(orders),
-      hasMore: this.cache.hasAfter,
-      error: "",
-      status: this.frozen ? "Paused" : this.marketLabel(),
+      hasMore: this.end !== null,
+      loadingMore: !!this.pending,
+      error: this.watchError || this.pageError,
+      status:
+        this.watchError || this.pageError ? "Unavailable" : this.marketLabel(),
     });
     this.scheduleExpiry();
   }

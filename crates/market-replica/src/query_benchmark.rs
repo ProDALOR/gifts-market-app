@@ -42,7 +42,7 @@ fn ordered_query_benchmark() {
     );
     let range = KeyRange {
         start: None,
-        end: Some(first.entries.last().unwrap().key.clone()),
+        end: Some(first.entries.last().unwrap().key.after()),
     };
     for (name, bounds, encode_keys) in [
         ("head_200", None, false),

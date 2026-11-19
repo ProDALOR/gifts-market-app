@@ -334,7 +334,7 @@ try {
             type: "result",
             id: command.id,
             method: command.method,
-            data: orderResult(command.params, [a, b]),
+            ...orderResult(command.params, [a, b]),
           }),
         );
         return;

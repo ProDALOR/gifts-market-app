@@ -14,7 +14,7 @@ export type Bookmark =
   | {
       kind: "range";
       anchor?: string;
-      next?: string | null;
+      end?: string | null;
       cache?: LoadedOrders;
     }
   | { kind: "history"; depth: number };

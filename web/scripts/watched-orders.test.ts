@@ -10,7 +10,6 @@ const row = (id: string, key: string) =>
 const snapshot = (data: any[], sequence = 0) =>
   ({
     type: "orders.snapshot",
-    next: null,
     sequence,
     data,
     range: { start: null, end: "9" },

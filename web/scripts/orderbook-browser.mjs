@@ -434,13 +434,12 @@ try {
             type: "result",
             id: frame.id,
             method: frame.method,
-            data:
-              frame.method === "orders.query"
-                ? orderResult(
-                    frame.params,
-                    result({ ...frame.params, limit: 10000 }).data,
-                  )
-                : valuationReport(frame.params),
+            ...(frame.method === "orders.query"
+              ? orderResult(
+                  frame.params,
+                  result({ ...frame.params, limit: 10000 }).data,
+                )
+              : { data: valuationReport(frame.params) }),
           }),
         );
       }

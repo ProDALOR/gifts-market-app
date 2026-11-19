@@ -37,7 +37,7 @@ export class WatchedOrders {
       if (
         (this.result.range.start !== null &&
           row.key < this.result.range.start) ||
-        (this.result.range.end !== null && row.key > this.result.range.end)
+        (this.result.range.end !== null && row.key >= this.result.range.end)
       )
         throw new Error("Order outside subscribed coverage");
     const data = this.result.data.slice();

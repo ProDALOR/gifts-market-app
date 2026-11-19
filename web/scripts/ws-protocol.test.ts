@@ -113,7 +113,6 @@ test("range snapshots and atomic changes validate identities, coverage and seque
   };
   const frame = {
     type: "orders.snapshot",
-    next: null,
     id: "op.1",
     sequence: 0,
     data: [row],
@@ -128,7 +127,7 @@ test("range snapshots and atomic changes validate identities, coverage and seque
       versions: { directory: "old", collections: {} },
     },
     { ...frame, sequence: -1 },
-    { ...frame, next: undefined },
+    { ...frame, next: null },
     { ...frame, next: "invalid!" },
     { ...frame, snapshot: "unused" },
     { ...frame, sequence: Number.MAX_SAFE_INTEGER + 1 },
@@ -169,7 +168,8 @@ test("range snapshots and atomic changes validate identities, coverage and seque
     type: "result",
     id: "q",
     method: "orders.query",
-    data: { data: frame.data, range: frame.range, next: null },
+    data: frame.data,
+    range: frame.range,
   };
   assert.deepEqual(parseFrame(JSON.stringify(finite)), finite);
 });
@@ -207,8 +207,8 @@ test("retired fields are rejected in envelopes, query results and order rows", (
       number: null,
     },
   };
-  const data = { data: [row], range: { start: null, end: null }, next: null };
-  const finite = { type: "result", method: "orders.query", id: "q", data };
+  const data = { data: [row], range: { start: null, end: null } };
+  const finite = { type: "result", method: "orders.query", id: "q", ...data };
   const changed = {
     type: "orders.changed",
     id: "q",
@@ -229,7 +229,7 @@ test("retired fields are rejected in envelopes, query results and order rows", (
   ]) {
     for (const frame of [
       { ...changed, [field]: null },
-      { ...finite, data: { ...data, [field]: null } },
+      { ...finite, [field]: null },
       { ...changed, upserts: [{ ...row, [field]: null }] },
     ])
       assert.throws(() => parseFrame(JSON.stringify(frame)), field);
@@ -250,7 +250,6 @@ test("flat targets accept sparse description and reject retired nested payloads"
   };
   const frame = (target: unknown, key = row.key) => ({
     type: "orders.snapshot",
-    next: null,
     id: "flat",
     sequence: 0,
     data: [{ ...row, target, key }],

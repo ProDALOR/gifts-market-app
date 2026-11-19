@@ -40,7 +40,7 @@ impl Handler<messages::ReleaseSnapshot> for OrderbooksActor {
 }
 
 impl Handler<messages::ReadRange> for OrderbooksActor {
-    type Result = ResponseFuture<Result<(crate::OrderRead, market_replica::ReadRevision), Status>>;
+    type Result = ResponseFuture<Result<crate::OrderSnapshot, Status>>;
     fn handle(&mut self, message: messages::ReadRange, _: &mut Self::Context) -> Self::Result {
         self.environment.blocking(message.permit, move |reader| {
             reader

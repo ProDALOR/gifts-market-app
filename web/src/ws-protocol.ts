@@ -19,6 +19,7 @@ const legacyFields = [
   "cursor",
   "page_token",
   "next_page_token",
+  "next",
   "base_sequence",
   "reset",
   "position",
@@ -172,17 +173,12 @@ function snapshot(value: unknown) {
     value.data.every(
       (row) =>
         (start === null || (row.key as string) >= (start as string)) &&
-        (end === null || (row.key as string) <= (end as string)),
+        (end === null || (row.key as string) < (end as string)),
     )
   );
 }
 function readResult(value: unknown) {
-  return (
-    snapshot(value) &&
-    record(value) &&
-    boundary(value.next) &&
-    nullableText(value.snapshot)
-  );
+  return snapshot(value) && record(value) && nullableText(value.snapshot);
 }
 /** Validate envelopes and the data the GUI consumes; calculations remain server-owned typed results. */
 export function parseFrame(raw: unknown): LiveFrame {
@@ -216,7 +212,6 @@ export function parseFrame(raw: unknown): LiveFrame {
       valid =
         sequence(value.sequence) &&
         snapshot(value) &&
-        boundary(value.next) &&
         value.snapshot === undefined;
       break;
     case "orders.changed": {
@@ -225,7 +220,6 @@ export function parseFrame(raw: unknown): LiveFrame {
       valid =
         sequence(value.sequence) &&
         value.range === undefined &&
-        value.next === undefined &&
         value.snapshot === undefined &&
         orderedRows(upserts) &&
         Array.isArray(removed) &&
@@ -255,7 +249,7 @@ export function parseFrame(raw: unknown): LiveFrame {
       const d = value.data;
       valid =
         value.method === "orders.query"
-          ? readResult(d)
+          ? readResult(value)
           : value.method === "valuation.evaluate" &&
             record(d) &&
             hasNoLegacyFields(d) &&

@@ -29,6 +29,7 @@ pub struct ReadEntry {
     pub key: ReadPosition,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Half-open ordering coverage: start is inclusive, end is exclusive.
 pub struct KeyRange {
     pub start: Option<ReadPosition>,
     pub end: Option<ReadPosition>,
@@ -44,6 +45,8 @@ pub struct ReadBatch {
     pub range: KeyRange,
     pub next: Option<ReadPosition>,
     pub revision: ReadRevision,
+    /// Monotonic observation clock within this reader instance; not a scoped cache key.
+    pub observed: u64,
     pub snapshot: Option<SnapshotId>,
 }
 fn reverse_sort(sort: Sort) -> Sort {
@@ -97,7 +100,7 @@ impl ReplicaReader {
         };
         self.read_selection_checked(request, slice, Some(range), true, validate, include)
     }
-    /// Read one page within inclusive bounds. `next` is an exclusive continuation point.
+    /// Read one page within half-open bounds; continue at the returned range end.
     pub fn query_range_checked(
         &self,
         request: w::ReadRequest,
@@ -224,7 +227,7 @@ impl ReplicaReader {
                     },
                 );
                 if range.start.as_ref().is_some_and(|start| point < *start)
-                    || range.end.as_ref().is_some_and(|end| point > *end)
+                    || range.end.as_ref().is_some_and(|end| point >= *end)
                 {
                     return Ok(false);
                 }
@@ -253,7 +256,7 @@ impl ReplicaReader {
                         || (backwards && p.edge == Edge::After))
                         && end
                             .as_ref()
-                            .is_none_or(|end| make_position(p.key.clone(), p.rank, p.at) <= *end)
+                            .is_none_or(|end| make_position(p.key.clone(), p.rank, p.at) < *end)
                     {
                         pivot = Some(e);
                     }
@@ -368,7 +371,7 @@ impl ReplicaReader {
                 if !reverse
                     && end
                         .as_ref()
-                        .is_some_and(|end| make_position(key.clone(), rank, None) > *end)
+                        .is_some_and(|end| make_position(key.clone(), rank, None) >= *end)
                 {
                     break;
                 }
@@ -481,6 +484,7 @@ impl ReplicaReader {
                     resume
                         .clone()
                         .or_else(|| entries.last().map(|e| e.key.clone()))
+                        .map(|point| point.after())
                 } else {
                     range.as_ref().and_then(|r| r.end.clone())
                 },
@@ -504,6 +508,7 @@ impl ReplicaReader {
                     resume
                         .clone()
                         .or_else(|| entries.last().map(|e| e.key.clone()))
+                        .map(|point| point.after())
                 } else {
                     None
                 },
@@ -534,6 +539,7 @@ impl ReplicaReader {
             range: coverage,
             next,
             revision: reader.read_revision(&request)?,
+            observed: view.revisions.sequence,
             snapshot,
         })
     }

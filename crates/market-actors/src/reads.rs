@@ -12,7 +12,13 @@ pub struct OrderResult {
 #[derive(Debug)]
 pub struct OrderRead {
     pub result: OrderResult,
-    pub next: Option<market_replica::ReadPosition>,
     pub snapshot: Option<market_replica::SnapshotId>,
 }
 pub use market_replica::{KeyRange, ReadPosition, ReadRevision};
+
+/// One pinned actor read and its internal publication metadata.
+pub(crate) struct OrderSnapshot {
+    pub read: OrderRead,
+    pub version: ReadRevision,
+    pub observed: u64,
+}

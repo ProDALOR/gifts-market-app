@@ -671,3 +671,99 @@ test("a market interruption invalidates old estimates through recovery without e
   assert.equal(socket.commands("request").length, 0);
   unsubscribe();
 });
+
+test("order capacity failures retry with increasing socket-owned backoff", (t) => {
+  const { Socket, live } = setup(t);
+  let errors = 0;
+  const stop = live.subscribe(
+    {
+      type: "orders.watch",
+      id: "orders",
+      params: {
+        filters: { collection_id: "gift", currency_id: "GRAM" },
+        limit: 80,
+      },
+    },
+    (frame) => {
+      if (frame.type === "error") {
+        errors++;
+        live.remember({
+          type: "orders.watch",
+          id: "orders",
+          params: {
+            filters: { collection_id: "gift", currency_id: "GRAM" },
+            limit: 80,
+            range: { start: "visible", end: null },
+          },
+        });
+      }
+    },
+  );
+  t.after(stop);
+  const socket = Socket.all[0];
+  socket.open();
+  const fail = () =>
+    socket.receive({
+      type: "error",
+      id: socket.commands("orders.watch").at(-1).id,
+      error: { code: "capacity_exceeded", message: "Busy" },
+    });
+  fail();
+  assert.equal(errors, 1);
+  assert.equal(socket.commands("orders.watch").length, 1);
+  t.mock.timers.tick(999);
+  assert.equal(socket.commands("orders.watch").length, 1);
+  t.mock.timers.tick(1);
+  assert.equal(socket.commands("orders.watch").length, 2);
+  assert.equal(
+    socket.commands("orders.watch")[1].params.range.start,
+    "visible",
+  );
+  fail();
+  t.mock.timers.tick(1999);
+  assert.equal(socket.commands("orders.watch").length, 2);
+  t.mock.timers.tick(1);
+  assert.equal(socket.commands("orders.watch").length, 3);
+});
+
+test("frames carry the actual resumed command, including updates while connecting", (t) => {
+  const { Socket, live } = setup(t);
+  const command = {
+    type: "orders.watch" as const,
+    id: "orders",
+    params: {
+      filters: { collection_id: "gift", currency_id: "GRAM" },
+      limit: 80,
+      range: { start: null as string | null, end: "K9999999" as string | null },
+    },
+  };
+  const received: any[] = [];
+  const stop = live.subscribe(command, (_frame, actual) =>
+    received.push(actual),
+  );
+  t.after(stop);
+  const first = Socket.all[0];
+  first.open();
+  live.remember({
+    ...command,
+    params: { ...command.params, range: { start: "K1000000", end: null } },
+  });
+  first.close();
+  t.mock.timers.tick(1000);
+  live.remember({
+    ...command,
+    params: { ...command.params, range: { start: "K2000000", end: null } },
+  });
+  const second = Socket.all[1];
+  second.open();
+  const sent = second.commands("orders.watch")[0];
+  second.receive({
+    type: "orders.snapshot",
+    id: sent.id,
+    sequence: 0,
+    data: [],
+    range: sent.params.range,
+  });
+  assert.equal(received.length, 1);
+  assert.deepEqual(received[0].params.range, { start: "K2000000", end: null });
+});

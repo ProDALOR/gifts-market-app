@@ -14,7 +14,7 @@ pub use catalog::CatalogSnapshot;
 pub use handle::MarketDataHandle;
 pub use market_replica::{READ_LIMITS, ReadLimits};
 pub use service::{MarketDataService, MarketDataTask};
-pub use subscriptions::{DataSubscription, DataUpdate};
+pub use subscriptions::{DataSubscription, DataUpdate, DataWatch};
 
 mod reads;
 pub use reads::*;

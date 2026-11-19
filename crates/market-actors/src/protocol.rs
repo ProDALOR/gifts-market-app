@@ -53,7 +53,6 @@ pub(crate) fn order_result(result: market_replica::ReadBatch) -> Result<crate::O
             data,
             range: result.range,
         },
-        next: result.next,
         snapshot: result.snapshot,
     })
 }
@@ -71,9 +70,14 @@ pub(crate) fn include_order(entity: &w::Entity) -> std::result::Result<bool, ton
 /// Projection stays inside the admitted blocking read, including its cancellation/slot lifetime.
 pub(crate) fn projected_read(
     batch: market_replica::ReadBatch,
-) -> std::result::Result<(crate::OrderRead, market_replica::ReadRevision), tonic::Status> {
-    let revision = batch.revision;
+) -> std::result::Result<crate::OrderSnapshot, tonic::Status> {
+    let version = batch.revision;
+    let observed = batch.observed;
     let read =
         order_result(batch).map_err(|error| tonic::Status::unavailable(error.to_string()))?;
-    Ok((read, revision))
+    Ok(crate::OrderSnapshot {
+        read,
+        version,
+        observed,
+    })
 }

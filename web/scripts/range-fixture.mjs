@@ -19,7 +19,7 @@ export function orderResult(query, rows) {
   const matching = ordered(rows).filter(
     (row) =>
       (range.start == null || row.key >= range.start) &&
-      (range.end == null || row.key <= range.end),
+      (range.end == null || row.key < range.end),
   );
   const limit = Math.min(query.limit ?? 100, 100);
   const data = matching.slice(0, limit),
@@ -27,10 +27,11 @@ export function orderResult(query, rows) {
   const last = data.at(-1)?.key;
   return {
     data,
-    next: more ? last + (last.length % 4 === 3 ? "0" : "00") : null,
     range: {
       start: range.start ?? null,
-      end: more ? last : (range.end ?? null),
+      end: more
+        ? last + (last.length % 4 === 3 ? "0" : "00")
+        : (range.end ?? null),
     },
   };
 }
@@ -49,7 +50,7 @@ export class RangeWatch {
               (row) =>
                 (!this.initial.range.start ||
                   row.key >= this.initial.range.start) &&
-                (!this.initial.range.end || row.key <= this.initial.range.end),
+                (!this.initial.range.end || row.key < this.initial.range.end),
             ),
           };
     const sequence = ++this.sequence,
@@ -62,7 +63,6 @@ export class RangeWatch {
         sequence,
         data: next.data,
         range: next.range,
-        next: next.next,
       };
     const previous = new Map(old.data.map((row) => [position(row), row])),
       current = new Set(next.data.map(position));

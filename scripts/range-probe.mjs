@@ -111,7 +111,9 @@ try {
       }),
     ),
   );
-  assert.deepEqual(oneShot.data, latest);
+  assert.deepEqual(oneShot.data, latest.data);
+  assert.deepEqual(oneShot.range, latest.range);
+  assert.equal(oneShot.next, undefined);
   const first = await freeze(query);
   const selected = first.data[1];
   await release(first.snapshot);
@@ -123,7 +125,7 @@ try {
   assert.equal(expired.error.code, "restart_read");
   const seeded = await watch("seed", { ...query, limit: 1 });
   const finiteSeed = await api("POST", { ...query, limit: 1 });
-  for (const field of ["data", "range", "next"])
+  for (const field of ["data", "range"])
     assert.deepEqual(seeded[field], finiteSeed[field]);
   socket.send(JSON.stringify({ type: "cancel", id: "seed" }));
   const selection = {
@@ -158,7 +160,7 @@ try {
   assert.ok(resumed.data.some((row) => row.key === nextPosition));
   socket.send(JSON.stringify({ type: "cancel", id: "resume" }));
   console.log(
-    "Range probe passed: REST/WS parity, inclusive range coverage, frozen reads, release and resume.",
+    "Range probe passed: REST/WS parity, half-open range coverage, frozen reads, release and resume.",
   );
 } finally {
   await Promise.allSettled([...leases].map(release));
