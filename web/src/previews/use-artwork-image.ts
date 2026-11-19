@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import { recoverImage } from "./media-client";
+import { hasImageFailure, recoverImage } from "./media-client";
 
 type Status = "loading" | "ready" | "failed";
 
 /** The enclosing artwork is keyed by media identity; each URL owns its retries. */
 function useImageSource(url: string | undefined, active: boolean) {
-  const [state, setState] = useState<{ status: Status; attempt: number }>({
-    status: "loading",
-    attempt: 0,
-  });
+  const [state, setState] = useState<{ status: Status; attempt: number }>(
+    () => ({
+      status: url && hasImageFailure(url) ? "failed" : "loading",
+      attempt: 0,
+    }),
+  );
   const loaded = useCallback(
     () => setState((old) => ({ ...old, status: "ready" })),
     [],

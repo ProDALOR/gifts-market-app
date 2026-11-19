@@ -4,7 +4,6 @@ import {
   MediaHttpError,
   MediaNetworkError,
   retryMedia,
-  wait,
 } from "./media-resource.ts";
 function retryAfter(response: Response): number | undefined {
   const value = response.headers.get("Retry-After");
@@ -24,28 +23,9 @@ export async function fetchMedia(
   kind: MediaType,
   priority = 0,
 ) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await downloads.run(
-        () => download(url, signal, kind),
-        signal,
-        priority,
-      );
-    } catch (error) {
-      signal.throwIfAborted();
-      if (
-        !(error instanceof MediaHttpError) ||
-        !error.retryable ||
-        error.retryAfterMs === undefined ||
-        error.retryAfterMs > 10_000 ||
-        attempt >= 2
-      )
-        throw error;
-      // Re-enter the priority queue for each attempt, after releasing network capacity.
-      await wait(error.retryAfterMs, signal);
-    }
-  }
+  return downloads.run(() => download(url, signal, kind), signal, priority);
 }
+
 async function download(url: string, signal: AbortSignal, kind: MediaType) {
   const response = await fetch(url, { signal }).catch(() => {
     signal.throwIfAborted();
@@ -123,5 +103,7 @@ const imageRecovery = new MediaResource(
   4,
   0, // Native HTTP caching owns successes; only in-flight work and failures need sharing here.
 );
+// Successful recoveries have zero retention; fresh entries here are failures only.
+export const hasImageFailure = (url: string) => imageRecovery.hasFresh(url);
 export const recoverImage = (url: string, signal: AbortSignal) =>
   retryMedia(() => imageRecovery.get(url, signal), signal);

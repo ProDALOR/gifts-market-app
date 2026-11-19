@@ -41,7 +41,13 @@ export class ResourceCache<T> {
       created.promise = this.queue
         .run(
           async () => {
-            const timeout = setTimeout(() => controller.abort(), 35000);
+            const timeout = setTimeout(
+              () =>
+                controller.abort(
+                  new DOMException("Resource load timed out", "TimeoutError"),
+                ),
+              35000,
+            );
             try {
               return await this.load(key, controller.signal, priority);
             } finally {
@@ -63,7 +69,12 @@ export class ResourceCache<T> {
           return value;
         })
         .catch((error) => {
-          const failure = !controller.signal.aborted && this.failure?.(error);
+          const timedOut =
+            controller.signal.reason instanceof DOMException &&
+            controller.signal.reason.name === "TimeoutError";
+          const failure =
+            (!controller.signal.aborted || timedOut) &&
+            this.failure?.(timedOut ? controller.signal.reason : error);
           if (failure && this.entries.get(key) === created) {
             created.expires = failure.expires;
             created.settled = true;

@@ -181,3 +181,66 @@ test("failure retention is bounded and queue pressure is not recorded as a missi
     await assert.rejects(resource.get("queue", signal()), QueueFullError);
   assert.equal(calls.get("queue"), 2);
 });
+
+test("queue pressure uses cancellable retry waits without caching a missing asset", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0,
+    calls = 0;
+  t.mock.method(Date, "now", () => now);
+  const resource = new MediaResource(async () => {
+    calls++;
+    throw new QueueFullError();
+  });
+  const stop = new AbortController();
+  const result = retryMedia(
+    () => resource.get("queue", stop.signal),
+    stop.signal,
+  );
+  await flush();
+  assert.equal(calls, 1);
+  assert.equal(resource.hasFresh("queue"), false);
+  now = 150;
+  t.mock.timers.tick(150);
+  await flush();
+  assert.equal(calls, 2);
+  stop.abort();
+  await assert.rejects(result);
+  now = 1000;
+  t.mock.timers.tick(1000);
+  await flush();
+  assert.equal(calls, 2);
+});
+
+test("producer timeouts retry as transient failures while consumer cancellation stays uncached", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0,
+    calls = 0;
+  t.mock.method(Date, "now", () => now);
+  const resource = new MediaResource(async (key, stop) => {
+    if (++calls === 1 || key === "cancel")
+      await new Promise((_, reject) =>
+        stop.addEventListener("abort", () => reject(stop.reason), {
+          once: true,
+        }),
+      );
+    return { value: true, bytes: 1 };
+  });
+  const active = signal();
+  const result = retryMedia(() => resource.get("timeout", active), active);
+  await flush();
+  now = 35_000;
+  t.mock.timers.tick(35_000);
+  await flush();
+  assert.equal(calls, 1);
+  assert.equal(resource.hasFresh("timeout"), true);
+  now = 37_000;
+  t.mock.timers.tick(2000);
+  assert.equal(await result, true);
+  assert.equal(calls, 2);
+  const stop = new AbortController();
+  const cancelled = resource.get("cancel", stop.signal);
+  await flush();
+  stop.abort();
+  await assert.rejects(cancelled);
+  assert.equal(resource.hasFresh("cancel"), false);
+});

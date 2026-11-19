@@ -29,6 +29,7 @@ function cacheFailure(error: unknown) {
     return;
   const transient =
     error instanceof MediaNetworkError ||
+    (error instanceof DOMException && error.name === "TimeoutError") ||
     (error instanceof MediaHttpError && error.retryable);
   const failure =
     error instanceof MediaFailure
@@ -77,7 +78,13 @@ export function wait(ms: number, signal: AbortSignal): Promise<void> {
     else signal.addEventListener("abort", aborted, { once: true });
   });
 }
-/** Visible image recovery may wait; it never occupies a producer/transfer slot while cooling down. */
+export function retryableMedia(error: unknown): boolean {
+  return (
+    error instanceof QueueFullError ||
+    (error instanceof MediaFailure && error.retryable)
+  );
+}
+/** Wait outside producer/transfer slots. Every visible media consumer uses this policy. */
 export async function retryMedia<T>(
   read: () => Promise<T>,
   signal: AbortSignal,
@@ -88,10 +95,12 @@ export async function retryMedia<T>(
       return await read();
     } catch (error) {
       signal.throwIfAborted();
-      if (!(error instanceof MediaFailure) || !error.retryable) throw error;
+      if (!retryableMedia(error)) throw error;
+      const retryAt =
+        error instanceof MediaFailure ? error.retryAt : Date.now() + 150;
       do {
-        await wait(Math.max(0, error.retryAt - Date.now()), signal);
-      } while (Date.now() < error.retryAt);
+        await wait(Math.max(0, retryAt - Date.now()), signal);
+      } while (Date.now() < retryAt);
     }
   }
 }

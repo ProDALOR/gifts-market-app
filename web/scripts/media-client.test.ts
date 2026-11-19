@@ -3,7 +3,11 @@ import { test } from "node:test";
 import { setImmediate as flush } from "node:timers/promises";
 import { ResourceCache } from "../src/resources/cache.ts";
 import { fetchMedia } from "../src/previews/media-client.ts";
-import { MediaHttpError } from "../src/previews/media-resource.ts";
+import {
+  MediaHttpError,
+  MediaResource,
+  retryMedia,
+} from "../src/previews/media-resource.ts";
 const signal = () => new AbortController().signal;
 test("resource cache uses byte limits and least-recently-used eviction", async () => {
   const calls: string[] = [];
@@ -60,7 +64,7 @@ test("failed resources are removed and oversized values are not retained", async
   await store.get("key", signal());
   assert.equal(calls, 3);
 });
-test("downloads bound retry attempts, honor Retry-After and never retry missing assets", async (t) => {
+test("downloads report one attempt and the full Retry-After to the shared retry policy", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   t.mock.method(Date, "now", () => 0);
   for (const [status, after, delay] of [
@@ -85,19 +89,10 @@ test("downloads bound retry attempts, honor Retry-After and never retry missing 
       (error) => error,
     );
     await flush();
-    const retry =
-      (status === 429 || status >= 500) &&
-      delay !== undefined &&
-      delay <= 10_000;
-    if (retry) {
-      t.mock.timers.tick(delay);
-      await flush();
-      t.mock.timers.tick(delay);
-    }
     const error = await result;
     assert.ok(error instanceof MediaHttpError);
     assert.equal(error.retryAfterMs, delay);
-    assert.equal(calls, retry ? 3 : 1);
+    assert.equal(calls, 1);
   }
 });
 test("downloads reject invalid types, declared oversize and chunked oversize", async (t) => {
@@ -114,14 +109,22 @@ test("downloads reject invalid types, declared oversize and chunked oversize", a
 });
 test("a transient response retries once and abort cancels backoff", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  let calls = 0;
+  let calls = 0,
+    now = 0;
+  t.mock.method(Date, "now", () => now);
+  const resource = new MediaResource(async (url, stop) => ({
+    value: await fetchMedia(url, stop, "image"),
+    bytes: 1,
+  }));
   t.mock.method(globalThis, "fetch", async () =>
     ++calls === 1
       ? new Response(null, { status: 503, headers: { "Retry-After": "1" } })
       : new Response("ok", { headers: { "Content-Type": "image/png" } }),
   );
-  const result = fetchMedia("/media", signal(), "image");
+  const active = signal();
+  const result = retryMedia(() => resource.get("/media", active), active);
   await flush();
+  now = 1000;
   t.mock.timers.tick(1000);
   assert.equal(new TextDecoder().decode(await result), "ok");
   assert.equal(calls, 2);
@@ -131,7 +134,10 @@ test("a transient response retries once and abort cancels backoff", async (t) =>
     async () => new Response(null, { status: 503 }),
   );
   const stop = new AbortController();
-  const cancelled = fetchMedia("/media", stop.signal, "image");
+  const cancelled = retryMedia(
+    () => resource.get("/cancel", stop.signal),
+    stop.signal,
+  );
   await flush();
   stop.abort();
   await assert.rejects(cancelled);
@@ -139,6 +145,12 @@ test("a transient response retries once and abort cancels backoff", async (t) =>
 
 test("background retry delays release transfer slots for interactive media and cancel cleanly", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0;
+  t.mock.method(Date, "now", () => now);
+  const resource = new MediaResource(async (url, stop, priority) => ({
+    value: await fetchMedia(url, stop, "image", priority),
+    bytes: 1,
+  }));
   const calls = new Map<string, number>();
   t.mock.method(globalThis, "fetch", async (input) => {
     const url = String(input);
@@ -157,7 +169,10 @@ test("background retry delays release transfer slots for interactive media and c
   });
   const stops = Array.from({ length: 4 }, () => new AbortController());
   const background = stops.map((stop, i) =>
-    fetchMedia(`/background/${i}`, stop.signal, "image", -10),
+    retryMedia(
+      () => resource.get(`/background/${i}`, stop.signal, -10),
+      stop.signal,
+    ),
   );
   await flush();
   assert.equal(calls.size, 4);
@@ -170,6 +185,7 @@ test("background retry delays release transfer slots for interactive media and c
   const cancelled = assert.rejects(background[0]);
   stops[0].abort();
   await cancelled;
+  now = 1000;
   t.mock.timers.tick(1000);
   await Promise.all(background.slice(1));
   assert.equal(calls.get("/background/0"), 1);

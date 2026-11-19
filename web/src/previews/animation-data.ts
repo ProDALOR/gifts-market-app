@@ -63,7 +63,7 @@ function needsOpacityMask(value: unknown): boolean {
         return separate(keyframe.s) || separate(keyframe.e);
       });
 }
-export function decodeTgs(bytes: Uint8Array): AnimationData {
+function decode(bytes: Uint8Array) {
   if (bytes.length > MAX_TGS_BYTES) throw new Error("Animation is too large");
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -96,15 +96,14 @@ export function decodeTgs(bytes: Uint8Array): AnimationData {
   ) {
     throw new Error("Invalid animation");
   }
-  return data;
+  return { value: data as AnimationData, bytes: size * 2 };
+}
+export function decodeTgs(bytes: Uint8Array): AnimationData {
+  return decode(bytes).value;
 }
 const animations = new MediaResource<AnimationData>(
   async (url, signal, priority) => {
-    const data = decodeTgs(await fetchMedia(url, signal, "tgs", priority));
-    return {
-      value: data,
-      bytes: new TextEncoder().encode(JSON.stringify(data)).length * 2,
-    };
+    return decode(await fetchMedia(url, signal, "tgs", priority));
   },
 );
 export const loadAnimationData = (

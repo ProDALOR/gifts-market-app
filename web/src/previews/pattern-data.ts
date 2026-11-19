@@ -1,4 +1,4 @@
-import { MediaResource } from "./media-resource.ts";
+import { MediaResource, retryMedia } from "./media-resource.ts";
 import { fetchMedia } from "./media-client.ts";
 // Decode once per pattern URL, then tint once per color. Both caches account for
 // decoded RGBA bytes rather than compressed image sizes or an arbitrary count.
@@ -41,4 +41,4 @@ const frames = new MediaResource<HTMLCanvasElement>(
   2 * 1024 * 1024,
 );
 export const loadPattern = (url: string, color: string, signal: AbortSignal) =>
-  frames.get(JSON.stringify([url, color]), signal);
+  retryMedia(() => frames.get(JSON.stringify([url, color]), signal), signal);

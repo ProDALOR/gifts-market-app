@@ -173,28 +173,31 @@ test("a synchronous player error event cannot re-enable the failed canvas", asyn
   await flush();
   assert.equal(visible, false);
 });
-test("temporary queue saturation retries while active and cancellation prevents later creation", async (t) => {
-  const { QueueFullError } = await import("../src/resources/task-queue.ts");
+test("load failures report their cause and leave retry scheduling to the media policy", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  let attempts = 0;
+  const cause = Error("load failed");
+  let attempts = 0,
+    reported: unknown;
   const controller = new AnimationLifecycle(
     async () => {
       attempts++;
-      throw new QueueFullError();
+      throw cause;
     },
     () => {},
+    350,
+    (error) => {
+      reported = error;
+    },
   );
   controller.setActive(true);
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  assert.equal(attempts, 1);
-  t.mock.timers.tick(150);
-  assert.equal(attempts, 2);
-  controller.setActive(false, false);
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  await flush();
+  await flush();
+  assert.equal(reported, cause);
   t.mock.timers.tick(1000);
+  assert.equal(attempts, 1, "Renderer lifecycle owns no retry timer");
+  controller.setActive(false, false);
+  controller.setActive(true);
+  await flush();
   assert.equal(attempts, 2);
+  controller.stop();
 });

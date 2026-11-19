@@ -9,6 +9,7 @@ import { balancedRows, balancedGrid, previewLayout } from "./preview-layout";
 import {
   observePreviewSize,
   usePreviewVisibility,
+  usePreviewEnvironment,
 } from "./preview-environment";
 import type { CatalogOption, Collection } from "../orderbook";
 // Render only explicitly selected catalog traits.
@@ -55,6 +56,7 @@ function SelectedTraitPreview({
 }) {
   const host = useRef<HTMLElement>(null),
     visible = usePreviewVisibility(host);
+  const { pageVisible } = usePreviewEnvironment();
   const [width, setWidth] = useState(358);
   useEffect(() => {
     const element = host.current;
@@ -119,7 +121,7 @@ function SelectedTraitPreview({
                 ? [option.media.thumbnail_url]
                 : [],
             )}
-            visible={visible}
+            visible={visible && pageVisible}
             layout="banner"
             background={false}
           />

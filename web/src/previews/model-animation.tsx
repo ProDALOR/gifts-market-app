@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { animationRenderer, loadAnimationData } from "./animation-data";
 import { AnimationLifecycle } from "./animation-lifecycle";
+import { retryableMedia, retryMedia } from "./media-resource";
 import { playbackBudget } from "./playback-budget";
 import { observePreviewSize } from "./preview-environment";
 export default function ModelAnimation({
@@ -22,10 +23,28 @@ export default function ModelAnimation({
 }) {
   const container = useRef<HTMLSpanElement>(null);
   const lifecycle = useRef<AnimationLifecycle | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<{ error: unknown }>();
   const priorityRef = useRef(priority);
   priorityRef.current = priority;
-  useEffect(() => setFailed(false), [active, url, vector]);
+  useEffect(() => setFailure(undefined), [active, url, vector]);
+  useEffect(() => {
+    if (!active || !failure || !retryableMedia(failure.error)) return;
+    const stop = new AbortController();
+    // The failed player has released its budget slot. Recover data before
+    // requesting another player; waiting never blocks healthy autoplay.
+    void retryMedia(
+      () => loadAnimationData(url, stop.signal, priorityRef.current),
+      stop.signal,
+    ).then(
+      () => {
+        if (!stop.signal.aborted) setFailure(undefined);
+      },
+      () => {
+        /* Invalid data stays on its still image until reactivation. */
+      },
+    );
+    return () => stop.abort();
+  }, [active, failure, url, vector]);
   useEffect(() => {
     const host = container.current;
     if (!host) return;
@@ -75,7 +94,7 @@ export default function ModelAnimation({
       },
       onReady,
       350,
-      () => setFailed(true),
+      (error) => setFailure({ error }),
     );
     lifecycle.current = controller;
     return () => {
@@ -86,14 +105,14 @@ export default function ModelAnimation({
   useEffect(() => {
     const controller = lifecycle.current;
     if (!controller) return;
-    if (!active || failed) {
-      controller.setActive(false, failed ? false : retain);
+    if (!active || failure) {
+      controller.setActive(false, failure ? false : retain);
       return;
     }
     return playbackBudget.request(priority, (granted, preempted) =>
       controller.setActive(granted, preempted ? false : retain),
     );
-  }, [url, active, retain, priority, failed, vector, onReady]);
+  }, [url, active, retain, priority, failure, vector, onReady]);
   return (
     <span
       ref={container}

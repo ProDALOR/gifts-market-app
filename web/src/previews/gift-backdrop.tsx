@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { BackdropPalette } from "./gift-appearance";
 
 import { bannerPatternTiles, giftPatternTiles } from "./preview-layout";
@@ -23,39 +23,6 @@ export function GiftBackdrop({
   const { center, edge, pattern } = palette;
   const urls = patternUrls || [];
   const key = JSON.stringify([urls, pattern]);
-  const [frame, setFrame] = useState<{
-    key: string;
-    canvases: (HTMLCanvasElement | undefined)[];
-  }>();
-  const symbols = frame?.key === key ? frame.canvases : [];
-  useEffect(() => {
-    if (!visible) {
-      setFrame(undefined);
-      return;
-    }
-    if (!urls.length) return;
-    const stop = new AbortController();
-    void (async () => {
-      const canvases: (HTMLCanvasElement | undefined)[] = new Array(
-        urls.length,
-      );
-      // Bound work per layer; shared media stores coalesce matching sources/tints.
-      for (let index = 0; index < urls.length; index++) {
-        try {
-          canvases[index] = await loadPattern(
-            urls[index],
-            pattern,
-            stop.signal,
-          );
-        } catch {
-          /* Keep the gradient for unavailable symbols. */
-        }
-        if (stop.signal.aborted) return;
-        setFrame({ key, canvases: canvases.slice() });
-      }
-    })();
-    return () => stop.abort();
-  }, [key, visible]);
   useEffect(() => {
     const target = canvas.current;
     if (!target) return;
@@ -63,6 +30,9 @@ export function GiftBackdrop({
       target.width = target.height = 1;
       return;
     }
+    const stop = new AbortController();
+    const symbols: (HTMLCanvasElement | undefined)[] = new Array(urls.length);
+    let frame = 0;
     const draw = () => {
       const width = target.clientWidth,
         height = target.clientHeight;
@@ -105,9 +75,34 @@ export function GiftBackdrop({
       }
       context.globalAlpha = 1;
     };
-    const unobserve = observePreviewSize(target, draw);
-    draw();
-    return unobserve;
-  }, [center, edge, frame, key, layout, background, visible]);
+    // Data completions and resize notifications share one paint per frame.
+    const schedule = () => {
+      if (!frame)
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          draw();
+        });
+    };
+    const unobserve = observePreviewSize(target, schedule);
+    schedule();
+    urls.forEach((url, index) => {
+      // Shared resources bound HTTP/decode work; one slow symbol doesn't block others.
+      void loadPattern(url, pattern, stop.signal).then(
+        (symbol) => {
+          if (stop.signal.aborted) return;
+          symbols[index] = symbol;
+          schedule();
+        },
+        () => {
+          /* Keep the gradient for unavailable symbols. */
+        },
+      );
+    });
+    return () => {
+      stop.abort();
+      unobserve();
+      cancelAnimationFrame(frame);
+    };
+  }, [center, edge, key, layout, background, visible]);
   return <canvas ref={canvas} className="gift-backdrop" aria-hidden="true" />;
 }
