@@ -1,7 +1,5 @@
-use super::{MarketSubscriptionsActor, messages::Release};
 use crate::error::DataError;
-use actix::Addr;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
@@ -14,12 +12,9 @@ pub enum DataUpdate {
     },
     Error(DataError),
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct SubscriberId(pub u64);
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum QueryKey {
     Catalog(Vec<market_gifts::CollectionId>),
-    View(SubscriberId),
     Range {
         selection: Vec<u8>,
         sort: i32,
@@ -35,19 +30,23 @@ pub(super) enum FeedSpec {
     Catalog(Vec<market_gifts::CollectionId>),
     Orders(Box<OrdersFeed>),
 }
-/// One caller's lease. Dropping its final Arc releases only that caller.
+/// One caller's lease. Clones retain it; the final lease cancels the shared feed.
 pub struct DataSubscription {
-    pub(super) id: SubscriberId,
-    pub(super) owner: Addr<MarketSubscriptionsActor>,
-}
-impl Drop for DataSubscription {
-    fn drop(&mut self) {
-        // Cleanup must be delivered even when the ordinary request mailbox is full.
-        self.owner.do_send(Release(self.id));
-    }
+    pub(super) _feed: Arc<QueryFeed>,
 }
 pub(super) struct QueryFeed {
     pub sender: watch::Sender<DataUpdate>,
-    pub done: AtomicBool,
     pub stop: CancellationToken,
+}
+impl QueryFeed {
+    pub fn reusable(&self) -> bool {
+        !self.stop.is_cancelled()
+            && !self.sender.is_closed()
+            && !matches!(*self.sender.borrow(), DataUpdate::Error(_))
+    }
+}
+impl Drop for QueryFeed {
+    fn drop(&mut self) {
+        self.stop.cancel();
+    }
 }

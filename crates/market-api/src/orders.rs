@@ -136,25 +136,32 @@ pub struct OrderReadResponse<'a> {
     #[schema(value_type=Option<market_gifts::ReadSnapshotId>)]
     pub snapshot: Option<String>,
 }
-impl<'a> OrderReadResponse<'a> {
-    pub fn latest(result: &'a market_actors::OrderResult) -> Self {
+/// Complete live coverage, without finite-query continuation or snapshot leases.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OrderSnapshotResponse<'a> {
+    pub data: Vec<OrderedOrderResponse<'a>>,
+    #[schema(value_type=market_gifts::OrderRange)]
+    pub range: OrderRangeResponse<'a>,
+}
+impl<'a> From<&'a market_actors::OrderResult> for OrderSnapshotResponse<'a> {
+    fn from(result: &'a market_actors::OrderResult) -> Self {
         Self {
             data: result.data.iter().map(Into::into).collect(),
             range: OrderRangeResponse {
                 start: result.range.start.as_ref(),
                 end: result.range.end.as_ref(),
             },
-            next: None,
-            snapshot: None,
         }
     }
 }
 impl<'a> From<&'a market_actors::OrderRead> for OrderReadResponse<'a> {
     fn from(read: &'a market_actors::OrderRead) -> Self {
+        let data = OrderSnapshotResponse::from(&read.result);
         Self {
+            data: data.data,
+            range: data.range,
             next: read.next.as_ref(),
             snapshot: read.snapshot.map(|id| id.to_string()),
-            ..Self::latest(&read.result)
         }
     }
 }

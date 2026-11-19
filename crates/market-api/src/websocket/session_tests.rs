@@ -51,7 +51,7 @@ async fn connect(
             }
             if query.limit==4 {return End::SlowConsumer;}
             let label=if query.limit==3 {"😀".repeat(20_000)} else {"ready".into()};
-            let payload = queue::Payload::Orders(serde_json::json!({"type":"orders.snapshot","id":key.id.as_str(),"sequence":0,"data":[],"range":{"start":null,"end":null},"next":null,"label":label}).to_string().into());
+            let payload = queue::Payload::Orders(serde_json::json!({"type":"orders.snapshot","id":key.id.as_str(),"sequence":0,"data":[],"range":{"start":null,"end":null},"label":label}).to_string().into());
             if tx.send(Scope::Operation(key),payload,false,&cancel).await.is_err() {return End::SlowConsumer;}
             cancel.cancelled().await;scenario.cancelled.notify_one();End::Cancelled
         }.boxed_local()
@@ -260,6 +260,18 @@ async fn malformed_commands_fail_validation_without_interrupting_existing_work()
     let (scenario, mut socket, server, job) = server().await;
     subscribe(&mut socket, 2).await;
     assert!(matches!(next(&mut socket).await, Message::Text(_)));
+    socket
+        .send(Message::Text(
+            serde_json::json!({"type":"request","id":"pending","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}})
+                .to_string().into(),
+        ))
+        .await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        scenario.started.notified(),
+    )
+    .await
+    .unwrap();
     for invalid in [
         serde_json::json!({"type":"request","id":"bad id","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}}),
         serde_json::json!({"type":"request","id":"x","method":"unknown","params":{}}),
@@ -274,10 +286,32 @@ async fn malformed_commands_fail_validation_without_interrupting_existing_work()
             panic!("error expected")
         };
         let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(frame["type"], "error");
+        assert_eq!(frame["type"], "command_error");
         assert_eq!(frame["id"], "");
         assert_eq!(frame["error"]["code"], "invalid_query");
     }
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            scenario.cancelled.notified()
+        )
+        .await
+        .is_err()
+    );
+    socket
+        .send(Message::Text(
+            serde_json::json!({"type":"cancel","id":"pending"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        scenario.cancelled.notified(),
+    )
+    .await
+    .unwrap();
     socket
         .send(Message::Text(
             "{\"type\":\"cancel\",\"id\":\"unknown\"}".into(),

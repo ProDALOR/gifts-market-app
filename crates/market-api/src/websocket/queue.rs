@@ -1,16 +1,11 @@
 use super::registry::{Key, OperationId, Registry};
-use crate::{
-    config::WebSocketLimits,
-    error::ApiError,
-    models::{ServerFrame, SubscriptionStatus},
-};
+use crate::{config::WebSocketLimits, error::ApiError, models::ServerFrame};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(super) enum Payload {
     Result(Arc<market_valuation::GiftFloorMark>),
-    Connecting,
     Orders(Arc<str>),
     MarketStatus(crate::models::MarketStatus),
     Catalog(market_gifts::CatalogVersions),
@@ -20,7 +15,7 @@ pub(super) enum Payload {
 impl Payload {
     #[cfg(test)]
     pub fn test_orders(result: Arc<str>) -> Self {
-        Self::Orders(serde_json::json!({"type":"orders.snapshot","id":"offers","sequence":0,"data":[],"range":{"start":null,"end":null},"next":null,"padding":&*result}).to_string().into())
+        Self::Orders(serde_json::json!({"type":"orders.snapshot","id":"offers","sequence":0,"data":[],"range":{"start":null,"end":null},"padding":&*result}).to_string().into())
     }
     pub fn text(&self, id: &str) -> String {
         match self {
@@ -36,11 +31,6 @@ impl Payload {
                 serde_json::to_string(&ServerFrame::MarketStatus { status: *status })
                     .expect("market status serializes")
             }
-            Self::Connecting => serde_json::to_string(&ServerFrame::Status {
-                id: id.into(),
-                state: SubscriptionStatus::Connecting,
-            })
-            .expect("public status serializes"),
             Self::Catalog(versions) => serde_json::to_string(&ServerFrame::Catalog {
                 id: id.into(),
                 versions: crate::catalog::versions(versions.clone()),

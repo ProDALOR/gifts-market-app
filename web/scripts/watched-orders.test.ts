@@ -7,19 +7,16 @@ const row = (id: string, key: string) =>
     key: key,
     book: { venue_id: "v", collection_id: "g", currency_id: "GRAM" },
   }) as any;
-const snapshot = (data: any[], sequence = 0, reset = false) =>
+const snapshot = (data: any[], sequence = 0) =>
   ({
     type: "orders.snapshot",
     sequence,
-    reset,
     data,
-    next: null,
     range: { start: null, end: "9" },
   }) as any;
 const change = (base: number, upserts: any[] = [], removed: any[] = []) =>
   ({
     type: "orders.changed",
-    base_sequence: base,
     sequence: base + 1,
     upserts,
     removed,
@@ -54,7 +51,7 @@ test("gaps and invalid coverage leave the previous state and sequence intact", (
     state.apply(change(0)).data.map((row) => row.id),
     ["a"],
   );
-  assert.deepEqual(state.apply(snapshot([], 2, true)).data, []);
+  assert.deepEqual(state.apply(snapshot([], 2)).data, []);
   state.clear();
   assert.equal(state.apply(snapshot([row("fresh", "2")])).data[0].id, "fresh");
 });

@@ -1,6 +1,6 @@
 import type { components } from "../gen/api.ts";
 import { orderKey } from "../orderbook/order-activity.ts";
-type Result = components["schemas"]["OrderReadResponse"];
+type Result = components["schemas"]["OrderSnapshotResponse"];
 type Entry = Result["data"][number];
 export function lowerBound(
   rows: readonly Entry[],

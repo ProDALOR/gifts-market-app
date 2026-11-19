@@ -64,14 +64,9 @@ impl MarketDataHandle {
     }
     pub async fn subscribe_catalog(
         &self,
-        mut ids: Vec<CollectionId>,
+        ids: Vec<CollectionId>,
     ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
         self.catalog.budget.check()?;
-        if ids.len() > 8 {
-            return Err(error::DataError::invalid("Watch at most eight collections"));
-        }
-        ids.sort();
-        ids.dedup();
         Ok(self
             .subscriptions
             .send(crate::subscriptions::messages::SubscribeCatalog(ids))

@@ -146,7 +146,7 @@ async fn drive_with_writer(
                     seen=Instant::now();
                     let command=match serde_json::from_str::<Command>(&text) {
                         Ok(command)=>command,
-                        Err(_)=>{if tx.error(Scope::Global,ApiError::invalid("invalid API message")).is_err(){break CloseCode::Again;}continue;}
+                        Err(_)=>{if tx.reject(Scope::Global,ApiError::invalid("invalid API message")).is_err(){break CloseCode::Again;}continue;}
                     };
                     if schedule(command,&mut registry,&mut jobs,&tx,&limits,&stop,&start).is_err(){break CloseCode::Again;}
                 }
@@ -231,7 +231,7 @@ fn schedule(
     };
     let id = match OperationId::parse(id) {
         Ok(id) => id,
-        Err(error) => return tx.error(Scope::Global, error),
+        Err(error) => return tx.reject(Scope::Global, error),
     };
     let Some(query) = query else {
         registry.remove(&id);

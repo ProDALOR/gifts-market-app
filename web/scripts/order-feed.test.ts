@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { test, beforeEach, type TestContext } from "node:test";
 import { createOrderFeed, type FeedState } from "../src/order-feed.ts";
 import { liveSocket } from "../src/live-socket.ts";
+import { LiveRanges } from "../src/feed/range-source.ts";
 import type { Order, OrderQueryResult, FeedQuery } from "../src/market.ts";
-let statusCallback: (sync: any) => void = () => {};
+let statusCallback: (status: any) => void = () => {};
 beforeEach((t) => {
   t.mock.method(liveSocket, "watchStatus", (callback) => {
     statusCallback = callback;
@@ -49,6 +50,44 @@ const result = (ids: string[], before = false, after = true) => {
     },
   };
 };
+
+test("an unchanged range query preserves its snapshot and sequence", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let receive: (frame: any) => void = () => {};
+  t.mock.method(liveSocket, "subscribe", (_, callback) => {
+    receive = callback;
+    return () => {};
+  });
+  t.mock.method(liveSocket, "update", () => false);
+  t.mock.method(liveSocket, "retry", () => assert.fail("No recovery needed"));
+  const received: any[] = [];
+  const source = new LiveRanges({
+    result: (value) => received.push(value),
+    reset: () => {},
+    status: () => assert.fail("Unchanged queries must stay live"),
+    error: () => assert.fail("No error expected"),
+  });
+  t.after(() => source.close());
+  source.start(query);
+  receive({
+    type: "orders.snapshot",
+    id: "offers",
+    sequence: 0,
+    ...result(["0"], false, false),
+  });
+  source.move(query);
+  const next = result(["0", "1"], false, false);
+  receive({
+    type: "orders.changed",
+    id: "offers",
+    sequence: 1,
+    upserts: [next.data[1]],
+    removed: [],
+  });
+  assert.equal(received.length, 2);
+  assert.deepEqual(received[1].data, next.data);
+  t.mock.timers.tick(60000);
+});
 function live(t: TestContext) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   t.mock.method(globalThis, "fetch", () =>
@@ -72,6 +111,7 @@ function live(t: TestContext) {
     commands.push(command);
     previous = undefined;
     sequence = -1;
+    return true;
   });
   t.mock.method(liveSocket, "remember", () => {});
   let state: FeedState | undefined;
@@ -100,16 +140,15 @@ function live(t: TestContext) {
         receive({
           type: "orders.snapshot",
           id: "offers",
-          ...next,
+          data: next.data,
+          range: next.range,
           sequence,
-          reset: false,
         });
       else {
         const oldRows = new Map(old.data.map((row: any) => [row.id, row]));
         receive({
           type: "orders.changed",
           id: "offers",
-          base_sequence: sequence - 1,
           sequence,
           upserts: next.data.filter(
             (row) =>
@@ -503,12 +542,9 @@ test("sequence gaps retain visited rows and retry only the affected watch with b
   f.deliver(["a", "b"]);
   f.frame({
     type: "orders.changed",
-    base_sequence: 99,
     sequence: 100,
     upserts: [],
     removed: [],
-
-    revision: "bad",
   });
   assert.deepEqual(
     f.state.orders.map((row) => row.id),
@@ -529,12 +565,9 @@ test("closing a watch cancels pending sequence recovery", (t) => {
   f.deliver(["a"]);
   f.frame({
     type: "orders.changed",
-    base_sequence: 99,
     sequence: 100,
     upserts: [],
     removed: [],
-
-    revision: "bad",
   });
   f.feed.close();
   t.mock.timers.tick(2000);

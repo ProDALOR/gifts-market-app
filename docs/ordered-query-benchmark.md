@@ -21,6 +21,18 @@ The Rust fixture contains 40,000 active orders across collections and venues. It
 
 The single versioned ordering key reduces navigation/ordering bytes by about 37%. Native read speed also benefits from avoiding repeated key serialization and raw entity clones. Exact range watches share producers; different coverage still runs independently. A relevant replica change still scans its bounded range—this refactor does not add a durable change journal or incremental replica index.
 
+## Compact navigation keys
+
+A subsequent run measured the compact key format against the preceding release test binary on the same machine. The 40,000-order fixture and 200-row price queries are unchanged.
+
+| Operation | Previous keys | Compact keys |
+| --- | ---: | ---: |
+| Ordering-key bytes for 200 rows | 44,800 | 33,200 |
+| Head, 200 rows, including keys | 121.13 µs | 119.04 µs |
+| Fixed range, 200 rows, including keys | 171.71 µs | 160.13 µs |
+
+Price-key payloads shrink by 25.9% in this fixture. Timing is a local microbenchmark, not a throughput guarantee. Prices use packed decimal digits with full precision; time and gift-number ranks use integer encoding. Active identity keys omit the rank, and history identity/time keys encode execution time once. Query fingerprints, identity tie-breakers, ascending/descending ordering and before/after edges are preserved. Durable index encoding is unchanged. Navigation-key encoding is versioned; clients must discard previous-format keys and initialize a fresh watch when upgrading.
+
 The frontend benchmark retains 10,000 or 100,000 visited rows, repeatedly refreshing a 200-row interior range while changing one listing price under number ordering. It excludes fixture generation, initial population, React rendering and activity/viewport projection. The fixture retains the baseline fields to keep object sizes comparable. The new cache keeps an identity index, finds coverage by binary search and compares only incoming rows; producing the complete visited-row array still requires copying array references.
 
 | Cached rows | Before | After |

@@ -7,10 +7,11 @@ import type { Order, ValuationView } from "../market";
 
 /** One cancellable read shared by the price summary and calculation breakdown. */
 export function useGiftValuation(order: Order) {
-  const availability = useMarketStatus();
   const gift = order.target.kind === "gift" ? order.target.gift : undefined;
   const number = gift?.number;
   const giftId = gift?.id;
+  const available = !!number && !!giftId;
+  const availability = useMarketStatus(available);
   const key = JSON.stringify([
     number,
     giftId,
@@ -90,8 +91,8 @@ export function useGiftValuation(order: Order) {
     stale: estimateIsStale(current?.report, current?.generation, availability),
     fields,
     error: current?.error,
-    available: !!number && !!giftId,
-    loading: !!number && !!giftId && (!current || current.pending),
+    available,
+    loading: available && (!current || current.pending),
     retry: () => {
       pending();
       setAttempt((value) => value + 1);

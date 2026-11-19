@@ -7,8 +7,8 @@ pub use crate::catalog::{
     GiftCatalog, GiftCollection, GiftCollectionCatalog, GiftMedia, GiftModel, GiftPattern,
 };
 pub use crate::orders::{
-    OrderIdentity, OrderReadResponse, OrderResponse, OrderTargetResponse, OrderedOrderResponse,
-    UnsupportedTargetReason,
+    OrderIdentity, OrderReadResponse, OrderResponse, OrderSnapshotResponse, OrderTargetResponse,
+    OrderedOrderResponse, UnsupportedTargetReason,
 };
 pub use crate::status::MarketStatus;
 pub use market_gifts::{
@@ -34,6 +34,7 @@ pub enum Command {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
     },
+    #[serde(rename = "catalog.watch")]
     WatchCatalog {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
@@ -67,7 +68,7 @@ impl ApiRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame<'a> {
     Result(ApiResult<'a>),
-    /// Rejected command; the referenced operation continues unchanged.
+    /// Rejected command; active operations continue unchanged. Empty ID if no valid ID was parsed.
     CommandError {
         id: String,
         error: crate::error::ApiError,
@@ -77,7 +78,7 @@ pub enum ServerFrame<'a> {
         id: String,
         sequence: u64,
         #[serde(flatten)]
-        data: crate::orders::OrderReadResponse<'a>,
+        data: crate::orders::OrderSnapshotResponse<'a>,
     },
     #[serde(rename = "orders.changed")]
     OrdersChanged {
@@ -86,14 +87,11 @@ pub enum ServerFrame<'a> {
         upserts: Vec<crate::orders::OrderedOrderResponse<'a>>,
         removed: Vec<crate::orders::OrderIdentity<'a>>,
     },
-    Status {
-        id: String,
-        state: SubscriptionStatus,
-    },
     #[serde(rename = "market.status")]
     MarketStatus {
         status: MarketStatus,
     },
+    #[serde(rename = "catalog.versions")]
     Catalog {
         id: String,
         versions: CatalogVersions,
@@ -118,12 +116,6 @@ pub enum ApiResult<'a> {
         data: GiftValuationResponse<'a>,
     },
 }
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SubscriptionStatus {
-    Connecting,
-}
-
 pub use crate::valuation::GiftValuationResponse;
 
 #[cfg(test)]
@@ -138,7 +130,12 @@ mod tests {
             Command::Request(ApiRequest::Valuation { .. })
         ));
         assert_eq!(serde_json::to_value(request).unwrap(), value);
+        let catalog =
+            serde_json::json!({"type":"catalog.watch","id":"catalog","collection_ids":[]});
+        let command: Command = serde_json::from_value(catalog.clone()).unwrap();
+        assert_eq!(serde_json::to_value(command).unwrap(), catalog);
         for invalid in [
+            serde_json::json!({"type":"watch_catalog","id":"old","collection_ids":[]}),
             serde_json::json!({"type":"subscribe","id":"old","query":{"filters":{"collection_id":"gift","currency_id":"GRAM"}}}),
             serde_json::json!({"type":"unsubscribe","id":"old"}),
             serde_json::json!({"type":"request","id":"x","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"},"extra":true}),

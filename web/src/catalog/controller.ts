@@ -92,12 +92,12 @@ export class CatalogController {
     this.watchSignature = this.watching();
     this.unsubscribe = this.deps.socket.subscribe(
       {
-        type: "watch_catalog",
+        type: "catalog.watch",
         id: "catalog",
         collection_ids: JSON.parse(this.watchSignature),
       },
       (frame) => {
-        if (frame.type === "catalog") {
+        if (frame.type === "catalog.versions") {
           this.liveError = "";
           this.fallback = false;
           this.manifest = frame.versions;
@@ -169,7 +169,7 @@ export class CatalogController {
     if (signature === this.watchSignature) return;
     this.watchSignature = signature;
     this.deps.socket.update({
-      type: "watch_catalog",
+      type: "catalog.watch",
       id: "catalog",
       collection_ids: JSON.parse(signature),
     });

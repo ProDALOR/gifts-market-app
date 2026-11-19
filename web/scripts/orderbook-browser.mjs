@@ -1,6 +1,6 @@
 // Full UI workflow with an isolated local catalog/feed; no Telegram or hub login.
 import assert from "node:assert/strict";
-import { orderResult } from "./range-fixture.mjs";
+import { orderResult, orderSnapshot } from "./range-fixture.mjs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
@@ -270,7 +270,7 @@ try {
   const sendCatalog = (peer) =>
     peer.socket.send(
       JSON.stringify({
-        type: "catalog",
+        type: "catalog.versions",
         id: peer.id,
         versions: {
           directory: "directory.0",
@@ -441,7 +441,7 @@ try {
           }),
         );
       }
-      if (frame.type === "watch_catalog") {
+      if (frame.type === "catalog.watch") {
         catalogPeers.delete(catalogPeer);
         catalogPeer = { socket, id: frame.id, ids: frame.collection_ids };
         catalogPeers.add(catalogPeer);
@@ -457,7 +457,7 @@ try {
             type: "orders.snapshot",
             sequence: 0,
             id: frame.id,
-            ...orderResult(
+            ...orderSnapshot(
               frame.params.query,
               result({ ...frame.params.query, limit: 10000 }).data,
             ),

@@ -83,10 +83,10 @@ pub(super) async fn run(
     let mut sequence = 0u64;
     loop {
         let update = updates.borrow_and_update().clone();
-        let (payload, terminal) = match update {
-            DataUpdate::Connecting => (Payload::Connecting, false),
-            DataUpdate::Catalog(versions) => (Payload::Catalog(versions), false),
-            DataUpdate::Error(error) => (Payload::Error(error.into()), true),
+        let message = match update {
+            DataUpdate::Connecting => None,
+            DataUpdate::Catalog(versions) => Some((Payload::Catalog(versions), false)),
+            DataUpdate::Error(error) => Some((Payload::Error(error.into()), true)),
             DataUpdate::Orders {
                 result,
                 version: next_epoch,
@@ -99,11 +99,7 @@ pub(super) async fn run(
                         .as_ref()
                         .is_some_and(|old| std::sync::Arc::ptr_eq(old, &result))
                 {
-                    let changed = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=updates.changed()=>result};
-                    if changed.is_err() {
-                        return End::Failed;
-                    }
-                    continue;
+                    None
                 } else {
                     let next_sequence = if previous.is_none() {
                         Some(0)
@@ -137,18 +133,20 @@ pub(super) async fn run(
                             previous = Some(result);
                             epoch = Some(next_epoch);
                             sequence = next_sequence;
-                            (Payload::Orders(encoded), false)
+                            Some((Payload::Orders(encoded), false))
                         }
-                        Err(error) => (Payload::Error(error), true),
+                        Err(error) => Some((Payload::Error(error), true)),
                     }
                 }
             }
         };
-        let delivered = tx
-            .send(Scope::Operation(key.clone()), payload, terminal, &cancel)
-            .await;
-        if delivered.is_err() || terminal {
-            return end(delivered);
+        if let Some((payload, terminal)) = message {
+            let delivered = tx
+                .send(Scope::Operation(key.clone()), payload, terminal, &cancel)
+                .await;
+            if delivered.is_err() || terminal {
+                return end(delivered);
+            }
         }
         let changed = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=updates.changed()=>result};
         if changed.is_err() {

@@ -165,11 +165,11 @@ try {
     true,
   );
   await page
-    .locator("#ws-message-watch_catalog")
+    .locator('[id="ws-message-catalog.watch"]')
     .getByText(/Watch catalog content revisions/)
     .waitFor();
   await page
-    .locator("#ws-message-catalog td code")
+    .locator('[id="ws-message-catalog.versions"] td code')
     .filter({ hasText: /^versions$/ })
     .waitFor();
   for (const [message, field] of [

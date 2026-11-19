@@ -2,7 +2,7 @@ import type { components } from "../gen/api.ts";
 import { orderKey } from "../orderbook/order-activity.ts";
 import type { LiveFrame } from "../ws-protocol.ts";
 import { lowerBound } from "./loaded-orders.ts";
-type Result = components["schemas"]["OrderReadResponse"];
+type Result = components["schemas"]["OrderSnapshotResponse"];
 type Entry = Result["data"][number];
 type Snapshot = Extract<LiveFrame, { type: "orders.snapshot" }>;
 type Changed = Extract<LiveFrame, { type: "orders.changed" }>;
@@ -28,8 +28,6 @@ export class WatchedOrders {
       return (this.result = {
         data: frame.data,
         range: frame.range,
-        next: frame.next,
-        snapshot: frame.snapshot,
       });
     }
     if (!this.result || frame.sequence !== this.sequence! + 1)

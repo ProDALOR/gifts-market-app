@@ -4,7 +4,7 @@ export type RequestCall = components["schemas"]["ApiRequest"];
 export type RequestResult = components["schemas"]["ApiResult"];
 export type SubscriptionCommand = Extract<
   components["schemas"]["Command"],
-  { type: "orders.watch" | "watch_catalog" }
+  { type: "orders.watch" | "catalog.watch" }
 >;
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -139,20 +139,26 @@ function orderedRows(value: unknown): value is Record<string, unknown>[] {
     )
   );
 }
-function readResult(value: unknown) {
+function snapshot(value: unknown) {
   if (!record(value) || !orderedRows(value.data) || !record(value.range))
     return false;
   const { start, end } = value.range;
   return (
     boundary(start) &&
     boundary(end) &&
-    boundary(value.next) &&
     !(text(start) && text(end) && start > end) &&
     value.data.every(
       (row) =>
         (start === null || (row.key as string) >= (start as string)) &&
         (end === null || (row.key as string) <= (end as string)),
-    ) &&
+    )
+  );
+}
+function readResult(value: unknown) {
+  return (
+    snapshot(value) &&
+    record(value) &&
+    boundary(value.next) &&
     nullableText(value.snapshot)
   );
 }
@@ -165,16 +171,14 @@ export function parseFrame(raw: unknown): LiveFrame {
     !record(value) ||
     !(
       id(value.id) ||
-      (value.type === "error" && value.id === "") ||
+      ((value.type === "error" || value.type === "command_error") &&
+        value.id === "") ||
       (value.type === "market.status" && value.id === undefined)
     )
   )
     throw new Error("Invalid operation envelope");
   let valid = false;
   switch (value.type) {
-    case "status":
-      valid = value.state === "connecting";
-      break;
     case "command_error":
     case "error":
       valid =
@@ -191,7 +195,11 @@ export function parseFrame(raw: unknown): LiveFrame {
         value.revision === undefined;
       break;
     case "orders.snapshot":
-      valid = sequence(value.sequence) && readResult(value);
+      valid =
+        sequence(value.sequence) &&
+        snapshot(value) &&
+        value.next === undefined &&
+        value.snapshot === undefined;
       break;
     case "orders.changed": {
       const removed = value.removed;
@@ -215,7 +223,7 @@ export function parseFrame(raw: unknown): LiveFrame {
         );
       break;
     }
-    case "catalog":
+    case "catalog.versions":
       valid =
         record(value.versions) &&
         text(value.versions.directory) &&

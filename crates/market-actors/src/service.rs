@@ -36,6 +36,7 @@ impl MarketDataService {
     pub fn arbiter(&self) -> actix::ArbiterHandle {
         self.arbiter.clone()
     }
+    /// The subscription limit bounds producer tasks; shared consumers and lease clones use no extra slot.
     pub async fn start(reads: ReadExecutor, subscription_limit: usize) -> Result<Self, Status> {
         Self::start_with_shutdown(reads, subscription_limit, CancellationToken::new()).await
     }

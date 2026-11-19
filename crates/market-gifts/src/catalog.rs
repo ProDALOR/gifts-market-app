@@ -79,7 +79,7 @@ pub struct GiftCollectionCatalog {
     pub patterns: std::sync::Arc<Vec<GiftPattern>>,
 }
 
-/// Content revisions for catalog cache revalidation; not replica checkpoints.
+/// Content revisions for catalog cache revalidation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct CatalogVersions {

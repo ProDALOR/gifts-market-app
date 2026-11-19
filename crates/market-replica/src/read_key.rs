@@ -5,7 +5,7 @@ use crate::{
     ranking::ordered_decimal,
     types::{EntityKind, Key, Position as HistoryPosition, Sort},
 };
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use std::{cmp::Ordering, str::FromStr};
 use tonic::Status;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -63,17 +63,26 @@ impl PartialOrd for ReadPosition {
 impl ReadPosition {
     pub fn encode(&self) -> String {
         let mut bytes = Vec::with_capacity(self.encoded_len() / 2);
-        bytes.push(1);
+        bytes.push(2);
         bytes.extend(self.selection.0);
         bytes.push(self.sort as u8);
         bytes.push(u8::from(self.at.is_some()));
-        bytes.extend(ordered_decimal(if self.rank.is_zero() {
-            Decimal::ZERO
-        } else {
-            self.rank
-        }));
-        if let Some(at) = self.at {
-            bytes.extend(((at as u64) ^ (1 << 63)).to_be_bytes());
+        match self.sort {
+            Sort::Identity => {}
+            Sort::TimeAsc | Sort::TimeDesc => bytes.extend(ordered_integer(integer(self.rank))),
+            Sort::NumberAsc | Sort::NumberDesc => {
+                let missing = self.rank == Decimal::MAX;
+                bytes.push(u8::from(missing));
+                bytes.extend(if missing {
+                    [0; 8]
+                } else {
+                    ordered_integer(integer(self.rank))
+                });
+            }
+            Sort::PriceAsc | Sort::PriceDesc => bytes.extend(compact_decimal(self.rank)),
+        }
+        if let Some(at) = self.at.filter(|_| !self.time_rank()) {
+            bytes.extend(ordered_integer(at));
         }
         for part in [&self.key.venue_id, &self.key.id] {
             for b in part.bytes() {
@@ -97,7 +106,7 @@ impl ReadPosition {
             return Err(invalid());
         }
         let bytes = unhex(value)?;
-        if bytes.len() < 98 || bytes[0] != 1 || bytes[34] > 1 {
+        if bytes.len() < 40 || bytes[0] != 2 || bytes[34] > 1 {
             return Err(invalid());
         }
         let selection = QueryFingerprint(bytes[1..33].try_into().map_err(|_| invalid())?);
@@ -114,22 +123,40 @@ impl ReadPosition {
                 *b = 255 - *b;
             }
         }
-        if payload.len() < 62 {
-            return Err(invalid());
-        }
-        let rank = decode_decimal(&payload[..58])?;
-        let mut i = 58;
+        let mut i = 0;
+        let mut rank = match sort {
+            Sort::Identity => Decimal::ZERO,
+            Sort::TimeAsc | Sort::TimeDesc => Decimal::from(read_integer(&payload, &mut i)?),
+            Sort::NumberAsc | Sort::NumberDesc => {
+                let missing = *payload.get(i).ok_or_else(invalid)?;
+                i += 1;
+                let raw = read_integer(&payload, &mut i)?;
+                match missing {
+                    0 => Decimal::from(raw),
+                    1 if raw == i64::MIN => Decimal::MAX,
+                    _ => return Err(invalid()),
+                }
+            }
+            Sort::PriceAsc | Sort::PriceDesc => {
+                let raw = payload.get(..29).ok_or_else(invalid)?;
+                i = 29;
+                expand_decimal(raw)?
+            }
+        };
         let at = if bytes[34] == 1 {
-            let raw: [u8; 8] = payload
-                .get(i..i + 8)
-                .ok_or_else(invalid)?
-                .try_into()
-                .map_err(|_| invalid())?;
-            i += 8;
-            Some((u64::from_be_bytes(raw) ^ (1 << 63)) as i64)
+            Some(if matches!(sort, Sort::TimeAsc | Sort::TimeDesc) {
+                integer(rank)
+            } else {
+                read_integer(&payload, &mut i)?
+            })
         } else {
             None
         };
+        if sort == Sort::Identity
+            && let Some(at) = at
+        {
+            rank = Decimal::from(at);
+        }
         let venue_id = part(&payload, &mut i)?;
         let id = part(&payload, &mut i)?;
         if i != payload.len() {
@@ -184,9 +211,16 @@ impl ReadPosition {
             order_id: self.key.id.clone(),
         })
     }
+    fn time_rank(&self) -> bool {
+        matches!(self.sort, Sort::TimeAsc | Sort::TimeDesc)
+    }
     pub(crate) fn encoded_len(&self) -> usize {
-        (35 + 58
-            + usize::from(self.at.is_some()) * 8
+        (35 + match self.sort {
+            Sort::Identity => 0,
+            Sort::TimeAsc | Sort::TimeDesc => 8,
+            Sort::NumberAsc | Sort::NumberDesc => 9,
+            Sort::PriceAsc | Sort::PriceDesc => 29,
+        } + usize::from(self.at.is_some() && !self.time_rank()) * 8
             + self.key.venue_id.len()
             + self.key.id.len()
             + self
@@ -199,6 +233,53 @@ impl ReadPosition {
             + 5)
             * 2
     }
+}
+// Pack the existing exact decimal order into BCD without changing durable index keys.
+fn compact_decimal(value: Decimal) -> [u8; 29] {
+    let raw = ordered_decimal(if value.is_zero() {
+        Decimal::ZERO
+    } else {
+        value
+    });
+    let mut out = [0; 29];
+    out[0] = (raw[0] << 4) | (raw[1] - b'0');
+    for i in 1..29 {
+        out[i] = ((raw[2 * i] - b'0') << 4) | (raw[2 * i + 1] - b'0');
+    }
+    out
+}
+fn expand_decimal(raw: &[u8]) -> Result<Decimal, Status> {
+    let mut digits = [b'0'; 58];
+    if raw.len() != 29 || raw[0] >> 4 > 1 {
+        return Err(invalid());
+    }
+    digits[0] = raw[0] >> 4;
+    for (i, byte) in raw.iter().enumerate() {
+        if byte & 15 > 9 || (i > 0 && byte >> 4 > 9) {
+            return Err(invalid());
+        }
+        if i > 0 {
+            digits[i * 2] = b'0' + (byte >> 4);
+        }
+        digits[i * 2 + 1] = b'0' + (byte & 15);
+    }
+    decode_decimal(&digits)
+}
+fn integer(value: Decimal) -> i64 {
+    assert!(value.fract().is_zero(), "integer sort has an integral rank");
+    value.to_i64().expect("integer sort rank fits i64")
+}
+fn ordered_integer(value: i64) -> [u8; 8] {
+    ((value as u64) ^ (1 << 63)).to_be_bytes()
+}
+fn read_integer(bytes: &[u8], i: &mut usize) -> Result<i64, Status> {
+    let raw: [u8; 8] = bytes
+        .get(*i..*i + 8)
+        .ok_or_else(invalid)?
+        .try_into()
+        .map_err(|_| invalid())?;
+    *i += 8;
+    Ok((u64::from_be_bytes(raw) ^ (1 << 63)) as i64)
 }
 fn invalid() -> Status {
     Status::invalid_argument("invalid ordering key")
@@ -310,6 +391,60 @@ impl FromStr for SnapshotId {
 mod tests {
     use super::*;
     #[test]
+    fn compact_price_ranks_preserve_exact_order_for_scales_signs_and_extremes() {
+        let mut values = vec![Decimal::MIN, Decimal::MAX, Decimal::ZERO];
+        let mut seed = 17u128;
+        for scale in 0..=28 {
+            for _ in 0..32 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let coefficient = (seed & ((1u128 << 96) - 1)) as i128;
+                values.push(Decimal::from_i128_with_scale(coefficient, scale));
+                values.push(Decimal::from_i128_with_scale(-coefficient, scale));
+            }
+        }
+        values.sort();
+        for value in &values {
+            assert_eq!(expand_decimal(&compact_decimal(*value)).unwrap(), *value);
+        }
+        assert!(
+            values
+                .windows(2)
+                .all(|pair| compact_decimal(pair[0]) <= compact_decimal(pair[1]))
+        );
+        assert_eq!(
+            compact_decimal("1.00".parse().unwrap()),
+            compact_decimal(Decimal::ONE)
+        );
+    }
+    #[test]
+    fn compact_positions_remove_redundant_ranks_without_losing_history_identity() {
+        for (sort, rank, history, expected) in [
+            (Sort::Identity, Decimal::ZERO, false, 84),
+            (Sort::Identity, Decimal::from(-1), true, 100),
+            (Sort::PriceAsc, Decimal::ONE, false, 142),
+            (Sort::PriceDesc, Decimal::ONE, true, 158),
+            (Sort::TimeAsc, Decimal::from(-1), false, 100),
+            (Sort::TimeDesc, Decimal::from(-1), true, 100),
+            (Sort::NumberAsc, Decimal::MAX, false, 102),
+            (Sort::NumberDesc, Decimal::from(i64::MIN), true, 118),
+        ] {
+            let position = ReadPosition {
+                selection: QueryFingerprint([0; 32]),
+                sort,
+                key: Key::order("v".into(), "x".into()),
+                rank,
+                at: history.then_some(-1),
+                edge: Edge::At,
+            };
+            let key = position.encode();
+            assert_eq!(key.len(), expected);
+            assert_eq!(ReadPosition::decode(&key).unwrap(), position);
+            let mut retired = key.clone();
+            retired.replace_range(..2, "01");
+            assert!(ReadPosition::decode(&retired).is_err());
+        }
+    }
+    #[test]
     fn one_key_roundtrips_and_matches_native_order_for_every_sort_and_edge() {
         for sort in [
             Sort::Identity,
@@ -322,21 +457,45 @@ mod tests {
         ] {
             for history in [false, true] {
                 let mut keys = vec![];
-                for rank in [
-                    Decimal::MIN,
-                    Decimal::new(-1, 28),
-                    Decimal::ZERO,
-                    Decimal::new(1, 28),
-                    Decimal::MAX,
-                ] {
+                let ranks = match sort {
+                    Sort::Identity => vec![Decimal::ZERO],
+                    Sort::TimeAsc | Sort::TimeDesc => {
+                        [i64::MIN, -1, 0, 1, i64::MAX].map(Decimal::from).to_vec()
+                    }
+                    Sort::NumberAsc | Sort::NumberDesc => vec![
+                        Decimal::from(i64::MIN),
+                        Decimal::ZERO,
+                        Decimal::from(i64::MAX),
+                        Decimal::MAX,
+                    ],
+                    _ => vec![
+                        Decimal::MIN,
+                        Decimal::new(-1, 28),
+                        Decimal::ZERO,
+                        Decimal::new(1, 28),
+                        Decimal::MAX,
+                    ],
+                };
+                for rank in ranks {
                     for text in ["", "a", "a\0", "a\0b", "aa", "é", "😀"] {
                         for edge in [Edge::Before, Edge::At, Edge::After] {
+                            let at = history.then_some(
+                                if matches!(sort, Sort::TimeAsc | Sort::TimeDesc) {
+                                    integer(rank)
+                                } else {
+                                    -1
+                                },
+                            );
                             let key = ReadPosition {
                                 selection: QueryFingerprint([42; 32]),
                                 sort,
                                 key: Key::order("venue\0x".into(), text.into()),
-                                rank,
-                                at: history.then_some(-1),
+                                rank: if sort == Sort::Identity && history {
+                                    Decimal::from(-1)
+                                } else {
+                                    rank
+                                },
+                                at,
                                 edge,
                             };
                             let encoded = key.encode();
@@ -375,6 +534,11 @@ mod tests {
         let mut wrong_version = key.clone();
         wrong_version.replace_range(..2, "ff");
         assert!(ReadPosition::decode(&wrong_version).is_err());
+        for (offset, value) in [(68, "02"), (70, "20"), (72, "fa")] {
+            let mut malformed = key.clone();
+            malformed.replace_range(offset..offset + 2, value);
+            assert!(ReadPosition::decode(&malformed).is_err());
+        }
         assert!(ReadPosition::decode(&(key + "00")).is_err());
     }
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { orderResult } from "./range-fixture.mjs";
+import { orderResult, orderSnapshot } from "./range-fixture.mjs";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 const root = new URL("..", import.meta.url).pathname;
@@ -182,13 +182,14 @@ try {
               : null;
           }, command.id);
         if (current !== command.id) return;
-        const window = orderResult(command.params.query, rows);
+        const window = orderSnapshot(command.params.query, rows);
         socket.send(
           JSON.stringify({
             type: "orders.snapshot",
             sequence: 0,
             id: command.id,
-            ...window,
+            data: window.data,
+            range: window.range,
           }),
         );
         if (marker && window.data.some((row) => row.id === marker.id)) {

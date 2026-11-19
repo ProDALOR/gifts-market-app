@@ -6,6 +6,8 @@ function setup(t: TestContext) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   class Socket {
     static all: Socket[] = [];
+    static OPEN = 1;
+    readyState = 0;
     sent: any[] = [];
     closed = false;
     onopen?: () => void;
@@ -18,7 +20,12 @@ function setup(t: TestContext) {
     send(value: string) {
       this.sent.push(JSON.parse(value));
     }
+    open() {
+      this.readyState = 1;
+      this.onopen?.();
+    }
     close() {
+      this.readyState = 3;
       this.closed = true;
       this.onclose?.();
     }
@@ -44,7 +51,7 @@ function setup(t: TestContext) {
   return { Socket, live: new LiveSocket(() => 0.5) };
 }
 const catalog = (id = "catalog") => ({
-  type: "watch_catalog" as const,
+  type: "catalog.watch" as const,
   id,
   collection_ids: ["gift"],
 });
@@ -80,22 +87,22 @@ test("replacement, updates and reconnects use fresh identities and ignore delaye
     assert.fail("Replaced subscriber"),
   );
   const first = Socket.all[0];
-  first.onopen?.();
-  const initial = first.commands("watch_catalog")[0].id;
+  first.open();
+  const initial = first.commands("catalog.watch")[0].id;
   const stop = live.subscribe(catalog(), (frame) => {
     assert.equal(frame.id, "catalog");
     updates++;
   });
   old();
-  const replaced = first.commands("watch_catalog").at(-1).id;
+  const replaced = first.commands("catalog.watch").at(-1).id;
   assert.notEqual(initial, replaced);
-  first.receive({ type: "catalog", id: initial, versions });
+  first.receive({ type: "catalog.versions", id: initial, versions });
   assert.equal(updates, 0);
-  first.receive({ type: "catalog", id: replaced, versions });
+  first.receive({ type: "catalog.versions", id: replaced, versions });
   assert.equal(updates, 1);
   const stopOrders = live.subscribe(catalog("orders"), () => {});
   live.update({ ...catalog(), collection_ids: ["other"] });
-  const updated = first.commands("watch_catalog").at(-1).id;
+  const updated = first.commands("catalog.watch").at(-1).id;
   assert.notEqual(updated, replaced);
   const count = first.sent.length;
   live.update({ ...catalog(), collection_ids: ["other"] });
@@ -105,14 +112,14 @@ test("replacement, updates and reconnects use fresh identities and ignore delaye
   first.close();
   t.mock.timers.tick(1000);
   const second = Socket.all[1];
-  second.onopen?.();
-  const reconnected = second.commands("watch_catalog")[0].id;
+  second.open();
+  const reconnected = second.commands("catalog.watch")[0].id;
   assert.notEqual(updated, reconnected);
-  second.receive({ type: "catalog", id: updated, versions });
+  second.receive({ type: "catalog.versions", id: updated, versions });
   assert.equal(updates, 1);
-  first.receive({ type: "catalog", id: reconnected, versions });
+  first.receive({ type: "catalog.versions", id: reconnected, versions });
   assert.equal(updates, 1);
-  second.receive({ type: "catalog", id: reconnected, versions });
+  second.receive({ type: "catalog.versions", id: reconnected, versions });
   assert.equal(updates, 2);
   stop();
   assert.equal(second.closed, true);
@@ -120,7 +127,7 @@ test("replacement, updates and reconnects use fresh identities and ignore delaye
   assert.equal(Socket.all.length, 2);
 });
 
-test("transient errors retry only their subscription and valid frames clear stale retries", (t) => {
+test("terminal errors retire old identities and retry only their subscription", (t) => {
   const { Socket, live } = setup(t),
     errors: string[] = [];
   const stop = live.subscribe(catalog(), (f) => {
@@ -132,15 +139,15 @@ test("transient errors retry only their subscription and valid frames clear stal
     other();
   });
   const socket = Socket.all[0];
-  socket.onopen?.();
+  socket.open();
   const current = () =>
     socket
-      .commands("watch_catalog")
+      .commands("catalog.watch")
       .filter((c) => c.collection_ids[0] === "gift")[0];
   const fail = (code: string) =>
     socket.receive({
       type: "error",
-      id: socket.commands("watch_catalog").at(-1).id,
+      id: socket.commands("catalog.watch").at(-1).id,
       error: { code, message: "Failed" },
     });
   // Catalog is the first operation, other remains healthy.
@@ -150,25 +157,41 @@ test("transient errors retry only their subscription and valid frames clear stal
     error: { code: "capacity_exceeded", message: "Busy" },
   });
   t.mock.timers.tick(1000);
-  assert.equal(socket.commands("watch_catalog").length, 3);
+  assert.equal(socket.commands("catalog.watch").length, 3);
   fail("unavailable");
   t.mock.timers.tick(1999);
-  assert.equal(socket.commands("watch_catalog").length, 3);
+  assert.equal(socket.commands("catalog.watch").length, 3);
   t.mock.timers.tick(1);
-  assert.equal(socket.commands("watch_catalog").length, 4);
+  assert.equal(socket.commands("catalog.watch").length, 4);
   fail("invalid_query");
   t.mock.timers.tick(15000);
-  assert.equal(socket.commands("watch_catalog").length, 4);
+  assert.equal(socket.commands("catalog.watch").length, 4);
   live.retry("catalog");
-  assert.equal(socket.commands("watch_catalog").length, 5);
+  assert.equal(socket.commands("catalog.watch").length, 5);
   fail("unavailable");
   socket.receive({
-    type: "catalog",
-    id: socket.commands("watch_catalog").at(-1).id,
+    type: "catalog.versions",
+    id: socket.commands("catalog.watch").at(-1).id,
+    versions,
+  });
+  t.mock.timers.tick(1000);
+  assert.equal(
+    socket.commands("catalog.watch").length,
+    6,
+    "late terminal frames cannot cancel retries",
+  );
+  socket.receive({
+    type: "catalog.versions",
+    id: socket.commands("catalog.watch").at(-1).id,
     versions,
   });
   t.mock.timers.tick(15000);
-  assert.equal(socket.commands("watch_catalog").length, 5);
+  assert.equal(socket.commands("catalog.watch").length, 6);
+  assert.equal(
+    socket.commands("cancel").length,
+    0,
+    "terminal operations need no cancellation",
+  );
   assert.equal(errors.includes("invalid_query"), true);
   assert.equal(socket.closed, false);
 });
@@ -182,7 +205,7 @@ test("requests resolve out of order and cancellation ignores late results withou
     two = live.request(call);
   const rejected = assert.rejects(one, { name: "AbortError" });
   const socket = Socket.all[0];
-  socket.onopen?.();
+  socket.open();
   const [a, b] = socket.commands("request");
   socket.receive(result(b.id));
   assert.deepEqual(await two, report);
@@ -220,7 +243,7 @@ test("queued cancellation sends no request and an idle socket closes", async (t)
   await rejected;
   assert.equal(Socket.all[0].closed, true);
   assert.equal(Socket.all[0].sent.length, 0);
-  Socket.all[0].onopen?.();
+  Socket.all[0].open();
   assert.equal(Socket.all[0].sent.length, 0);
 });
 
@@ -231,14 +254,63 @@ test("disconnect rejects requests once and reconnects only subscriptions", async
   const promise = live.request(call);
   const rejected = assert.rejects(promise, { code: "unavailable" });
   const first = Socket.all[0];
-  first.onopen?.();
+  first.open();
   first.close();
   await rejected;
   t.mock.timers.tick(1000);
   const second = Socket.all[1];
-  second.onopen?.();
+  second.open();
   assert.equal(second.commands("request").length, 0);
-  assert.equal(second.commands("watch_catalog").length, 1);
+  assert.equal(second.commands("catalog.watch").length, 1);
+});
+
+test("stalled handshakes expire, and releasing the last observer cancels reconnects", async (t) => {
+  const { Socket, live } = setup(t);
+  const stop = live.watchStatus(() => {});
+  const pending = live.request(call);
+  const rejected = assert.rejects(pending, { code: "unavailable" });
+  const first = Socket.all[0];
+  t.mock.timers.tick(9999);
+  assert.equal(first.closed, false);
+  t.mock.timers.tick(1);
+  await rejected;
+  assert.equal(first.closed, true);
+  first.open();
+  assert.equal(first.sent.length, 0, "retired socket callbacks are detached");
+  t.mock.timers.tick(1000);
+  const second = Socket.all[1];
+  second.open();
+  assert.equal(
+    second.commands("request").length,
+    0,
+    "requests are not replayed",
+  );
+  t.mock.timers.tick(10000);
+  assert.equal(second.closed, false, "opening clears the handshake deadline");
+  stop();
+  assert.equal(second.closed, true);
+  t.mock.timers.tick(60000);
+  assert.equal(Socket.all.length, 2);
+});
+
+test("cancelling requests queued during reconnect sends no stale cancellation", async (t) => {
+  const { Socket, live } = setup(t);
+  const stop = live.subscribe(catalog(), () => {});
+  const first = Socket.all[0];
+  first.open();
+  first.close();
+  const abort = new AbortController();
+  const pending = live.request(call, abort.signal);
+  const rejected = assert.rejects(pending, { name: "AbortError" });
+  abort.abort();
+  await rejected;
+  t.mock.timers.tick(1000);
+  const second = Socket.all[1];
+  second.open();
+  assert.equal(second.commands("request").length, 0);
+  assert.equal(second.commands("cancel").length, 0);
+  assert.equal(second.commands("catalog.watch").length, 1);
+  stop();
 });
 
 test("pending request budget and timeout release all work", async (t) => {
@@ -249,7 +321,7 @@ test("pending request budget and timeout release all work", async (t) => {
   );
   await assert.rejects(live.request(call), { code: "capacity_exceeded" });
   const socket = Socket.all[0];
-  socket.onopen?.();
+  socket.open();
   t.mock.timers.tick(35000);
   await Promise.all(rejected);
   assert.equal(socket.commands("cancel").length, 8);
@@ -263,7 +335,7 @@ test("malformed frames fail pending requests and recover subscriptions without t
   const promise = live.request(call);
   const rejected = assert.rejects(promise, { code: "unavailable" });
   const socket = Socket.all[0];
-  socket.onopen?.();
+  socket.open();
   socket.receive({ type: "page", id: "op.1", page: { data: null } });
   await rejected;
   assert.equal(socket.closed, true);
@@ -276,12 +348,8 @@ test("a valid frame for the wrong operation kind is rejected", (t) => {
   const stop = live.subscribe(catalog(), () => assert.fail("Wrong channel"));
   t.after(stop);
   const socket = Socket.all[0];
-  socket.onopen?.();
-  socket.receive({
-    type: "sync",
-    id: socket.sent[0].id,
-    sync: report.sync,
-  });
+  socket.open();
+  socket.receive(result(socket.sent[0].id));
   assert.equal(socket.closed, true);
 });
 
@@ -290,7 +358,7 @@ test("unsubscribing inside an error callback leaves no delayed retry", (t) => {
   let stop = () => {};
   stop = live.subscribe(catalog(), () => stop());
   const socket = Socket.all[0];
-  socket.onopen?.();
+  socket.open();
   socket.receive({
     type: "error",
     id: socket.sent[0].id,
@@ -299,7 +367,7 @@ test("unsubscribing inside an error callback leaves no delayed retry", (t) => {
   t.mock.timers.tick(60000);
   assert.equal(socket.closed, true);
   assert.equal(Socket.all.length, 1);
-  assert.equal(socket.commands("watch_catalog").length, 1);
+  assert.equal(socket.commands("catalog.watch").length, 1);
 });
 
 test("resume anchors do not suppress navigation and reconnect uses the latest visible position", (t) => {
@@ -318,7 +386,7 @@ test("resume anchors do not suppress navigation and reconnect uses the latest vi
   const stop = live.subscribe(command, () => {});
   t.after(stop);
   const first = Socket.all[0];
-  first.onopen?.();
+  first.open();
   const next = {
     ...command,
     params: { query: { ...command.params.query, position: "visible" } },
@@ -334,7 +402,7 @@ test("resume anchors do not suppress navigation and reconnect uses the latest vi
   first.close();
   t.mock.timers.tick(1000);
   const second = Socket.all[1];
-  second.onopen?.();
+  second.open();
   assert.equal(
     second.commands("orders.watch")[0].params.query.position,
     "latest",
@@ -347,7 +415,7 @@ test("command rejections do not complete or cancel the original request", async 
   live.onCommandError = () => rejected++;
   const promise = live.request(call);
   const socket = Socket.all[0];
-  socket.onopen?.();
+  socket.open();
   const id = socket.commands("request")[0].id;
   socket.receive({
     type: "command_error",
@@ -361,12 +429,92 @@ test("command rejections do not complete or cancel the original request", async 
   assert.deepEqual(await promise, report);
 });
 
+test("malformed command rejections leave pending requests and subscriptions running", async (t) => {
+  const { Socket, live } = setup(t);
+  let updates = 0,
+    rejections = 0;
+  const stop = live.subscribe(catalog(), () => updates++);
+  live.onCommandError = (frame) => {
+    assert.equal(frame.id, "");
+    rejections++;
+  };
+  const pending = live.request(call);
+  const socket = Socket.all[0];
+  socket.open();
+  socket.receive({
+    type: "command_error",
+    id: "",
+    error: { code: "invalid_query", message: "Invalid command" },
+  });
+  assert.equal(socket.closed, false);
+  assert.equal(rejections, 1);
+  assert.equal(updates, 0);
+  socket.receive({
+    type: "catalog.versions",
+    id: socket.commands("catalog.watch")[0].id,
+    versions,
+  });
+  socket.receive(result(socket.commands("request")[0].id));
+  assert.equal(updates, 1);
+  assert.deepEqual(await pending, report);
+  assert.equal(socket.commands("cancel").length, 0);
+  stop();
+});
+
+test("retrying inside a terminal error callback starts one fresh operation", (t) => {
+  const { Socket, live } = setup(t);
+  const stop = live.subscribe(catalog(), (frame) => {
+    if (frame.type === "error") live.retry("catalog");
+  });
+  const socket = Socket.all[0];
+  socket.open();
+  const old = socket.commands("catalog.watch")[0].id;
+  socket.receive({
+    type: "error",
+    id: old,
+    error: { code: "unavailable", message: "Retry" },
+  });
+  const current = socket.commands("catalog.watch").at(-1).id;
+  assert.notEqual(current, old);
+  assert.equal(socket.commands("cancel").length, 0);
+  t.mock.timers.tick(60000);
+  assert.equal(socket.commands("catalog.watch").length, 2);
+  stop();
+});
+
+test("connection errors retire old work before error callbacks queue replacements", async (t) => {
+  const { Socket, live } = setup(t);
+  let recovery: Promise<unknown> | undefined;
+  const stop = live.subscribe(catalog(), (frame) => {
+    if (frame.type === "error") recovery = live.request(call);
+  });
+  const old = live.request(call);
+  const rejected = assert.rejects(old, { code: "timed_out" });
+  const first = Socket.all[0];
+  first.open();
+  first.receive({
+    type: "error",
+    id: "",
+    error: { code: "timed_out", message: "Connection failed" },
+  });
+  await rejected;
+  assert.ok(recovery);
+  assert.equal(Socket.all.length, 1);
+  t.mock.timers.tick(1000);
+  const second = Socket.all[1];
+  second.open();
+  assert.equal(second.commands("request").length, 1);
+  second.receive(result(second.commands("request")[0].id));
+  assert.deepEqual(await recovery, report);
+  stop();
+});
+
 test("one connection status stream is shared, replayed and released independently", (t) => {
   const { Socket, live } = setup(t);
   const states: string[] = [];
   const a = live.watchStatus((status) => states.push(status));
   const socket = Socket.all[0];
-  socket.onopen?.();
+  socket.open();
   socket.receive({
     type: "market.status",
     status: "available",
@@ -386,12 +534,85 @@ test("one connection status stream is shared, replayed and released independentl
   assert.equal(Socket.all.length, 2);
 });
 
+test("disconnect callbacks can queue requests and replace subscriptions without losing new work", async (t) => {
+  const { Socket, live } = setup(t);
+  let recovered: Promise<unknown> | undefined;
+  let stopReplacement = () => {};
+  let updates = 0;
+  const stopOld = live.subscribe(catalog(), () => assert.fail("Old listener"));
+  let interrupted = false;
+  const stopStatus = live.watchStatus((status) => {
+    if (status !== "unavailable" || !interrupted) return;
+    interrupted = false;
+    recovered = live.request(call);
+    stopReplacement = live.subscribe(catalog(), () => updates++);
+  });
+  const oldRequest = live.request(call);
+  const rejected = assert.rejects(oldRequest, { code: "unavailable" });
+  const first = Socket.all[0];
+  first.open();
+  first.receive({ type: "market.status", status: "available" });
+  interrupted = true;
+  first.close();
+  await rejected;
+  assert.ok(recovered);
+  assert.equal(
+    Socket.all.length,
+    1,
+    "callbacks must respect reconnect backoff",
+  );
+  t.mock.timers.tick(1000);
+  assert.equal(Socket.all.length, 2);
+  const second = Socket.all[1];
+  second.open();
+  second.receive({ type: "market.status", status: "available" });
+  const request = second.commands("request")[0];
+  assert.ok(request, "new request must survive old-connection cleanup");
+  assert.equal(second.commands("request").length, 1);
+  assert.equal(second.commands("catalog.watch").length, 1);
+  first.receive({ type: "market.status", status: "delayed" });
+  first.receive(result(request.id));
+  assert.equal(live.statusSnapshot().status, "available");
+  second.receive(result(request.id));
+  assert.deepEqual(await recovered, report);
+  second.receive({
+    type: "catalog.versions",
+    id: second.commands("catalog.watch")[0].id,
+    versions,
+  });
+  assert.equal(updates, 1);
+  stopOld();
+  stopReplacement();
+  stopStatus();
+  t.mock.timers.tick(60000);
+  assert.equal(Socket.all.length, 2);
+  assert.equal(second.closed, true);
+});
+
+test("a successful status-only connection resets reconnect backoff", (t) => {
+  const { Socket, live } = setup(t);
+  const stop = live.watchStatus(() => {});
+  Socket.all[0].close();
+  t.mock.timers.tick(1000);
+  Socket.all[1].close();
+  t.mock.timers.tick(2000);
+  const connected = Socket.all[2];
+  connected.open();
+  connected.receive({ type: "market.status", status: "delayed" });
+  connected.close();
+  t.mock.timers.tick(999);
+  assert.equal(Socket.all.length, 3);
+  t.mock.timers.tick(1);
+  assert.equal(Socket.all.length, 4);
+  stop();
+});
+
 test("a market interruption invalidates old estimates through recovery without extra requests", async (t) => {
   const { estimateIsStale } = await import("../src/valuation/freshness.ts");
   const { Socket, live } = setup(t);
   const unsubscribe = live.watchStatus(() => {});
   const socket = Socket.all[0];
-  socket.onopen?.();
+  socket.open();
   const publish = (status: string) =>
     socket.receive({ type: "market.status", status });
   publish("available");

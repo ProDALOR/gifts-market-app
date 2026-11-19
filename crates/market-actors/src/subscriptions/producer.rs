@@ -3,32 +3,58 @@ use super::{DataUpdate, QueryFeed};
 use crate::error::DataError;
 use crate::{orderbooks::handle::OrderbooksHandle, runtime::ActorEnvironment};
 use market_hub_protocol::wire as w;
-use std::{
-    sync::{Arc, Weak, atomic::Ordering},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, watch};
+use tokio_util::sync::CancellationToken;
 use tonic::Status;
 struct Completion {
-    feed: Weak<QueryFeed>,
     sender: watch::Sender<DataUpdate>,
+    stop: CancellationToken,
+    permit: Option<OwnedSemaphorePermit>,
+}
+impl Completion {
+    fn new(feed: &QueryFeed, permit: OwnedSemaphorePermit) -> Self {
+        Self {
+            sender: feed.sender.clone(),
+            stop: feed.stop.clone(),
+            permit: Some(permit),
+        }
+    }
+    fn finish(&mut self, error: DataError) {
+        // A receiver can retry as soon as it sees the terminal update.
+        drop(self.permit.take());
+        self.stop.cancel();
+        if !matches!(*self.sender.borrow(), DataUpdate::Error(_)) {
+            self.sender.send_replace(DataUpdate::Error(error));
+        }
+    }
+}
+/// Coalesce data changes without retaining a producer after cancellation or receiver loss.
+async fn wait_for_change(
+    changed: &mut watch::Receiver<u64>,
+    stop: &CancellationToken,
+    sender: &watch::Sender<DataUpdate>,
+) -> Result<bool, DataError> {
+    tokio::select! { biased;
+        _ = stop.cancelled() => return Ok(false),
+        _ = sender.closed() => return Ok(false),
+        result = changed.changed() => result.map_err(|_| Status::unavailable("Market updates stopped"))?,
+    }
+    tokio::select! { biased;
+        _ = stop.cancelled() => Ok(false),
+        _ = sender.closed() => Ok(false),
+        _ = tokio::time::sleep(Duration::from_millis(100)) => Ok(true),
+    }
 }
 impl Drop for Completion {
     fn drop(&mut self) {
-        if let Some(feed) = self.feed.upgrade() {
-            feed.done.store(true, Ordering::Release);
-        }
-        if !matches!(*self.sender.borrow(), DataUpdate::Error(_)) {
-            self.sender.send_replace(DataUpdate::Error(
-                Status::unavailable("Live subscription stopped").into(),
-            ));
-        }
+        self.finish(Status::unavailable("Live subscription stopped").into());
     }
 }
 /// Catalog notifications use the replica's metadata clock, never order-price or freshness ticks.
 pub(super) fn start_catalog(
     environment: &ActorEnvironment,
-    feed: &Arc<QueryFeed>,
+    feed: &QueryFeed,
     catalog: crate::catalog::handle::CatalogHandle,
     ids: Vec<market_gifts::CollectionId>,
     reader: market_replica::ReplicaReader,
@@ -36,18 +62,17 @@ pub(super) fn start_catalog(
 ) {
     let sender = feed.sender.clone();
     let stop = feed.stop.clone();
-    let completion = Completion {
-        feed: Arc::downgrade(feed),
-        sender: sender.clone(),
-    };
+    let completion = Completion::new(feed, permit);
     let work = async move {
-        let _completion = completion;
-        let _permit = permit;
+        let mut completion = completion;
         let mut changed = reader.changes();
         let work = async {
             let mut previous = None;
             let mut revision = None;
             loop {
+                if stop.is_cancelled() || sender.is_closed() {
+                    return Ok(());
+                }
                 changed.borrow_and_update();
                 let current = (
                     reader.metadata_revision(&[
@@ -70,19 +95,13 @@ pub(super) fn start_catalog(
                     }
                     revision = Some(current);
                 }
-                tokio::select! {
-                    _ = stop.cancelled() => return Ok(()),
-                    _ = sender.closed() => return Ok(()),
-                    result = changed.changed() => result.map_err(|_| Status::unavailable("Replica updates stopped"))?,
-                }
-                tokio::select! {
-                    _ = stop.cancelled() => return Ok(()),
-                    _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+                if !wait_for_change(&mut changed, &stop, &sender).await? {
+                    return Ok(());
                 }
             }
         };
         if let Err(error) = work.await {
-            sender.send_replace(DataUpdate::Error(error));
+            completion.finish(error);
         }
     };
     environment.jobs.spawn_on(work, &environment.runtime);
@@ -90,7 +109,7 @@ pub(super) fn start_catalog(
 
 pub(super) fn start_orders(
     environment: &ActorEnvironment,
-    feed: &Arc<QueryFeed>,
+    feed: &QueryFeed,
     orders: OrderbooksHandle,
     selection: super::types::OrdersFeed,
     reader: market_replica::ReplicaReader,
@@ -103,18 +122,17 @@ pub(super) fn start_orders(
     } = selection;
     let sender = feed.sender.clone();
     let stop = feed.stop.clone();
-    let completion = Completion {
-        feed: Arc::downgrade(feed),
-        sender: sender.clone(),
-    };
+    let completion = Completion::new(feed, permit);
     let work = async move {
-        let _completion = completion;
-        let _permit = permit;
+        let mut completion = completion;
         let mut changed = reader.changes();
         let work = async {
             let mut previous: Option<Arc<crate::OrderResult>> = None;
             let mut revision = None;
             loop {
+                if stop.is_cancelled() || sender.is_closed() {
+                    return Ok(());
+                }
                 changed.borrow_and_update();
                 let current = reader.read_revision(&request)?;
                 if revision != Some(current) {
@@ -138,13 +156,42 @@ pub(super) fn start_orders(
                         result: previous.as_ref().expect("range loaded").clone(),
                     });
                 }
-                tokio::select! {_=stop.cancelled()=>return Ok(()),_=sender.closed()=>return Ok(()),result=changed.changed()=>result.map_err(|_|Status::unavailable("Replica updates stopped"))?}
-                tokio::select! {_=stop.cancelled()=>return Ok(()),_=tokio::time::sleep(Duration::from_millis(100))=>{}}
+                if !wait_for_change(&mut changed, &stop, &sender).await? {
+                    return Ok(());
+                }
             }
         };
         if let Err(error) = work.await {
-            sender.send_replace(DataUpdate::Error(error));
+            completion.finish(error);
         }
     };
     environment.jobs.spawn_on(work, &environment.runtime);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn a_panicking_producer_retires_its_feed_and_releases_capacity() {
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = slots.clone().try_acquire_owned().unwrap();
+        let (sender, updates) = watch::channel(DataUpdate::Connecting);
+        let feed = QueryFeed {
+            sender,
+            stop: CancellationToken::new(),
+        };
+        let completion = Completion::new(&feed, permit);
+        assert!(
+            tokio::spawn(async move {
+                let _completion = completion;
+                panic!("simulated producer failure");
+            })
+            .await
+            .unwrap_err()
+            .is_panic()
+        );
+        assert!(!feed.reusable());
+        assert!(matches!(*updates.borrow(), DataUpdate::Error(_)));
+        assert!(slots.try_acquire_owned().is_ok());
+    }
 }

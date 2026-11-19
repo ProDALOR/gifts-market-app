@@ -4,7 +4,7 @@ import { liveSocket } from "../live-socket.ts";
 import { request, ApiFailure } from "../market.ts";
 import type { components } from "../gen/api.ts";
 export type OrderQuery = components["schemas"]["GiftOrderQuery"];
-export type OrderData = components["schemas"]["OrderReadResponse"];
+export type OrderData = components["schemas"]["OrderSnapshotResponse"];
 type Snapshot = components["schemas"]["OrderReadResponse"];
 export type Callbacks = {
   result: (result: OrderData) => void;
@@ -76,8 +76,7 @@ export class LiveRanges implements RangeSource {
     );
   }
   move(query: OrderQuery) {
-    this.clear();
-    liveSocket.update(command(query));
+    if (liveSocket.update(command(query))) this.clear();
   }
   remember(query: OrderQuery) {
     liveSocket.remember(command(query));

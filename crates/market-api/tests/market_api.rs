@@ -580,6 +580,36 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
     assert!(schema["components"]["schemas"].get("SyncStatus").is_none());
     assert!(schema["components"]["schemas"].get("SyncState").is_none());
     assert!(
+        schema["components"]["schemas"]
+            .get("SubscriptionStatus")
+            .is_none()
+    );
+    let snapshot = &schema["components"]["schemas"]["OrderSnapshotResponse"]["properties"];
+    assert!(snapshot.get("data").is_some());
+    assert!(snapshot.get("range").is_some());
+    assert!(snapshot.get("next").is_none());
+    assert!(snapshot.get("snapshot").is_none());
+    fn assert_app_facing(value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(properties) = object.get("properties").and_then(|v| v.as_object()) {
+                    for field in ["sync", "cursor", "revision", "updated_at"] {
+                        assert!(!properties.contains_key(field), "Public field {field}");
+                    }
+                }
+                if let Some(description) = object.get("description").and_then(|v| v.as_str()) {
+                    assert!(!description.contains("replica"), "{description}");
+                }
+                for value in object.values() {
+                    assert_app_facing(value);
+                }
+            }
+            serde_json::Value::Array(values) => values.iter().for_each(assert_app_facing),
+            _ => {}
+        }
+    }
+    assert_app_facing(&schema);
+    assert!(
         schema["paths"]["/orders/query"]["delete"]["responses"]
             .get("503")
             .is_some()
@@ -596,9 +626,9 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|variant| variant.to_string().contains("OrderReadResponse"))
+        .find(|variant| variant.to_string().contains("OrderSnapshotResponse"))
         .unwrap();
-    assert!(frame.to_string().contains("OrderReadResponse"));
+    assert!(frame.to_string().contains("OrderSnapshotResponse"));
 
     for name in [
         "ValuationErrorContext",
@@ -1086,7 +1116,7 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
         .await
         .unwrap();
-    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({"type":"watch_catalog","id":"catalog","collection_ids":["tg.gift.123","missing"]}).to_string().into())).await.unwrap();
+    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({"type":"catalog.watch","id":"catalog","collection_ids":["tg.gift.123","missing"]}).to_string().into())).await.unwrap();
     async fn receive(
         socket: &mut tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -1098,7 +1128,7 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
                     socket.next().await
                 {
                     let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-                    if frame["type"] == "catalog" {
+                    if frame["type"] == "catalog.versions" {
                         return frame["versions"].clone();
                     }
                     assert_ne!(frame["type"], "error", "{frame}");
@@ -1146,7 +1176,7 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
                 socket.next().await
             {
                 let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-                if frame["type"] == "catalog" {
+                if frame["type"] == "catalog.versions" {
                     return frame;
                 }
             }
@@ -2073,7 +2103,9 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
                 let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
                 assert_ne!(frame["type"], "error", "{frame}");
                 if frame["type"] == "orders.snapshot" {
-                    break serde_json::json!({"data":frame["data"],"range":frame["range"],"next":frame["next"]});
+                    assert!(frame.get("next").is_none());
+                    assert!(frame.get("snapshot").is_none());
+                    break serde_json::json!({"data":frame["data"],"range":frame["range"]});
                 }
             }
         }

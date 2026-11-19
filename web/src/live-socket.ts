@@ -69,8 +69,11 @@ export class LiveSocket {
   private operations = new Map<string, Operation>();
   private pending = new Set<Pending>();
   private socket?: WebSocket;
-  private opened = false;
+  private get opened() {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
   private timer?: ReturnType<typeof setTimeout>;
+  private handshake?: ReturnType<typeof setTimeout>;
   private failures = 0;
   private sequence = 0;
   onCommandError?: (
@@ -86,7 +89,6 @@ export class LiveSocket {
     status?: Subscription["status"],
   ) {
     const previous = this.listeners.get(command.id);
-    if (previous) this.release(previous);
     const listener: Subscription = {
       kind: "subscription",
       command,
@@ -95,10 +97,13 @@ export class LiveSocket {
       failures: 0,
     };
     this.listeners.set(command.id, listener);
-    if (this.opened) this.start(listener);
-    else {
-      status?.("Connecting");
-      this.ensureConnected();
+    if (previous) this.release(previous);
+    if (this.listeners.get(command.id) === listener) {
+      if (this.opened) this.start(listener);
+      else {
+        status?.("Connecting");
+        this.ensureConnected();
+      }
     }
     return () => {
       if (this.listeners.get(command.id) !== listener) return;
@@ -113,11 +118,12 @@ export class LiveSocket {
       !listener ||
       JSON.stringify(listener.command) === JSON.stringify(command)
     )
-      return;
+      return false;
     listener.command = command;
     listener.resume = undefined;
     listener.failures = 0;
     this.restart(listener);
+    return true;
   }
   /** Update the query to resume after transport loss without restarting live work. */
   remember(command: SubscriptionCommand) {
@@ -197,13 +203,14 @@ export class LiveSocket {
       return false;
     }
   }
-  private release(listener: Subscription) {
+  private release(listener: Subscription, cancel = true) {
     clearTimeout(listener.retry);
     listener.retry = undefined;
     if (listener.wire) {
-      this.operations.delete(listener.wire);
-      this.send({ type: "cancel", id: listener.wire });
+      const wire = listener.wire;
       listener.wire = undefined;
+      this.operations.delete(wire);
+      if (cancel) this.send({ type: "cancel", id: wire });
     }
   }
   private start(listener: Subscription) {
@@ -218,7 +225,8 @@ export class LiveSocket {
   }
   private restart(listener: Subscription) {
     this.release(listener);
-    if (this.opened) this.start(listener);
+    if (this.listeners.get(listener.command.id) === listener && this.opened)
+      this.start(listener);
   }
   private ensureConnected() {
     if (!this.socket && !this.timer) this.connect();
@@ -230,49 +238,63 @@ export class LiveSocket {
     this.timer = undefined;
     this.failures = 0;
     this.publishStatus("unavailable");
+    this.detach();
+  }
+  private detach() {
+    clearTimeout(this.handshake);
+    this.handshake = undefined;
     const socket = this.socket;
     this.socket = undefined;
-    this.opened = false;
-    if (socket) {
-      socket.onclose = null;
-      socket.close();
-    }
-  }
-  private disconnected(socket: WebSocket) {
-    if (this.socket !== socket) return;
-    this.socket = undefined;
-    this.opened = false;
-    socket.onclose = null;
+    if (!socket) return;
+    socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
     socket.close();
-    this.publishStatus("unavailable");
+  }
+  private disconnected(
+    socket: WebSocket,
+    failure?: Extract<LiveFrame, { type: "error" }>,
+  ) {
+    if (this.socket !== socket) return;
+    this.detach();
+    // Detach old work before notifying callers: callbacks may enqueue new work.
+    const pending = [...this.pending];
+    const listeners = [...this.listeners.values()];
     this.operations.clear();
-    for (const operation of [...this.pending])
-      operation.finish(
-        new ApiFailure(
-          "unavailable",
-          "WebSocket disconnected; retry the request",
-        ),
-      );
-    for (const listener of this.listeners.values()) {
+    for (const listener of listeners) {
       clearTimeout(listener.retry);
       listener.retry = undefined;
       listener.wire = undefined;
-      listener.status?.("Reconnecting");
     }
     if (this.listeners.size || this.statusListeners.size)
       this.timer = setTimeout(
         () => this.connect(),
         retryDelay(this.failures++, this.random),
       );
+    this.publishStatus("unavailable");
+    const error = failure
+      ? new ApiFailure(
+          failure.error.code,
+          failure.error.message,
+          failure.error.details ?? undefined,
+        )
+      : new ApiFailure(
+          "unavailable",
+          "WebSocket disconnected; retry the request",
+        );
+    for (const operation of pending) operation.finish(error);
+    for (const listener of listeners) {
+      if (failure && this.listeners.get(listener.command.id) === listener)
+        listener.frame(failure);
+      if (this.listeners.get(listener.command.id) === listener)
+        listener.status?.("Reconnecting");
+    }
   }
   private connect() {
+    this.timer = undefined;
     if (
-      !this.listeners.size &&
-      !this.pending.size &&
-      !this.statusListeners.size
+      this.socket ||
+      (!this.listeners.size && !this.pending.size && !this.statusListeners.size)
     )
       return;
-    this.timer = undefined;
     let socket: WebSocket;
     try {
       socket = new WebSocket(
@@ -291,12 +313,13 @@ export class LiveSocket {
       return;
     }
     this.socket = socket;
-    this.opened = false;
+    this.handshake = setTimeout(() => this.disconnected(socket), 10000);
     for (const listener of this.listeners.values())
       listener.status?.("Connecting");
     socket.onopen = () => {
       if (this.socket !== socket) return;
-      this.opened = true;
+      clearTimeout(this.handshake);
+      this.handshake = undefined;
       for (const listener of this.listeners.values()) {
         if (this.socket !== socket) return;
         this.start(listener);
@@ -316,6 +339,7 @@ export class LiveSocket {
         return;
       }
       if (value.type === "market.status") {
+        this.failures = 0;
         this.publishStatus(value.status);
         return;
       }
@@ -324,16 +348,7 @@ export class LiveSocket {
         return;
       }
       if (value.type === "error" && !value.id) {
-        for (const listener of this.listeners.values()) listener.frame(value);
-        for (const operation of [...this.pending])
-          operation.finish(
-            new ApiFailure(
-              value.error.code,
-              value.error.message,
-              value.error.details ?? undefined,
-            ),
-          );
-        this.disconnected(socket);
+        this.disconnected(socket, value);
         return;
       }
       const operation = this.operations.get(value.id);
@@ -357,8 +372,8 @@ export class LiveSocket {
       }
       if (
         value.type === "result" ||
-        (value.type === "catalog" &&
-          operation.command.type !== "watch_catalog") ||
+        (value.type === "catalog.versions" &&
+          operation.command.type !== "catalog.watch") ||
         ((value.type === "orders.snapshot" ||
           value.type === "orders.changed") &&
           operation.command.type !== "orders.watch")
@@ -366,9 +381,15 @@ export class LiveSocket {
         this.disconnected(socket);
         return;
       }
-      operation.frame({ ...value, id: operation.command.id });
-      if (this.operations.get(value.id) !== operation) return;
       if (value.type === "error") {
+        this.release(operation, false);
+        operation.frame({ ...value, id: operation.command.id });
+        if (
+          this.listeners.get(operation.command.id) !== operation ||
+          operation.wire !== undefined ||
+          this.socket !== socket
+        )
+          return;
         if (
           [
             "unavailable",
@@ -390,7 +411,9 @@ export class LiveSocket {
             retryDelay(operation.failures++, this.random),
           );
         }
-      } else if (value.type !== "status") {
+      } else {
+        operation.frame({ ...value, id: operation.command.id });
+        if (this.operations.get(value.id) !== operation) return;
         clearTimeout(operation.retry);
         operation.retry = undefined;
         operation.failures = 0;

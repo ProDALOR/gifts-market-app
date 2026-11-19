@@ -55,7 +55,14 @@ export class RangeWatch {
     const sequence = ++this.sequence,
       old = this.previous;
     this.previous = next;
-    if (!old) return { type: "orders.snapshot", id, sequence, ...next };
+    if (!old)
+      return {
+        type: "orders.snapshot",
+        id,
+        sequence,
+        data: next.data,
+        range: next.range,
+      };
     const previous = new Map(old.data.map((row) => [position(row), row])),
       current = new Set(next.data.map(position));
     return {
@@ -71,4 +78,9 @@ export class RangeWatch {
         .map((row) => ({ venue_id: row.book.venue_id, id: row.id })),
     };
   }
+}
+
+export function orderSnapshot(query, rows) {
+  const { data, range } = orderResult(query, rows);
+  return { data, range };
 }

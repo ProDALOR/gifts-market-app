@@ -33,6 +33,7 @@ React.createElement(GiftGrid,{orders:feed.displayOrders,busy:feed.loadingMore,vi
 selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Gift',removed:feed.activity.get(orderKey(selected))?.state==='removed',close:()=>select(undefined)}));}
 const app=createRoot(document.getElementById('fixture'));app.render(React.createElement(App));window.unmount=()=>app.unmount();
 window.renderListing=(order,activity)=>app.render(React.createElement('ul',{className:'gift-grid'},React.createElement(GiftCard,{order,activity,options,collectionName:'Gift',venueName:'MRKT',selected:false,open:()=>{}})));
+window.renderDetails=order=>app.render(React.createElement(OrderDetails,{selected:order,options,names,collectionName:'Gift',close:()=>app.render(null)}));
 window.renderMotionModal=()=>app.render(React.createElement(Modal,{label:'Motion test',heading:'Motion test',className:'valuation-popup',closeLabel:'Close motion test',close:()=>{window.modalCloseCalls=(window.modalCloseCalls||0)+1;app.render(null);}},React.createElement('p',null,'Motion fixture')));
 
 </script></body></html>`;
@@ -308,7 +309,12 @@ try {
   await page.route("**/valuations/gift", () =>
     assert.fail("GUI valuation must use WebSocket"),
   );
+  let connections = 0,
+    activeConnections = 0;
   await page.routeWebSocket("**/ws", (peer) => {
+    connections++;
+    activeConnections++;
+    peer.onClose(() => activeConnections--);
     socket = peer;
     peer.send(JSON.stringify({ type: "market.status", status: "available" }));
     peer.onMessage(async (message) => {
@@ -894,6 +900,38 @@ try {
     .getByRole("button", { name: "Refresh valuation", exact: true })
     .click();
   await page.getByText("About 20% below estimate", { exact: true }).waitFor();
+
+  // A response started before an interruption stays outdated even if it arrives after recovery.
+  mode = "hold";
+  release = undefined;
+  await page
+    .getByRole("button", { name: "Refresh valuation", exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector(".valuation-summary")
+        ?.getAttribute("aria-busy") === "true",
+  );
+  assert.ok(release);
+  const pendingRequests = requests.length;
+  socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
+  await page.getByText("Estimate may be outdated ·", { exact: true }).waitFor();
+  socket.send(JSON.stringify({ type: "market.status", status: "available" }));
+  mode = "success";
+  release();
+  await settled();
+  assert.equal(await page.locator(".price-comparison").count(), 0);
+  assert.equal(
+    requests.length,
+    pendingRequests,
+    "recovery must not duplicate in-flight requests",
+  );
+  await page.getByText("Estimate may be outdated ·", { exact: true }).waitFor();
+  await page
+    .getByRole("button", { name: "Refresh valuation", exact: true })
+    .click();
+  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
   assert.equal(await page.locator(".valuation-breakdown").count(), 0);
   const requestsBeforeDelay = requests.length;
   socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
@@ -991,6 +1029,33 @@ try {
   );
   assert.equal(requests.length, countBeforeCriteria);
   assert.equal(symbolAnimations, 0);
+  // Standalone criteria details have no valuation to keep a status socket alive for.
+  const connectionsBeforeCriteria = connections;
+  await page.evaluate(
+    (order) =>
+      window.renderDetails({
+        ...order,
+        kind: "bid",
+        target: {
+          kind: "criteria",
+          criteria: { models: [], backdrops: [], patterns: [], number: null },
+        },
+      }),
+    b,
+  );
+  await page
+    .getByText("Choose a numbered collectible to see an estimate.", {
+      exact: true,
+    })
+    .waitFor();
+  await page.waitForTimeout(50);
+  assert.equal(connections, connectionsBeforeCriteria);
+  assert.equal(
+    activeConnections,
+    0,
+    "criteria-only details must release status subscriptions",
+  );
+  assert.equal(requests.length, countBeforeCriteria);
   // Retained activity timestamps prevent entry replay after virtualized remounts.
   await page.evaluate(
     (order) =>

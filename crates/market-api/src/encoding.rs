@@ -136,7 +136,7 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
                     &ServerFrame::OrdersSnapshot {
                         id,
                         sequence,
-                        data: OrderReadResponse::latest(&current),
+                        data: (&*current).into(),
                     },
                 )
             }
@@ -183,6 +183,20 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["data"], expected);
+        let snapshot = encoder
+            .encode(OrderEvent::Update {
+                id: "x".into(),
+                previous: None,
+                current: Arc::new(empty()),
+                sequence: 0,
+                reset: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&snapshot).unwrap(),
+            serde_json::json!({"type":"orders.snapshot","id":"x","sequence":0,"data":[],"range":{"start":null,"end":null}})
+        );
         let small = OrderEncoder::new(8);
         assert!(
             small

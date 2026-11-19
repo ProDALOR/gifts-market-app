@@ -38,7 +38,7 @@ function fixture(t: TestContext) {
   let retries = 0;
   const emit = () =>
     callback?.({
-      type: "catalog",
+      type: "catalog.versions",
       id: "catalog",
       versions: {
         directory: directoryVersion,

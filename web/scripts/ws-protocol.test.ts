@@ -46,12 +46,17 @@ test("typed envelopes preserve opaque revisions and exact decimal strings", () =
   for (const frame of [
     result,
     {
-      type: "catalog",
+      type: "catalog.versions",
       id: "op.3",
       versions: { directory: "d", collections: { gift: null } },
     },
     {
       type: "error",
+      id: "",
+      error: { code: "invalid_query", message: "Invalid command" },
+    },
+    {
+      type: "command_error",
       id: "",
       error: { code: "invalid_query", message: "Invalid command" },
     },
@@ -107,15 +112,20 @@ test("range snapshots and atomic changes validate identities, coverage and seque
     type: "orders.snapshot",
     id: "op.1",
     sequence: 0,
-    reset: false,
-    sync,
     data: [row],
-    next: null,
     range: { start: null, end: null },
   };
   assert.deepEqual(parseFrame(JSON.stringify(frame)), frame);
   for (const invalid of [
+    { type: "status", id: "op.1", state: "connecting" },
+    {
+      type: "catalog",
+      id: "op.1",
+      versions: { directory: "old", collections: {} },
+    },
     { ...frame, sequence: -1 },
+    { ...frame, next: null },
+    { ...frame, snapshot: "unused" },
     { ...frame, sequence: Number.MAX_SAFE_INTEGER + 1 },
     { ...frame, data: [row, row] },
     { ...frame, data: [{ ...row, key: "" }] },
@@ -131,11 +141,8 @@ test("range snapshots and atomic changes validate identities, coverage and seque
     type: "orders.changed",
     id: "op.1",
     sequence: 1,
-    base_sequence: 0,
     upserts: [row],
     removed: [],
-    sync,
-    revision: "r2",
   };
   assert.deepEqual(parseFrame(JSON.stringify(change)), change);
   for (const invalid of [

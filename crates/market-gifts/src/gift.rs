@@ -207,7 +207,7 @@ impl utoipa::PartialSchema for GiftSlug {
 #[cfg(feature = "schema")]
 impl utoipa::ToSchema for GiftSlug {}
 
-/// Resolve synchronized gift facts by a public slug or stable catalog identity.
+/// Resolve available gift facts by a public slug or stable catalog identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

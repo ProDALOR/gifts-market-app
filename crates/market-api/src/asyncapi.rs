@@ -105,7 +105,9 @@ fn references(value: &Value, pending: &mut Vec<String>) {
 fn summary(name: &str) -> &'static str {
     match name {
         "request" => "Run one typed API request. One result or error completes the operation.",
-        "command_error" => "Rejected command; the existing operation continues unchanged.",
+        "command_error" => {
+            "Rejected command; active operations continue unchanged. ID is empty when the command has no valid identity."
+        }
         "result" => "Typed request result; valuation uses the same response as HTTP.",
         "cancel" => "Cancel a pending request or subscription. No acknowledgement is sent.",
         "orders.watch" => "Watch a fixed ordered range with an atomic initial snapshot.",
@@ -113,13 +115,12 @@ fn summary(name: &str) -> &'static str {
         "orders.changed" => {
             "Apply removals and upserts atomically after checking sequence continuity."
         }
-        "watch_catalog" => {
+        "catalog.watch" => {
             "Watch catalog content revisions for up to eight collections, without polling."
         }
-        "catalog" => {
+        "catalog.versions" => {
             "Current catalog content revisions. Compare with HTTP ETags to revalidate changed entries."
         }
-        "status" => "The subscription is connecting.",
         "market.status" => {
             "Market availability: available, delayed or unavailable, independent of query lifetimes."
         }
@@ -178,14 +179,12 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         "orders.snapshot" => serde_json::to_value(ServerFrame::OrdersSnapshot {
             id: "orders.1".into(),
             sequence: 0,
-            data: OrderReadResponse {
+            data: OrderSnapshotResponse {
                 data: vec![],
                 range: crate::orders::OrderRangeResponse {
                     start: None,
                     end: None,
                 },
-                next: None,
-                snapshot: None,
             },
         })?,
         "orders.changed" => serde_json::to_value(ServerFrame::OrdersChanged {
@@ -194,11 +193,11 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             upserts: vec![],
             removed: vec![],
         })?,
-        "watch_catalog" => serde_json::to_value(Command::WatchCatalog {
+        "catalog.watch" => serde_json::to_value(Command::WatchCatalog {
             id: "catalog".into(),
             collection_ids: vec!["tg.gift.123".into()],
         })?,
-        "catalog" => serde_json::to_value(ServerFrame::Catalog {
+        "catalog.versions" => serde_json::to_value(ServerFrame::Catalog {
             id: "catalog".into(),
             versions: CatalogVersions {
                 directory: "opaque-directory-content-revision".into(),
@@ -208,10 +207,6 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
                 )]
                 .into(),
             },
-        })?,
-        "status" => serde_json::to_value(ServerFrame::Status {
-            id: "offers".into(),
-            state: SubscriptionStatus::Connecting,
         })?,
         "market.status" => serde_json::to_value(ServerFrame::MarketStatus {
             status: MarketStatus::Available,
@@ -250,7 +245,7 @@ mod tests {
         assert!(refs.iter().all(|name| names.contains(name)));
         assert!(!names.contains("GiftCatalog"));
         assert!(!names.contains("Session"));
-        for command in ["watch_catalog", "orders.watch", "request", "cancel"] {
+        for command in ["catalog.watch", "orders.watch", "request", "cancel"] {
             serde_json::from_value::<Command>(
                 spec["components"]["messages"][command]["examples"][0]["payload"].clone(),
             )
@@ -268,7 +263,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            8
+            7
         );
     }
 }

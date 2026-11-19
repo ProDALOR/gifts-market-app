@@ -1,9 +1,10 @@
 import { useSyncExternalStore } from "react";
 import { liveSocket } from "./live-socket.ts";
 const subscribe = (notify: () => void) => liveSocket.watchStatus(notify);
-export const useMarketStatus = () =>
+const inactive = () => () => {};
+export const useMarketStatus = (enabled = true) =>
   useSyncExternalStore(
-    subscribe,
+    enabled ? subscribe : inactive,
     liveSocket.statusSnapshot,
     liveSocket.statusSnapshot,
   );
