@@ -3,6 +3,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import type { TraitFilters, TraitKey } from "../market";
 import { traits } from "../orderbook";
 import type { CatalogOption, Collection } from "../orderbook";
+import { GiftArtwork } from "../previews/gift-artwork";
 function OptionArt({ option }: { option: CatalogOption }) {
   if (option.kind === "backdrop") {
     const colors = option.palette;
@@ -22,15 +23,14 @@ function OptionArt({ option }: { option: CatalogOption }) {
   return (
     <span
       className={`option-art${option.kind === "pattern" ? " symbol-thumb" : ""}`}
+      aria-hidden="true"
     >
-      <img
-        alt=""
-        loading="lazy"
-        decoding="async"
-        src={option.media?.thumbnail_url}
-        onError={(event) => {
-          event.currentTarget.style.visibility = "hidden";
-        }}
+      <GiftArtwork
+        media={option.media || undefined}
+        fallback=""
+        label={option.name}
+        playback="static"
+        placeholderKind={option.kind === "pattern" ? "symbol" : "gift"}
       />
     </span>
   );

@@ -11,9 +11,9 @@ import { VenueIcon } from "./ui/icons";
 import { OrderDetails } from "./orderbook/order-details";
 import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
-import { CurrencyPicker } from "./ui/pickers";
-import { SortPicker } from "./ui/pickers";
+import { CurrencyPicker, SortPicker } from "./ui/pickers";
 import { ScrollLoader } from "./orderbook/scroll-loader";
+import { BrandMark } from "./brand/brand-mark";
 import { initializeTelegram, launchSelection } from "./telegram";
 import type { TelegramContext } from "./telegram";
 import { useTelegram, useTelegramBack, TelegramAccount } from "./telegram-ui";
@@ -85,8 +85,7 @@ function App({ context }: { context: TelegramContext }) {
   const telegram = useTelegram(context);
   const [accountOpen, setAccountOpen] = useState(false);
   const [choice, setChoice] = useState(() => saved(context)),
-    [refresh, setRefresh] = useState(0),
-    [paused, setPaused] = useState(false),
+    [reloadKey, setReloadKey] = useState(0),
     [selected, setSelected] = useState<Order>(),
     [openTrait, setOpenTrait] = useState<TraitKey>();
   const {
@@ -100,7 +99,7 @@ function App({ context }: { context: TelegramContext }) {
     optionsError,
     retryOptions,
     retryCatalog,
-  } = useCatalog(refresh, choice.collection);
+  } = useCatalog(reloadKey, choice.collection);
   useBackgroundPlaybackSuspension(!!selected || accountOpen);
   useEffect(() => {
     if (!directory[0]) return;
@@ -190,7 +189,7 @@ function App({ context }: { context: TelegramContext }) {
     hasMore,
     loadMore,
     setVisibleRange,
-  } = useOrderFeed(query, paused, refresh);
+  } = useOrderFeed(query, false, reloadKey);
   useEffect(
     () =>
       setSelected((current) =>
@@ -276,10 +275,15 @@ function App({ context }: { context: TelegramContext }) {
           data-scroll-container
         >
           <div className="sidebar-heading">
-            <a className="brand" href="/">
-              IGIFTS
-            </a>
-            <span>Market</span>
+            <BrandMark animated />
+            <CurrencyPicker
+              currencies={currencies}
+              value={choice.currency}
+              change={(currency) => {
+                if (currency !== choice.currency)
+                  set({ ...choice, currency, venue: "", min: "", max: "" });
+              }}
+            />
           </div>
           <header className="account-bar">
             <TelegramAccount
@@ -302,7 +306,7 @@ function App({ context }: { context: TelegramContext }) {
                 onClick={() => {
                   if (optionsError) retryOptions();
                   else if (startupError) retryCatalog();
-                  else setRefresh((v) => v + 1);
+                  else setReloadKey((v) => v + 1);
                 }}
               >
                 Reload
@@ -352,14 +356,6 @@ function App({ context }: { context: TelegramContext }) {
                 </button>
               ))}
             </div>
-            <CurrencyPicker
-              currencies={currencies}
-              value={choice.currency}
-              change={(currency) => {
-                if (currency !== choice.currency)
-                  set({ ...choice, currency, venue: "", min: "", max: "" });
-              }}
-            />
           </div>
           {(choice.min || choice.max || choice.from || choice.until) && (
             <div className="selection-note">
@@ -428,21 +424,6 @@ function App({ context }: { context: TelegramContext }) {
                 {choice.sort.endsWith("_asc") ? "↑" : "↓"}
               </button>
             </div>
-          </div>
-          <div className="feed-actions">
-            {choice.mode !== "executed" && (
-              <button onClick={() => setPaused((value) => !value)}>
-                {paused ? "▶ Resume" : "Ⅱ Pause"}
-              </button>
-            )}
-            <button
-              aria-label="Refresh market"
-              onClick={() => {
-                setRefresh((value) => value + 1);
-              }}
-            >
-              ↻
-            </button>
           </div>
         </aside>
         <div className="market-results">
@@ -514,9 +495,7 @@ function App({ context }: { context: TelegramContext }) {
             />
           </section>
           <footer className="app-footer">
-            <a className="brand" href="/" aria-label="IGIFTS home">
-              IGIFTS
-            </a>
+            <BrandMark />
             <span>Every venue. One view.</span>
             <a
               className="api-link"

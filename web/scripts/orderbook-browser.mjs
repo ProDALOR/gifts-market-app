@@ -74,7 +74,6 @@ const venues = ["Telegram", "Portals", "MRKT"].map((name) => ({
   id: name.toLowerCase(),
   name,
 }));
-let revision = 0;
 function result(query, executed = query.source === "history") {
   const filters = query.filters;
   const mode = executed ? "executed" : query.source === "bids" ? "bid" : "ask";
@@ -93,9 +92,7 @@ function result(query, executed = query.source === "history") {
         filters.currency_id === "XTR"
           ? String(850 + index)
           : index === 0
-            ? revision
-              ? "0.250000001"
-              : "0.500000001"
+            ? "0.500000001"
             : index === 59
               ? "10000000000000000.000000001"
               : String(index + 10),
@@ -700,12 +697,8 @@ try {
     0,
     "Completed books remove the scroll sentinel and its end label",
   );
-  await button("Ⅱ Pause").click();
-  await page.getByText("Paused", { exact: true }).waitFor();
-  await cards(125);
-  await button("▶ Resume").click();
-  await page.getByText("Live", { exact: true }).waitFor();
-  await cards(125);
+  assert.equal(await button("Ⅱ Pause").count(), 0);
+  assert.equal(await button("Refresh market").count(), 0);
   await button("Search collections").click();
   await page.getByLabel("Filter collections").fill("pepe");
   assert.equal(await page.locator(".collection-tile").count(), 1);
@@ -853,13 +846,29 @@ try {
     await sidebar
       .getByRole("button", { name: "Refresh market", exact: true })
       .count(),
-    1,
+    0,
   );
   assert.equal(
     await sidebar
       .getByRole("combobox", { name: "Sort by", exact: true })
       .count(),
     1,
+  );
+  assert.equal(
+    await page.getByRole("combobox", { name: "Currency", exact: true }).count(),
+    1,
+  );
+  assert.equal(
+    await sidebar.locator('.sidebar-heading [role="combobox"]').count(),
+    1,
+  );
+  assert.equal(await sidebar.getByText("Market", { exact: true }).count(), 0);
+  assert.equal(await sidebar.locator(".feed-actions").count(), 0);
+  assert.equal(
+    await sidebar
+      .locator(".collection-list")
+      .evaluate((element) => getComputedStyle(element).flexDirection),
+    "column",
   );
   await page.evaluate(() => window.scrollTo(0, 350));
   assert.ok(
@@ -928,19 +937,6 @@ try {
   );
   await currency("GRAM");
   await price("0.500000001");
-  await button("Ⅱ Pause").click();
-  await page.getByText("Paused", { exact: true }).waitFor();
-  revision = 1;
-  for (const { socket, query, id } of connections)
-    socket.send(
-      JSON.stringify({
-        type: "sync",
-        id,
-      }),
-    );
-  await price("0.500000001");
-  await button("▶ Resume").click();
-  await price("0.250000001");
   await button("Bids").click();
   await cards(4);
   await price("13");
@@ -1025,7 +1021,7 @@ try {
   await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
-  await price("0.250000001");
+  await price("0.500000001");
   assert.equal(new URL(page.url()).searchParams.get("sort"), "price_asc");
   const opener = page.locator(".card-open").first();
   await opener.click();

@@ -1,0 +1,16 @@
+.brand {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.brand .gift-preview {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.app-footer .brand .gift-preview {
+  width: 26px;
+  height: 26px;
+}

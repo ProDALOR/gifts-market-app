@@ -21,11 +21,14 @@
   min-width: 0;
 }
 .sidebar-heading {
-  display: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: var(--control-gap);
 }
-.market-sidebar > .feed-actions {
-  justify-content: flex-end;
-  margin-top: 4px;
+.sidebar-heading .brand {
+  font-size: 15px;
 }
 .market-results {
   display: flex;
@@ -360,21 +363,6 @@
 
 .orderbook > * {
   flex-shrink: 0;
-}
-
-.feed-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 5px;
-}
-.feed-actions button {
-  font-size: 10px;
-  padding: 2px 5px;
-  color: var(--muted);
-  min-height: 28px;
-}
-.feed-actions button[aria-label] {
-  font-size: 18px;
 }
 
 @property --clock-angle {

@@ -40,6 +40,7 @@ export const CollectionRail = memo(function CollectionRail({
     if (!context) return;
     const fit = () => {
       const styles = getComputedStyle(label);
+      if (styles.whiteSpace === "nowrap") return;
       const words = (label.textContent || "").trim().split(/\s+/);
       const width = label.clientWidth;
       let fitted = 11;
@@ -72,6 +73,22 @@ export const CollectionRail = memo(function CollectionRail({
     (instant = false) => {
       if (rail.current && selectedButton.current) {
         const styles = getComputedStyle(rail.current);
+        if (styles.flexDirection === "column") {
+          const viewport = rail.current.getBoundingClientRect();
+          const selected = selectedButton.current.getBoundingClientRect();
+          const offset =
+            selected.top < viewport.top
+              ? selected.top - viewport.top
+              : selected.bottom > viewport.bottom
+                ? selected.bottom - viewport.bottom
+                : 0;
+          rail.current.scrollTo({
+            left: 0,
+            top: rail.current.scrollTop + offset,
+            behavior: reducedMotion || instant ? "instant" : "smooth",
+          });
+          return;
+        }
         const precedingSlot =
           parseFloat(styles.getPropertyValue("--collection-tile-size")) +
           parseFloat(styles.columnGap);
@@ -92,7 +109,7 @@ export const CollectionRail = memo(function CollectionRail({
   );
   useEffect(() => {
     if (searching) {
-      rail.current?.scrollTo({ left: 0 });
+      rail.current?.scrollTo({ left: 0, top: 0 });
       input.current?.focus();
       initial.current = true;
     } else {
@@ -103,10 +120,13 @@ export const CollectionRail = memo(function CollectionRail({
   useEffect(() => {
     const element = host.current;
     if (!element || searching) return;
-    let width = element.clientWidth;
+    let width = element.clientWidth,
+      height = element.clientHeight;
     return observePreviewSize(element, () => {
-      if (width === element.clientWidth) return;
+      if (width === element.clientWidth && height === element.clientHeight)
+        return;
       width = element.clientWidth;
+      height = element.clientHeight;
       alignSelected(true);
     });
   }, [searching, alignSelected]);

@@ -251,17 +251,8 @@ try {
   await page.route("**/media/**", async (route) => {
     const url = route.request().url();
     mediaRequests.push(new URL(url).pathname + new URL(url).search);
-    if (url.includes("/loading-") && url.endsWith("/placeholder")) {
-      if (url.includes("/loading-missing/"))
-        await route.fulfill({ status: 404, body: "No outline" });
-      else
-        await route.fulfill({
-          contentType: "image/svg+xml",
-          headers: { "Cache-Control": "public,max-age=86400" },
-          body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#fff" d="M128,128L384,128L384,384L128,384z"/></svg>',
-        });
-      return;
-    }
+    if (url.endsWith("/placeholder"))
+      assert.fail("GUI placeholders must not fetch model outlines");
     if (
       url.includes("/loading-") &&
       url.endsWith("/thumbnail") &&
@@ -658,10 +649,15 @@ try {
     true,
     "Desktop reflow retains collection artwork and its player",
   );
+  assert.ok(
+    animations <= beforeDesktop + 6,
+    "Desktop rows keep autoplay downloads bounded",
+  );
   assert.equal(
-    animations,
-    beforeDesktop,
-    "Resizing reuses downloaded animation data",
+    mediaRequests.filter((url) => url === "/media/models/rail-123/animation")
+      .length,
+    1,
+    "The selected collection reuses its cached animation",
   );
   await page.waitForFunction(() => {
     const tile = document.querySelector(
@@ -670,44 +666,63 @@ try {
     const list = tile.parentElement.getBoundingClientRect();
     const bounds = tile.getBoundingClientRect();
     return (
-      Math.abs(bounds.left - list.left - 67) < 1 &&
+      bounds.top >= list.top - 1 &&
+      bounds.bottom <= list.bottom + 1 &&
+      bounds.left >= list.left &&
       bounds.right <= list.right + 1
     );
   });
+  const listScroll = await page
+    .locator(".collection-list")
+    .evaluate((list) => list.scrollTop);
+  await page.getByRole("button", { name: "Rail 122", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Intelligence Cup", exact: true })
+    .click();
+  assert.equal(
+    await page.locator(".collection-list").evaluate((list) => list.scrollTop),
+    listScroll,
+    "Choosing visible desktop rows does not jump the collection list",
+  );
   await page.evaluate(() => window.renameRail("Artisan Brick"));
   await page.waitForFunction(
     () =>
-      parseFloat(
-        getComputedStyle(
-          document.querySelector('.collection-tile[aria-pressed="true"] b'),
-        ).fontSize,
-      ) === 16,
+      document.querySelector('.collection-tile[aria-pressed="true"] b')
+        .textContent === "Artisan Brick",
+  );
+  assert.equal(
+    await selectedTile
+      .locator("b")
+      .evaluate((label) => getComputedStyle(label).fontSize),
+    "13px",
   );
   await page
     .getByRole("button", { name: "Search collections", exact: true })
     .click();
   await page.getByLabel("Filter collections").fill("Artisan");
-  await page.waitForFunction(
-    () =>
-      getComputedStyle(
-        document.querySelector('.collection-tile[aria-pressed="true"] b'),
-      ).width === "56px",
+  assert.equal(await page.locator(".collection-tile").count(), 1);
+  assert.ok(
+    await selectedTile
+      .locator("b")
+      .evaluate(
+        (label) =>
+          label.getBoundingClientRect().right <=
+          label.parentElement.getBoundingClientRect().right,
+      ),
   );
   await page.waitForFunction(() => {
     const canvas = document.querySelector(
       '.collection-tile[aria-pressed="true"] canvas',
     );
-    return canvas && canvas.width === 32 * Math.min(devicePixelRatio, 2);
+    return canvas && canvas.width === 34 * Math.min(devicePixelRatio, 2);
   });
   await page.getByLabel("Filter collections").press("Escape");
-  await page.waitForFunction(() => {
-    const canvas = document.querySelector(
-      '.collection-tile[aria-pressed="true"] canvas',
-    );
-    return canvas && canvas.width === 55 * Math.min(devicePixelRatio, 2);
-  });
+  await page.waitForFunction(
+    () => document.querySelectorAll(".collection-tile").length === 124,
+  );
   await page.setViewportSize({ width: 1024, height: 400 });
   const sidebar = page.locator(".market-sidebar");
+  const sidebarPageY = await page.evaluate(() => window.scrollY);
   await sidebar.evaluate((node) => {
     node.scrollTop = 400;
   });
@@ -750,10 +765,11 @@ try {
   assert.equal(await menu.evaluate((node) => node === window.sortMenu), true);
   assert.equal(
     await page.evaluate(() => window.scrollY),
-    0,
+    sidebarPageY,
     "Sidebar menus never scroll listings",
   );
   await page.setViewportSize({ width: 960, height: 320 });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
   assert.equal(
     await menuContained(),
     true,
@@ -765,7 +781,7 @@ try {
   await menu.waitFor({ state: "detached" });
   assert.equal(
     await page.evaluate(() => window.scrollY),
-    0,
+    sidebarPageY,
     "A clipped trigger closes its menu without moving listings",
   );
   await sidebar.evaluate((node) => {
@@ -1056,10 +1072,10 @@ try {
     window.scrollTo(0, 0);
     window.mountLoading("slow");
   });
-  await page.locator(".gift-model-placeholder").waitFor();
+  await page.locator(".gift-placeholder-gift").waitFor();
   assert.ok(
     await page
-      .locator(".gift-model-placeholder clipPath path")
+      .locator(".gift-placeholder-gift clipPath path")
       .getAttribute("d"),
   );
   assert.equal(
@@ -1084,7 +1100,7 @@ try {
   loadingStills.splice(0).forEach((release) => release());
   await page.locator(".loading-test img.loaded").waitFor();
   assert.equal(
-    await page.locator(".gift-model-placeholder").count(),
+    await page.locator(".gift-placeholder-gift").count(),
     0,
     "Loaded stills remove the shimmer",
   );
@@ -1103,15 +1119,15 @@ try {
   );
   await page.waitForTimeout(250);
   assert.equal(
-    await page.locator(".gift-model-placeholder").count(),
-    0,
-    "Absent outlines keep the local silhouette",
+    await page.locator(".gift-placeholder-gift").count(),
+    1,
+    "Unavailable images keep the local silhouette",
   );
   assert.equal(
     mediaRequests.filter((url) => url.includes("/loading-missing/placeholder"))
       .length,
-    1,
-    "Missing outlines are not repeatedly requested",
+    0,
+    "Local placeholders never request outlines",
   );
   loadingStills.splice(0).forEach((release) => release());
   await page.locator(".loading-test img.loaded").waitFor();

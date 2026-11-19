@@ -2,9 +2,9 @@
 
 ## Decision
 
-Keep Telegram's cached **WebP thumbnails for small static previews**. Enlarged artwork and details use **cached Rust-generated first-frame SVGs** as ordinary images. Instantiate Lottie only for TGS playback; enlarged playback uses SVG. Reduced motion keeps static images and creates no player. SVG failures fall back to the original thumbnail.
+Model stills now use **cached Rust-generated first-frame SVGs** as ordinary images at every size, including listing cards and collection rows. Telegram thumbnails remain the fallback if an SVG is unavailable. Instantiate Lottie only for TGS playback; enlarged playback uses SVG. Reduced motion keeps static images and creates no player.
 
-The [SVG quality gate](native-svg-validation.md) now passes all 43 gifts. `market-media` generates and persists SVGs on demand from the existing TGS cache with bounded, coalesced Rust jobs. The API serves a catalog-scoped preview URL with compression and conditional caching. No generated media is committed. The measurements below describe the original browser-export comparison; Rust-export size and quality results are recorded separately.
+The [SVG quality gate](native-svg-validation.md) now passes all 43 gifts. `market-media` generates and persists SVGs on demand from the existing TGS cache with bounded, coalesced Rust jobs. The API serves a catalog-scoped preview URL with compression and conditional caching. Runtime gift media is not committed; the fixed Liberty Figure branding assets are bundled separately. The measurements below describe the original browser-export comparison; Rust-export size and quality results are recorded separately.
 
 ## Method
 
@@ -47,7 +47,7 @@ The machine-specific results and exact source SHA-256 hashes are saved in `.mark
 
 SVG preserves scalable contours and fine details. The generated 512px WebP also looks considerably clearer than the existing thumbnail at 160 CSS pixels and at high device pixel ratios, at a higher transfer cost. The 256px export is a useful middle ground, but still costs an additional TGS download and conversion on a cache miss.
 
-The current 128px WebP is suitable for the common 48px grid image at 2× device pixel ratio. It becomes visibly softer when enlarged; CSS cannot recover that detail. The initial grid-only choice did not address this larger preview requirement. The application now uses a size-dependent policy: small cards keep their native images; large artwork loads a generated SVG image when static and uses Lottie SVG only during playback. The 100-image SVG stress result supports keeping this treatment scoped to enlarged views instead of putting a paused player on every small card.
+The original 128px WebP is suitable for the common 48px grid image at 2× device pixel ratio, but becomes visibly softer when enlarged. The GUI now prefers server-cached SVG images for all model stills, keeping static rendering in native images. The measurements above remain the original comparison, rather than a new benchmark of that policy. Lottie is still instantiated only for actual playback, sharing its existing download and playback budgets.
 
 All 43 sampled first frames contain visible artwork. That does not guarantee frame zero is a suitable poster for every future gift. Telegram's thumbnail remains the fallback for derived previews.
 

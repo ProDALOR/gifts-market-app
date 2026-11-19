@@ -15,7 +15,7 @@ function retryAfter(response: Response): number | undefined {
     : (Date.parse(value) - Date.now()) / 1000;
   return Number.isFinite(seconds) ? Math.max(1, seconds) * 1000 : undefined;
 }
-type MediaType = "image" | "tgs" | "placeholder";
+type MediaType = "image" | "tgs";
 /** Limit active HTTP transfers. Backoff never holds a transfer slot. */
 const downloads = new TaskQueue(4);
 export async function fetchMedia(
@@ -57,25 +57,17 @@ async function download(url: string, signal: AbortSignal, kind: MediaType) {
   }
   const type = response.headers.get("Content-Type")?.split(";")[0];
   if (
-    (kind === "placeholder" && !type) ||
-    (type &&
-      !(kind === "tgs"
-        ? type === "application/x-tgsticker"
-        : kind === "placeholder"
-          ? type === "image/svg+xml"
-          : ["image/png", "image/jpeg", "image/webp", "image/svg+xml"].includes(
-              type,
-            )))
+    type &&
+    !(kind === "tgs"
+      ? ["application/x-tgsticker", "application/octet-stream"].includes(type)
+      : ["image/png", "image/jpeg", "image/webp", "image/svg+xml"].includes(
+          type,
+        ))
   ) {
     await response.body?.cancel().catch(() => {});
     throw new Error("Invalid media type");
   }
-  const limit =
-    kind === "placeholder"
-      ? 8 * 1024
-      : type === "image/svg+xml"
-        ? 1024 * 1024
-        : 256 * 1024;
+  const limit = type === "image/svg+xml" ? 1024 * 1024 : 256 * 1024;
   if (
     Number(response.headers.get("Content-Length")) > limit ||
     !response.body

@@ -51,6 +51,9 @@ export function OrderAttributes({
                             : value[0] || "◇"
                         }
                         playback="static"
+                        placeholderKind={
+                          visual.kind === "pattern" ? "symbol" : "gift"
+                        }
                       />
                     </span>
                   )}

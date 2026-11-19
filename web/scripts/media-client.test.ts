@@ -144,7 +144,7 @@ test("background retry delays release transfer slots for interactive media and c
     const url = String(input);
     const count = (calls.get(url) ?? 0) + 1;
     calls.set(url, count);
-    return url.startsWith("/outline/") && count === 1
+    return url.startsWith("/background/") && count === 1
       ? new Response(null, { status: 503, headers: { "Retry-After": "1" } })
       : new Response("ok", {
           headers: {
@@ -157,7 +157,7 @@ test("background retry delays release transfer slots for interactive media and c
   });
   const stops = Array.from({ length: 4 }, () => new AbortController());
   const background = stops.map((stop, i) =>
-    fetchMedia(`/outline/${i}`, stop.signal, "placeholder", -10),
+    fetchMedia(`/background/${i}`, stop.signal, "image", -10),
   );
   await flush();
   assert.equal(calls.size, 4);
@@ -172,8 +172,8 @@ test("background retry delays release transfer slots for interactive media and c
   await cancelled;
   t.mock.timers.tick(1000);
   await Promise.all(background.slice(1));
-  assert.equal(calls.get("/outline/0"), 1);
-  assert.equal(calls.get("/outline/1"), 2);
+  assert.equal(calls.get("/background/0"), 1);
+  assert.equal(calls.get("/background/1"), 2);
 });
 
 test("SVG recovery accepts the preview budget and keeps other image limits", async (t) => {
@@ -200,33 +200,26 @@ test("SVG recovery accepts the preview budget and keeps other image limits", asy
   await assert.rejects(fetchMedia("/preview", signal(), "image"));
 });
 
-test("placeholder downloads accept only small SVGs", async (t) => {
-  for (const response of [
-    new Response("mask"),
-    new Response("mask", { headers: { "Content-Type": "image/png" } }),
-    new Response(new Uint8Array(8193), {
-      headers: { "Content-Type": "image/svg+xml" },
-    }),
-  ]) {
-    t.mock.method(globalThis, "fetch", async () => response);
-    await assert.rejects(
-      fetchMedia("/media/models/model/placeholder", signal(), "placeholder"),
+test("bundled TGS downloads accept static-file MIME without accepting unrelated types", async (t) => {
+  for (const type of ["application/x-tgsticker", "application/octet-stream"]) {
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async () =>
+        new Response(new Uint8Array([1, 2]), {
+          headers: { "Content-Type": type },
+        }),
+    );
+    assert.equal(
+      (await fetchMedia("/assets/brand.tgs", signal(), "tgs")).length,
+      2,
     );
   }
   t.mock.method(
     globalThis,
     "fetch",
     async () =>
-      new Response("mask", { headers: { "Content-Type": "image/svg+xml" } }),
+      new Response("html", { headers: { "Content-Type": "text/html" } }),
   );
-  assert.equal(
-    new TextDecoder().decode(
-      await fetchMedia(
-        "/media/models/model/placeholder",
-        signal(),
-        "placeholder",
-      ),
-    ),
-    "mask",
-  );
+  await assert.rejects(fetchMedia("/assets/brand.tgs", signal(), "tgs"));
 });

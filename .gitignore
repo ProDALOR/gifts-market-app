@@ -28,6 +28,8 @@ __pycache__/
 # Runtime thumbnail payloads and incomplete cache writes.
 **/*.thumb
 **/*.tgs
+# Fixed UI branding is bundled; downloaded market media stays ignored.
+!/web/src/brand/liberty-figure.tgs
 **/*.part
 
 # Local browser verification artifacts.

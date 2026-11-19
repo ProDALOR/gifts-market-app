@@ -12,9 +12,11 @@
     padding: max(24px, var(--tg-safe-top, 0px)) 24px 24px;
   }
   .market-sidebar {
+    display: flex;
+    flex-direction: column;
     position: sticky;
     top: max(20px, var(--tg-safe-top, 0px));
-    max-height: calc(100dvh - max(20px, var(--tg-safe-top, 0px)) - 20px);
+    height: calc(100dvh - max(20px, var(--tg-safe-top, 0px)) - 20px);
     overflow: auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
@@ -24,29 +26,122 @@
     border-radius: 18px;
     background: var(--paper);
   }
+  .market-sidebar > * {
+    flex-shrink: 0;
+  }
   .sidebar-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 22px;
+    margin-bottom: 16px;
   }
   .sidebar-heading .brand {
     font-size: 17px;
     letter-spacing: 1.5px;
   }
-  .sidebar-heading > span {
-    color: var(--muted);
-    font-size: 11px;
-  }
   .market-sidebar .collection-rail {
-    --collection-selected-width: 138px;
-    --collection-label-width: 72px;
+    flex: 1;
+    flex-direction: column;
+    align-items: stretch;
+    min-height: 160px;
+    gap: 8px;
     margin-bottom: 16px;
   }
-  .market-sidebar .pick-trigger {
-    padding-inline: 7px;
+  .market-sidebar .search-tile {
+    width: 100%;
+    height: 36px;
+    border-radius: 9px;
+  }
+  .market-sidebar .search-toggle {
+    display: flex;
+    justify-content: flex-start;
+    gap: 8px;
+    padding-inline: 10px;
+  }
+  .market-sidebar .search-toggle::after {
+    content: "Search collections";
     font-size: 12px;
+  }
+  .market-sidebar .search-icon {
+    width: 17px;
+    height: 17px;
+    flex: none;
+  }
+  .market-sidebar .search-tile.open .search-toggle {
+    width: 18px;
+    padding: 0;
+  }
+  .market-sidebar .search-tile.open .search-toggle::after {
+    content: none;
+  }
+  .market-sidebar .collection-list {
+    flex-direction: column;
     gap: 4px;
+    overflow: hidden auto;
+    overscroll-behavior: contain;
+    scroll-snap-type: none;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+    border-radius: 9px;
+    padding: 2px;
+  }
+  .market-sidebar .collection-list::-webkit-scrollbar {
+    display: initial;
+    width: 4px;
+  }
+  .market-sidebar .collection-list::after {
+    content: none;
+  }
+  .market-sidebar .collection-tile {
+    width: 100%;
+    height: 44px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    transition:
+      background 160ms ease-out,
+      border-color 160ms ease-out;
+    scroll-snap-align: none;
+  }
+  .market-sidebar .collection-tile[aria-pressed="true"] {
+    border-color: var(--accent-line);
+    background: var(--tint);
+    color: var(--accent);
+  }
+  .market-sidebar .collection-tile:focus-visible {
+    outline-offset: -2px;
+  }
+  .market-sidebar .collection-tile:hover {
+    background: var(--surface);
+  }
+  .market-sidebar .collection-art {
+    left: 6px;
+    top: 4px;
+    width: 34px;
+    height: 34px;
+  }
+  .market-sidebar .collection-tile b {
+    left: 50px;
+    top: 50%;
+    width: calc(100% - 62px);
+    max-width: none;
+    max-height: none;
+    text-align: left;
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 550;
+    opacity: 1;
+    transform: translateY(-50%);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: none;
+  }
+  .market-sidebar .pickers {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .market-sidebar .pick-trigger {
+    height: 36px;
+    font-size: 12px;
+    padding-inline: 10px;
   }
   .market-sidebar .market-controls {
     margin-top: 16px;
@@ -63,21 +158,6 @@
   }
   .market-sidebar .venue {
     flex: 1;
-  }
-  .market-sidebar > .feed-actions {
-    border-top: 1px solid var(--line);
-    padding-top: 10px;
-    margin-top: 16px;
-  }
-  .market-sidebar > .feed-actions button {
-    min-height: 32px;
-    padding: 4px 8px;
-    border-radius: 7px;
-    background: var(--surface);
-    font-size: 11px;
-  }
-  .market-sidebar > .feed-actions button[aria-label] {
-    font-size: 19px;
   }
   .market-heading {
     position: static;

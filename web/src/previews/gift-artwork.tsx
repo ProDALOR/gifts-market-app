@@ -30,19 +30,18 @@ type ArtworkProps = {
   size?: "small" | "large";
   playback?: PlaybackPolicy;
   className?: string;
+  placeholderKind?: "gift" | "symbol";
   children?: ReactNode;
 };
 
-/** Media identity owns thumbnail failures, hover state and renderer lifetime for every caller. */
+/** Media identity owns image failures, hover state and renderer lifetime for every caller. */
 export const GiftArtwork = memo(function GiftArtwork(props: ArtworkProps) {
   return (
     <Artwork
       key={JSON.stringify([
         props.media?.thumbnail_url,
         props.media?.animation_url,
-        props.size === "large" || props.playback === "detail"
-          ? props.media?.preview_url
-          : undefined,
+        props.media?.preview_url,
       ])}
       {...props}
     />
@@ -58,13 +57,12 @@ function Artwork({
   size = "small",
   playback = "interaction",
   className = "",
+  placeholderKind = "gift",
   children,
 }: ArtworkProps) {
   const highResolution = size === "large" || playback === "detail";
   const [previewFailed, setPreviewFailed] = useState(false);
-  const preferred = highResolution
-    ? (media?.preview_url ?? media?.thumbnail_url)
-    : media?.thumbnail_url;
+  const preferred = media?.preview_url ?? media?.thumbnail_url;
   const url = previewFailed ? media?.thumbnail_url : preferred;
   const animationUrl = media?.animation_url;
   const host = useRef<HTMLSpanElement>(null);
@@ -104,7 +102,7 @@ function Artwork({
   useEffect(() => () => clearTimeout(hoverTimer.current), [canInteract]);
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
-  // One owner for poster, animation and loading UI; either ready source stops outlines.
+  // One owner for poster, animation and loading UI; either ready source stops the placeholder.
   const [ready, setReady] = useState({ still: false, animation: false });
   const setStillReady = useCallback((still: boolean) => {
     setReady((previous) =>
@@ -178,12 +176,11 @@ function Artwork({
         />
       )}
       {!artworkReady &&
-        (media ? (
+        (media || placeholderKind === "symbol" ? (
           <GiftPlaceholder
-            key={media?.placeholder_url}
-            url={media?.placeholder_url}
+            kind={placeholderKind}
             active={visible && pageVisible}
-            loading={!failed}
+            loading={!failed && (!!url || shouldAnimate)}
           />
         ) : (
           <span className="gift-preview-fallback">{fallback}</span>

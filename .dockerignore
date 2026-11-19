@@ -26,4 +26,5 @@ web/src/gen/
 # Runtime thumbnail payloads and incomplete cache writes.
 **/*.thumb
 **/*.tgs
+!web/src/brand/liberty-figure.tgs
 **/*.part
