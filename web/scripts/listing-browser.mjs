@@ -1,4 +1,4 @@
-import { RangeWatch } from "./range-fixture.mjs";
+import { RangeWatch, orderResult } from "./range-fixture.mjs";
 // Live transitions and valuation lifecycle against isolated React components and a fake feed.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -323,11 +323,22 @@ try {
       }
       if (command.type === "orders.watch") {
         orderWire = command.id;
-        watcher = new RangeWatch(command.params.query, [a, b]);
+        watcher = new RangeWatch(command.params, [a, b]);
         peer.send(JSON.stringify(frame([a, b])));
         return;
       }
       if (command.type !== "request") return;
+      if (command.method === "orders.query") {
+        peer.send(
+          JSON.stringify({
+            type: "result",
+            id: command.id,
+            method: command.method,
+            data: orderResult(command.params, [a, b]),
+          }),
+        );
+        return;
+      }
       assert.equal(command.method, "valuation.evaluate");
       const body = command.params;
       requests.push(body);

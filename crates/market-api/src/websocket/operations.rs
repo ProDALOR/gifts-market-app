@@ -8,7 +8,7 @@ use market_actors::DataUpdate;
 use tokio_util::sync::CancellationToken;
 pub(super) enum Operation {
     Request(crate::models::ApiRequest),
-    Orders(Box<market_gifts::OrderWatchQuery>),
+    Orders(Box<market_gifts::GiftOrderQuery>),
     Catalog(Vec<market_gifts::CollectionId>),
 }
 #[derive(Debug)]

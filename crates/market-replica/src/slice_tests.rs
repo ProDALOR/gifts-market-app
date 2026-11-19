@@ -1027,3 +1027,84 @@ fn serialized_compact_keys_preserve_bidirectional_pages_around_reads_and_ranges(
         }
     }
 }
+
+#[test]
+fn range_queries_page_without_duplicates_and_watches_reject_incomplete_coverage() {
+    let (_dir, writer) = setup();
+    let reader = writer.reader();
+    for sort in 0..=6 {
+        let mut request = read(1, false);
+        request.sort = sort;
+        let bounds = KeyRange {
+            start: None,
+            end: None,
+        };
+        let mut start = None;
+        let mut seen = Vec::new();
+        loop {
+            let page = reader
+                .query_range_checked(
+                    request.clone(),
+                    RangeRequest {
+                        range: KeyRange {
+                            start: start.clone(),
+                            end: None,
+                        },
+                        limit: 5,
+                        snapshot: None,
+                    },
+                    false,
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
+                .unwrap();
+            assert_eq!(page.range.start, start);
+            assert!(page.entries.len() <= 5);
+            seen.extend(ids(&page));
+            let Some(next) = page.next else {
+                break;
+            };
+            assert!(page.range.end.as_ref().unwrap() < &next);
+            assert!(start.as_ref().is_none_or(|old| old < &next));
+            start = Some(next);
+        }
+        assert_eq!(seen.len(), 20);
+        assert_eq!(
+            seen.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            20
+        );
+        let complete = reader
+            .query_range_checked(
+                request.clone(),
+                RangeRequest {
+                    range: bounds.clone(),
+                    limit: 20,
+                    snapshot: None,
+                },
+                true,
+                |_, _| Ok(()),
+                |_| Ok(true),
+            )
+            .unwrap();
+        assert_eq!(seen, ids(&complete));
+        assert!(complete.next.is_none());
+        assert_eq!(
+            reader
+                .query_range_checked(
+                    request,
+                    RangeRequest {
+                        range: bounds,
+                        limit: 19,
+                        snapshot: None
+                    },
+                    true,
+                    |_, _| Ok(()),
+                    |_| Ok(true)
+                )
+                .err()
+                .unwrap()
+                .code(),
+            tonic::Code::ResourceExhausted
+        );
+    }
+}

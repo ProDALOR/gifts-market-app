@@ -11,7 +11,6 @@ pub(crate) struct SubscribeCatalog(pub Vec<market_gifts::CollectionId>);
 #[derive(Message)]
 #[rtype(result = "Result<(Arc<DataSubscription>,watch::Receiver<DataUpdate>),Status>")]
 pub(crate) struct WatchOrders {
-    pub range: Option<market_replica::KeyRange>,
     pub request: w::ReadRequest,
-    pub slice: market_replica::SliceRequest,
+    pub read: market_replica::RangeRequest,
 }

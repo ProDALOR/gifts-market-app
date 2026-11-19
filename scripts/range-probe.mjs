@@ -8,7 +8,7 @@ const query = {
   filters: input.filters,
   source: input.side === "bid" ? "bids" : "asks",
   sort: input.sort ?? "price_asc",
-  navigation: { type: "head" },
+  range: { start: null, end: null },
   limit: 4,
 };
 const leases = new Set();
@@ -83,7 +83,11 @@ function receive(id, send) {
 const watch = (id, query, range) =>
   receive(id, () =>
     socket.send(
-      JSON.stringify({ type: "orders.watch", id, params: { query, range } }),
+      JSON.stringify({
+        type: "orders.watch",
+        id,
+        params: { ...query, range: range ?? query.range },
+      }),
     ),
   );
 const identity = (row) => [row.book.venue_id, row.id];
@@ -119,7 +123,7 @@ try {
   assert.equal(expired.error.code, "restart_read");
   const selection = {
     ...query,
-    navigation: { type: "around", key: selected.key },
+    range: { start: selected.key, end: first.data.at(-1).key },
   };
   const live = await watch("live", selection);
   assert.equal(live.sequence, 0);
@@ -138,21 +142,18 @@ try {
   const paused = await freeze(selection);
   const nextPosition = paused.data.at(-1).key;
   const moved = await freeze(
-    { ...query, navigation: { type: "around", key: nextPosition } },
+    { ...query, range: { start: nextPosition, end: null } },
     paused.snapshot,
   );
   assert.equal(moved.snapshot, paused.snapshot);
   assert.equal(moved.revision, undefined);
   assert.ok(moved.data.some((row) => row.key === nextPosition));
   await release(paused.snapshot);
-  const resumed = await watch("resume", {
-    ...query,
-    navigation: { type: "around", key: nextPosition },
-  });
+  const resumed = await watch("resume", { ...query, range: moved.range });
   assert.ok(resumed.data.some((row) => row.key === nextPosition));
   socket.send(JSON.stringify({ type: "cancel", id: "resume" }));
   console.log(
-    "Range probe passed: REST/WS parity, query-bound coverage, frozen reads, release and resume.",
+    "Range probe passed: REST/WS parity, inclusive range coverage, frozen reads, release and resume.",
   );
 } finally {
   await Promise.allSettled([...leases].map(release));

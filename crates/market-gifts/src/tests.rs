@@ -317,7 +317,7 @@ fn checked_orders_require_execution_time_exactly_for_executions() {
 }
 
 #[test]
-fn one_query_resolves_source_defaults_and_rejects_ambiguous_navigation_and_views() {
+fn one_range_query_resolves_defaults_and_rejects_legacy_navigation_and_invalid_views() {
     for (source, expected) in [
         (OrderSource::Asks, GiftSort::PriceAsc),
         (OrderSource::Bids, GiftSort::PriceDesc),
@@ -329,14 +329,13 @@ fn one_query_resolves_source_defaults_and_rejects_ambiguous_navigation_and_views
         query.sort = Some(GiftSort::NumberAsc);
         assert_eq!(query.sort(), GiftSort::NumberAsc);
     }
-    for navigation in [
-        serde_json::json!({"type":"head","key":"aa"}),
-        serde_json::json!({"type":"after"}),
-        serde_json::json!({"type":"after","key":"ABC=EF"}),
-        serde_json::json!({"type":"around","key":"a"}),
-    ] {
-        assert!(serde_json::from_value::<Navigation>(navigation).is_err());
-    }
+    let query = serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM"}});
+    let parsed: GiftOrderQuery = serde_json::from_value(query.clone()).unwrap();
+    assert_eq!(parsed.limit, 100);
+    assert_eq!(parsed.range, OrderRange::default());
+    let mut legacy = query;
+    legacy["navigation"] = serde_json::json!({"type":"head"});
+    assert!(serde_json::from_value::<GiftOrderQuery>(legacy).is_err());
     assert!(
         serde_json::from_value::<ReadView>(
             serde_json::json!({"kind":"latest","id":"00000000-0000-0000-0000-000000000001"})

@@ -3,11 +3,8 @@ use crate::error::{DataError, Result};
 use market_gifts::{GiftFilters, GiftOrderQuery};
 use market_hub_protocol::wire as w;
 fn admit(filters: &GiftFilters, limit: u32) -> Result<()> {
-    if !(1..=market_replica::READ_LIMITS.max_rows).contains(&limit) {
-        return Err(DataError::invalid(format!(
-            "row count must be 1..={}",
-            market_replica::READ_LIMITS.max_rows
-        )));
+    if !(1..=market_gifts::ORDER_LIMIT).contains(&limit) {
+        return Err(DataError::invalid(format!("row count must be 1..={}", 100)));
     }
     if filters.models.len() + filters.backdrops.len() + filters.patterns.len() > 500 {
         return Err(DataError::invalid("at most 500 gift trait selections"));
@@ -35,12 +32,11 @@ pub(crate) fn validate_order_collection(
     Ok(())
 }
 
-/// One query compiler for finite HTTP/WS reads and atomic watch initialization.
-pub(crate) fn selection(
+/// One range compiler for finite reads and watches.
+pub(crate) fn compile(
     query: GiftOrderQuery,
-) -> Result<(w::ReadRequest, market_replica::SliceRequest)> {
-    use market_gifts::{Navigation as N, ReadView};
-    use market_replica::{Navigation, ReadPosition};
+) -> Result<(w::ReadRequest, market_replica::RangeRequest)> {
+    use market_gifts::ReadView;
     admit(&query.filters, query.limit)?;
     let mut request =
         market_gifts_hub::query::compile(&query).map_err(|e| DataError::invalid(e.to_string()))?;
@@ -51,42 +47,28 @@ pub(crate) fn selection(
             id.as_ref().map(|id| id.as_str().parse()).transpose()?
         }
     };
-    let decode = |key: market_gifts::OrderKey| ReadPosition::decode(key.as_str());
-    let navigation = match query.navigation {
-        N::Head {} => Navigation::Head,
-        N::After { key } => Navigation::After(decode(key)?),
-        N::Before { key } => Navigation::Before(decode(key)?),
-        N::Around { key } => Navigation::Around(decode(key)?),
-    };
     Ok((
         request,
-        market_replica::SliceRequest {
-            navigation,
+        market_replica::RangeRequest {
+            range: range(&query.range)?,
             limit: query.limit,
             snapshot,
         },
     ))
 }
-pub(crate) fn range(
-    range: Option<&market_gifts::OrderRange>,
-) -> Result<Option<market_replica::KeyRange>> {
-    range
-        .map(|range| {
-            let decode =
-                |p: &market_gifts::OrderKey| market_replica::ReadPosition::decode(p.as_str());
-            let range = market_replica::KeyRange {
-                start: range.start.as_ref().map(decode).transpose()?,
-                end: range.end.as_ref().map(decode).transpose()?,
-            };
-            if range
-                .start
-                .as_ref()
-                .zip(range.end.as_ref())
-                .is_some_and(|(a, b)| a > b)
-            {
-                return Err(DataError::invalid("inverted order range"));
-            }
-            Ok(range)
-        })
-        .transpose()
+fn range(range: &market_gifts::OrderRange) -> Result<market_replica::KeyRange> {
+    let decode = |p: &market_gifts::OrderKey| market_replica::ReadPosition::decode(p.as_str());
+    let range = market_replica::KeyRange {
+        start: range.start.as_ref().map(decode).transpose()?,
+        end: range.end.as_ref().map(decode).transpose()?,
+    };
+    if range
+        .start
+        .as_ref()
+        .zip(range.end.as_ref())
+        .is_some_and(|(a, b)| a > b)
+    {
+        return Err(DataError::invalid("inverted order range"));
+    }
+    Ok(range)
 }

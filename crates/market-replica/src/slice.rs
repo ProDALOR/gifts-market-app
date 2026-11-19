@@ -33,6 +33,12 @@ pub struct KeyRange {
     pub start: Option<ReadPosition>,
     pub end: Option<ReadPosition>,
 }
+#[derive(Clone)]
+pub struct RangeRequest {
+    pub range: KeyRange,
+    pub limit: u32,
+    pub snapshot: Option<SnapshotId>,
+}
 pub struct ReadBatch {
     pub entries: Vec<ReadEntry>,
     pub range: KeyRange,
@@ -75,7 +81,7 @@ impl ReplicaReader {
         validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
         include: impl Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadBatch, Status> {
-        self.read_selection_checked(request, slice, None, validate, include)
+        self.read_selection_checked(request, slice, None, false, validate, include)
     }
     pub fn read_range_checked(
         &self,
@@ -89,13 +95,36 @@ impl ReplicaReader {
             limit: READ_LIMITS.max_batch_rows,
             snapshot: None,
         };
-        self.read_selection_checked(request, slice, Some(range), validate, include)
+        self.read_selection_checked(request, slice, Some(range), true, validate, include)
+    }
+    /// Read one page within inclusive bounds. `next` is an exclusive continuation point.
+    pub fn query_range_checked(
+        &self,
+        request: w::ReadRequest,
+        read: RangeRequest,
+        complete: bool,
+        validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
+        include: impl Fn(&w::Entity) -> Result<bool, Status>,
+    ) -> Result<ReadBatch, Status> {
+        self.read_selection_checked(
+            request,
+            SliceRequest {
+                navigation: Navigation::Head,
+                limit: read.limit,
+                snapshot: read.snapshot,
+            },
+            Some(read.range),
+            complete,
+            validate,
+            include,
+        )
     }
     fn read_selection_checked(
         &self,
         request: w::ReadRequest,
         slice: SliceRequest,
         range: Option<KeyRange>,
+        complete: bool,
         validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
         include: impl Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadBatch, Status> {
@@ -231,7 +260,7 @@ impl ReplicaReader {
                 }
             }
         }
-        let directional = range.is_none() && !around;
+        let directional = !complete && !around;
         let mut resume = None;
         let mut scan = |reverse: bool| -> Result<Vec<(Key, Decimal, Arc<w::Entity>)>, Status> {
             let boundary = position.as_ref();
@@ -416,7 +445,7 @@ impl ReplicaReader {
             }
             entries.push(ReadEntry { entity, key });
         }
-        if range.is_some() && has_after {
+        if complete && has_after {
             return Err(Status::resource_exhausted(
                 "watched range exceeds row budget; narrow its bounds",
             ));
@@ -444,28 +473,42 @@ impl ReplicaReader {
                 );
             }
         }
-        let coverage = range.unwrap_or_else(|| KeyRange {
-            start: if backwards || around {
-                if has_before {
+        let range_query = range.is_some() && !complete;
+        let coverage = if range_query {
+            KeyRange {
+                start: range.as_ref().and_then(|r| r.start.clone()),
+                end: if has_after {
                     resume
                         .clone()
-                        .or_else(|| entries.first().map(|e| e.key.clone()))
+                        .or_else(|| entries.last().map(|e| e.key.clone()))
+                } else {
+                    range.as_ref().and_then(|r| r.end.clone())
+                },
+            }
+        } else {
+            range.unwrap_or_else(|| KeyRange {
+                start: if backwards || around {
+                    if has_before {
+                        resume
+                            .clone()
+                            .or_else(|| entries.first().map(|e| e.key.clone()))
+                    } else {
+                        None
+                    }
+                } else {
+                    position.as_ref().map(ReadPosition::after)
+                },
+                end: if backwards {
+                    position.as_ref().map(ReadPosition::before)
+                } else if has_after {
+                    resume
+                        .clone()
+                        .or_else(|| entries.last().map(|e| e.key.clone()))
                 } else {
                     None
-                }
-            } else {
-                position.as_ref().map(ReadPosition::after)
-            },
-            end: if backwards {
-                position.as_ref().map(ReadPosition::before)
-            } else if has_after {
-                resume
-                    .clone()
-                    .or_else(|| entries.last().map(|e| e.key.clone()))
-            } else {
-                None
-            },
-        });
+                },
+            })
+        };
         let next = if backwards {
             if has_before {
                 resume
@@ -480,6 +523,11 @@ impl ReplicaReader {
                 .or_else(|| entries.last().map(|e| e.key.clone()))
         } else {
             None
+        };
+        let next = if range_query {
+            next.map(|point| point.after())
+        } else {
+            next
         };
         Ok(ReadBatch {
             entries,

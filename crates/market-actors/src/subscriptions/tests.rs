@@ -3,21 +3,15 @@ use crate::{
     MarketDataService,
     tests::{fixture, order},
 };
-use market_gifts::{GiftFilters, GiftOrderQuery, OrderRange, OrderWatchQuery};
+use market_gifts::{GiftFilters, GiftOrderQuery};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-fn query(collection: &str) -> OrderWatchQuery {
-    OrderWatchQuery {
-        query: GiftOrderQuery::new(GiftFilters::new(
-            market_gifts::CollectionId::new(collection).unwrap(),
-            "GRAM".into(),
-        )),
-        range: Some(OrderRange {
-            start: None,
-            end: None,
-        }),
-    }
+fn query(collection: &str) -> GiftOrderQuery {
+    GiftOrderQuery::new(GiftFilters::new(
+        market_gifts::CollectionId::new(collection).unwrap(),
+        "GRAM".into(),
+    ))
 }
 async fn terminal(updates: &mut watch::Receiver<DataUpdate>) {
     tokio::time::timeout(Duration::from_secs(2), async {

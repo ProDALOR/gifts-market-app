@@ -115,11 +115,7 @@ pub(super) fn start_orders(
     reader: market_replica::ReplicaReader,
     permit: OwnedSemaphorePermit,
 ) {
-    let super::types::OrdersFeed {
-        request,
-        slice,
-        range: mut coverage,
-    } = selection;
+    let super::types::OrdersFeed { request, read } = selection;
     let sender = feed.sender.clone();
     let stop = feed.stop.clone();
     let completion = Completion::new(feed, permit);
@@ -136,17 +132,13 @@ pub(super) fn start_orders(
                 changed.borrow_and_update();
                 let current = reader.read_revision(&request)?;
                 if revision != Some(current) {
-                    let read = async {
-                        if let Some(range) = &coverage {
-                            orders.range_wait(request.clone(), range.clone()).await
-                        } else {
-                            orders.slice_wait(request.clone(), slice.clone()).await
-                        }
+                    let result = tokio::select! {biased;
+                        _=stop.cancelled()=>return Ok(()),
+                        _=sender.closed()=>return Ok(()),
+                        result=orders.range_wait(request.clone(), read.clone())=>result
                     };
-                    let result = tokio::select! {biased;_=stop.cancelled()=>return Ok(()),_=sender.closed()=>return Ok(()),result=read=>result?};
-                    let (next, current) = result;
+                    let (next, current) = result?;
                     let next = next.result;
-                    coverage = Some(next.range.clone());
                     if previous.as_ref().is_none_or(|old| **old != next) {
                         previous = Some(Arc::new(next));
                     }

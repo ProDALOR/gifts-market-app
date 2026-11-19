@@ -253,6 +253,10 @@ async fn setup() -> (MarketApi, TestMarket, Peer, CancellationToken) {
     .unwrap();
     (api, runtime, peer, stop)
 }
+fn with_range(mut query: serde_json::Value, range: serde_json::Value) -> serde_json::Value {
+    query["range"] = range;
+    query
+}
 fn query() -> serde_json::Value {
     serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","limit":25})
 }
@@ -463,7 +467,7 @@ async fn public_websocket_queries_share_local_windows_and_one_replication_stream
 
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
-                serde_json::json!({"type":"orders.watch","id":"offers","params":{"query":slice_query()}})
+                serde_json::json!({"type":"orders.watch","id":"offers","params":slice_query()})
                     .to_string()
                     .into(),
             ))
@@ -1021,7 +1025,7 @@ async fn oversized_order_batches_report_terminal_errors_and_release_the_id() {
     for _ in 0..2 {
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
-                serde_json::json!({"type":"orders.watch","id":"offers","params":{"query":slice_query()}})
+                serde_json::json!({"type":"orders.watch","id":"offers","params":slice_query()})
                     .to_string()
                     .into(),
             ))
@@ -2147,7 +2151,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     let first: serde_json::Value = test::read_body_json(first).await;
     assert_eq!(first["data"].as_array().unwrap().len(), 1);
     assert!(!first["next"].as_str().unwrap().is_empty());
-    paged_query["navigation"] = serde_json::json!({"type":"after","key":first["next"]});
+    paged_query["range"] = serde_json::json!({"start":first["next"],"end":null});
     let second = test::call_service(
         &app,
         test::TestRequest::post()
@@ -2193,10 +2197,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     watch_query["filters"]["venue_id"] = "test".into();
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
-            serde_json::json!({"type":"orders.watch","id":"orders","params":{
-                "query":watch_query,
-                "range":{"start":rest["data"][0]["key"],"end":rest["data"][1]["key"]}
-            }})
+            serde_json::json!({"type":"orders.watch","id":"orders","params":with_range(watch_query, serde_json::json!({"start":rest["data"][0]["key"],"end":rest["data"][1]["key"]}))})
             .to_string()
             .into(),
         ))
@@ -2260,7 +2261,7 @@ async fn atomic_range_changes_share_public_presentation_without_http_continuatio
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
         .await
         .unwrap();
-    let command = serde_json::json!({"type":"orders.watch","id":"orders.1","params":{"query":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","sort":"price_asc","limit":50}}});
+    let command = serde_json::json!({"type":"orders.watch","id":"orders.1","params":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","sort":"price_asc","limit":50}});
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
             command.to_string().into(),
@@ -2562,7 +2563,8 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
     let mut narrower = query();
     narrower["filters"]["venue_id"] = "test".into();
     narrower["filters"]["price"] = serde_json::json!({"min":"1"});
-    narrower["navigation"] = serde_json::json!({"type":"around","key":latest["data"][0]["key"]});
+    narrower["range"] =
+        serde_json::json!({"start":latest["data"][0]["key"],"end":latest["data"][0]["key"]});
     let reused: serde_json::Value = test::call_and_read_body_json(&app, send(narrower)).await;
     assert_eq!(reused["data"], latest["data"]);
     for (source, sort) in [
@@ -2573,8 +2575,7 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
         let mut incompatible = query();
         incompatible["source"] = source.into();
         incompatible["sort"] = sort.into();
-        incompatible["navigation"] =
-            serde_json::json!({"type":"after","key":latest["data"][0]["key"]});
+        incompatible["range"] = serde_json::json!({"start":latest["data"][0]["key"],"end":null});
         let response = test::call_service(&app, send(incompatible)).await;
         assert_eq!(response.status(), 400);
         let error: serde_json::Value = test::read_body_json(response).await;
@@ -2614,11 +2615,11 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
         test::call_and_read_body_json(&app, send(frozen_query.clone())).await;
     assert_eq!(same["data"], frozen["data"]);
     let row_key = frozen["data"][0]["key"].clone();
-    for direction in ["after", "before"] {
+    {
         let mut next = frozen_query.clone();
-        next["navigation"] = serde_json::json!({"type":direction,"key":row_key});
+        next["range"] = serde_json::json!({"start":row_key,"end":row_key});
         let result: serde_json::Value = test::call_and_read_body_json(&app, send(next)).await;
-        assert!(result["data"].as_array().unwrap().is_empty());
+        assert_eq!(result["data"].as_array().unwrap().len(), 1);
     }
     let response = test::call_service(
         &app,
@@ -2658,6 +2659,15 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
     assert!(result["data"].as_array().unwrap().is_empty());
     let schema = serde_json::to_value(ApiDoc::openapi()).unwrap();
     assert!(schema["paths"]["/orders/query"]["post"].is_object());
+    let fields = &schema["components"]["schemas"]["GiftOrderQuery"]["properties"];
+    assert_eq!(fields["limit"]["default"], 100);
+    assert_eq!(fields["limit"]["maximum"], 100);
+    assert!(fields.get("navigation").is_none());
+    assert!(
+        schema["components"]["schemas"]
+            .get("OrderWatchQuery")
+            .is_none()
+    );
     assert!(schema["paths"].get("/orders/read").is_none());
     for old in [
         "GiftOrdersQuery",

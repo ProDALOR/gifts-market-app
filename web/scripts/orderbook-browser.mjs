@@ -434,7 +434,13 @@ try {
             type: "result",
             id: frame.id,
             method: frame.method,
-            data: valuationReport(frame.params),
+            data:
+              frame.method === "orders.query"
+                ? orderResult(
+                    frame.params,
+                    result({ ...frame.params, limit: 10000 }).data,
+                  )
+                : valuationReport(frame.params),
           }),
         );
       }
@@ -447,7 +453,7 @@ try {
       if (frame.type === "orders.watch") {
         orderSubscriptions++;
         connections.delete(connection);
-        connection = { socket, id: frame.id, query: frame.params.query };
+        connection = { socket, id: frame.id, query: frame.params };
         connections.add(connection);
         socket.send(
           JSON.stringify({
@@ -455,8 +461,8 @@ try {
             sequence: 0,
             id: frame.id,
             ...orderSnapshot(
-              frame.params.query,
-              result({ ...frame.params.query, limit: 10000 }).data,
+              frame.params,
+              result({ ...frame.params, limit: 10000 }).data,
             ),
           }),
         );
@@ -508,10 +514,23 @@ try {
         .evaluate((el) => Number(el.dataset.orderCount))) >= count
     )
       return;
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    // Trait panels and virtualization can reflow after the first scroll.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.mouse.wheel(0, 300);
+      await page.waitForTimeout(150);
+      if (
+        (await page
+          .locator(".gift-grid")
+          .evaluate((el) => Number(el.dataset.orderCount))) >= count
+      )
+        return;
+    }
     await cards(count);
   };
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await price("0.500000001");
   await page
     .getByRole("alert")
@@ -655,7 +674,9 @@ try {
     );
   await page.emulateMedia({ reducedMotion: "reduce" });
   await button("Jelly Bunny").click();
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await price("0.500000001");
   await scrollMore(100);
   await scrollMore(125);
@@ -691,7 +712,9 @@ try {
   assert.equal(await page.locator(".collection-tile").count(), 1);
   await page.getByLabel("Filter collections").press("Enter");
   await page.waitForURL(/collection=pepe/);
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   assert.equal(
     await page.locator(".collection-rail").evaluate((rail) => {
       const search = rail.querySelector(".search-tile").getBoundingClientRect();
@@ -724,7 +747,9 @@ try {
   await button("Search collections").click();
   await page.getByLabel("Filter collections").fill("bunny");
   await page.getByLabel("Filter collections").press("Enter");
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   assert.equal(
     optionRequests,
     3,
@@ -762,9 +787,13 @@ try {
   await button("Symbol").click();
   for (const pattern of patterns) await button(pattern.name).click();
   await page.keyboard.press("Escape");
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await button("Reset traits").click();
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await button("Model").click();
   await button("Barbie").click();
   await cards(25);
@@ -773,11 +802,15 @@ try {
   await cards(25);
   assert.ok(page.url().includes("filters="));
   await button("Reset traits").click();
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await button("Telegram").click();
   await cards(42);
   await button("All venues").click();
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await button("Reverse sort direction").click();
   await price("10,000,000,000,000,000.000000001");
   for (const width of [320, 390, 480, 1440]) {
@@ -823,7 +856,9 @@ try {
   );
   await cards(3);
   await currency("XTR");
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   assert.equal(
     new URL(page.url()).searchParams.has("max"),
     false,
@@ -902,7 +937,7 @@ try {
   );
   await page.keyboard.press("Escape");
   await button("History").click();
-  await cards(50);
+  await cards(75);
   assert.equal(new URL(page.url()).searchParams.get("sort"), "time_desc");
   assert.equal(await sortTrigger.innerText(), "Time");
   assert.equal(await button("Reverse sort direction").innerText(), "↓");
@@ -925,7 +960,9 @@ try {
   );
   await page.keyboard.press("Escape");
   await button("Asks").click();
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await price("0.250000001");
   assert.equal(new URL(page.url()).searchParams.get("sort"), "price_asc");
   const opener = page.locator(".card-open").first();
@@ -1018,7 +1055,9 @@ try {
     window.catalogDocument = "same-document";
   });
   await page.reload();
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForFunction(() =>
     document.documentElement.classList.contains("telegram"),
   );
@@ -1026,7 +1065,9 @@ try {
     await button("Search collections").click();
     await page.getByLabel("Filter collections").fill(name);
     await page.getByLabel("Filter collections").press("Enter");
-    await cards(125);
+    await cards(100);
+    await scrollMore(125);
+    await page.evaluate(() => window.scrollTo(0, 0));
   };
   await choose("pepe");
   await choose("bunny");
@@ -1039,7 +1080,7 @@ try {
   assert.equal(optionRequests, beforeRequests, "Inactive changes remain lazy");
   assert.equal(openSockets.size, 1, "Catalog and orders share one socket");
   await button("History").click();
-  await cards(50);
+  await cards(75);
   models[0].name = "Live model";
   collectionRevisions.bunny = "kupF-YY6C-CXFMtJ4jmY6A";
   notifyCatalog();
@@ -1089,7 +1130,10 @@ try {
     "same-document",
   );
   await button("Asks").click();
-  await cards(125);
+  await cards(100);
+  await scrollMore(125);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(150);
   const healthyOrders = orderSubscriptions,
     healthySockets = socketCount;
   const beforeRecovery = optionRequests;
@@ -1148,7 +1192,7 @@ try {
   // custom sort and clicking the already-active tab preserve the user's choice.
   for (const [search, count, expectedSort, label, direction] of [
     ["mode=bid", 4, "price_desc", "Price", "↓"],
-    ["mode=executed", 50, "time_desc", "Time", "↓"],
+    ["mode=executed", 75, "time_desc", "Time", "↓"],
     ["mode=bid&sort=time_asc", 4, "time_asc", "Time", "↑"],
   ]) {
     await page.goto(`${base}/?collection=bunny&currency=GRAM&${search}`);

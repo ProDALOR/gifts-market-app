@@ -169,7 +169,7 @@ function App({ context }: { context: TelegramContext }) {
             kind: "history",
             query: {
               ...base,
-              limit: 50,
+              limit: 100,
               period:
                 choice.from || choice.until
                   ? { from: choice.from || null, until: choice.until || null }

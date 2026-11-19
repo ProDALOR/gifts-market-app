@@ -25,27 +25,22 @@ impl MarketDataHandle {
     }
     pub async fn watch_orders(
         &self,
-        query: OrderWatchQuery,
+        query: GiftOrderQuery,
     ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
         self.orderbooks.budget.check()?;
-        let (request, slice) = crate::query::selection(query.query)?;
-        let range = crate::query::range(query.range.as_ref())?;
+        let (request, read) = crate::query::compile(query)?;
         if request.mode != w::ReadMode::Live as i32 {
             return Err(error::DataError::invalid("watches require latest reads"));
         }
         self.subscriptions
-            .send(crate::subscriptions::messages::WatchOrders {
-                request,
-                slice,
-                range,
-            })
+            .send(crate::subscriptions::messages::WatchOrders { request, read })
             .await
             .map_err(closed)?
             .map_err(Into::into)
     }
     pub async fn query_orders(&self, query: GiftOrderQuery) -> error::Result<crate::OrderRead> {
-        let (request, slice) = crate::query::selection(query)?;
-        Ok(self.orderbooks.slice(request, slice).await?.0)
+        let (request, read) = crate::query::compile(query)?;
+        Ok(self.orderbooks.query(request, read).await?.0)
     }
     pub async fn release_read_snapshot(&self, snapshot: ReadSnapshotId) -> error::Result<()> {
         Ok(self

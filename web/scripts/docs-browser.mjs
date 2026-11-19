@@ -156,11 +156,11 @@ try {
     .waitFor();
   await page
     .locator('[id="ws-message-orders.watch"] a[data-schema]')
-    .filter({ hasText: "OrderWatchQuery" })
+    .filter({ hasText: "GiftOrderQuery" })
     .click();
   assert.equal(
     await page
-      .locator("#ws-schema-OrderWatchQuery")
+      .locator("#ws-schema-GiftOrderQuery")
       .evaluate((node) => node.open),
     true,
   );

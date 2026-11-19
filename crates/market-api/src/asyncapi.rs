@@ -171,7 +171,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         "orders.watch" => serde_json::to_value(Command::WatchOrders {
             id: "orders.1".into(),
             params: Box::new(serde_json::from_value(
-                json!({"query":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","sort":"price_asc","limit":150}}),
+                json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","sort":"price_asc","range":{"start":null,"end":null},"limit":100}),
             )?),
         })?,
         "orders.snapshot" => serde_json::to_value(ServerFrame::OrdersSnapshot {

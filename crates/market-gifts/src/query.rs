@@ -6,8 +6,10 @@ use crate::{
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+pub const ORDER_LIMIT: u32 = 100;
+
 fn default_limit() -> u32 {
-    50
+    ORDER_LIMIT
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +125,7 @@ impl Period {
     }
 }
 
-/// One query for latest/frozen asks, bids and history. Keys are bound to its selection and ordering.
+/// One range query for latest/frozen asks, bids and history.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -135,9 +137,9 @@ pub struct GiftOrderQuery {
     pub sort: Option<GiftSort>,
     pub period: Option<Period>,
     #[serde(default)]
-    pub navigation: Navigation,
+    pub range: crate::OrderRange,
     #[serde(default = "default_limit")]
-    #[cfg_attr(feature = "schema", schema(minimum = 1))]
+    #[cfg_attr(feature = "schema", schema(minimum = 1, maximum = 100, default = 100))]
     pub limit: u32,
     #[serde(default)]
     pub view: ReadView,
@@ -151,15 +153,6 @@ pub enum OrderSource {
     Bids,
     History,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Navigation {
-    Head {},
-    After { key: crate::OrderKey },
-    Before { key: crate::OrderKey },
-    Around { key: crate::OrderKey },
-}
 impl GiftOrderQuery {
     pub fn new(filters: GiftFilters) -> Self {
         Self {
@@ -167,7 +160,7 @@ impl GiftOrderQuery {
             source: OrderSource::Asks,
             sort: None,
             period: None,
-            navigation: Navigation::Head {},
+            range: crate::OrderRange::default(),
             limit: default_limit(),
             view: ReadView::Latest {},
         }
@@ -179,14 +172,6 @@ impl GiftOrderQuery {
             OrderSource::History => GiftSort::TimeDesc,
         })
     }
-}
-/// A watch seeds its coverage from the query, or reads an explicit query-bound range.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct OrderWatchQuery {
-    pub query: GiftOrderQuery,
-    pub range: Option<crate::OrderRange>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -202,11 +187,6 @@ pub struct ReleaseReadSnapshot {
     pub snapshot: crate::ReadSnapshotId,
 }
 
-impl Default for Navigation {
-    fn default() -> Self {
-        Self::Head {}
-    }
-}
 impl Default for ReadView {
     fn default() -> Self {
         Self::Latest {}

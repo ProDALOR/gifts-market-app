@@ -4,11 +4,11 @@ Connect to `/ws`. The GUI and external clients share this public contract. HTTP 
 
 ## One query
 
-Send `{"type":"request","id":"read.1","method":"orders.query","params":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","limit":150}}`. The result is `{type:"result",id,method:"orders.query",data:{data,range,next,snapshot?}}`, identical to `POST /orders/query` without the request envelope.
+Send `{"type":"request","id":"read.1","method":"orders.query","params":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","limit":100}}`. The result is `{type:"result",id,method:"orders.query",data:{data,range,next,snapshot?}}`, identical to `POST /orders/query` without the request envelope.
 
-`source` is `asks` (default), `bids`, or `history`. Default sorts are respectively `price_asc`, `price_desc`, and `time_desc`. History accepts an optional execution `period`; other sources reject it. A query also accepts `navigation` and `view`. Unknown fields are rejected.
+`source` is `asks` (default), `bids`, or `history`. Default sorts are respectively `price_asc`, `price_desc`, and `time_desc`. History accepts an optional execution `period`; other sources reject it. A query also accepts inclusive `range:{start,end}`, `limit` (default and maximum 100), and `view`. The default range has two null bounds. Unknown fields are rejected.
 
-Navigation defaults to `{type:"head"}`. `{type:"after",key}` and `{type:"before",key}` read strictly beyond the supplied ordering point; repricing its original order does not move that point. `{type:"around",key}` follows the current order identity when available, reserves one third of the slice before it, and fills available space at the edges. Each row has one opaque `key`. Compare keys using ordinary ASCII string order (`a < b` in JavaScript), with the same source and sort (including direction); never use locale-aware comparison. Keys contain no query fingerprint and can be reused across filters or execution periods. The supplied query still controls every returned row. Price positions use the query's currency units: reusing a key does not convert currencies or validate its former currency. Do not decode keys or reproduce ranking rules. History keys include execution-time ties. Order identity remains `(book.venue_id,id)`.
+Queries read forward in sort order within inclusive key bounds. Null starts at the open head or extends to the open tail. A finite query returns up to `limit` rows; `next` is an exclusive continuation point. To continue, set `range.start` to `next` and preserve the original `range.end`. Repricing an order does not move a stored boundary. Each row has one opaque `key`. Compare keys using ordinary ASCII string order (`a < b` in JavaScript), with the same source and sort (including direction); never use locale-aware comparison. Keys contain no query fingerprint and can be reused across filters or execution periods. The supplied query still controls every returned row. Price positions use the query's currency units: reusing a key does not convert currencies or validate its former currency. Do not decode keys or reproduce ranking rules. History keys include execution-time ties. Order identity remains `(book.venue_id,id)`.
 
 ## Order payloads
 
@@ -26,9 +26,13 @@ Protocol nulls retain meaning: `range.start`/`range.end` are always present and 
 
 ## Range subscriptions
 
-Send `{"type":"orders.watch","id":"orders.1","params":{"query":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"limit":150}}}`. Initialization and monitoring are one operation, so there is no separate-read/subscription gap. The initial slice establishes `range:{start,end}`. Bounds are inclusive ordering keys, with null extending to the open head or tail. Keys may represent the point immediately before or after an order. Coverage stays fixed as orders reprice: the row count can grow or shrink rather than refilling a fixed window. The query limit controls only the seed.
+REST `POST /orders/query`, WebSocket method `orders.query`, and `orders.watch` accept the same query model. First query a page, then watch its returned coverage:
 
-Optional `params.range` instead watches that explicit coverage within the supplied query from the outset. The server rejects inverted ranges and keys with a different sort or source. Keys from other filters are accepted as ordering boundaries. Replace coverage by cancelling the operation and starting a fresh ID, keeping visible data until the new snapshot arrives. Watches require `view:{kind:"latest"}` (the default).
+```json
+{"type":"orders.watch","id":"orders.1","params":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","range":{"start":null,"end":"<returned end key>"},"limit":100}}
+```
+
+A watch returns complete coverage or a capacity error; it never silently clips its range. Its limit defaults to 100 and cannot exceed 100, including when the range grows. Narrow the bounds on capacity errors. The initial complete snapshot reconciles changes between the finite query and subscription. Bounds stay fixed as prices change; removal from coverage does not imply a sale. There is no `navigation`, `around` operation, nested `params.query` or separate watch range. Watches require the default latest view. Inverted bounds and sort/source mismatches are rejected.
 
 The first data frame is `{type:"orders.snapshot",id,sequence:0,data,range}`. Subsequent frames are `{type:"orders.changed",id,sequence,upserts,removed}`. Require `sequence === lastSequence + 1` for changes. Apply each batch atomically: remove both deleted and replaced identities first, then merge all upserts in `key` order. Multiple orders can exchange ranks in the same batch. Removals and upserts have disjoint identities. Removal means an order left the matching range and does not imply a sale.
 
@@ -38,11 +42,11 @@ Every `orders.snapshot` replaces the complete subscribed state, including when a
 
 ## Frozen traversal
 
-`view` defaults to `{kind:"latest"}` and retains no server state. Set `{kind:"snapshot"}` to pin an immutable view. The response includes a `snapshot` ID; send `view:{kind:"snapshot",id}` for subsequent reads. Follow `next` using `navigation:{type:"after",key:next}` until null. Before-navigation returns the key for continuing backwards. A bounded scan may return a short or empty slice with a non-null `next`; continue until null even if `data` is empty. Watched ranges always return complete coverage or an explicit capacity error. No separate history endpoint or page token is needed.
+`view` defaults to `{kind:"latest"}` and retains no server state. Set `{kind:"snapshot"}` to pin an immutable view. The response includes a `snapshot` ID; send `view:{kind:"snapshot",id}` for subsequent reads. Follow `next` by setting `range.start` to that key until null, keeping the original end bound. A bounded scan may return a short or empty slice with a non-null `next`; continue until null even if `data` is empty. Watched ranges always return complete coverage or an explicit capacity error. No separate history endpoint or page token is needed.
 
 Release with `DELETE /orders/query` and `{snapshot}`. Views expire after 60 seconds idle or application restart, share bounded capacity, and require instance affinity behind a load balancer. An expired/released ID returns HTTP 409 `restart_read`; reopening at the visible key establishes a fresh baseline. Release is idempotent and an in-flight read cannot resurrect a released view.
 
-The GUI keeps all visited listings and virtualizes mounted cards. Only the active range is live; cached regions refresh on revisit. Pausing retains visited rows and uses a frozen view. The History tab uses forward snapshot traversal through the same query endpoint.
+The GUI keeps all visited listings and virtualizes mounted cards. The GUI uses WebSocket queries for live paging, watches up to 80 cached viewport rows with headroom below the 100-row cap, and narrows/requeries after capacity errors. Only the active range is live; cached regions refresh on revisit. Pausing retains visited rows and uses a frozen view. The History tab uses forward snapshot traversal through the same query endpoint.
 
 ## Status, operations and budgets
 

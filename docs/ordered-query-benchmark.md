@@ -9,7 +9,7 @@ npm --prefix web run benchmark:query
 
 Both benchmarks discard eight warmup iterations and report the median of 64 samples. These are local microbenchmarks from the same development machine, measured before and after this refactor. They are not HTTP throughput or browser frame-rate measurements.
 
-The Rust fixture contains 40,000 active orders across collections and venues. It reads 200 price-ranked asks from one collection, then reads the same fixed coverage. The baseline deep-copied wire entities and encoded both `position` and `sort_key` inside every read. The new native read returns shared entity references and typed positions; encoding happens at the transport boundary. The “including keys” rows explicitly perform that encoding, making them the useful comparison to the baseline. Gift projection, JSON order serialization, network costs and state updates are outside this benchmark.
+The Rust fixture contains 40,000 active orders across collections and venues. Its generic internal reader uses 200-row batches for historical comparison; the consumer API now defaults to and caps queries/watches at 100 rows. It reads 200 price-ranked asks from one collection, then reads the same fixed coverage. The baseline deep-copied wire entities and encoded both `position` and `sort_key` inside every read. The new native read returns shared entity references and typed positions; encoding happens at the transport boundary. The “including keys” rows explicitly perform that encoding, making them the useful comparison to the baseline. Gift projection, JSON order serialization, network costs and state updates are outside this benchmark.
 
 | Operation | Before | After |
 | --- | ---: | ---: |

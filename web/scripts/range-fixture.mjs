@@ -15,35 +15,35 @@ const ordered = (rows) =>
     key: encode(`${String(index).padStart(16, "0")}:${position(row)}`),
   }));
 export function orderResult(query, rows) {
-  const all = ordered(rows),
-    size = query.limit;
-  const nav = query.navigation ?? { type: "head" };
-  let pivot = Math.max(
-    0,
-    all.findIndex((row) => row.key === nav.key),
+  const range = query.range ?? { start: null, end: null };
+  const matching = ordered(rows).filter(
+    (row) =>
+      (range.start == null || row.key >= range.start) &&
+      (range.end == null || row.key <= range.end),
   );
-  const start =
-    nav.type === "around"
-      ? Math.max(0, Math.min(pivot - Math.floor(size / 3), all.length - size))
-      : nav.type === "before"
-        ? Math.max(0, pivot - size)
-        : nav.type === "after"
-          ? pivot + 1
-          : 0;
-  const end = nav.type === "before" ? pivot : start + size;
-  const data = all.slice(start, end);
+  const limit = Math.min(query.limit ?? 100, 100);
+  const data = matching.slice(0, limit),
+    more = matching.length > limit;
+  const last = data.at(-1)?.key;
   return {
     data,
-    next: end < all.length ? (data.at(-1)?.key ?? null) : null,
+    next: more ? last + (last.length % 4 === 3 ? "0" : "00") : null,
     range: {
-      start: start > 0 ? (data[0]?.key ?? null) : null,
-      end: end < all.length ? (data.at(-1)?.key ?? null) : null,
+      start: range.start ?? null,
+      end: more ? last : (range.end ?? null),
     },
   };
 }
 export class RangeWatch {
   constructor(query, rows) {
-    this.initial = orderResult(query, rows);
+    this.initial = {
+      data: ordered(rows).filter(
+        (row) =>
+          (query.range?.start == null || row.key >= query.range.start) &&
+          (query.range?.end == null || row.key <= query.range.end),
+      ),
+      range: query.range ?? { start: null, end: null },
+    };
     this.sequence = -1;
   }
   frame(id, rows) {
@@ -88,6 +88,12 @@ export class RangeWatch {
 }
 
 export function orderSnapshot(query, rows) {
-  const { data, range } = orderResult(query, rows);
-  return { data, range };
+  return {
+    data: ordered(rows).filter(
+      (row) =>
+        (query.range?.start == null || row.key >= query.range.start) &&
+        (query.range?.end == null || row.key <= query.range.end),
+    ),
+    range: query.range ?? { start: null, end: null },
+  };
 }

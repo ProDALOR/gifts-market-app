@@ -5,7 +5,7 @@ import { request, ApiFailure } from "../market.ts";
 import type { components } from "../gen/api.ts";
 export type OrderQuery = components["schemas"]["GiftOrderQuery"];
 export type OrderData = components["schemas"]["OrderSnapshotResponse"];
-type Snapshot = components["schemas"]["OrderReadResponse"];
+export type Snapshot = components["schemas"]["OrderReadResponse"];
 export type Callbacks = {
   result: (result: OrderData) => void;
   status: (status: string) => void;
@@ -13,28 +13,33 @@ export type Callbacks = {
   reset: () => void;
 };
 export interface RangeSource {
-  start(query: OrderQuery): void;
-  move(query: OrderQuery): void;
-  remember?(query: OrderQuery): void;
+  query(query: OrderQuery, signal: AbortSignal): Promise<Snapshot>;
+  watch?(query: OrderQuery): void;
   close(): void;
 }
 const command = (query: OrderQuery) => ({
   type: "orders.watch" as const,
   id: "offers",
-  params: { query, range: null },
+  params: query,
 });
+/** Finite reads and persistent watches share the existing WebSocket connection. */
 export class LiveRanges implements RangeSource {
   private unsubscribe?: () => void;
   private state = new WatchedOrders();
   private recovery?: ReturnType<typeof setTimeout>;
   private failures = 0;
   constructor(private callbacks: Callbacks) {}
-  private clear() {
-    clearTimeout(this.recovery);
-    this.recovery = undefined;
-    this.state.clear();
+  query(query: OrderQuery, signal: AbortSignal) {
+    return liveSocket.request(
+      { method: "orders.query", params: query },
+      signal,
+    );
   }
-  start(query: OrderQuery) {
+  watch(query: OrderQuery) {
+    if (this.unsubscribe) {
+      if (liveSocket.update(command(query))) this.state.clear();
+      return;
+    }
     this.unsubscribe = liveSocket.subscribe(
       command(query),
       (frame) => {
@@ -63,27 +68,22 @@ export class LiveRanges implements RangeSource {
           }
           this.callbacks.result(result);
         } else if (frame.type === "error") {
-          this.clear();
+          this.state.clear();
           this.callbacks.error(
             new ApiFailure(frame.error.code, frame.error.message),
           );
         }
       },
       (status) => {
-        this.clear();
+        this.state.clear();
         this.callbacks.status(status);
       },
     );
   }
-  move(query: OrderQuery) {
-    if (liveSocket.update(command(query))) this.clear();
-  }
-  remember(query: OrderQuery) {
-    liveSocket.remember(command(query));
-  }
   close() {
     this.unsubscribe?.();
-    this.clear();
+    clearTimeout(this.recovery);
+    this.state.clear();
   }
 }
 export const release = (snapshot: string) => {
@@ -94,46 +94,38 @@ export const release = (snapshot: string) => {
     keepalive: true,
   }).catch(() => {});
 };
-/** Owns one bounded, expiring snapshot lease; ordering anchors stay portable. */
+/** One expiring immutable view, reused by all paused range reads. */
 export class FrozenReads implements RangeSource {
   private snapshot?: string;
-  private pending?: AbortController;
   private closed = false;
   constructor(private callbacks: Callbacks) {}
-  start(query: OrderQuery) {
-    this.move(query);
-  }
-  move(query: OrderQuery) {
-    void this.read(query);
-  }
-  private async read(query: OrderQuery) {
-    this.pending?.abort();
-    const attempt = new AbortController();
-    this.pending = attempt;
+  async query(query: OrderQuery, signal: AbortSignal): Promise<Snapshot> {
     let restarted = false;
-    while (!this.closed && !attempt.signal.aborted) {
+    while (!this.closed && !signal.aborted) {
       try {
         const result = await request<Snapshot>(
           "/orders/query",
-          { ...query, view: { kind: "snapshot", id: this.snapshot ?? null } },
-          attempt.signal,
+          {
+            ...query,
+            view: { kind: "snapshot", id: this.snapshot ?? null },
+          },
+          signal,
         );
         if (!result.snapshot)
           throw new Error("Snapshot lease missing from frozen read");
-        if (this.closed || this.pending !== attempt || attempt.signal.aborted) {
+        if (this.closed || signal.aborted) {
           if (result.snapshot !== this.snapshot || this.closed)
             release(result.snapshot);
-          return;
+          throw signal.reason ?? new Error("Read cancelled");
         }
         this.snapshot = result.snapshot;
-        this.callbacks.result(result);
-        return;
+        return result;
       } catch (error) {
-        if (this.closed || attempt.signal.aborted) return;
         if (
           error instanceof ApiFailure &&
           error.code === "restart_read" &&
-          !restarted
+          !restarted &&
+          !signal.aborted
         ) {
           restarted = true;
           if (this.snapshot) release(this.snapshot);
@@ -141,17 +133,14 @@ export class FrozenReads implements RangeSource {
           this.callbacks.reset();
           continue;
         }
-        this.callbacks.error(error);
-        return;
+        throw error;
       }
     }
+    throw signal.reason ?? new Error("Read cancelled");
   }
   close() {
     this.closed = true;
-    this.pending?.abort();
-    if (this.snapshot) {
-      release(this.snapshot);
-      this.snapshot = undefined;
-    }
+    if (this.snapshot) release(this.snapshot);
+    this.snapshot = undefined;
   }
 }

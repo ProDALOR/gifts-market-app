@@ -184,15 +184,15 @@ async fn next_window(
 #[tokio::test]
 async fn independent_sync_writer_publishes_data_to_shared_query_and_subscription_actors() {
     let (_directory, mut writer) = fixture();
-    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
+    let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let api = service.handle.clone();
     let bot = service.handle.clone();
     assert!(bot.status().await.unwrap().ready);
     let (_api_feed, mut api_updates) = api.test_window(gift_query()).await.unwrap();
     let (_bot_feed, mut bot_updates) = bot.test_window(gift_query()).await.unwrap();
     assert!(
-        !api_updates.same_channel(&bot_updates),
-        "both transports use independent range-watch lifetimes"
+        api_updates.same_channel(&bot_updates),
+        "equivalent ranges share work while leases have independent lifetimes"
     );
     next_window(&mut api_updates, &writer.reader()).await;
     let mut another = gift_query();
@@ -372,9 +372,13 @@ async fn catalog_and_orderbooks_serve_distinct_typed_projections() {
     let invalid = handle
         .orderbooks
         .address
-        .send(crate::orderbooks::messages::ReadSlice {
-            slice: market_replica::SliceRequest {
-                navigation: market_replica::Navigation::Head,
+        .send(crate::orderbooks::messages::ReadRange {
+            complete: false,
+            read: market_replica::RangeRequest {
+                range: market_replica::KeyRange {
+                    start: None,
+                    end: None,
+                },
                 limit: 50,
                 snapshot: None,
             },
@@ -428,16 +432,18 @@ async fn terminal(updates: &mut watch::Receiver<DataUpdate>) {
 #[tokio::test]
 async fn market_watch_leases_cancel_independently_and_release_capacity() {
     let (_directory, mut writer) = fixture();
-    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
+    let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
     let (api, mut api_updates) = service.handle.test_window(gift_query()).await.unwrap();
     let (bot, mut bot_updates) = service.handle.test_window(gift_query()).await.unwrap();
-    assert!(!api_updates.same_channel(&bot_updates));
+    assert!(api_updates.same_channel(&bot_updates));
     next_window(&mut api_updates, &writer.reader()).await;
     next_window(&mut bot_updates, &writer.reader()).await;
+    let mut distinct = gift_query();
+    distinct.limit = 1;
     assert_eq!(
         service
             .handle
-            .test_window(gift_query())
+            .test_window(distinct)
             .await
             .err()
             .unwrap()
@@ -445,7 +451,7 @@ async fn market_watch_leases_cancel_independently_and_release_capacity() {
         crate::error::DataErrorCode::CapacityExceeded
     );
     drop(api);
-    terminal(&mut api_updates).await;
+    assert!(!matches!(*api_updates.borrow(), DataUpdate::Error(_)));
     writer
         .apply(w::Batch {
             cursor: "changed".into(),
@@ -729,7 +735,9 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
     query.limit = 2;
     query.view = ReadView::Snapshot { id: None };
     let retained = service.handle.test_page(query.clone()).await.unwrap();
-    let (lease, mut updates) = service.handle.test_window(query.clone()).await.unwrap();
+    let mut watch_query = query.clone();
+    watch_query.range.end = retained.next.clone();
+    let (lease, mut updates) = service.handle.test_window(watch_query).await.unwrap();
     let head = next_window(&mut updates, &writer.reader()).await;
     assert_eq!(head.data.len(), 2);
     writer
@@ -744,7 +752,7 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
     advance(&mut query, &retained);
     let tail = service.handle.test_page(query.clone()).await.unwrap();
     assert_eq!(tail.data[0].id.as_str(), "ask.05");
-    query.navigation = market_gifts::Navigation::Head {};
+    query.range = Default::default();
     query.view = ReadView::Latest {};
     assert!(
         service
@@ -828,7 +836,7 @@ async fn range_watches_keep_open_edges_freshness_and_independent_leases() {
     };
     let (a, mut updates) = service.handle.test_seed_watch(query.clone()).await.unwrap();
     let (b, other) = service.handle.test_seed_watch(query.clone()).await.unwrap();
-    assert!(!updates.same_channel(&other));
+    assert!(updates.same_channel(&other));
     async fn next(
         updates: &mut watch::Receiver<DataUpdate>,
         price: &str,
@@ -949,12 +957,10 @@ impl Seed {
                 market_gifts::OrderSource::Asks
             },
             sort: Some(self.sort),
-            navigation: self
-                .anchor
-                .map(|key| market_gifts::Navigation::Around {
-                    key: key.try_into().unwrap(),
-                })
-                .unwrap_or_default(),
+            range: market_gifts::OrderRange {
+                start: self.anchor.map(|key| key.try_into().unwrap()),
+                end: None,
+            },
             view: market_gifts::ReadView::Latest {},
             limit: self.before + self.after + 1,
             period: None,
@@ -966,29 +972,32 @@ impl MarketDataHandle {
         &self,
         seed: Seed,
     ) -> crate::error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
-        self.watch_orders(market_gifts::OrderWatchQuery {
-            query: seed.query(),
-            range: None,
-        })
-        .await
+        let has_anchor = seed.anchor.is_some();
+        let mut query = seed.query();
+        if has_anchor {
+            let initial = self.query_orders(query.clone()).await?;
+            query.range = market_gifts::OrderRange {
+                start: initial
+                    .result
+                    .range
+                    .start
+                    .map(|key| key.encode().try_into().unwrap()),
+                end: initial
+                    .result
+                    .range
+                    .end
+                    .map(|key| key.encode().try_into().unwrap()),
+            };
+        }
+        query.limit = 100;
+        self.watch_orders(query).await
     }
     async fn test_window(
         &self,
-        query: market_gifts::GiftOrderQuery,
+        mut query: market_gifts::GiftOrderQuery,
     ) -> crate::error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
-        self.test_seed_watch(Seed {
-            filters: query.filters.clone(),
-            side: if query.source == market_gifts::OrderSource::Bids {
-                market_gifts::GiftSide::Bid
-            } else {
-                market_gifts::GiftSide::Ask
-            },
-            sort: query.sort(),
-            anchor: None,
-            before: 0,
-            after: query.limit - 1,
-        })
-        .await
+        query.view = market_gifts::ReadView::Latest {};
+        self.watch_orders(query).await
     }
 }
 
@@ -1238,9 +1247,7 @@ impl MarketDataHandle {
     }
 }
 fn advance(query: &mut market_gifts::GiftOrderQuery, page: &TestPage) {
-    query.navigation = market_gifts::Navigation::After {
-        key: page.next.clone().unwrap(),
-    };
+    query.range.start = page.next.clone();
     if page.snapshot.is_some() {
         query.view = market_gifts::ReadView::Snapshot {
             id: page.snapshot.clone(),
@@ -1252,20 +1259,14 @@ fn advance(query: &mut market_gifts::GiftOrderQuery, page: &TestPage) {
 async fn identical_explicit_ranges_share_a_producer_with_independent_leases() {
     let (_dir, mut writer) = fixture();
     let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
-    let params = market_gifts::OrderWatchQuery {
-        query: gift_query(),
-        range: Some(market_gifts::OrderRange {
-            start: None,
-            end: None,
-        }),
-    };
+    let params = gift_query();
     let (a, mut ax) = service.handle.watch_orders(params.clone()).await.unwrap();
     let first = next_window(&mut ax, &writer.reader()).await;
     let (b, mut bx) = service.handle.watch_orders(params.clone()).await.unwrap();
     let second = next_window(&mut bx, &writer.reader()).await;
     assert!(Arc::ptr_eq(&first, &second));
     let mut different = params;
-    different.range.as_mut().unwrap().end = Some(first.data[0].key.encode().try_into().unwrap());
+    different.range.end = Some(first.data[0].key.encode().try_into().unwrap());
     assert_eq!(
         service
             .handle
@@ -1292,6 +1293,55 @@ async fn identical_explicit_ranges_share_a_producer_with_independent_leases() {
     );
     drop(b);
     terminal(&mut bx).await;
+    let stop = CancellationToken::new();
+    stop.cancel();
+    service.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn queries_and_watches_enforce_the_same_hundred_order_limit() {
+    let (_dir, writer) = fixture();
+    let service = TestData::start(writer.reader(), 2, 2).await.unwrap();
+    for limit in [0, 101, u32::MAX] {
+        let mut query = gift_query();
+        query.limit = limit;
+        assert_eq!(
+            service
+                .handle
+                .query_orders(query.clone())
+                .await
+                .err()
+                .unwrap()
+                .code(),
+            crate::error::DataErrorCode::InvalidQuery
+        );
+        assert_eq!(
+            service
+                .handle
+                .watch_orders(query)
+                .await
+                .err()
+                .unwrap()
+                .code(),
+            crate::error::DataErrorCode::InvalidQuery
+        );
+    }
+    let query: market_gifts::GiftOrderQuery = serde_json::from_value(
+        serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM"}}),
+    )
+    .unwrap();
+    assert_eq!(query.limit, 100);
+    assert_eq!(
+        service
+            .handle
+            .query_orders(query)
+            .await
+            .unwrap()
+            .result
+            .data
+            .len(),
+        1
+    );
     let stop = CancellationToken::new();
     stop.cancel();
     service.task.run(stop).await.unwrap();

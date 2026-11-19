@@ -214,10 +214,10 @@ def main():
         assert "T" in page["data"][0]["observed_at"]
         stale = page["next"]
         frozen_query["view"]["id"]=page["snapshot"]
-        second = call("/orders/query", dict(frozen_query,navigation={"type":"after","key":stale}))
+        second = call("/orders/query", dict(frozen_query,range={"start":stale,"end":None}))
         assert second["data"][0]["price"] == "2.25"
         assert second["snapshot"] == page["snapshot"]
-        q = dict(query, limit=200)
+        q = dict(query, limit=100)
         result = call("/orders/query", q)
         prices = [Decimal(v["price"]) for v in result["data"]]
         assert len(prices) == 30 and prices == sorted(prices)
@@ -286,7 +286,7 @@ def main():
         assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 1
         # A frozen local view survives a hub failure.
         assert (
-            call("/orders/query", dict(frozen_query,navigation={"type":"after","key":stale}))["data"][0]["price"]
+            call("/orders/query", dict(frozen_query,range={"start":stale,"end":None}))["data"][0]["price"]
             == "2.25"
         )
         app_process.kill()
@@ -298,7 +298,7 @@ def main():
         assert call("/orders/query", query)["data"][0]["price"] == "0.500000001"
         assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 1
         assert len(call("/catalog")["collections"]) == 2
-        call("/orders/query", dict(frozen_query,navigation={"type":"after","key":stale}), expected=409)
+        call("/orders/query", dict(frozen_query,range={"start":stale,"end":None}), expected=409)
         # Hub restart invalidates the Watch cursor: rebuild and swap the replica atomically.
         server = start("hub", hub_command, env, root)
         wait(f"http://127.0.0.1:{admin}/healthz")
@@ -312,9 +312,9 @@ def main():
         )
         assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 1
         # Ordering keys remain reusable after their snapshot lease expires.
-        live = call("/orders/query", dict(query,navigation={"type":"after","key":stale}))
+        live = call("/orders/query", dict(query,range={"start":stale,"end":None}))
         assert live["data"][0]["price"] == "2.25"
-        assert call("/orders/query", dict(query,navigation={"type":"after","key":live["next"]}))["data"][0]["price"] == "3.25"
+        assert call("/orders/query", dict(query,range={"start":live["next"],"end":None}))["data"][0]["price"] == "3.25"
         # REST and WebSockets use the same query-bound ordering keys.
         subprocess.run(
             ["node", str(root / "scripts/range-probe.mjs")],

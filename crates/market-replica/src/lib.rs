@@ -9,7 +9,7 @@ mod read_key;
 mod slice;
 #[cfg(test)]
 mod slice_tests;
-pub use slice::{KeyRange, Navigation, ReadBatch, ReadEntry, SliceRequest};
+pub use slice::{KeyRange, Navigation, RangeRequest, ReadBatch, ReadEntry, SliceRequest};
 mod revisions;
 pub use revisions::{DirectoryRevision, MetadataDependencies, MetadataRevision, ReadRevision};
 mod replication;

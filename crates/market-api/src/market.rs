@@ -40,7 +40,7 @@ impl MarketApi {
     }
     pub(crate) async fn watch_orders(
         &self,
-        params: market_gifts::OrderWatchQuery,
+        params: market_gifts::GiftOrderQuery,
     ) -> Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
         Ok(self.data.watch_orders(params).await?)
     }

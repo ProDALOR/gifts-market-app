@@ -19,12 +19,12 @@ pub(super) enum QueryKey {
         selection: Vec<u8>,
         sort: i32,
         range: Box<market_replica::KeyRange>,
+        limit: u32,
     },
 }
 pub(super) struct OrdersFeed {
-    pub range: Option<market_replica::KeyRange>,
     pub request: market_hub_protocol::wire::ReadRequest,
-    pub slice: market_replica::SliceRequest,
+    pub read: market_replica::RangeRequest,
 }
 pub(super) enum FeedSpec {
     Catalog(Vec<market_gifts::CollectionId>),

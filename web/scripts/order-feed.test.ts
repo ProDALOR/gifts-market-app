@@ -1,620 +1,519 @@
 import assert from "node:assert/strict";
-import { test, beforeEach, type TestContext } from "node:test";
+import { test, type TestContext } from "node:test";
 import { createOrderFeed, type FeedState } from "../src/order-feed.ts";
 import { liveSocket } from "../src/live-socket.ts";
 import { LiveRanges } from "../src/feed/range-source.ts";
-import type { Order, OrderQueryResult, FeedQuery } from "../src/market.ts";
-let statusCallback: (status: any) => void = () => {};
-beforeEach((t) => {
-  t.mock.method(liveSocket, "watchStatus", (callback) => {
-    statusCallback = callback;
-    callback("available");
-    return () => {};
-  });
-});
-const order = (id: string): Order => ({
-  id,
+import { ApiFailure } from "../src/market.ts";
+import type { OrderQuery, OrderQueryResult } from "../src/market.ts";
+const tick = () => new Promise<void>((r) => setImmediate(r));
+async function until(check: () => boolean) {
+  for (let i = 0; i < 100; i++) {
+    if (check()) return;
+    await tick();
+  }
+  assert.fail("Feed did not settle");
+}
+const key = (n: number) => `K${String(n).padStart(7, "0")}`;
+const row = (n: number) => ({
+  id: String(n),
+  key: key(1000 + n * 2),
   book: { venue_id: "v", collection_id: "gift", currency_id: "GRAM" },
-  kind: "ask",
+  kind: "ask" as const,
+  price: String(n + 1),
   quantity: 1,
-  price: "1",
   observed_at: "2026-11-18T12:00:00Z",
   target: {
-    kind: "criteria",
+    kind: "criteria" as const,
     models: [],
     backdrops: [],
     patterns: [],
-    number: null,
   },
 });
-const page = (ids: string[], next = ""): OrderQueryResult => ({
-  data: ids.map((id) => ({ ...order(id), key: id })),
-  next: next || null,
-  range: { start: null, end: null },
-  snapshot: "lease",
-});
-const query: Extract<FeedQuery, { kind: "orders" }>["query"] = {
+const query = {
   filters: { collection_id: "gift", currency_id: "GRAM" },
-  side: "ask",
-  sort: "price_asc",
+  side: "ask" as const,
+  sort: "price_asc" as const,
 };
-const result = (ids: string[], before = false, after = true) => {
-  const data = ids.map((id) => ({
-    ...order(id),
-    key: `${String(/^\d+$/.test(id) ? Number(id) + 1 : id === "x" ? 0 : 1).padStart(16, "0")}:${id}`,
-  }));
-  const boundary = (row: (typeof data)[number]) => row.key;
+function page(q: OrderQuery, rows: ReturnType<typeof row>[]): OrderQueryResult {
+  const range = q.range ?? { start: null, end: null };
+  const all = rows.filter(
+    (r) =>
+      (range.start == null || r.key >= range.start) &&
+      (range.end == null || r.key <= range.end),
+  );
+  const data = all.slice(0, q.limit ?? 100),
+    more = all.length > data.length;
   return {
     data,
-    next: null,
-    range: {
-      start: before && data.length ? boundary(data[0]) : null,
-      end: after && data.length ? boundary(data.at(-1)!) : null,
+    range: { start: range.start, end: more ? data.at(-1)!.key : range.end },
+    next: more ? key(Number(data.at(-1)!.key.slice(1)) + 1) : null,
+  };
+}
+function fixture(t: TestContext, frozen = false) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let rows = Array.from({ length: 250 }, (_, i) => row(i)),
+    state: FeedState;
+  const queries: OrderQuery[] = [],
+    commands: any[] = [],
+    signals: AbortSignal[] = [],
+    releases: string[] = [];
+  let active: any,
+    receive: (frame: any) => void = () => {},
+    previous: any,
+    sequence = 0,
+    status: (value: string) => void = () => {};
+  let failure: Error | undefined, held: Promise<void> | undefined;
+  const snapshot = () => {
+    if (!active) return;
+    const range = active.params.range;
+    const data = rows.filter(
+      (r) =>
+        (range.start == null || r.key >= range.start) &&
+        (range.end == null || r.key <= range.end),
+    );
+    if (data.length > 100) {
+      receive({
+        type: "error",
+        id: "offers",
+        error: { code: "capacity_exceeded", message: "Narrow the range" },
+      });
+      return;
+    }
+    const next = { data, range };
+    if (!previous)
+      receive({ type: "orders.snapshot", id: "offers", sequence: 0, ...next });
+    else
+      receive({
+        type: "orders.changed",
+        id: "offers",
+        sequence: ++sequence,
+        upserts: data.filter(
+          (r) =>
+            JSON.stringify(
+              previous.data.find((old: any) => old.id === r.id),
+            ) !== JSON.stringify(r),
+        ),
+        removed: previous.data
+          .filter((old: any) => !data.some((r) => r.id === old.id))
+          .map((r: any) => ({ venue_id: "v", id: r.id })),
+      });
+    previous = next;
+  };
+  const read = async (q: OrderQuery, signal: AbortSignal) => {
+    queries.push(q);
+    signals.push(signal);
+    await held;
+    if (failure) {
+      const e = failure;
+      failure = undefined;
+      throw e;
+    }
+    return page(q, rows);
+  };
+  t.mock.method(liveSocket, "watchStatus", (callback) => {
+    callback("available");
+    return () => {};
+  });
+  t.mock.method(liveSocket, "request", (call: any, signal: AbortSignal) =>
+    read(call.params, signal),
+  );
+  t.mock.method(
+    liveSocket,
+    "subscribe",
+    (command: any, callback: any, changed: any) => {
+      active = command;
+      commands.push(command);
+      receive = callback;
+      status = changed;
+      previous = undefined;
+      sequence = 0;
+      queueMicrotask(snapshot);
+      return () => {
+        active = undefined;
+      };
+    },
+  );
+  t.mock.method(liveSocket, "update", (command: any) => {
+    if (JSON.stringify(active) === JSON.stringify(command)) return false;
+    active = command;
+    commands.push(command);
+    previous = undefined;
+    sequence = 0;
+    queueMicrotask(snapshot);
+    return true;
+  });
+  t.mock.method(liveSocket, "retry", () => {
+    previous = undefined;
+    sequence = 0;
+    queueMicrotask(snapshot);
+  });
+  t.mock.method(globalThis, "fetch", async (_path: any, init: RequestInit) => {
+    if (!frozen) assert.fail("Live orders use WebSocket queries");
+    if (init.method === "DELETE") {
+      releases.push(JSON.parse(String(init.body)).snapshot);
+      return new Response(null, { status: 204 });
+    }
+    const q = JSON.parse(String(init.body));
+    const result = await read(q, init.signal as AbortSignal);
+    return new Response(JSON.stringify({ ...result, snapshot: "lease" }));
+  });
+  const feed = createOrderFeed(
+    { kind: "orders", query },
+    frozen,
+    (next) => (state = next),
+  );
+  t.after(() => feed.close());
+  return {
+    feed,
+    queries,
+    commands,
+    signals,
+    releases,
+    start: async () => {
+      feed.start();
+      await until(() => feed.ready);
+      await tick();
+    },
+    get state() {
+      return state!;
+    },
+    get rows() {
+      return rows;
+    },
+    setRows: (value: typeof rows) => {
+      rows = value;
+    },
+    deliver: snapshot,
+    reconnect: () => {
+      previous = undefined;
+      sequence = 0;
+      status("Reconnecting");
+      queueMicrotask(snapshot);
+    },
+    fail: (error: Error) => {
+      failure = error;
+    },
+    hold: (value?: Promise<void>) => {
+      held = value;
     },
   };
-};
-
-test("an unchanged range query preserves its snapshot and sequence", (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+}
+test("live initialization uses one 100-row query then watches explicit bounds", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  assert.equal(f.queries.length, 1);
+  assert.equal(f.queries[0].limit, 100);
+  assert.deepEqual(f.queries[0].range, { start: null, end: null });
+  assert.equal(f.state.orders.length, 100);
+  assert.equal(f.commands[0].params.query, undefined);
+  assert.equal(f.commands[0].params.navigation, undefined);
+  assert.equal(f.commands[0].params.range.start, null);
+  assert.equal(f.commands[0].params.range.end, row(79).key);
+  assert.equal(f.state.hasMore, true);
+  await tick();
+  assert.equal(
+    f.queries.length,
+    1,
+    "Loading the first page must not drain the market",
+  );
+});
+test("pagination preserves every loaded row and uses the exclusive continuation", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 200);
+  assert.equal(f.queries[1].range!.start, key(1199));
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 250);
+  assert.equal(f.state.hasMore, false);
+  assert.equal(new Set(f.state.orders.map((r) => r.id)).size, 250);
+  f.feed.loadMore();
+  await tick();
+  assert.equal(f.queries.length, 3);
+});
+test("scrolling cached rows changes watch bounds without querying or dropping pages", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 200);
+  f.feed.setVisibleRange(120, 140, 120);
+  t.mock.timers.tick(80);
+  await tick();
+  assert.equal(f.queries.length, 2);
+  assert.equal(f.commands.at(-1).params.range.start, row(100).key);
+  assert.equal(f.state.orders.length, 200);
+  f.feed.setVisibleRange(0, 20, 0);
+  t.mock.timers.tick(80);
+  await tick();
+  assert.equal(f.commands.at(-1).params.range.start, null);
+  assert.equal(f.state.orders.length, 200);
+});
+test("live additions and removals reconcile only the covered range", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const added = { ...row(999), id: "new", key: key(1) };
+  f.setRows([added, ...f.rows.filter((r) => r.id !== "5" && r.id !== "120")]);
+  f.deliver();
+  await tick();
+  assert.equal(
+    f.state.orders.some((r) => r.id === "new"),
+    true,
+  );
+  assert.equal(
+    f.state.orders.some((r) => r.id === "5"),
+    false,
+  );
+  assert.equal(
+    f.state.displayOrders.some((r) => r.id === "5"),
+    true,
+    "Removed cards retain their disappearance state",
+  );
+  assert.equal(
+    f.state.activity.get(JSON.stringify(["v", "new"]))?.state,
+    "new",
+  );
+});
+test("reconnect replaces watched state and retains all previously loaded pages", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 200);
+  f.reconnect();
+  await tick();
+  assert.equal(f.queries.length, 2);
+  assert.equal(f.state.orders.length, 200);
+  assert.equal(f.state.activity.size, 0);
+});
+test("a burst beyond watch capacity reloads and narrows coverage", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.setRows([
+    ...Array.from({ length: 30 }, (_, i) => ({
+      ...row(i),
+      id: `new${i}`,
+      key: key(i + 1),
+    })),
+    ...f.rows,
+  ]);
+  f.deliver();
+  await until(
+    () => f.queries.length === 2 && !f.state.error && !f.state.loadingMore,
+  );
+  await tick();
+  assert.ok(f.commands.length >= 2);
+  assert.equal(f.commands.at(-1).params.range.end, row(59).key);
+});
+test("transient query failure retries the current range with bounded backoff", async (t) => {
+  const f = fixture(t);
+  f.fail(new ApiFailure("unavailable", "offline"));
+  f.feed.start();
+  await until(() => !!f.state.error);
+  assert.equal(f.queries.length, 1);
+  t.mock.timers.tick(2000);
+  await until(() => f.feed.ready);
+  assert.equal(f.queries.length, 2);
+});
+test("closing cancels a pending query and ignores its late result", async (t) => {
+  const f = fixture(t);
+  let finish!: () => void;
+  f.hold(new Promise<void>((r) => (finish = r)));
+  f.feed.start();
+  await until(() => f.signals.length === 1);
+  const old = f.state;
+  f.feed.close();
+  assert.equal(f.signals[0].aborted, true);
+  finish();
+  await tick();
+  assert.equal(f.state, old);
+  assert.equal(f.commands.length, 0);
+});
+test("paused range queries reuse and release their snapshot without starting watches", async (t) => {
+  const f = fixture(t, true);
+  await f.start();
+  assert.equal(f.commands.length, 0);
+  f.feed.loadMore();
+  await until(() => f.state.orders.length === 200);
+  assert.equal(f.queries[1].view?.kind, "snapshot");
+  assert.equal((f.queries[1].view as any).id, "lease");
+  f.feed.close();
+  await tick();
+  assert.deepEqual(f.releases, ["lease"]);
+});
+test("unchanged watch bounds preserve sequence continuity", (t) => {
   let receive: (frame: any) => void = () => {};
-  t.mock.method(liveSocket, "subscribe", (_, callback) => {
+  t.mock.method(liveSocket, "subscribe", (_q, callback) => {
     receive = callback;
     return () => {};
   });
   t.mock.method(liveSocket, "update", () => false);
-  t.mock.method(liveSocket, "retry", () => assert.fail("No recovery needed"));
-  const received: any[] = [];
+  const results: any[] = [];
   const source = new LiveRanges({
-    result: (value) => received.push(value),
+    result: (r) => results.push(r),
     reset: () => {},
-    status: () => assert.fail("Unchanged queries must stay live"),
-    error: () => assert.fail("No error expected"),
+    status: () => {},
+    error: (e) => assert.fail(String(e)),
   });
   t.after(() => source.close());
-  source.start(query);
+  const q = {
+    ...query,
+    source: "asks",
+    range: { start: null, end: null },
+    limit: 100,
+  } as OrderQuery;
+  source.watch(q);
   receive({
     type: "orders.snapshot",
     id: "offers",
     sequence: 0,
-    ...result(["0"], false, false),
+    data: [row(0)],
+    range: q.range,
   });
-  source.move(query);
-  const next = result(["0", "1"], false, false);
+  source.watch(q);
   receive({
     type: "orders.changed",
     id: "offers",
     sequence: 1,
-    upserts: [next.data[1]],
+    upserts: [row(1)],
     removed: [],
   });
-  assert.equal(received.length, 2);
-  assert.deepEqual(received[1].data, next.data);
-  t.mock.timers.tick(60000);
-});
-function live(t: TestContext) {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  t.mock.method(globalThis, "fetch", () =>
-    assert.fail("Live windows must not load HTTP pages"),
-  );
-  let receive: (frame: any) => void = () => {},
-    status: (state: string) => void = () => {};
-  const commands: any[] = [];
-  let previous: any;
-  let sequence = -1;
-  let releases = 0;
-  t.mock.method(liveSocket, "subscribe", (command, frame, state) => {
-    commands.push(command);
-    previous = undefined;
-    sequence = -1;
-    receive = frame;
-    status = state ?? (() => {});
-    return () => releases++;
-  });
-  t.mock.method(liveSocket, "update", (command) => {
-    commands.push(command);
-    previous = undefined;
-    sequence = -1;
-    return true;
-  });
-  t.mock.method(liveSocket, "remember", () => {});
-  let state: FeedState | undefined;
-  const feed = createOrderFeed(
-    { kind: "orders", query },
-    false,
-    (next) => (state = next),
-  );
-  t.after(() => feed.close());
-  feed.start();
-  return {
-    feed,
-    commands,
-    get state() {
-      return state!;
-    },
-    get releases() {
-      return releases;
-    },
-    deliver(ids: string[], before = false, after = true) {
-      const next = result(ids, before, after);
-      const old = previous;
-      previous = next;
-      sequence++;
-      if (!old)
-        receive({
-          type: "orders.snapshot",
-          id: "offers",
-          data: next.data,
-          range: next.range,
-          sequence,
-        });
-      else {
-        const oldRows = new Map(old.data.map((row: any) => [row.id, row]));
-        receive({
-          type: "orders.changed",
-          id: "offers",
-          sequence,
-          upserts: next.data.filter(
-            (row) =>
-              JSON.stringify(oldRows.get(row.id)) !== JSON.stringify(row),
-          ),
-          removed: old.data
-            .filter((row: any) => !ids.includes(row.id))
-            .map((row: any) => ({ venue_id: row.book.venue_id, id: row.id })),
-        });
-      }
-    },
-    frame(frame: any) {
-      if (frame.type === "error") {
-        previous = undefined;
-        sequence = -1;
-      }
-      if (frame.type === "market.status") statusCallback(frame.status);
-      else receive(frame);
-    },
-    status(value: string) {
-      previous = undefined;
-      sequence = -1;
-      status(value);
-    },
-  };
-}
-test("live windows refresh their covered region while keeping previously loaded edges", (t) => {
-  const f = live(t);
-  assert.equal(f.commands[0].type, "orders.watch");
-  assert.deepEqual(f.commands[0].params.query.navigation, { type: "head" });
-  f.deliver(["a", "b", "c"]);
-  assert.deepEqual(
-    f.state.orders.map((o) => o.id),
-    ["a", "b", "c"],
-  );
-  f.deliver(["x", "a", "b"]);
-  assert.deepEqual(
-    f.state.orders.map((o) => o.id),
-    ["x", "a", "b"],
-  );
-  assert.equal(f.state.activity.get(JSON.stringify(["v", "x"]))?.state, "new");
-  assert.equal(
-    f.state.activity.get(JSON.stringify(["v", "c"]))?.state,
-    "removed",
-  );
-  f.deliver(["x", "b"], false, false);
-  assert.equal(
-    f.state.activity.get(JSON.stringify(["v", "a"]))?.state,
-    "removed",
-  );
-});
-test("scrolling requests anchored windows in both directions and retains the old window until replacement", (t) => {
-  const f = live(t),
-    ids = Array.from({ length: 150 }, (_, i) => String(i));
-  f.deliver(ids);
-  f.feed.setVisibleRange(110, 140, 120);
-  t.mock.timers.tick(80);
-  assert.equal(f.commands.length, 2);
-  assert.deepEqual(f.commands[1].params.query.navigation, {
-    type: "around",
-    key: result(["120"]).data[0].key,
-  });
-  assert.equal(f.state.loadingMore, true);
-  assert.equal(f.state.orders[0].id, "0");
-  f.deliver(
-    Array.from({ length: 150 }, (_, i) => String(i + 70)),
-    true,
-  );
-  assert.equal(f.state.loadingMore, false);
-  assert.equal(f.state.orders.length, 220);
-  assert.equal(f.state.orders[0].id, "0");
-  assert.equal(f.state.activity.size, 0);
-  f.feed.setVisibleRange(5, 30, 10);
-  t.mock.timers.tick(80);
-  assert.deepEqual(f.commands[2].params.query.navigation, {
-    type: "around",
-    key: result(["10"]).data[0].key,
-  });
-  f.deliver(
-    Array.from({ length: 150 }, (_, i) => String(i)),
-    false,
-  );
-  assert.equal(f.state.orders[0].id, "0");
-  assert.equal(f.state.orders.length, 220);
-  assert.equal(f.state.orders.at(-1)?.id, "219");
-});
-test("scroll intent is debounced, active requests are bounded and cancellation releases the lease", (t) => {
-  const f = live(t);
-  f.deliver(
-    Array.from({ length: 150 }, (_, i) => String(i)),
-    true,
-  );
-  f.feed.setVisibleRange(1, 10, 2);
-  t.mock.timers.tick(40);
-  f.feed.setVisibleRange(6, 20, 7);
-  t.mock.timers.tick(79);
-  assert.equal(f.commands.length, 1);
-  t.mock.timers.tick(1);
-  assert.deepEqual(f.commands[1].params.query.navigation, {
-    type: "around",
-    key: result(["7"]).data[0].key,
-  });
-  f.feed.setVisibleRange(130, 149, 140);
-  t.mock.timers.tick(1000);
-  assert.equal(f.commands.length, 2);
-  f.feed.close();
-  assert.equal(f.releases, 1);
-});
-test("freshness frames preserve data and reconnect establishes a new animation baseline", (t) => {
-  const f = live(t);
-  f.deliver(["a", "b"]);
-  const data = f.state.orders;
-  f.frame({ type: "market.status", status: "delayed" });
-  assert.equal(f.state.orders, data);
-  assert.equal(f.state.status, "Updates delayed");
-  f.status("Reconnecting");
-  f.deliver(["x", "a", "b"]);
-  assert.equal(f.state.activity.size, 0);
-});
-test("anchored window edge changes are not reported as sales or fresh arrivals", (t) => {
-  const f = live(t);
-  f.deliver(["a", "b", "c"], true);
-  f.deliver(["b", "c"], true);
-  assert.equal(
-    f.state.activity.get(JSON.stringify(["v", "a"]))?.state,
-    "removed",
-  );
-  assert.deepEqual(
-    f.state.displayOrders.map((o) => o.id),
-    ["a", "b", "c"],
-  );
-});
-test("scrolling back during an in-flight move keeps the displayed window until the latest anchor arrives", (t) => {
-  const f = live(t);
-  f.deliver(Array.from({ length: 150 }, (_, i) => String(i)));
-  f.feed.setVisibleRange(110, 140, 120);
-  t.mock.timers.tick(80);
-  f.feed.setVisibleRange(0, 30, 10);
-  f.deliver(
-    Array.from({ length: 150 }, (_, i) => String(i + 70)),
-    true,
-  );
-  assert.equal(f.state.orders[0].id, "0");
-  assert.equal(f.state.loadingMore, true);
-  assert.deepEqual(f.commands.at(-1).params.query.navigation, {
-    type: "around",
-    key: result(["10"]).data[0].key,
-  });
-  f.deliver(
-    Array.from({ length: 150 }, (_, i) => String(i)),
-    false,
-  );
-  assert.equal(f.state.loadingMore, false);
-  assert.equal(f.state.orders[10].id, "10");
-});
-test("interior removals are visible in anchored windows while edge shifts remain unclassified", (t) => {
-  const f = live(t);
-  f.deliver(["a", "b", "c", "d"], true, true);
-  f.deliver(["a", "c", "d"], true, true);
-  assert.equal(
-    f.state.activity.get(JSON.stringify(["v", "b"]))?.state,
-    "removed",
-  );
-  assert.equal(f.state.activity.has(JSON.stringify(["v", "e"])), false);
+  assert.equal(results.at(-1).data.length, 2);
 });
 
-test("pausing deep in a window freezes around its anchor and releases the snapshot on close", async (t) => {
-  const calls: any[] = [];
-  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
-    const body = JSON.parse(init.body as string);
-    calls.push({ method: init.method, body });
-    if (init.method === "DELETE") return new Response(null, { status: 204 });
-    assert.equal(url, "/orders/query");
-    assert.equal(body.navigation?.key, result(["2000"]).data[0].key);
-    assert.equal(body.view.kind, "snapshot");
-    return Response.json({
-      ...result(
-        Array.from({ length: 150 }, (_, i) => String(1950 + i)),
-        true,
-        true,
-      ),
-      snapshot: "frozen.1",
-    });
-  });
-  let state: FeedState | undefined;
-  const feed = createOrderFeed(
-    { kind: "orders", query },
-    true,
-    (next) => (state = next),
-    { kind: "range", anchor: result(["2000"]).data[0].key },
-  );
-  feed.start();
-  await new Promise(setImmediate);
-  assert.equal(state!.orders[50].id, "2000");
-  assert.equal(state!.status, "Paused");
-  feed.setVisibleRange(50, 80, 50);
-  assert.equal(feed.bookmark.kind, "range");
-  if (feed.bookmark.kind === "range") {
-    assert.equal(feed.bookmark.anchor, result(["2000"]).data[0].key);
-    assert.equal(feed.bookmark.cache?.rows.length, 150);
-  }
-  feed.close();
-  await new Promise(setImmediate);
-  assert.deepEqual(calls.at(-1), {
-    method: "DELETE",
-    body: { snapshot: "frozen.1" },
-  });
-});
-test("frozen navigation reuses its lease and expiration restarts around the current anchor", async (t) => {
-  const bodies: any[] = [];
-  let fail = false;
-  t.mock.method(globalThis, "fetch", async (_: string, init: RequestInit) => {
-    if (init.method === "DELETE") return new Response(null, { status: 204 });
-    const body = JSON.parse(init.body as string);
-    bodies.push(body);
-    if (body.view.id && fail) {
-      fail = false;
-      return Response.json(
-        { error: { code: "restart_read", message: "Expired" } },
-        { status: 409 },
-      );
-    }
-    const pivot = body.navigation?.key
-      ? Number(body.navigation?.key.split(":")[1])
-      : 0;
-    return Response.json({
-      ...result(
-        Array.from({ length: 150 }, (_, i) =>
-          String(Math.max(0, pivot - 50) + i),
-        ),
-        pivot > 50,
-        true,
-      ),
-      snapshot: body.view.id ?? `lease.${bodies.length}`,
-    });
-  });
-  let state: FeedState | undefined;
-  const feed = createOrderFeed(
-    { kind: "orders", query },
-    true,
-    (next) => (state = next),
-  );
-  feed.start();
-  await new Promise(setImmediate);
-  feed.setVisibleRange(110, 140, 120);
-  feed.loadMore();
-  await new Promise(setImmediate);
-  assert.equal(bodies[1].view.id, "lease.1");
-  assert.equal(bodies[1].navigation.key, result(["120"]).data[0].key);
-  fail = true;
-  feed.setVisibleRange(170, 210, 190);
-  feed.loadMore();
-  await new Promise(setImmediate);
-  await new Promise(setImmediate);
-  assert.equal(bodies.at(-1).view.id, null);
-  assert.equal(bodies.at(-1).navigation.key, result(["190"]).data[0].key);
-  assert.equal(state!.status, "Paused");
-  feed.close();
-});
-test("late frozen responses release their lease without updating a closed view", async (t) => {
-  let finish: (response: Response) => void = () => {};
-  const released: string[] = [];
-  t.mock.method(globalThis, "fetch", async (_: string, init: RequestInit) => {
-    if (init.method === "DELETE") {
-      released.push(JSON.parse(init.body as string).snapshot);
-      return new Response(null, { status: 204 });
-    }
-    return new Promise<Response>((resolve) => (finish = resolve));
-  });
-  let state: FeedState | undefined;
-  const feed = createOrderFeed(
-    { kind: "orders", query },
-    true,
-    (next) => (state = next),
-  );
-  feed.start();
-  feed.close();
-  const closed = state;
-  finish(
-    Response.json({
-      ...result(["late"]),
-      snapshot: "orphan",
+test("watch overflow during pagination schedules recovery after the pending read", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  let finish!: () => void;
+  f.hold(
+    new Promise<void>((resolve) => {
+      finish = resolve;
     }),
   );
-  await new Promise(setImmediate);
-  assert.equal(state, closed);
-  assert.deepEqual(released, ["orphan"]);
+  f.feed.loadMore();
+  await until(() => f.queries.length === 2);
+  f.setRows([
+    ...Array.from({ length: 30 }, (_, i) => ({
+      ...row(i),
+      id: `new${i}`,
+      key: key(i + 1),
+    })),
+    ...f.rows,
+  ]);
+  f.deliver();
+  assert.equal(f.queries.length, 2);
+  f.hold();
+  finish();
+  await until(() => f.queries.length === 3 && !f.state.loadingMore);
+  assert.equal(f.state.error, "");
+  assert.equal(
+    f.state.orders.some((r) => r.id === "new0"),
+    true,
+  );
 });
-test("history alone uses forward snapshot pagination and restarts expired traversals", async (t) => {
-  let expired = true;
-  const tokens: string[] = [];
-  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
-    assert.equal(url, "/orders/query");
-    const body = JSON.parse(init.body as string);
-    if (init.method === "DELETE") return new Response(null, { status: 204 });
-    assert.equal(body.view.kind, "snapshot");
-    const token = body.navigation?.key ?? "";
-    tokens.push(token);
-    if (token && expired) {
-      expired = false;
-      return Response.json(
-        { error: { code: "restart_read", message: "Expired" } },
+
+test("history continues by range and rebuilds frozen pages after lease expiry", async (t) => {
+  let state: FeedState,
+    expired = false;
+  const bodies: any[] = [],
+    released: string[] = [];
+  const rows = Array.from({ length: 220 }, (_, i) => row(i));
+  t.mock.method(globalThis, "fetch", async (_path: any, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    if (init.method === "DELETE") {
+      released.push(body.snapshot);
+      return new Response(null, { status: 204 });
+    }
+    bodies.push(body);
+    if (!expired && body.view.id === "lease1" && body.range.start) {
+      expired = true;
+      return new Response(
+        JSON.stringify({ error: { code: "restart_read", message: "expired" } }),
         { status: 409 },
       );
     }
-    return Response.json(page(token ? ["c"] : ["a", "b"], token ? "" : "next"));
+    const result = page(body, rows);
+    return new Response(
+      JSON.stringify({
+        ...result,
+        data: result.data.map((r) => ({
+          ...r,
+          kind: "executed",
+          executed_at: r.observed_at,
+          price: String(Number(r.price) + (expired ? 10000 : 0)),
+        })),
+        snapshot: expired ? "lease2" : "lease1",
+      }),
+    );
   });
-  let state: FeedState | undefined;
   const feed = createOrderFeed(
-    { kind: "history", query: { filters: query.filters, limit: 2 } },
+    {
+      kind: "history",
+      query: { filters: query.filters, sort: "time_desc", limit: 100 },
+    },
     false,
-    (next) => (state = next),
-    { kind: "history", depth: 2 },
-  );
-  feed.start();
-  await new Promise(setImmediate);
-  assert.deepEqual(
-    state!.orders.map((o) => o.id),
-    ["a", "b", "c"],
-  );
-  assert.deepEqual(tokens, ["", "next", "", "next"]);
-  feed.close();
-});
-
-test("pausing and resuming keep every visited region while refreshing the visible window", async (t) => {
-  const f = live(t);
-  f.deliver(Array.from({ length: 150 }, (_, i) => String(i)));
-  f.feed.setVisibleRange(110, 140, 120);
-  t.mock.timers.tick(80);
-  f.deliver(
-    Array.from({ length: 150 }, (_, i) => String(i + 70)),
-    true,
-  );
-  f.feed.setVisibleRange(140, 170, 150);
-  const bookmark = f.feed.bookmark;
-  f.feed.close();
-  t.mock.method(globalThis, "fetch", async (_: string, init: RequestInit) => {
-    if (init.method === "DELETE") return new Response(null, { status: 204 });
-    const body = JSON.parse(init.body as string);
-    assert.equal(body.navigation?.key, result(["150"]).data[0].key);
-    return Response.json({
-      ...result(
-        Array.from({ length: 150 }, (_, i) => String(i + 100)),
-        true,
-      ),
-      snapshot: "paused",
-    });
-  });
-  let frozen: FeedState | undefined;
-  const feed = createOrderFeed(
-    { kind: "orders", query },
-    true,
-    (next) => (frozen = next),
-    bookmark,
+    (next) => {
+      state = next;
+    },
   );
   t.after(() => feed.close());
   feed.start();
-  await new Promise(setImmediate);
-  assert.equal(frozen!.orders.length, 250);
-  assert.equal(frozen!.orders[0].id, "0");
-  assert.equal(frozen!.orders.at(-1)?.id, "249");
-  assert.equal(frozen!.status, "Paused");
-  const resumedBookmark = feed.bookmark;
-  feed.close();
-  let resumed: FeedState | undefined;
-  const liveAgain = createOrderFeed(
-    { kind: "orders", query },
-    false,
-    (next) => (resumed = next),
-    resumedBookmark,
-  );
-  t.after(() => liveAgain.close());
-  liveAgain.start();
-  f.deliver(
-    Array.from({ length: 150 }, (_, i) => String(i + 100)),
-    true,
-  );
-  assert.equal(resumed!.orders.length, 250);
-  assert.equal(resumed!.orders[0].id, "0");
-  assert.equal(resumed!.orders.at(-1)?.id, "249");
-  assert.equal(resumed!.status, "Live");
-});
-
-test("sequence gaps retain visited rows and retry only the affected watch with backoff", (t) => {
-  const f = live(t);
-  let retries = 0;
-  t.mock.method(liveSocket, "retry", (id) => {
-    assert.equal(id, "offers");
-    retries++;
-  });
-  f.deliver(["a", "b"]);
-  f.frame({
-    type: "orders.changed",
-    sequence: 100,
-    upserts: [],
-    removed: [],
-  });
-  assert.deepEqual(
-    f.state.orders.map((row) => row.id),
-    ["a", "b"],
-  );
-  assert.equal(f.state.status, "Reconnecting");
-  assert.equal(retries, 0);
-  t.mock.timers.tick(2000);
-  assert.equal(retries, 1);
-  f.status("Connecting");
-  f.deliver(["a", "b"]);
-  assert.equal(f.state.status, "Live");
-});
-test("closing a watch cancels pending sequence recovery", (t) => {
-  const f = live(t);
-  let retries = 0;
-  t.mock.method(liveSocket, "retry", () => retries++);
-  f.deliver(["a"]);
-  f.frame({
-    type: "orders.changed",
-    sequence: 100,
-    upserts: [],
-    removed: [],
-  });
-  f.feed.close();
-  t.mock.timers.tick(2000);
-  assert.equal(retries, 0);
-});
-
-test("revisiting cached rows moves away from an active range that became empty", (t) => {
-  const f = live(t);
-  f.deliver(Array.from({ length: 150 }, (_, i) => String(i)));
-  f.feed.setVisibleRange(110, 140, 120);
-  t.mock.timers.tick(80);
-  f.deliver(
-    Array.from({ length: 150 }, (_, i) => String(i + 100)),
-    true,
-  );
-  f.deliver([], true);
-  assert.equal(f.state.orders.length, 100);
-  f.feed.setVisibleRange(0, 20, 10);
-  t.mock.timers.tick(80);
-  assert.deepEqual(f.commands.at(-1).params.query.navigation, {
-    type: "around",
-    key: result(["10"]).data[0].key,
-  });
-  assert.equal(f.state.loadingMore, true);
-  f.deliver(Array.from({ length: 150 }, (_, i) => String(i)));
-  assert.equal(f.state.loadingMore, false);
-});
-
-test("an emptied range queries beyond its boundary once instead of leaving the GUI stranded", (t) => {
-  const f = live(t);
-  f.deliver(Array.from({ length: 150 }, (_, i) => String(i)));
-  f.deliver([]);
-  assert.equal(f.state.orders.length, 0);
-  t.mock.timers.tick(80);
-  assert.deepEqual(f.commands.at(-1).params.query.navigation, {
-    type: "after",
-    key: result(["149"]).data[0].key,
-  });
-  const count = f.commands.length;
-  f.deliver([], false, false);
-  t.mock.timers.tick(1000);
+  await until(() => feed.ready);
+  assert.equal(state!.orders.length, 100);
+  feed.loadMore();
+  await until(() => state!.orders.length === 200 && !state!.loadingMore);
+  assert.equal(bodies[1].range.start, key(1199));
   assert.equal(
-    f.commands.length,
-    count,
-    "a globally empty query must not poll or loop",
+    state!.orders.every((r) => Number(r.price) >= 10001),
+    true,
+    "Expired and fresh snapshots must not be mixed",
   );
+  assert.equal(new Set(state!.orders.map((r) => r.id)).size, 200);
+  feed.loadMore();
+  await until(() => state!.orders.length === 220);
+  assert.equal(state!.hasMore, false);
+  feed.close();
+  await tick();
+  assert.deepEqual(released, ["lease1", "lease2"]);
+  assert.equal(
+    bodies.every((q) => q.limit === 100 && q.navigation === undefined),
+    true,
+  );
+});
+
+test("closed history releases a late snapshot without publishing stale rows", async (t) => {
+  let finish!: () => void, state: FeedState;
+  const pending = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const released: string[] = [];
+  t.mock.method(globalThis, "fetch", async (_path: any, init: RequestInit) => {
+    if (init.method === "DELETE") {
+      released.push(JSON.parse(String(init.body)).snapshot);
+      return new Response(null, { status: 204 });
+    }
+    await pending;
+    return new Response(
+      JSON.stringify({
+        ...page(
+          { range: { start: null, end: null }, limit: 100 } as OrderQuery,
+          [row(0)],
+        ),
+        snapshot: "late",
+      }),
+    );
+  });
+  const feed = createOrderFeed(
+    { kind: "history", query: { filters: query.filters, limit: 100 } },
+    false,
+    (next) => {
+      state = next;
+    },
+  );
+  feed.start();
+  const before = state!;
+  feed.close();
+  finish();
+  await tick();
+  await tick();
+  assert.equal(state!, before);
+  assert.deepEqual(released, ["late"]);
 });

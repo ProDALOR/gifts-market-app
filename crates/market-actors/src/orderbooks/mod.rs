@@ -28,22 +28,6 @@ impl Handler<GetStatus> for OrderbooksActor {
     }
 }
 
-impl Handler<messages::ReadSlice> for OrderbooksActor {
-    type Result = ResponseFuture<Result<(crate::OrderRead, market_replica::ReadRevision), Status>>;
-    fn handle(&mut self, message: messages::ReadSlice, _: &mut Self::Context) -> Self::Result {
-        self.environment.blocking(message.permit, move |reader| {
-            reader
-                .read_slice_checked(
-                    message.request,
-                    message.slice,
-                    query::validate_order_collection,
-                    crate::protocol::include_order,
-                )
-                .and_then(crate::protocol::projected_read)
-        })
-    }
-}
-
 impl Handler<messages::ReleaseSnapshot> for OrderbooksActor {
     type Result = Result<(), Status>;
     fn handle(
@@ -60,9 +44,10 @@ impl Handler<messages::ReadRange> for OrderbooksActor {
     fn handle(&mut self, message: messages::ReadRange, _: &mut Self::Context) -> Self::Result {
         self.environment.blocking(message.permit, move |reader| {
             reader
-                .read_range_checked(
+                .query_range_checked(
                     message.request,
-                    message.range,
+                    message.read,
+                    message.complete,
                     query::validate_order_collection,
                     crate::protocol::include_order,
                 )

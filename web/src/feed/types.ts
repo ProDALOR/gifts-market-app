@@ -11,7 +11,12 @@ export type FeedState = {
   hasMore: boolean;
 };
 export type Bookmark =
-  | { kind: "range"; anchor?: string; cache?: LoadedOrders }
+  | {
+      kind: "range";
+      anchor?: string;
+      next?: string | null;
+      cache?: LoadedOrders;
+    }
   | { kind: "history"; depth: number };
 export interface FeedController {
   start(): void;

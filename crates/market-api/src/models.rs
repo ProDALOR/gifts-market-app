@@ -28,7 +28,7 @@ pub enum Command {
     WatchOrders {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
-        params: Box<market_gifts::OrderWatchQuery>,
+        params: Box<market_gifts::GiftOrderQuery>,
     },
     Cancel {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]

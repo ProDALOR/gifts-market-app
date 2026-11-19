@@ -40,7 +40,7 @@ async fn connect(
             let scenario = scenario.clone();
             async move {
             let query = match query {
-                operations::Operation::Orders(params) => params.query,
+                operations::Operation::Orders(params) => *params,
                 operations::Operation::Request(_) => {
                     scenario.started.notify_one();cancel.cancelled().await;scenario.cancelled.notify_one();return End::Cancelled;
                 },
@@ -116,7 +116,7 @@ async fn server_with_writer(
 async fn subscribe(socket: &mut Socket, limit: u32) {
     socket
         .send(Message::Text(
-            serde_json::json!({"type":"orders.watch","id":"offers","params":{"query":{"filters":{"collection_id":"gift","currency_id":"GRAM"},"limit":limit}}})
+            serde_json::json!({"type":"orders.watch","id":"offers","params":{"filters":{"collection_id":"gift","currency_id":"GRAM"},"limit":limit}})
                 .to_string()
                 .into(),
         ))

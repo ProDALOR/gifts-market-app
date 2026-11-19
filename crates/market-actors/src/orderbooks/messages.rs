@@ -7,14 +7,6 @@ use tonic::Status;
 pub(crate) struct GetStatus;
 
 #[derive(Message)]
-#[rtype(result = "Result<(crate::OrderRead,market_replica::ReadRevision),Status>")]
-pub(crate) struct ReadSlice {
-    pub request: w::ReadRequest,
-    pub slice: market_replica::SliceRequest,
-    pub permit: market_replica::ReadPermit,
-}
-
-#[derive(Message)]
 #[rtype(result = "Result<(),Status>")]
 pub(crate) struct ReleaseSnapshot {
     pub snapshot: market_replica::SnapshotId,
@@ -24,6 +16,7 @@ pub(crate) struct ReleaseSnapshot {
 #[rtype(result = "Result<(crate::OrderRead,market_replica::ReadRevision),Status>")]
 pub(crate) struct ReadRange {
     pub request: w::ReadRequest,
-    pub range: market_replica::KeyRange,
+    pub read: market_replica::RangeRequest,
+    pub complete: bool,
     pub permit: market_replica::ReadPermit,
 }

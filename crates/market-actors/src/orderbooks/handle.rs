@@ -10,51 +10,36 @@ pub(crate) struct OrderbooksHandle {
     pub budget: QueryBudget,
 }
 impl OrderbooksHandle {
-    /// Foreground reads reject overload; persistent producers have bounded waiting admission.
-    pub async fn slice(
+    /// Foreground queries reject overload; persistent watches wait within shared admission.
+    pub async fn query(
         &self,
         request: w::ReadRequest,
-        slice: market_replica::SliceRequest,
+        read: market_replica::RangeRequest,
     ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
-        self.read_slice(request, slice, self.budget.try_query()?)
+        self.read_range(request, read, false, self.budget.try_query()?)
             .await
     }
-    pub async fn slice_wait(
+    pub async fn range_wait(
         &self,
         request: w::ReadRequest,
-        slice: market_replica::SliceRequest,
+        read: market_replica::RangeRequest,
     ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
-        self.read_slice(request, slice, self.budget.wait().await?)
+        self.read_range(request, read, true, self.budget.wait().await?)
             .await
     }
-    async fn read_slice(
+    async fn read_range(
         &self,
         request: w::ReadRequest,
-        slice: market_replica::SliceRequest,
+        read: market_replica::RangeRequest,
+        complete: bool,
         permit: market_replica::ReadPermit,
     ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
         let _cancel = permit.cancel_on_drop();
         self.address
-            .send(super::messages::ReadSlice {
-                request,
-                slice,
-                permit,
-            })
-            .await
-            .map_err(closed)?
-    }
-
-    pub async fn range_wait(
-        &self,
-        request: w::ReadRequest,
-        range: market_replica::KeyRange,
-    ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
-        let permit = self.budget.wait().await?;
-        let _cancel = permit.cancel_on_drop();
-        self.address
             .send(super::messages::ReadRange {
                 request,
-                range,
+                read,
+                complete,
                 permit,
             })
             .await

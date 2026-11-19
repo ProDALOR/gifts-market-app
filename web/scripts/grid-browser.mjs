@@ -162,12 +162,23 @@ try {
         if (current === incoming.id) current = undefined;
         return;
       }
+      if (incoming.type === "request" && incoming.method === "orders.query") {
+        socket.send(
+          JSON.stringify({
+            type: "result",
+            id: incoming.id,
+            method: incoming.method,
+            data: orderResult(incoming.params, rows),
+          }),
+        );
+        return;
+      }
       if (incoming.type === "orders.watch") current = incoming.id;
       const work = (async () => {
         const command = incoming;
         if (command.type !== "orders.watch") return;
         subscriptions++;
-        lastAnchor = command.params.query.navigation?.key;
+        lastAnchor = command.params.range?.start;
         const marker = await page
           .locator(".card-open")
           .evaluateAll((cards, operation) => {
@@ -185,7 +196,7 @@ try {
               : null;
           }, command.id);
         if (current !== command.id) return;
-        const window = orderSnapshot(command.params.query, rows);
+        const window = orderSnapshot(command.params, rows);
         socket.send(
           JSON.stringify({
             type: "orders.snapshot",
@@ -227,7 +238,7 @@ try {
           assert.notEqual(
             actual.top,
             undefined,
-            `Missing active anchor: ${JSON.stringify({ marker, actual, query: command.params.query })}`,
+            `Missing active anchor: ${JSON.stringify({ marker, actual, query: command.params })}`,
           );
           const top = actual.top;
           anchorChecks++;
@@ -269,7 +280,7 @@ try {
   await page.goto(
     `http://127.0.0.1:${server.httpServer.address().port}/__scroll_test`,
   );
-  await page.waitForFunction(() => window.feedView?.().orders.length === 150);
+  await page.waitForFunction(() => window.feedView?.().orders.length === 100);
   assert.equal(requests, 0);
   assert.equal(subscriptions, 1);
   const anchor = async () =>
@@ -285,7 +296,7 @@ try {
   await page.evaluate(() =>
     window.scrollTo(0, document.body.scrollHeight - 600),
   );
-  await page.waitForFunction(() => window.feedView?.().orders.length > 150);
+  await page.waitForFunction(() => window.feedView?.().orders.length > 100);
   await page.waitForTimeout(200);
   const count = subscriptions;
   await page.waitForTimeout(500);
@@ -315,7 +326,7 @@ try {
   }
   const liveAnchor = await anchor();
   assert.ok(liveAnchor);
-  assert.ok(await page.evaluate(() => window.feedView().orders.length > 150));
+  assert.ok(await page.evaluate(() => window.feedView().orders.length > 100));
   assert.ok((await page.locator(".gift-card").count()) < 60);
   assert.equal(requests, 0);
   const anchorBeforePause = await anchor();
@@ -356,7 +367,7 @@ try {
     subscriptions > previousSubscriptions,
     "Returning to cached rows refreshes their live window",
   );
-  assert.equal(lastAnchor, orderResult({ limit: 1 }, rows).data[0].key);
+  assert.equal(lastAnchor, null, "Head coverage keeps its lower bound open");
   assert.equal(
     await page.evaluate(() => window.feedView().orders.length),
     loadedCount,

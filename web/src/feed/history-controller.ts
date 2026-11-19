@@ -37,6 +37,7 @@ export class HistoryController implements FeedController {
   close() {
     this.stop.abort();
     if (this.snapshot) release(this.snapshot);
+    this.snapshot = undefined;
   }
   setVisibleRange() {}
   loadMore() {
@@ -63,9 +64,7 @@ export class HistoryController implements FeedController {
             {
               ...this.query,
               source: "history",
-              navigation: token
-                ? { type: "after", key: token }
-                : { type: "head" },
+              range: { start: token, end: null },
               view: { kind: "snapshot", id: this.snapshot ?? null },
             },
             this.stop.signal,

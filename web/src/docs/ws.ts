@@ -102,14 +102,11 @@ function command(): Command {
     id: id.value,
     params: {
       ...template.params,
-      query: {
-        ...template.params.query,
-        source: side.value === "bid" ? "bids" : "asks",
-        filters: {
-          ...template.params.query.filters,
-          collection_id: collection.value,
-          currency_id: currency.value,
-        },
+      source: side.value === "bid" ? "bids" : "asks",
+      filters: {
+        ...template.params.filters,
+        collection_id: collection.value,
+        currency_id: currency.value,
       },
     },
   };

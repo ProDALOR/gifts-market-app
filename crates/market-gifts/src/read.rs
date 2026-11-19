@@ -86,7 +86,7 @@ impl From<ReadSnapshotId> for String {
     }
 }
 /// Inclusive fixed bounds. Ordering keys may encode the point immediately before/after a row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct OrderRange {

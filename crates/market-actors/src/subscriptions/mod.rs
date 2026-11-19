@@ -59,9 +59,8 @@ impl Handler<WatchOrders> for MarketSubscriptionsActor {
     type Result = Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>), Status>;
     fn handle(&mut self, message: WatchOrders, _: &mut Self::Context) -> Self::Result {
         self.register(FeedSpec::Orders(Box::new(types::OrdersFeed {
-            range: message.range,
             request: message.request,
-            slice: message.slice,
+            read: message.read,
         })))
     }
 }
@@ -86,7 +85,7 @@ impl MarketSubscriptionsActor {
         }
         let key = match &spec {
             FeedSpec::Catalog(ids) => Some(QueryKey::Catalog(ids.clone())),
-            FeedSpec::Orders(selection) => selection.range.as_ref().map(|range| QueryKey::Range {
+            FeedSpec::Orders(selection) => Some(QueryKey::Range {
                 selection: selection
                     .request
                     .selection
@@ -94,7 +93,8 @@ impl MarketSubscriptionsActor {
                     .map(|s| s.encode_to_vec())
                     .unwrap_or_default(),
                 sort: selection.request.sort,
-                range: Box::new(range.clone()),
+                range: Box::new(selection.read.range.clone()),
+                limit: selection.read.limit,
             }),
         };
         if let Some(feed) = key
