@@ -173,6 +173,7 @@ function Artwork({
         <GiftBackdrop
           palette={palette}
           patternUrl={patternUrl}
+          layout={size === "large" ? "preview" : "gift"}
           visible={visible && pageVisible}
         />
       )}

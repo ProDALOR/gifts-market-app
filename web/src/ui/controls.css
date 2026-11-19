@@ -77,6 +77,9 @@
 .venue[data-venue="Portals"] {
   color: #c7a5ff;
 }
+.venue[data-venue="Tonnel"] {
+  color: #f2f725;
+}
 .venue[data-venue="MRKT"] {
   color: var(--ink);
 }
@@ -209,6 +212,8 @@
   background: var(--surface);
   z-index: 20;
   box-shadow: 0 8px 24px #0005;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .currency-picker .picker-options {
   min-width: 72px;

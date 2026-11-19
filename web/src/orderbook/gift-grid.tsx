@@ -85,6 +85,20 @@ export function GiftGrid({
     const columns = style.gridTemplateColumns.split(" ").length;
     const stride = parseFloat(style.gridAutoRows) + parseFloat(style.rowGap);
     if (!stride || !Number.isFinite(stride)) return;
+    const saved = anchor.current;
+    if (
+      saved &&
+      (geometry.current.columns !== columns ||
+        geometry.current.stride !== stride)
+    ) {
+      const index = orders.findIndex((order) => orderKey(order) === saved.key);
+      if (index >= 0) {
+        const offset =
+          element.getBoundingClientRect().top +
+          Math.floor(index / columns) * stride;
+        window.scrollBy({ top: offset - saved.offset, behavior: "instant" });
+      }
+    }
     geometry.current = { columns, stride, gap: parseFloat(style.rowGap) };
     const top = element.getBoundingClientRect().top;
     const first = Math.max(0, Math.floor(-top / stride));
@@ -114,8 +128,15 @@ export function GiftGrid({
         ? old
         : next,
     );
-    visible(next.start, next.end, Math.min(orders.length - 1, first * columns));
-    const index = first * columns;
+    const rowStart = first * columns;
+    const savedOffset = saved
+      ? orders
+          .slice(rowStart, rowStart + columns)
+          .findIndex((order) => orderKey(order) === saved.key)
+      : -1;
+    // Keep the same gift when a wider row starts with an earlier sibling.
+    const index = rowStart + Math.max(0, savedOffset);
+    visible(next.start, next.end, Math.min(orders.length - 1, index));
     // A scrolled viewer can still see the grid below the header. Preserve that
     // first row when a preceding window arrives; keep the unscrolled head free.
     anchor.current =

@@ -85,3 +85,41 @@ export function bannerPatternTiles(
     };
   });
 }
+
+// Telegram's 420 × 280 gift SVG; coordinates are top-left positions of a
+// 100 × 100 symbol before its per-instance scale. Preserve individual alpha.
+// Source: https://t.me/nft/ResistanceDog-14029 (2026-11-19).
+const GIFT_PATTERN = [
+  [140.5761, 13.79, 0.3, 0.212890625],
+  [249.465, 13.79, 0.3, 0.212890625],
+  [291.8539, 102.7918, 0.3, 0.223865327],
+  [98.1872, 102.7918, 0.3, 0.223865327],
+  [276.2551, 176.2043, 0.277, 0.221633185],
+  [196.144, 188.6412, 0.277, 0.123046875],
+  [116.0329, 176.2043, 0.277, 0.221633185],
+  [355.0988, 79.3286, 0.2247, 0.189569382],
+  [292.0988, 52.1228, 0.2247, 0.260904948],
+  [334.0988, 17.5326, 0.2247, 0.146437872],
+  [198.7654, -5.7866, 0.2247, 0.153087798],
+  [63.4321, 17.5326, 0.2247, 0.145321801],
+  [105.4321, 52.1228, 0.2247, 0.260904948],
+  [42.4321, 79.3286, 0.2247, 0.165899368],
+  [72.7654, 155.8935, 0.2247, 0.165899368],
+  [49.4321, 205.6413, 0.2247, 0.10500372],
+  [344.2099, 205.6413, 0.2247, 0.10500372],
+  [337.2099, 155.8935, 0.2247, 0.152669271],
+] as const;
+
+/** Center-crop the native composition like a cover image, never stretch it. */
+export function giftPatternTiles(width: number, height: number) {
+  if (width <= 0 || height <= 0) return [];
+  const scale = Math.max(width / 420, height / 280);
+  const left = (width - 420 * scale) / 2;
+  const top = (height - 280 * scale) / 2;
+  return GIFT_PATTERN.map(([x, y, size, opacity]) => ({
+    x: left + x * scale,
+    y: top + y * scale,
+    size: 100 * size * scale,
+    opacity,
+  }));
+}

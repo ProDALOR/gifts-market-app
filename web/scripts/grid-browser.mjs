@@ -7,13 +7,15 @@ const html = `<!doctype html><html><body style="margin:0"><div id="fixture"></di
 import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {GiftGrid} from '/src/orderbook/gift-grid.tsx';
+import {ScrollLoader} from '/src/orderbook/scroll-loader.tsx';
 import '/src/style.css';
 const root=createRoot(document.getElementById('fixture'));
 const make=(id)=>({id:String(id),book:{venue_id:'v',collection_id:'gift',currency_id:'GRAM'},kind:'ask',price:'1',quantity:1,target:{kind:'criteria',models:[],backdrops:[],patterns:[]}});
 let rows=Array.from({length:10000},(_,i)=>make(i));
 const options=new Map();const open=()=>{};const visible=(start,end)=>{window.range=[start,end]};
 const card=()=>({options,collectionName:'Gift',venueName:'Venue',selected:false,open});
-const render=()=>root.render(React.createElement('div',{className:'workspace'},React.createElement('div',{style:{height:72}},'Header'),React.createElement(GiftGrid,{orders:rows,card,busy:false,visible})));
+const render=()=>root.render(React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook market-shell'},React.createElement('aside',{className:'market-sidebar','data-scroll-container':true},'Controls'),React.createElement('div',{className:'market-results'},React.createElement('div',{style:{height:72}},'Header'),React.createElement(GiftGrid,{orders:rows,card,busy:false,visible})))));
+window.loaderFixture=()=>{window.intentLoads=0;root.render(React.createElement('div',null,React.createElement('aside',{'data-scroll-container':true,style:{height:160,width:180,overflow:'auto',overscrollBehavior:'contain'}},React.createElement('div',{style:{height:1400}},'Scrollable controls')),React.createElement(ScrollLoader,{loading:false,hasMore:true,loadMore:()=>window.intentLoads++})));};
 window.prepend=()=>{rows=[...Array.from({length:300},(_,i)=>make(i-300)),...rows];render()};
 window.unmount=()=>root.unmount();
 render();
@@ -98,7 +100,7 @@ try {
   await page.evaluate(() => window.scrollTo(0, 50000));
   await page.waitForFunction(() => window.range?.[0] > 1000);
   const before = await page.locator(".card-open").evaluateAll((nodes) => {
-    const node = nodes.find((node) => node.getBoundingClientRect().top >= 0);
+    const node = nodes.find((node) => node.getBoundingClientRect().bottom > 0);
     window.beforeNode = node;
     return { id: node.dataset.orderId, top: node.getBoundingClientRect().top };
   });
@@ -120,13 +122,52 @@ try {
     true,
     "Large prepends must retain visible card DOM and artwork",
   );
+  await page.setViewportSize({ width: 1440, height: 850 });
+  await page.waitForFunction(
+    () =>
+      getComputedStyle(
+        document.querySelector(".gift-grid"),
+      ).gridTemplateColumns.split(" ").length >= 4,
+  );
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  const desktopTop = await page
+    .locator(`[data-order-id="${before.id}"]`)
+    .evaluate((node) => node.getBoundingClientRect().top);
+  assert.ok(
+    Math.abs(desktopTop - before.top) < 2,
+    `Desktop reflow moved the visible anchor by ${desktopTop - before.top}px`,
+  );
+  assert.ok((await page.locator(".gift-card").count()) < 120);
   await page.setViewportSize({ width: 360, height: 500 });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  const mobileTop = await page
+    .locator(`[data-order-id="${before.id}"]`)
+    .evaluate((node) => node.getBoundingClientRect().top);
+  assert.ok(
+    Math.abs(mobileTop - before.top) < 2,
+    "Returning to mobile preserves the visible gift",
+  );
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await page.waitForFunction(
     () => !!document.querySelector('[data-order-id="9999"]'),
   );
   assert.ok((await page.locator(".gift-card").count()) < 60);
   assert.equal(await page.evaluate(() => window.scrollListeners.size), 1);
+  await page.evaluate(() => {
+    window.loaderFixture();
+    window.scrollTo(0, 0);
+  });
+  await page.locator("[data-scroll-container]").hover();
+  await page.mouse.wheel(0, 200);
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal(
+    await page.evaluate(() => window.intentLoads),
+    0,
+    "Sidebar wheel gestures must not request another listings page",
+  );
+  await page.mouse.move(300, 250);
+  await page.mouse.wheel(0, 200);
+  await page.waitForFunction(() => window.intentLoads === 1);
   await page.evaluate(() => window.unmount());
   assert.equal(await page.locator(".gift-card").count(), 0);
   assert.equal(await page.evaluate(() => window.scrollListeners.size), 0);

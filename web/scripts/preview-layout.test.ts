@@ -4,7 +4,42 @@ import {
   balancedRows,
   previewLayout,
   bannerPatternTiles,
+  giftPatternTiles,
 } from "../src/previews/preview-layout.ts";
+test("gift covers preserve Telegram's native SVG positions, scales and individual opacity", () => {
+  const reference = giftPatternTiles(420, 280);
+  assert.equal(reference.length, 18);
+  assert.deepEqual(reference[0], {
+    x: 140.5761,
+    y: 13.79,
+    size: 30,
+    opacity: 0.212890625,
+  });
+  assert.equal(reference[5].opacity, 0.123046875);
+  assert.equal(new Set(reference.map((tile) => tile.size)).size, 3);
+  assert.ok(new Set(reference.map((tile) => tile.opacity)).size > 3);
+  assert.deepEqual(giftPatternTiles(420, 280), reference);
+  assert.deepEqual(
+    giftPatternTiles(840, 560),
+    reference.map((tile) => ({
+      x: tile.x * 2,
+      y: tile.y * 2,
+      size: tile.size * 2,
+      opacity: tile.opacity,
+    })),
+  );
+  // Portrait panes crop the sides of the same composition, rather than
+  // moving symbols independently or enlarging them at different rates.
+  const portrait = giftPatternTiles(420, 560);
+  assert.equal(portrait[0].x, reference[0].x * 2 - 210);
+  assert.equal(portrait[0].y, reference[0].y * 2);
+  assert.equal(portrait[0].size, reference[0].size * 2);
+  const landscape = giftPatternTiles(840, 280);
+  assert.equal(landscape[0].x, reference[0].x * 2);
+  assert.equal(landscape[0].y, reference[0].y * 2 - 140);
+  assert.deepEqual(giftPatternTiles(0, 400), []);
+  assert.deepEqual(giftPatternTiles(400, 0), []);
+});
 test("backdrops split into balanced complete rows, including twelve as six plus six", () => {
   assert.deepEqual(
     balancedRows(

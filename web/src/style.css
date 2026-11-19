@@ -3,6 +3,7 @@
 @import "./collections/collections.css";
 @import "./ui/controls.css";
 @import "./previews/previews.css";
+@import "./desktop.css";
 
 :root {
   font:

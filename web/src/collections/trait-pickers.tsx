@@ -60,7 +60,9 @@ export const TraitPickers = memo(function TraitPickers({
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    const pointer = (event: PointerEvent) => {
+    // This panel participates in layout. Close after the outside click has
+    // reached its control, so collapsing it cannot move that control mid-click.
+    const outside = (event: MouseEvent) => {
       if (!host.current?.contains(event.target as Node)) setOpen(undefined);
     };
     const key = (event: KeyboardEvent) => {
@@ -69,10 +71,10 @@ export const TraitPickers = memo(function TraitPickers({
         document.getElementById(`pick-${open}`)?.focus();
       }
     };
-    document.addEventListener("pointerdown", pointer);
+    document.addEventListener("click", outside);
     document.addEventListener("keydown", key);
     return () => {
-      document.removeEventListener("pointerdown", pointer);
+      document.removeEventListener("click", outside);
       document.removeEventListener("keydown", key);
     };
   }, [open]);

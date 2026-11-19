@@ -154,7 +154,7 @@
   position: absolute;
   left: 60px;
   top: 50%;
-  width: 82px;
+  width: var(--collection-label-width, 82px);
   font-size: var(--collection-name-size, 16px);
   line-height: 1.2;
   text-align: left;

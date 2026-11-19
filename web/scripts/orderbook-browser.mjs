@@ -821,16 +821,79 @@ try {
       false,
       `No overflow at ${width}`,
     );
-    assert.equal(
-      await page
-        .locator(".gift-grid")
-        .evaluate(
-          (el) => getComputedStyle(el).gridTemplateColumns.split(" ").length,
-        ),
-      3,
+    const columns = await page
+      .locator(".gift-grid")
+      .evaluate(
+        (el) => getComputedStyle(el).gridTemplateColumns.split(" ").length,
+      );
+    assert.ok(
+      width >= 960 ? columns >= 4 : columns === 3,
+      `Responsive columns at ${width}: ${columns}`,
     );
   }
+  // The desktop sidebar owns all market controls, while the document still
+  // scrolls the virtual listings. Resizing must retain selection and card DOM.
+  const sidebar = page.getByRole("complementary", { name: "Market controls" });
+  const desktopGeometry = await page.evaluate(() => {
+    const sidebar = document
+      .querySelector(".market-sidebar")
+      .getBoundingClientRect();
+    const grid = document.querySelector(".gift-grid").getBoundingClientRect();
+    window.responsiveCard = document.querySelector(".card-open");
+    return {
+      sidebarRight: sidebar.right,
+      gridLeft: grid.left,
+      gridWidth: grid.width,
+      count: document.querySelector(".gift-grid").dataset.orderCount,
+    };
+  });
+  assert.ok(desktopGeometry.gridLeft > desktopGeometry.sidebarRight);
+  assert.ok(desktopGeometry.gridWidth > 700);
+  assert.equal(
+    await sidebar
+      .getByRole("button", { name: "Refresh market", exact: true })
+      .count(),
+    1,
+  );
+  assert.equal(
+    await sidebar
+      .getByRole("combobox", { name: "Sort by", exact: true })
+      .count(),
+    1,
+  );
+  await page.evaluate(() => window.scrollTo(0, 350));
+  assert.ok(
+    await sidebar.evaluate((node) => node.getBoundingClientRect().top >= 19),
+    "Controls remain sticky while listings scroll",
+  );
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.setViewportSize({ width: 1024, height: 560 });
+  await button("Model").click();
+  const beforeSidebarScroll = await page.evaluate(() => window.scrollY);
+  await sidebar.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  assert.equal(
+    await page.evaluate(() => window.scrollY),
+    beforeSidebarScroll,
+    "Sidebar scrolling does not scroll or paginate the listings",
+  );
+  await page.getByRole("combobox", { name: "Sort by", exact: true }).click();
+  await page.getByRole("option", { name: "Price", exact: true }).click();
+  await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(
+    (count) =>
+      document.querySelector(".gift-grid")?.dataset.orderCount === count,
+    desktopGeometry.count,
+  );
+  assert.equal(
+    await page.evaluate(
+      () => document.querySelector(".card-open") === window.responsiveCard,
+    ),
+    true,
+    "Responsive reflow retains card DOM and media",
+  );
   await sort("Gift #");
   await page.waitForFunction(
     () => document.querySelector(".gift-card .serial")?.textContent === "#2000",
@@ -893,7 +956,7 @@ try {
             footer.getBoundingClientRect().bottom -
               (innerHeight -
                 parseFloat(
-                  getComputedStyle(footer.parentElement).paddingBottom,
+                  getComputedStyle(footer.closest(".orderbook")).paddingBottom,
                 )),
           ) < 2,
       ),

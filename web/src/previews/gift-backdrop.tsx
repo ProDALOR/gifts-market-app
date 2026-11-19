@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { BackdropPalette } from "./gift-appearance";
 
-import { bannerPatternTiles } from "./preview-layout";
+import { bannerPatternTiles, giftPatternTiles } from "./preview-layout";
 import { loadPattern } from "./pattern-data";
 import { observePreviewSize } from "./preview-environment";
 
@@ -18,7 +18,7 @@ export function GiftBackdrop({
   patternUrl?: string;
   patternUrls?: string[];
   visible: boolean;
-  layout?: "gift" | "banner";
+  layout?: "gift" | "banner" | "preview";
   background?: boolean;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -98,6 +98,13 @@ export function GiftBackdrop({
           if (symbol)
             context.drawImage(symbol, tile.x, tile.y, tile.size, tile.size);
         }
+      } else if (layout === "preview") {
+        const symbol = symbols[0];
+        if (symbol)
+          for (const tile of giftPatternTiles(width, height)) {
+            context.globalAlpha = tile.opacity;
+            context.drawImage(symbol, tile.x, tile.y, tile.size, tile.size);
+          }
       } else
         for (let index = 0; index < 8; index++) {
           const angle = -Math.PI / 2 + (index * Math.PI) / 4;

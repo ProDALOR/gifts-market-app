@@ -7,7 +7,10 @@ import {
   useState,
 } from "react";
 import { GiftArtwork } from "../previews/gift-artwork";
-import { usePreviewEnvironment } from "../previews/preview-environment";
+import {
+  observePreviewSize,
+  usePreviewEnvironment,
+} from "../previews/preview-environment";
 import { SearchIcon } from "../ui/icons";
 import type { Collection } from "../orderbook";
 export const CollectionRail = memo(function CollectionRail({
@@ -24,6 +27,7 @@ export const CollectionRail = memo(function CollectionRail({
   const { reducedMotion } = usePreviewEnvironment();
   const initial = useRef(true);
   const rail = useRef<HTMLDivElement>(null),
+    host = useRef<HTMLElement>(null),
     input = useRef<HTMLInputElement>(null),
     selectedButton = useRef<HTMLButtonElement>(null);
   const matches = collections.filter((item) =>
@@ -32,35 +36,38 @@ export const CollectionRail = memo(function CollectionRail({
   useLayoutEffect(() => {
     const label = selectedButton.current?.querySelector("b");
     if (!label || searching) return;
-    label.style.removeProperty("--collection-name-size");
-    const styles = getComputedStyle(label);
     const context = document.createElement("canvas").getContext("2d");
     if (!context) return;
-    const words = (label.textContent || "").trim().split(/\s+/);
-    const width = label.clientWidth;
-    let fitted = 11;
-    for (let size = 16; size >= 11; size -= 0.25) {
-      context.font = `${styles.fontWeight} ${size}px ${styles.fontFamily}`;
-      let line = "",
-        lines = 1,
-        fits = true;
-      for (const word of words) {
-        if (context.measureText(word).width > width) {
-          fits = false;
-          break;
+    const fit = () => {
+      const styles = getComputedStyle(label);
+      const words = (label.textContent || "").trim().split(/\s+/);
+      const width = label.clientWidth;
+      let fitted = 11;
+      for (let size = 16; size >= 11; size -= 0.25) {
+        context.font = `${styles.fontWeight} ${size}px ${styles.fontFamily}`;
+        let line = "",
+          lines = 1,
+          fits = true;
+        for (const word of words) {
+          if (context.measureText(word).width > width) {
+            fits = false;
+            break;
+          }
+          const next = line ? `${line} ${word}` : word;
+          if (context.measureText(next).width <= width) line = next;
+          else {
+            lines++;
+            line = word;
+          }
         }
-        const next = line ? `${line} ${word}` : word;
-        if (context.measureText(next).width <= width) line = next;
-        else {
-          lines++;
-          line = word;
-        }
+        fitted = size;
+        if (fits && lines <= 2) break;
       }
-      fitted = size;
-      if (fits && lines <= 2) break;
-    }
-    label.style.setProperty("--collection-name-size", `${fitted}px`);
-  }, [selected, searching, collections.length]);
+      label.style.setProperty("--collection-name-size", `${fitted}px`);
+    };
+    fit();
+    return observePreviewSize(label, fit);
+  }, [selected, searching, collections]);
   const alignSelected = useCallback(
     (instant = false) => {
       if (rail.current && selectedButton.current) {
@@ -93,12 +100,23 @@ export const CollectionRail = memo(function CollectionRail({
       initial.current = false;
     }
   }, [searching, selected, collections.length, alignSelected]);
+  useEffect(() => {
+    const element = host.current;
+    if (!element || searching) return;
+    let width = element.clientWidth;
+    return observePreviewSize(element, () => {
+      if (width === element.clientWidth) return;
+      width = element.clientWidth;
+      alignSelected(true);
+    });
+  }, [searching, alignSelected]);
   function close() {
     setSearching(false);
     setQuery("");
   }
   return (
     <nav
+      ref={host}
       className={`collection-rail${searching ? " searching" : ""}`}
       aria-label="Collections"
       onTransitionEnd={(event) => {
@@ -181,7 +199,6 @@ export const CollectionRail = memo(function CollectionRail({
               <span className="collection-art">
                 {media ? (
                   <GiftArtwork
-                    key={media.thumbnail_url}
                     media={media}
                     fallback={item.name[0]}
                     label={item.name}

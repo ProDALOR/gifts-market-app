@@ -211,14 +211,33 @@ try {
   page.on("request", (request) => {
     if (request.url().includes("/__symbol-motion")) symbolAnimations++;
   });
+  const symbolPng = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 96;
+    const context = canvas.getContext("2d");
+    context.scale(4, 4);
+    context.fillStyle = "red";
+    context.fill(new Path2D("m12 1 3 7 8 1-6 6 2 8-7-4-7 4 2-8-6-6 8-1z"));
+    return canvas.toDataURL("image/png").split(",")[1];
+  });
   await page.route("**/__symbol.svg", (route) =>
     route.fulfill({
-      contentType: "image/svg+xml",
-      body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="red" d="m12 1 3 7 8 1-6 6 2 8-7-4-7 4 2-8-6-6 8-1z"/></svg>',
+      contentType: "image/png",
+      body: Buffer.from(symbolPng, "base64"),
     }),
   );
   const errors = [];
   await page.addInitScript(() => {
+    window.detailPatternDraws = [];
+    const draw = CanvasRenderingContext2D.prototype.drawImage;
+    CanvasRenderingContext2D.prototype.drawImage = function (source, ...args) {
+      if (this.canvas.matches(".detail-art .gift-backdrop"))
+        window.detailPatternDraws.push({
+          size: args[2],
+          opacity: this.globalAlpha,
+        });
+      return draw.call(this, source, ...args);
+    };
     window.motionAnimations = [];
     const animate = Element.prototype.animate;
     Element.prototype.animate = function (...args) {
@@ -447,6 +466,31 @@ try {
     art.height >= 300 && giftArt.height > 200,
     "Mobile artwork has more room",
   );
+  assert.equal(await page.locator(".detail-caption p").textContent(), "Gold");
+  assert.equal(
+    await page.locator(".detail-art #detail-title").textContent(),
+    "Gift #1",
+  );
+  assert.equal(await page.locator(".detail-content #detail-title").count(), 0);
+  await page.waitForFunction(() => {
+    const tiles = window.detailPatternDraws.slice(-18);
+    return (
+      tiles.length === 18 &&
+      new Set(tiles.map((tile) => tile.size)).size === 3 &&
+      new Set(tiles.map((tile) => tile.opacity)).size > 3
+    );
+  });
+  assert.ok(
+    await page.locator(".detail-caption").evaluate((caption) => {
+      const bounds = caption.getBoundingClientRect();
+      const artwork = caption
+        .closest(".detail-art")
+        .querySelector(".gift-model-image")
+        .getBoundingClientRect();
+      return bounds.top >= artwork.bottom - 1;
+    }),
+    "The caption sits below the artwork",
+  );
   assert.equal(await page.locator(".attribute-visual").count(), 3);
   await page.locator(".attribute-model .gift-model-image.loaded").waitFor();
   await page.locator(".attribute-pattern .gift-model-image.loaded").waitFor();
@@ -460,15 +504,100 @@ try {
         .evaluate((el) => getComputedStyle(el).filter)
     ).includes("brightness(0)"),
   );
+  await page
+    .locator(".detail")
+    .evaluate((dialog) =>
+      Promise.all(
+        dialog.getAnimations().map((animation) => animation.finished),
+      ),
+    );
   await page.screenshot({ path: "/tmp/gifts-market-ui/details-mobile.png" });
-  await page.setViewportSize({ width: 1100, height: 850 });
-  const desktopArt = await page.locator(".detail-art").boundingBox();
-  const desktopBody = await page.locator(".detail-body").boundingBox();
-  assert.ok(
-    desktopBody.x >= desktopArt.x + desktopArt.width - 1,
-    "Desktop shows artwork beside details",
-  );
+  await page.evaluate(() => {
+    window.detailNodes = [
+      document.querySelector(".detail"),
+      document.querySelector(".detail-art .gift-model-image"),
+      document.querySelector(".valuation-summary"),
+    ];
+  });
+  for (const width of [800, 959, 960, 1100, 1440]) {
+    await page.setViewportSize({ width, height: 850 });
+    const geometry = await page.locator(".detail").evaluate((dialog) => {
+      const art = dialog.querySelector(".detail-art").getBoundingClientRect();
+      const body = dialog.querySelector(".detail-body").getBoundingClientRect();
+      const pane = dialog
+        .querySelector(".detail-content")
+        .getBoundingClientRect();
+      const bounds = dialog.getBoundingClientRect();
+      return {
+        mobile:
+          body.top >= art.bottom - 1 &&
+          Math.abs(bounds.bottom - innerHeight) < 1,
+        desktop:
+          pane.left >= art.right - 1 &&
+          Math.abs(pane.top - art.top) < 1 &&
+          Math.abs(pane.height - art.height) < 1,
+        contained:
+          bounds.left >= 0 &&
+          bounds.right <= innerWidth &&
+          bounds.top >= 0 &&
+          bounds.bottom <= innerHeight &&
+          dialog.scrollWidth <= dialog.clientWidth,
+      };
+    });
+    assert.ok(geometry.contained, `Details fit the viewport at ${width}px`);
+    assert.ok(
+      width < 960 ? geometry.mobile : geometry.desktop,
+      `Responsive detail layout at ${width}px`,
+    );
+    assert.equal(
+      await page.evaluate(
+        () =>
+          document.querySelector(".detail") === window.detailNodes[0] &&
+          document.querySelector(".detail-art .gift-model-image") ===
+            window.detailNodes[1] &&
+          document.querySelector(".valuation-summary") ===
+            window.detailNodes[2],
+      ),
+      true,
+      "Resizing keeps the dialog, artwork and valuation mounted",
+    );
+  }
   await page.screenshot({ path: "/tmp/gifts-market-ui/details-desktop.png" });
+  await page.setViewportSize({ width: 1024, height: 400 });
+  const fixedDetails = await page.evaluate(() => ({
+    art: document.querySelector(".detail-art").getBoundingClientRect().top,
+    close: document
+      .querySelector(".detail > .modal-close")
+      .getBoundingClientRect().top,
+    page: scrollY,
+  }));
+  const pane = page.locator(".detail-content");
+  await pane.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  assert.ok(
+    await pane.evaluate((element) => element.scrollTop > 0),
+    "Short desktop windows scroll the information pane",
+  );
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      art: document.querySelector(".detail-art").getBoundingClientRect().top,
+      close: document
+        .querySelector(".detail > .modal-close")
+        .getBoundingClientRect().top,
+      page: scrollY,
+    })),
+    fixedDetails,
+    "Artwork, close button and listings stay still while details scroll",
+  );
+  assert.ok(
+    await page.locator(".detail-actions").evaluate((element) => {
+      const action = element.getBoundingClientRect();
+      const dialog = element.closest(".detail").getBoundingClientRect();
+      return action.top >= dialog.top && action.bottom <= dialog.bottom;
+    }),
+    "The venue action stays inside the short dialog",
+  );
   await page.setViewportSize({ width: 440, height: 880 });
   await waitReport();
   assert.equal(
@@ -1040,6 +1169,16 @@ try {
     3,
   );
   assert.equal(requests.length, countBeforeCriteria);
+  assert.equal(
+    await page.locator(".detail-caption p").count(),
+    0,
+    "Unrestricted bids do not invent a model name",
+  );
+  assert.equal(
+    await page.locator("#detail-title span").count(),
+    0,
+    "Unnumbered bids have no gift number",
+  );
   assert.equal(symbolAnimations, 0);
   // Standalone criteria details have no valuation to keep a status socket alive for.
   const connectionsBeforeCriteria = connections;

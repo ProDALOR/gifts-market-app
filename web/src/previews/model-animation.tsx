@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { animationRenderer, loadAnimationData } from "./animation-data";
 import { AnimationLifecycle } from "./animation-lifecycle";
 import { playbackBudget } from "./playback-budget";
+import { observePreviewSize } from "./preview-environment";
 export default function ModelAnimation({
   url,
   active,
@@ -53,10 +54,19 @@ export default function ModelAnimation({
                 }
               : {},
         });
+        // CSS can resize artwork without a window resize (search, selected
+        // traits, sidebar reflow). Resize the existing canvas, not its player.
+        const unobserve =
+          renderer === "canvas"
+            ? observePreviewSize(host, () => animation.resize())
+            : undefined;
         return {
           play: () => animation.play(),
           pause: () => animation.pause(),
-          destroy: () => animation.destroy(),
+          destroy: () => {
+            unobserve?.();
+            animation.destroy();
+          },
           ready: () => animation.isLoaded,
           listen: (event, callback) => {
             animation.addEventListener(event, callback);

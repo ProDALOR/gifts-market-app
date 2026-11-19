@@ -15,6 +15,7 @@ import {GiftArtwork} from '/src/previews/gift-artwork.tsx';
 import { CollectionRail } from "/src/collections/collection-picker.tsx";
 import { TraitPreview } from "/src/previews/trait-preview.tsx";
 import { VenueIcon } from "/src/ui/icons.tsx";
+import { SortPicker } from "/src/ui/pickers.tsx";
 const order={target:{kind:'gift',id:'gift-1',number:1,traits:{model:'model',backdrop:'backdrop',pattern:'pattern'}}};
 const options=new Map([
  ['model',{kind:'model',id:'model',name:'Model',media:{thumbnail_url:'/media/models/model/thumbnail',preview_url:'/media/models/model/preview',animation_url:'/media/models/model/animation'}}],
@@ -51,6 +52,20 @@ function Many({detail}) {
 window.preload=()=>Promise.all(bulk.map(item=>loadAnimationData('/media/models/'+item.id+'/animation',new AbortController().signal)));
 window.mountMany=(detail=false)=>{document.getElementById('fixture').style.margin='0';root.render(React.createElement(Many,{detail}));};
 window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i+'/thumbnail',animation_url:'/media/models/rail-'+i+'/animation'},model_ids:['rail-'+i],backdrop_ids:[],pattern_ids:[]}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
+function Desktop() {
+ const [collections,setCollections]=React.useState(()=>Array.from({length:124},(_,i)=>({id:'rail-'+i,name:i===123?'Intelligence Cup':'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i+'/thumbnail',animation_url:'/media/models/rail-'+i+'/animation'},model_ids:[],backdrop_ids:[],pattern_ids:[]})));
+ const [selected,setSelected]=React.useState('rail-123');
+ const [sort,setSort]=React.useState('price');
+ window.renameRail=name=>setCollections(items=>items.map(item=>item.id===selected?{...item,name}:item));
+ return React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook market-shell'},
+  React.createElement('aside',{className:'market-sidebar','data-scroll-container':true},
+   React.createElement(CollectionRail,{collections,selected,select:setSelected}),
+   React.createElement('div',{style:{height:500}},'More controls'),
+   React.createElement('div',{className:'market-toolbar'},React.createElement('div',{className:'sort-control'},React.createElement(SortPicker,{value:sort,change:setSort}))),
+   React.createElement('div',{style:{height:400}},'Additional controls')),
+  React.createElement('div',{className:'market-results',style:{height:2000}},'Listings')));
+}
+window.mountDesktop=()=>root.render(React.createElement(Desktop));
 window.mountReference=(animated=true)=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/custom-still?v=1',animation_url:animated?'/media/custom-motion.tgs?v=2':null},fallback:'R',playback:'detail'}));
 window.mountMixed=()=>root.render(React.createElement('div',{className:'mixed-renderers'},...Array.from({length:12},(_,index)=>React.createElement(GiftArtwork,{key:index,media:index%2?{thumbnail_url:'/media/gradient-still',preview_url:'/media/opacity-test/preview',animation_url:'/media/opacity-test/animation'}:options.get('model').media,fallback:'M',playback:'selected'}))));
 window.mountGradient=(playback='detail')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/gradient-still',preview_url:'/media/opacity-test/preview',animation_url:'/media/opacity-test/animation'},fallback:'G',playback}));
@@ -91,6 +106,25 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
+    window.previewResizeTargets = 0;
+    const NativeResizeObserver = window.ResizeObserver;
+    window.ResizeObserver = class extends NativeResizeObserver {
+      targets = new Set();
+      observe(target, options) {
+        if (!this.targets.has(target)) window.previewResizeTargets++;
+        this.targets.add(target);
+        super.observe(target, options);
+      }
+      unobserve(target) {
+        if (this.targets.delete(target)) window.previewResizeTargets--;
+        super.unobserve(target);
+      }
+      disconnect() {
+        window.previewResizeTargets -= this.targets.size;
+        this.targets.clear();
+        super.disconnect();
+      }
+    };
     const timeout = window.setTimeout;
     window.setTimeout = function (callback, delay, ...args) {
       if (window.__trackPreviewTimers && [100, 150, 180].includes(delay))
@@ -507,6 +541,12 @@ try {
     6,
     "Reflow keeps every admitted player mounted",
   );
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".preview-model canvas")].every(
+      (canvas) =>
+        canvas.width === canvas.clientWidth * Math.min(devicePixelRatio, 2),
+    ),
+  );
   await page.locator(".preview-model").last().locator(".gift-preview").hover();
   await page
     .locator(".preview-model")
@@ -588,6 +628,152 @@ try {
     "Initial positioning skips transient animation downloads across the entire catalog",
   );
   assert.equal(await page.locator(".preview-model").count(), 0);
+  // A narrow desktop sidebar must refit labels and retain cached artwork.
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.evaluate(() => window.mountDesktop());
+  const selectedTile = page.locator('.collection-tile[aria-pressed="true"]');
+  await selectedTile.locator(".model-animation.ready canvas").waitFor();
+  const mobileFont = await selectedTile.locator("b").evaluate((label) => {
+    window.selectedImage = label.parentElement.querySelector("img");
+    window.selectedCanvas = label.parentElement.querySelector("canvas");
+    return parseFloat(getComputedStyle(label).fontSize);
+  });
+  const beforeDesktop = animations;
+  await page.setViewportSize({ width: 1440, height: 700 });
+  await page.waitForFunction(
+    (mobileFont) =>
+      parseFloat(
+        getComputedStyle(
+          document.querySelector('.collection-tile[aria-pressed="true"] b'),
+        ).fontSize,
+      ) < mobileFont,
+    mobileFont,
+  );
+  assert.equal(
+    await selectedTile.evaluate(
+      (tile) =>
+        tile.querySelector("img") === window.selectedImage &&
+        tile.querySelector("canvas") === window.selectedCanvas,
+    ),
+    true,
+    "Desktop reflow retains collection artwork and its player",
+  );
+  assert.equal(
+    animations,
+    beforeDesktop,
+    "Resizing reuses downloaded animation data",
+  );
+  await page.waitForFunction(() => {
+    const tile = document.querySelector(
+      '.collection-tile[aria-pressed="true"]',
+    );
+    const list = tile.parentElement.getBoundingClientRect();
+    const bounds = tile.getBoundingClientRect();
+    return (
+      Math.abs(bounds.left - list.left - 67) < 1 &&
+      bounds.right <= list.right + 1
+    );
+  });
+  await page.evaluate(() => window.renameRail("Artisan Brick"));
+  await page.waitForFunction(
+    () =>
+      parseFloat(
+        getComputedStyle(
+          document.querySelector('.collection-tile[aria-pressed="true"] b'),
+        ).fontSize,
+      ) === 16,
+  );
+  await page
+    .getByRole("button", { name: "Search collections", exact: true })
+    .click();
+  await page.getByLabel("Filter collections").fill("Artisan");
+  await page.waitForFunction(
+    () =>
+      getComputedStyle(
+        document.querySelector('.collection-tile[aria-pressed="true"] b'),
+      ).width === "56px",
+  );
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector(
+      '.collection-tile[aria-pressed="true"] canvas',
+    );
+    return canvas && canvas.width === 32 * Math.min(devicePixelRatio, 2);
+  });
+  await page.getByLabel("Filter collections").press("Escape");
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector(
+      '.collection-tile[aria-pressed="true"] canvas',
+    );
+    return canvas && canvas.width === 55 * Math.min(devicePixelRatio, 2);
+  });
+  await page.setViewportSize({ width: 1024, height: 400 });
+  const sidebar = page.locator(".market-sidebar");
+  await sidebar.evaluate((node) => {
+    node.scrollTop = 400;
+  });
+  await page.waitForFunction(
+    () => !document.querySelector(".collection-art canvas"),
+  );
+  await page.getByRole("combobox", { name: "Sort by", exact: true }).click();
+  const menu = page.getByRole("listbox", { name: "Sort by options" });
+  const menuContained = () =>
+    menu.evaluate((node) => {
+      const bounds = node.getBoundingClientRect();
+      const sidebar = node.closest(".market-sidebar").getBoundingClientRect();
+      return (
+        bounds.top >= sidebar.top &&
+        bounds.bottom <= sidebar.bottom &&
+        node.clientHeight > 0
+      );
+    });
+  assert.equal(await menuContained(), true, "Dropdown fits the short sidebar");
+  const menuNode = await menu.evaluate((node) => {
+    window.sortMenu = node;
+    return node.style.top;
+  });
+  await sidebar.evaluate((node) => {
+    node.scrollTop = 515;
+  });
+  await page.waitForFunction(
+    () => document.querySelector('[role="listbox"]').style.top !== "auto",
+  );
+  assert.equal(
+    menuNode,
+    "auto",
+    "The menu initially opens above the lower trigger",
+  );
+  assert.equal(
+    await menuContained(),
+    true,
+    "Scrolling places the same menu below an upper trigger",
+  );
+  assert.equal(await menu.evaluate((node) => node === window.sortMenu), true);
+  assert.equal(
+    await page.evaluate(() => window.scrollY),
+    0,
+    "Sidebar menus never scroll listings",
+  );
+  await page.setViewportSize({ width: 960, height: 320 });
+  assert.equal(
+    await menuContained(),
+    true,
+    "An open dropdown follows resizing",
+  );
+  await sidebar.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  await menu.waitFor({ state: "detached" });
+  assert.equal(
+    await page.evaluate(() => window.scrollY),
+    0,
+    "A clipped trigger closes its menu without moving listings",
+  );
+  await sidebar.evaluate((node) => {
+    node.scrollTop = 0;
+  });
+  await selectedTile.locator(".model-animation.ready canvas").waitFor();
+  assert.ok((await page.locator(".model-animation canvas").count()) <= 6);
+  await page.setViewportSize({ width: 480, height: 700 });
   await page.evaluate(() => window.unmount());
   const beforeReferences = animations;
   await page.evaluate(() => window.mountReference(false));
@@ -940,9 +1126,10 @@ try {
   );
   loadingStills.splice(0).forEach((release) => release());
   await page.evaluate(() => window.unmount());
+  await page.waitForFunction(() => window.previewResizeTargets === 0);
   assert.deepEqual(errors, []);
   console.log(
-    "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details, sharp large stills, SVG retry/fallback, transparent CSS placeholders, bounded downloads/playback, stable reflow, long-rail initialization and unmount.",
+    "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details, sharp large stills, SVG retry/fallback, transparent CSS placeholders, bounded downloads/playback, responsive canvas sizes, desktop labels/menus, long-rail initialization and observer cleanup.",
   );
 } finally {
   await browser?.close();

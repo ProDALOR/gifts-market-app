@@ -29,18 +29,23 @@ export function ScrollLoader({
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(check);
     };
+    const insideControls = (event: Event) =>
+      event.target instanceof Element &&
+      !!event.target.closest("[data-scroll-container]");
     const scroll = () => {
       const y = window.scrollY;
       if (y > lastY) schedule();
       lastY = y;
     };
     const wheel = (event: WheelEvent) => {
-      if (event.deltaY > 0) schedule();
+      if (!insideControls(event) && event.deltaY > 0) schedule();
     };
     const touchStart = (event: TouchEvent) => {
+      if (insideControls(event)) return;
       lastTouchY = event.touches[0]?.clientY ?? 0;
     };
     const touchMove = (event: TouchEvent) => {
+      if (insideControls(event)) return;
       const y = event.touches[0]?.clientY ?? lastTouchY;
       if (y < lastTouchY) schedule();
       lastTouchY = y;
