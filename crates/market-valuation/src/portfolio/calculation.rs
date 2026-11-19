@@ -150,6 +150,8 @@ pub(crate) fn portfolio(
         }
         rows.push(row);
     }
+    let sync = snapshot.sync()?;
+    let stale = sync.state != market_gifts::SyncState::Live;
     Ok((
         crate::Prepared::new(
             Valuation {
@@ -160,10 +162,11 @@ pub(crate) fn portfolio(
                 priced,
                 unpriced,
                 currency_id: input.currency_id,
-                sync: snapshot.sync()?,
+                sync,
             },
             snapshot.revision()?,
-        ),
+        )
+        .with_stale(stale),
         dependencies,
     ))
 }

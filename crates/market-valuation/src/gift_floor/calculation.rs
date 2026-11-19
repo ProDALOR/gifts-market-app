@@ -143,7 +143,6 @@ impl Statistics {
         gift: CollectibleGift,
         lookup: GiftLookup,
         currency: CurrencyId,
-        sync: SyncStatus,
     ) -> GiftFloorValuation {
         let empty = Floor::default();
         let model = gift
@@ -194,7 +193,6 @@ impl Statistics {
                 model_backdrop_samples: pair.samples,
                 minimum_multiplier_samples: MINIMUM_MULTIPLIER_SAMPLES,
             },
-            sync,
             gift,
         }
     }

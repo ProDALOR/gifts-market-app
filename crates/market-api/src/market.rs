@@ -1,7 +1,7 @@
 //! Shared HTTP/WebSocket adapter over gift-domain actor capabilities.
 use super::{error::Result, models::*};
 use market_actors::{DataSubscription, DataUpdate, MarketDataHandle};
-use market_gifts::{MediaTarget, TelegramDocumentId};
+use market_gifts::{MediaTarget, SyncStatus, TelegramDocumentId};
 use std::sync::Arc;
 use tokio::sync::watch;
 #[derive(Clone)]
@@ -51,11 +51,8 @@ impl MarketApi {
         if self.data.status().await?.ready {
             Ok(())
         } else {
-            Err(market_actors::error::DataError::unavailable("Market replica is loading").into())
+            Err(market_actors::error::DataError::unavailable("Market data is loading").into())
         }
-    }
-    pub(crate) async fn sync(&self) -> Result<SyncStatus> {
-        Ok(self.data.status().await?)
     }
     pub(crate) async fn catalog_snapshot(
         &self,

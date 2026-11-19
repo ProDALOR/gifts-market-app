@@ -10,12 +10,13 @@ pub use crate::orders::{
     OrderIdentity, OrderReadResponse, OrderResponse, OrderTargetResponse, OrderedOrderResponse,
     UnsupportedTargetReason,
 };
+pub use crate::status::MarketStatus;
 pub use market_gifts::{
     Amount, BackdropId, BackdropPalette, CatalogVersions, CollectibleGift, CollectionId,
     CollectionSlug, Currency, CurrencyId, GiftBackdrop, GiftBook, GiftCriteria, GiftFilters,
     GiftNumber, GiftNumberRange, GiftOrderKind, GiftOrderQuery, GiftSide, GiftSlug, GiftSort,
-    GiftTraits, ModelId, OrderId, PatternId, Period, PriceRange, SyncState, SyncStatus,
-    UnsupportedGiftReason, Venue, VenueId,
+    GiftTraits, ModelId, OrderId, PatternId, Period, PriceRange, UnsupportedGiftReason, Venue,
+    VenueId,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -89,9 +90,9 @@ pub enum ServerFrame<'a> {
         id: String,
         state: SubscriptionStatus,
     },
-    #[serde(rename = "replica.status")]
-    ReplicaStatus {
-        sync: SyncStatus,
+    #[serde(rename = "market.status")]
+    MarketStatus {
+        status: MarketStatus,
     },
     Catalog {
         id: String,

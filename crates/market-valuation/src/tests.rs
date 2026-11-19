@@ -41,6 +41,7 @@ impl Handler<TestMessage> for TestActor {
                     Arc::new(Mark::evaluated(
                         actor.life.strategy(),
                         Prepared {
+                            stale: false,
                             prepared_at: jiff::Timestamp::now(),
                             data,
                             revision: "pinned-revision".into(),

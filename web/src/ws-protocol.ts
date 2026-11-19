@@ -17,11 +17,8 @@ const id = (value: unknown) =>
   text(value) && /^[A-Za-z0-9_.-]{1,64}$/.test(value);
 const integer = (value: unknown) =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-const sync = (value: unknown) =>
-  record(value) &&
-  typeof value.ready === "boolean" &&
-  oneOf(value.state, ["starting", "syncing", "live", "stale"]) &&
-  nullableText(value.updated_at);
+const marketStatus = (value: unknown) =>
+  oneOf(value, ["available", "delayed", "unavailable"]);
 const traits = (value: unknown) =>
   record(value) &&
   [value.model, value.backdrop, value.pattern].every(nullableText);
@@ -169,7 +166,7 @@ export function parseFrame(raw: unknown): LiveFrame {
     !(
       id(value.id) ||
       (value.type === "error" && value.id === "") ||
-      (value.type === "replica.status" && value.id === undefined)
+      (value.type === "market.status" && value.id === undefined)
     )
   )
     throw new Error("Invalid operation envelope");
@@ -186,8 +183,12 @@ export function parseFrame(raw: unknown): LiveFrame {
         text(value.error.message) &&
         (value.error.details == null || record(value.error.details));
       break;
-    case "replica.status":
-      valid = sync(value.sync);
+    case "market.status":
+      valid =
+        value.id === undefined &&
+        marketStatus(value.status) &&
+        value.sync === undefined &&
+        value.revision === undefined;
       break;
     case "orders.snapshot":
       valid = sequence(value.sequence) && readResult(value);
@@ -229,11 +230,12 @@ export function parseFrame(raw: unknown): LiveFrame {
           : value.method === "valuation.evaluate" &&
             record(d) &&
             text(d.strategy) &&
-            text(d.revision) &&
             text(d.evaluated_at) &&
             text(d.currency_id) &&
             gift(d.gift) &&
-            sync(d.sync) &&
+            typeof d.stale === "boolean" &&
+            d.sync === undefined &&
+            d.revision === undefined &&
             display(d.display);
       break;
     }

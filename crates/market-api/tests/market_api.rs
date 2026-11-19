@@ -343,13 +343,20 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     assert_eq!(collection["collection"]["id"], "tg.gift.123");
     assert!(collection.get("sync").is_none());
     assert!(collection.get("cursor").is_none());
-    let status: serde_json::Value = test::read_body_json(
-        test::call_service(&app, test::TestRequest::get().uri("/sync").to_request()).await,
-    )
-    .await;
-    assert_eq!(status["ready"], true);
-    assert!(status["state"].is_string());
-    assert!(status.get("updated_at").is_some());
+    assert_eq!(
+        test::call_service(&app, test::TestRequest::get().uri("/sync").to_request())
+            .await
+            .status(),
+        404
+    );
+    for path in ["/healthz", "/readyz"] {
+        assert_eq!(
+            test::call_service(&app, test::TestRequest::get().uri(path).to_request())
+                .await
+                .status(),
+            200
+        );
+    }
     assert!(body.get("sync").is_none());
     for field in ["models", "backdrops", "patterns"] {
         assert!(collection[field].is_array());
@@ -418,7 +425,7 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
         assert!(properties.get("sync").is_none());
         assert!(properties.get("cursor").is_none());
     }
-    for path in ["/catalog", "/collections/{id}", "/sync"] {
+    for path in ["/catalog", "/collections/{id}"] {
         assert!(schema["paths"][path].is_object());
     }
     stop.cancel();
@@ -438,6 +445,22 @@ async fn public_websocket_queries_share_local_windows_and_one_replication_stream
     let (mut a, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     let (mut b, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     for socket in [&mut a, &mut b] {
+        let initial = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                    socket.next().await
+                {
+                    break serde_json::from_str::<serde_json::Value>(&text).unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            initial,
+            serde_json::json!({"type":"market.status","status":"available"})
+        );
+
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::json!({"type":"orders.watch","id":"offers","params":{"query":slice_query()}})
@@ -480,12 +503,26 @@ async fn public_websocket_queries_share_local_windows_and_one_replication_stream
     receive(&mut b, "2.000000002").await;
     assert_eq!(peer.reads.load(Ordering::SeqCst), 1);
     assert_eq!(peer.watches.load(Ordering::SeqCst), 1);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), async {
+            loop {
+                if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                    a.next().await
+                {
+                    break text;
+                }
+            }
+        })
+        .await
+        .is_err(),
+        "checkpoint-only changes must not emit market status"
+    );
     peer.disconnect.cancel();
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = a.next().await {
                 let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-                if value["type"] == "replica.status" && value["sync"]["state"] == "stale" {
+                if value["type"] == "market.status" && value["status"] == "delayed" {
                     assert!(value.get("page").is_none());
                     assert!(value.get("revision").is_none());
                     assert!(value.get("id").is_none());
@@ -537,13 +574,11 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
             );
         }
     }
-    for path in ["/sync", "/readyz"] {
-        assert!(
-            schema["paths"][path]["get"]["responses"]
-                .get("503")
-                .is_some()
-        );
+    for path in ["/sync", "/readyz", "/healthz"] {
+        assert!(schema["paths"].get(path).is_none());
     }
+    assert!(schema["components"]["schemas"].get("SyncStatus").is_none());
+    assert!(schema["components"]["schemas"].get("SyncState").is_none());
     assert!(
         schema["paths"]["/orders/query"]["delete"]["responses"]
             .get("503")
@@ -1392,7 +1427,9 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
     assert_eq!(final_field["value"]["kind"], "currency");
     assert_eq!(final_field["value"]["amount"], "6.00");
     assert_eq!(final_field["value"]["currency_id"], "GRAM");
-    assert!(body["revision"].is_string());
+    assert!(body.get("revision").is_none());
+    assert!(body.get("sync").is_none());
+    assert_eq!(body["stale"], false);
     assert!(body["evaluated_at"].is_string());
     assert!(body.get("strategies").is_none());
     assert!(body.get("data").is_none());
@@ -1414,7 +1451,7 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
                 socket.next().await
             {
                 let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-                if frame["type"] == "replica.status" {
+                if frame["type"] == "market.status" {
                     assert!(frame.get("id").is_none());
                     continue;
                 }
@@ -1449,7 +1486,7 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
                 socket.next().await
             {
                 let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-                if frame["type"] == "replica.status" {
+                if frame["type"] == "market.status" {
                     assert!(frame.get("id").is_none());
                     continue;
                 }
@@ -1512,7 +1549,8 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
     .await;
     assert_eq!(response.status(), 200);
     let report: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(report["revision"], "partial");
+    assert!(report.get("revision").is_none());
+    assert!(report.get("sync").is_none());
     assert_eq!(
         report["backdrop_multiplier"]["error"]["code"],
         "missing_trait"
@@ -2288,6 +2326,21 @@ async fn range_watch_smoke_probe_uses_portable_positions_and_frozen_leases() {
     let api_stop = CancellationToken::new();
     let job = tokio::spawn(api.run(api_stop.clone()));
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let availability = tokio::process::Command::new("node")
+        .arg(root.join("scripts/market-status-probe.mjs"))
+        .arg(&base)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        availability.status.success(),
+        "{}",
+        String::from_utf8_lossy(&availability.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&availability.stdout).trim(),
+        "available"
+    );
     let output = tokio::process::Command::new("node")
         .arg(root.join("scripts/range-probe.mjs"))
         .env("PUBLIC_URL", base)

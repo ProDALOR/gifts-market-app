@@ -426,3 +426,30 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
     );
     stop(data, task).await;
 }
+
+#[tokio::test]
+async fn mark_freshness_tracks_delayed_data_without_putting_sync_in_calculations() {
+    let (_directory, writer) = book();
+    let data = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let live = handle.gift(request()).await.unwrap();
+    assert!(!live.stale);
+    writer.mark(market_replica::SyncState::Stale);
+    let delayed = handle.gift(request()).await.unwrap();
+    assert!(delayed.stale);
+    assert_eq!(live.final_mark.value(), delayed.final_mark.value());
+    let value = serde_json::to_value(&delayed.data).unwrap();
+    assert!(value.get("sync").is_none());
+    assert!(value.get("revision").is_none());
+    writer.mark(market_replica::SyncState::Live);
+    assert!(!handle.gift(request()).await.unwrap().stale);
+    assert!(
+        delayed.stale,
+        "a previously prepared mark stays marked as delayed"
+    );
+    stop(data, task).await;
+}

@@ -34,8 +34,6 @@ pub struct ValuationErrorDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub currency_id: Option<market_gifts::CurrencyId>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub revision: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub required_samples: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available_samples: Option<u32>,
@@ -45,7 +43,6 @@ impl From<&market_valuation::ValuationErrorDetails> for ValuationErrorDetails {
         Self {
             strategy: value.strategy.clone(),
             currency_id: value.currency_id.clone(),
-            revision: value.revision.clone(),
             required_samples: value.required_samples,
             available_samples: value.available_samples,
         }
@@ -302,7 +299,7 @@ mod tests {
             serde_json::to_value(error).unwrap(),
             serde_json::json!({
                 "code":"not_enough_data", "message":"Not enough data",
-                "details":{"strategy":"gift_floor", "currency_id":"GRAM", "revision":"r1", "required_samples":3, "available_samples":1}
+                "details":{"strategy":"gift_floor", "currency_id":"GRAM", "required_samples":3, "available_samples":1}
             })
         );
     }

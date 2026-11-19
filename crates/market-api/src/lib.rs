@@ -37,3 +37,5 @@ pub fn schema_json() -> serde_json::Result<String> {
 pub fn asyncapi_json() -> serde_json::Result<String> {
     serde_json::to_string(&asyncapi::document()?)
 }
+
+mod status;

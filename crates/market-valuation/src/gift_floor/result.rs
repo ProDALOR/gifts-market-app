@@ -1,6 +1,6 @@
 //! The result and evidence produced by gift_floor, independent of transport presentation.
 use crate::ValuationMetric;
-use market_gifts::{CollectibleGift, CurrencyId, GiftSlug, SyncStatus};
+use market_gifts::{CollectibleGift, CurrencyId, GiftSlug};
 use serde::{Deserialize, Serialize};
 pub const MINIMUM_MULTIPLIER_SAMPLES: u32 = 3;
 
@@ -32,5 +32,4 @@ pub struct GiftFloorValuation {
     /// min(combined floor, collection floor * full-precision multipliers), then rounded to two decimals.
     pub final_mark: ValuationMetric,
     pub evidence: GiftFloorEvidence,
-    pub sync: SyncStatus,
 }

@@ -140,6 +140,7 @@ impl ValuationProvider for Quotes {
         Ok(Arc::new(market_valuation::Mark::evaluated(
             "model_floor",
             market_valuation::Prepared {
+                stale: false,
                 prepared_at: jiff::Timestamp::now(),
                 revision: format!("quote-{}", calls.len()),
                 data: value,

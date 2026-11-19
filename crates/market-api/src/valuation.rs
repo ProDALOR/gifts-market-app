@@ -1,10 +1,11 @@
-//! One public report with one snapshot revision and evaluation time.
+//! Public valuation metadata and strategy-owned calculations.
 use serde::Serialize;
 use utoipa::ToSchema;
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GiftValuationResponse<'a> {
     pub strategy: &'a str,
-    pub revision: &'a str,
+    /// True when market updates were delayed during evaluation.
+    pub stale: bool,
     #[schema(value_type = String, format = DateTime)]
     pub evaluated_at: jiff::Timestamp,
     #[serde(flatten)]
@@ -15,7 +16,7 @@ impl<'a> From<&'a market_valuation::GiftFloorMark> for GiftValuationResponse<'a>
     fn from(value: &'a market_valuation::GiftFloorMark) -> Self {
         Self {
             strategy: value.strategy,
-            revision: &value.revision,
+            stale: value.stale,
             evaluated_at: value.evaluated_at,
             data: &value.data,
             display: value.data.display(),

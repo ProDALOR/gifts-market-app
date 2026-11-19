@@ -59,32 +59,33 @@ pub(super) fn valuation(value: &GiftFloorMark) -> Reply {
     text.push_str(
         "\nBased on eligible asks, before fees. The final mark uses unrounded multipliers.",
     );
-    if value.sync.state != SyncState::Live {
-        text.push_str("\nMarket data is not live; using the last synchronized listings.");
+    if value.stale {
+        text.push_str("\nMarket updates are delayed; this estimate may be outdated.");
     }
     Reply { text }
 }
 pub(super) fn usage(_kind: CommandKind) -> Reply {
-    Reply { text: "Use /value PlushPepe-123 [GRAM|XTR] or /value https://t.me/nft/PlushPepe-123. Only gifts in synchronized market orders can be resolved.".into() }
+    Reply { text: "Use /value PlushPepe-123 [GRAM|XTR] or /value https://t.me/nft/PlushPepe-123. Only gifts listed in available market data can be resolved.".into() }
 }
 pub(crate) fn launch_reply(command: CommandKind) -> Option<Reply> {
     Some(Reply { text: match command {
         CommandKind::Start | CommandKind::Market => "Browse live gift markets, compare venues and filter offers in one place.",
-        CommandKind::Help => "/value <gift URL or slug> [GRAM|XTR] — unified gift valuation. You can also send a gift link directly.\n/status — synchronization status.\n/market — open the market.\nGift lookup uses synchronized market orders; unlisted gifts are unavailable.",
+        CommandKind::Help => "/value <gift URL or slug> [GRAM|XTR] — unified gift valuation. You can also send a gift link directly.\n/status — market availability.\n/market — open the market.\nGift lookup uses available market listings; unlisted gifts are unavailable.",
         _ => return None,
     }.into() })
 }
 pub(super) fn status_reply(status: market_gifts::SyncStatus) -> Reply {
-    let state = match status.state {
-        SyncState::Starting => "starting",
-        SyncState::Syncing => "synchronizing",
-        SyncState::Live => "live",
-        SyncState::Stale => "stale",
+    let state = if !status.ready {
+        "unavailable"
+    } else if status.state == SyncState::Live {
+        "available"
+    } else {
+        "updates delayed"
     };
     let detail = if !status.ready {
         "Preparing market data. Please check again shortly."
-    } else if status.state == SyncState::Stale {
-        "Showing the last synchronized market data."
+    } else if status.state != SyncState::Live {
+        "Showing previously received listings."
     } else {
         "Ready to browse."
     };
@@ -126,13 +127,9 @@ mod tests {
                 model_backdrop_samples: 3,
                 minimum_multiplier_samples: 3,
             },
-            sync: SyncStatus {
-                ready: true,
-                state: SyncState::Live,
-                updated_at: None,
-            },
         };
         let mark = market_valuation::Mark {
+            stale: false,
             strategy: "gift_floor",
             data: report,
             revision: "pinned".into(),

@@ -89,19 +89,12 @@ const order = (id, number) => ({
   expires_at: null,
   market_url: "https://example.com/gift",
 });
-const sync = { ready: true, state: "live", updated_at: null };
 const a = order("a", 1),
   b = order("b", 2),
   x = order("x", 3);
 let orderWire;
 let watcher;
-const frame = (rows) =>
-  watcher.frame(
-    orderWire,
-    rows,
-    sync,
-    JSON.stringify(rows.map((row) => row.id)),
-  );
+const frame = (rows) => watcher.frame(orderWire, rows);
 function report(body) {
   const number = body.gift.number;
   const missing = {
@@ -114,12 +107,11 @@ function report(body) {
   };
   return {
     strategy: "fixture_floor",
-    revision: "view",
+    stale: false,
     evaluated_at: "2026-11-18T12:00:00Z",
     slug: null,
     gift: order("gift", number).target.gift,
     currency_id: body.currency_id,
-    sync,
     collection_floor: { value: "8" },
     model_floor: { value: String(number * 10) },
     backdrop_floor: { value: "9" },
@@ -318,6 +310,7 @@ try {
   );
   await page.routeWebSocket("**/ws", (peer) => {
     socket = peer;
+    peer.send(JSON.stringify({ type: "market.status", status: "available" }));
     peer.onMessage(async (message) => {
       const command = JSON.parse(String(message));
       if (command.type === "cancel") {
@@ -346,7 +339,7 @@ try {
           amount: "25.00",
           currency_id: reportKind === "currency" ? "XTR" : body.currency_id,
         };
-        if (reportKind === "stale") response.sync = { ...sync, state: "stale" };
+        if (reportKind === "stale") response.stale = true;
       }
       // Deliberately deliver late results too: canceled IDs must be ignored by the client.
       peer.send(
@@ -762,7 +755,9 @@ try {
   await page.evaluate(() =>
     document.querySelector('button[aria-label="Refresh valuation"]').click(),
   );
-  await guide.getByText("Stale data ·", { exact: true }).waitFor();
+  await guide
+    .getByText("Estimate may be outdated ·", { exact: true })
+    .waitFor();
   reportKind = "partial";
   await page.evaluate(() =>
     document.querySelector('button[aria-label="Refresh valuation"]').click(),
@@ -900,6 +895,27 @@ try {
     .click();
   await page.getByText("About 20% below estimate", { exact: true }).waitFor();
   assert.equal(await page.locator(".valuation-breakdown").count(), 0);
+  const requestsBeforeDelay = requests.length;
+  socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
+  await page.getByText("Estimate may be outdated ·", { exact: true }).waitFor();
+  assert.equal(await page.locator(".price-comparison").count(), 0);
+  socket.send(JSON.stringify({ type: "market.status", status: "available" }));
+  await page.waitForTimeout(50);
+  assert.equal(
+    await page.locator(".price-comparison").count(),
+    0,
+    "recovery must not mark an old estimate current",
+  );
+  assert.equal(
+    requests.length,
+    requestsBeforeDelay,
+    "availability changes must not trigger valuation requests",
+  );
+  await page
+    .getByRole("button", { name: "Refresh valuation", exact: true })
+    .click();
+  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
+
   await page.setViewportSize({ width: 320, height: 720 });
   assert.equal(
     await page
@@ -918,7 +934,9 @@ try {
       .locator('.valuation-summary [data-metric="decision"] .valuation-value')
       .waitFor();
     if (variant === "stale")
-      await page.getByText("Stale data ·", { exact: true }).waitFor();
+      await page
+        .getByText("Estimate may be outdated ·", { exact: true })
+        .waitFor();
     else
       await page.locator(".valuation-summary .currency-symbol.star").waitFor();
     assert.equal(await page.locator(".price-comparison").count(), 0);

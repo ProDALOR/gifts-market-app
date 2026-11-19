@@ -15,7 +15,6 @@ const result = {
   method: "valuation.evaluate",
   data: {
     strategy: "floor",
-    revision: "r",
     evaluated_at: "2026-11-18T12:00:00Z",
     currency_id: "GRAM",
     gift: {
@@ -24,7 +23,7 @@ const result = {
       number: 1,
       traits: { model: null, backdrop: null, pattern: null },
     },
-    sync,
+    stale: false,
     display: {
       summary: null,
       note: "Exact amounts",
@@ -110,7 +109,6 @@ test("range snapshots and atomic changes validate identities, coverage and seque
     sequence: 0,
     reset: false,
     sync,
-    revision: "r",
     data: [row],
     next: null,
     range: { start: null, end: null },
@@ -159,4 +157,20 @@ test("range snapshots and atomic changes validate identities, coverage and seque
     data: { data: frame.data, range: frame.range, next: null },
   };
   assert.deepEqual(parseFrame(JSON.stringify(finite)), finite);
+});
+
+test("market status has an app-facing contract and valuation results reject operational fields", () => {
+  for (const status of ["available", "delayed", "unavailable"]) {
+    const frame = { type: "market.status", status };
+    assert.deepEqual(parseFrame(JSON.stringify(frame)), frame);
+  }
+  for (const frame of [
+    { type: "replica.status", sync },
+    { type: "market.status", status: "live" },
+    { type: "market.status", id: "op.1", status: "available" },
+    { ...result, data: { ...result.data, revision: "private-hub-checkpoint" } },
+    { ...result, data: { ...result.data, sync } },
+    { ...result, data: { ...result.data, stale: undefined } },
+  ])
+    assert.throws(() => parseFrame(JSON.stringify(frame)));
 });

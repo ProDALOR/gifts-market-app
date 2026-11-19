@@ -59,11 +59,23 @@ impl MessageHandler for MarketCommands {
         match request.command {
             Command::Status => Ok(match self.market.status().await {
                 Ok(status) => render::status_reply(status),
-                Err(error) => render::error_reply(error),
+                Err(error) => render::error_reply(
+                    if error.code() == market_actors::error::DataErrorCode::Unavailable {
+                        "Market data is temporarily unavailable"
+                    } else {
+                        error.message()
+                    },
+                ),
             }),
             Command::Value(query) => Ok(match self.valuation.gift(query).await {
                 Ok(result) => render::valuation(&result),
-                Err(error) => render::error_reply(error),
+                Err(error) => render::error_reply(
+                    if error.code() == market_valuation::ValuationErrorCode::Unavailable {
+                        "Valuations are temporarily unavailable"
+                    } else {
+                        error.message()
+                    },
+                ),
             }),
             command => {
                 LaunchCommands

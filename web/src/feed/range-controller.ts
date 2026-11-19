@@ -1,6 +1,6 @@
 import { liveSocket } from "../live-socket.ts";
 import { LoadedOrders } from "./loaded-orders.ts";
-import type { Order } from "../market.ts";
+import type { Order, MarketStatus } from "../market.ts";
 import { OrderActivityTracker, orderKey } from "../orderbook/order-activity.ts";
 import {
   emptyFeed,
@@ -14,7 +14,6 @@ import {
   type OrderData,
   type OrderQuery,
   type RangeSource,
-  type Sync,
 } from "./range-source.ts";
 export type RangeSelection = {
   filters: OrderQuery["filters"];
@@ -27,6 +26,7 @@ export class RangeController implements FeedController {
   private activity = new OrderActivityTracker();
   private source: RangeSource;
   private unwatchStatus?: () => void;
+  private availability: MarketStatus = "unavailable";
   private current?: OrderData;
   private activeStart = 0;
   private cache: LoadedOrders;
@@ -82,16 +82,11 @@ export class RangeController implements FeedController {
     };
   }
   start() {
-    this.unwatchStatus = liveSocket.watchStatus((sync) =>
-      this.emit({
-        sync,
-        status: this.frozen
-          ? "Paused"
-          : sync.state === "live"
-            ? "Live"
-            : "Stale",
-      }),
-    );
+    if (!this.frozen)
+      this.unwatchStatus = liveSocket.watchStatus((status) => {
+        this.availability = status;
+        this.emit({ status: this.marketLabel() });
+      });
     this.working = true;
     this.emit({
       loadingMore: true,
@@ -213,11 +208,7 @@ export class RangeController implements FeedController {
       hasMore: this.cache.hasAfter,
       loadingMore: false,
       error: "",
-      status: this.frozen
-        ? "Paused"
-        : this.state.sync.state === "live"
-          ? "Live"
-          : "Stale",
+      status: this.frozen ? "Paused" : this.marketLabel(),
     });
     this.scheduleExpiry();
     if (
@@ -228,6 +219,13 @@ export class RangeController implements FeedController {
       clearTimeout(this.movement);
       this.movement = setTimeout(() => this.move(), 80);
     }
+  }
+  private marketLabel() {
+    return this.availability === "available"
+      ? "Live"
+      : this.availability === "delayed"
+        ? "Updates delayed"
+        : "Unavailable";
   }
   private scheduleExpiry() {
     clearTimeout(this.expiry);

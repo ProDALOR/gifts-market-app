@@ -35,7 +35,7 @@ export function OrderDetails({
     !state.loading &&
     !state.error &&
     selected.kind === "ask" &&
-    state.report?.sync.state === "live" &&
+    !state.stale &&
     estimate?.kind === "currency" &&
     estimate.currency_id === selected.book.currency_id
       ? priceComparison(selected.price, estimate.amount)

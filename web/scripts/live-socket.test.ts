@@ -55,7 +55,6 @@ const call = {
 };
 const report = {
   strategy: "gift_floor",
-  revision: "r",
   evaluated_at: "2026-11-18T12:00:00Z",
   currency_id: "GRAM",
   gift: {
@@ -64,7 +63,7 @@ const report = {
     number: 1,
     traits: { model: null, backdrop: null, pattern: null },
   },
-  sync: { ready: true, state: "live", updated_at: null },
+  stale: false,
   display: { fields: [], summary: null, note: "Current asks" },
 };
 const result = (id: string) => ({
@@ -282,7 +281,6 @@ test("a valid frame for the wrong operation kind is rejected", (t) => {
     type: "sync",
     id: socket.sent[0].id,
     sync: report.sync,
-    revision: "r",
   });
   assert.equal(socket.closed, true);
 });
@@ -366,24 +364,81 @@ test("command rejections do not complete or cancel the original request", async 
 test("one connection status stream is shared, replayed and released independently", (t) => {
   const { Socket, live } = setup(t);
   const states: string[] = [];
-  const a = live.watchStatus((sync) => states.push(sync.state));
+  const a = live.watchStatus((status) => states.push(status));
   const socket = Socket.all[0];
   socket.onopen?.();
   socket.receive({
-    type: "replica.status",
-    sync: { ready: true, state: "live", updated_at: null },
+    type: "market.status",
+    status: "available",
   });
-  const b = live.watchStatus((sync) => states.push(`b:${sync.state}`));
+  const b = live.watchStatus((status) => states.push(`b:${status}`));
   assert.equal(Socket.all.length, 1);
-  assert.deepEqual(states, ["live", "b:live"]);
+  assert.deepEqual(states, ["unavailable", "available", "b:available"]);
   a();
   assert.equal(socket.closed, false);
   socket.onerror?.();
-  assert.equal(states.at(-1), "b:stale");
+  assert.equal(states.at(-1), "b:unavailable");
   t.mock.timers.tick(1000);
   assert.equal(Socket.all.length, 2);
   b();
   assert.equal(Socket.all[1].closed, true);
   t.mock.timers.tick(60000);
   assert.equal(Socket.all.length, 2);
+});
+
+test("a market interruption invalidates old estimates through recovery without extra requests", async (t) => {
+  const { estimateIsStale } = await import("../src/valuation/freshness.ts");
+  const { Socket, live } = setup(t);
+  const unsubscribe = live.watchStatus(() => {});
+  const socket = Socket.all[0];
+  socket.onopen?.();
+  const publish = (status: string) =>
+    socket.receive({ type: "market.status", status });
+  publish("available");
+  const evaluated = live.statusSnapshot();
+  assert.equal(
+    estimateIsStale({ stale: false }, evaluated.generation, evaluated),
+    false,
+  );
+  publish("available");
+  assert.equal(
+    live.statusSnapshot(),
+    evaluated,
+    "duplicate availability must not rerender subscribers",
+  );
+  publish("delayed");
+  assert.equal(
+    estimateIsStale(
+      { stale: false },
+      evaluated.generation,
+      live.statusSnapshot(),
+    ),
+    true,
+  );
+  publish("available");
+  assert.equal(
+    estimateIsStale(
+      { stale: false },
+      evaluated.generation,
+      live.statusSnapshot(),
+    ),
+    true,
+    "recovery cannot make an old estimate current",
+  );
+  const refreshed = live.statusSnapshot().generation;
+  assert.equal(
+    estimateIsStale({ stale: false }, refreshed, live.statusSnapshot()),
+    false,
+  );
+  assert.equal(
+    estimateIsStale({ stale: true }, refreshed, live.statusSnapshot()),
+    true,
+  );
+  socket.onerror?.();
+  assert.equal(
+    estimateIsStale({ stale: false }, refreshed, live.statusSnapshot()),
+    true,
+  );
+  assert.equal(socket.commands("request").length, 0);
+  unsubscribe();
 });

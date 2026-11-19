@@ -182,7 +182,6 @@ function App({ context }: { context: TelegramContext }) {
           };
   const {
     orders,
-    sync,
     displayOrders,
     activity,
     status,
@@ -417,11 +416,6 @@ function App({ context }: { context: TelegramContext }) {
             <span
               role="status"
               className={`status${status === "Live" ? " live" : ""}`}
-              title={
-                sync?.updated_at
-                  ? `Last synchronized ${new Date(sync.updated_at).toLocaleString()}`
-                  : undefined
-              }
             >
               <i />
               {status}

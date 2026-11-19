@@ -84,8 +84,10 @@ async fn drive_with_writer(
     let mut jobs = FuturesUnordered::<Job>::new();
     let mut registry = Registry::new(limits.subscriptions, limits.requests);
     let (tx, mut rx) = queue::channel(&limits);
+    let mut last_status = None;
     if let Some(status) = &mut status {
-        let value = status.borrow_and_update().clone();
+        let value = crate::models::MarketStatus::from(&*status.borrow_and_update());
+        last_status = Some(value);
         if tx.status(value).is_err() {
             return;
         }
@@ -100,8 +102,11 @@ async fn drive_with_writer(
             _=stop.cancelled()=>break CloseCode::Away,
             result=async {status.as_mut().expect("guarded status").changed().await},if status.is_some()=>{
                 if result.is_err(){break CloseCode::Away;}
-                let value=status.as_mut().expect("status present").borrow_and_update().clone();
-                if tx.status(value).is_err(){break CloseCode::Again;}
+                let value=crate::models::MarketStatus::from(&*status.as_mut().expect("status present").borrow_and_update());
+                if last_status!=Some(value) {
+                    last_status=Some(value);
+                    if tx.status(value).is_err(){break CloseCode::Again;}
+                }
             }
             Some((key,end))=jobs.next(),if !jobs.is_empty()=>{
                 if registry.current(&key) {

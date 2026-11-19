@@ -18,10 +18,10 @@ export function ValuationStatus({ state }: { state: GiftValuationState }) {
         </div>
       )}
       <p className="valuation-note">
-        {report.sync.state !== "live" && (
-          <span className="valuation-stale">Stale data · </span>
+        {state.stale && (
+          <span className="valuation-stale">Estimate may be outdated · </span>
         )}
-        Updated{" "}
+        Calculated{" "}
         <time dateTime={report.evaluated_at}>
           {new Date(report.evaluated_at).toLocaleTimeString([], {
             hour: "2-digit",

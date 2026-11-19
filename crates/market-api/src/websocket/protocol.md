@@ -1,6 +1,6 @@
 # Typed market WebSocket API
 
-Connect to `/ws`. The GUI and external clients share this public contract. HTTP and WebSocket reads use the same `GiftOrderQuery` and `OrderReadResponse`. OpenAPI is at `/openapi.json`, AsyncAPI at `/asyncapi.json`, and interactive documentation at `/docs` and `/docs/ws`. Public reads require no hub or Telegram credentials.
+Connect to `/ws`. The GUI and external clients share this public contract. HTTP and WebSocket reads use the same `GiftOrderQuery` and `OrderReadResponse`. OpenAPI is at `/openapi.json`, AsyncAPI at `/asyncapi.json`, and interactive documentation at `/docs` and `/docs/ws`. Public market reads do not require sign-in.
 
 ## One query
 
@@ -30,7 +30,11 @@ The GUI keeps all visited listings and virtualizes mounted cards. Only the activ
 
 ## Status, operations and budgets
 
-Each connection receives one initial `{type:"replica.status",sync:{ready,state,updated_at}}`, followed by status changes independently of order watches and read capacity. It has no operation ID and does not advance order sequences. `GET /sync` provides the same status over HTTP. Order responses carry no duplicate sync or revision metadata; catalog ETags and valuation provenance retain their own meaning.
+Each connection receives `{type:"market.status",status:"available"}` initially and when availability changes. Status is `available` when normal market updates are available, `delayed` when previously received data can still be served, or `unavailable` when market data is not available. This message has no operation ID and does not advance order sequences. Checkpoint-only changes do not produce duplicate status messages. A connected socket does not itself establish market availability.
+
+Valuation results contain `strategy`, `evaluated_at`, `stale`, typed calculation fields and their display projection. `stale` describes delayed inputs at evaluation time. Clients should also react to current availability: after a delay or connection loss, treat a previously displayed estimate as potentially outdated until a fresh evaluation succeeds. Calculation time is not an assertion about when every underlying listing changed. Status changes do not require automatically issuing valuations. Public results and error details contain no hub cursor or synchronization state.
+
+`GET /sync` is removed. Operational `/healthz` and `/readyz` remain for deployments and stay out of the consumer schema. Readiness remains successful while saved market data can be served during delays.
 
 Operation IDs use 1..64 ASCII letters, digits, `_`, `-` or `.` and are unique while active. `{"type":"cancel","id":"orders.1"}` cancels without acknowledgement. Duplicate IDs yield `command_error` while the original operation continues. Terminal `error` ends the operation; an empty ID denotes a connection-level error. Method `valuation.evaluate` shares its handler and response with HTTP.
 

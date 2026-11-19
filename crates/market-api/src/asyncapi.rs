@@ -47,7 +47,7 @@ pub fn document() -> serde_json::Result<Value> {
                 "payload":{"$ref":format!("#/components/schemas/{root}/oneOf/{index}")},
                 "examples": examples(name)?
             });
-            if name != "replica.status" {
+            if name != "market.status" {
                 message["correlationId"] = json!({"location":"$message.payload#/id","description":"Unique operation ID. Empty on connection-level errors."});
             }
             messages.insert(name.into(), message);
@@ -120,8 +120,8 @@ fn summary(name: &str) -> &'static str {
             "Current catalog content revisions. Compare with HTTP ETags to revalidate changed entries."
         }
         "status" => "The subscription is connecting.",
-        "replica.status" => {
-            "Connection-level replica readiness and freshness, independent of queries and watches."
+        "market.status" => {
+            "Market availability: available, delayed or unavailable, independent of query lifetimes."
         }
         "error" => {
             "A request, subscription or connection-level error. Inspect code and operation ID."
@@ -130,11 +130,6 @@ fn summary(name: &str) -> &'static str {
     }
 }
 fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
-    let sync = SyncStatus {
-        ready: true,
-        state: SyncState::Live,
-        updated_at: None,
-    };
     let value = match name {
         "request" => serde_json::to_value(Command::Request(ApiRequest::Valuation {
             id: "request-1".into(),
@@ -148,7 +143,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         "result" => {
             let mut data = json!({
                 "slug":null,"gift":{"id":"gift-123","collection_id":"tg.gift.123","number":123,"traits":{"model":"model","backdrop":"backdrop","pattern":null}},
-                "currency_id":"GRAM","sync":sync,
+                "currency_id":"GRAM",
                 "evidence":{"collection_samples":3,"model_samples":3,"backdrop_samples":3,"model_backdrop_samples":1,"minimum_multiplier_samples":3}
             });
             for field in [
@@ -167,7 +162,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
                 id: "request-1".into(),
                 data: GiftValuationResponse {
                     strategy: "gift_floor",
-                    revision: "opaque-revision",
+                    stale: false,
                     evaluated_at: "2026-11-18T12:00:00Z".parse().expect("example timestamp"),
                     display: data.display(),
                     data: &data,
@@ -218,7 +213,9 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             id: "offers".into(),
             state: SubscriptionStatus::Connecting,
         })?,
-        "replica.status" => serde_json::to_value(ServerFrame::ReplicaStatus { sync })?,
+        "market.status" => serde_json::to_value(ServerFrame::MarketStatus {
+            status: MarketStatus::Available,
+        })?,
         "command_error" => serde_json::to_value(ServerFrame::CommandError {
             id: "offers".into(),
             error: crate::error::ApiError::invalid("duplicate operation ID"),

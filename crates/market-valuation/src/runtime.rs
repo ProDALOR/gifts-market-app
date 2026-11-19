@@ -19,13 +19,19 @@ pub struct Prepared<T> {
     pub data: T,
     pub revision: String,
     pub prepared_at: jiff::Timestamp,
+    pub stale: bool,
 }
 impl<T> Prepared<T> {
+    pub fn with_stale(mut self, stale: bool) -> Self {
+        self.stale = stale;
+        self
+    }
     pub fn new(data: T, revision: String) -> Self {
         Self {
             data,
             revision,
             prepared_at: jiff::Timestamp::now(),
+            stale: false,
         }
     }
 }
@@ -35,6 +41,7 @@ pub struct Mark<T> {
     pub data: T,
     pub revision: String,
     pub evaluated_at: jiff::Timestamp,
+    pub stale: bool,
 }
 impl<T> Deref for Mark<T> {
     type Target = T;
@@ -49,6 +56,7 @@ impl<T> Mark<T> {
             data: value.data,
             revision: value.revision,
             evaluated_at: value.prepared_at,
+            stale: value.stale,
         }
     }
 }

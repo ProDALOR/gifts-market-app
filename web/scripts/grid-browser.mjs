@@ -151,7 +151,7 @@ try {
   let anchorChecks = 0,
     nearTopChecks = 0;
   await page.routeWebSocket("**/ws", (socket) => {
-    socket.send(JSON.stringify({ type: "replica.status", sync }));
+    socket.send(JSON.stringify({ type: "market.status", status: "available" }));
     let current;
     socket.onMessage((message) => {
       const incoming = JSON.parse(String(message));
@@ -189,8 +189,6 @@ try {
             sequence: 0,
             id: command.id,
             ...window,
-            sync,
-            revision: "view",
           }),
         );
         if (marker && window.data.some((row) => row.id === marker.id)) {
@@ -261,8 +259,6 @@ try {
       json: {
         ...orderResult(body, frozen.get(snapshot)),
         snapshot,
-        sync,
-        revision: "frozen",
       },
     });
   });

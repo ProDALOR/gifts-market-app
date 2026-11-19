@@ -67,17 +67,19 @@ try {
     .getByRole("button", { name: /Test Request/i })
     .first()
     .waitFor();
-  // Exercise Scalar's request modal on the process-health endpoint.
-  await page
-    .getByRole("button", { name: "Open Group - Health", exact: true })
-    .click();
-  await page.getByText("/healthz", { exact: true }).first().click();
-  await page.getByRole("button", { name: /Test Request.*healthz/i }).click();
+  // Exercise Scalar on a public market endpoint; probes stay out of consumer docs.
+  const openCatalog = page.getByRole("button", {
+    name: "Open Group - Catalog",
+    exact: true,
+  });
+  if (await openCatalog.isVisible()) await openCatalog.click();
+  await page.getByText("/catalog", { exact: true }).first().click();
+  await page.getByRole("button", { name: /Test Request.*catalog/i }).click();
   const send = page.getByRole("button", { name: /^Send( Request)?/i }).last();
   await Promise.all([
     page.waitForResponse(
       (response) =>
-        response.url() === `${base}/healthz` && response.status() === 200,
+        response.url() === `${base}/catalog` && response.status() === 200,
     ),
     send.click(),
   ]);
@@ -176,7 +178,7 @@ try {
     ["cancel", "id"],
     ["orders.watch", "params"],
     ["orders.snapshot", "data"],
-    ["replica.status", "sync"],
+    ["market.status", "status"],
   ]) {
     await page
       .locator(`[id="ws-message-${message}"] td code`)

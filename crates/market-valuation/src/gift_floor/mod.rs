@@ -173,9 +173,10 @@ impl Handler<Evaluate<GiftValuationRequest, GiftFloorValuation, ValuationError>>
                 let gift = snapshot.gift(&input.gift)?;
                 let scope = BookScope { collection: gift.collection_id.clone(), currency: input.currency_id.clone() };
                 let stats = books.lock().map_err(|_| ValuationError::unavailable("Valuation cache is unavailable"))?.get(&snapshot, &scope)?;
-                let data = stats.report(gift, input.gift, input.currency_id, snapshot.sync()?);
+                let data = stats.report(gift, input.gift, input.currency_id);
+                let stale=snapshot.sync()?.state!=market_gifts::SyncState::Live;
                 snapshot.check_cancelled()?;
-                Ok((Prepared::new(data, snapshot.revision()?), scope))
+                Ok((Prepared::new(data, snapshot.revision()?).with_stale(stale), scope))
             });
             tokio::select! {biased;
                 _=stop.cancelled()=>Err(ValuationError::unavailable("Valuation actor is stopping")),

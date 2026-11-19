@@ -3,12 +3,11 @@ import { test, beforeEach, type TestContext } from "node:test";
 import { createOrderFeed, type FeedState } from "../src/order-feed.ts";
 import { liveSocket } from "../src/live-socket.ts";
 import type { Order, OrderQueryResult, FeedQuery } from "../src/market.ts";
-const sync = { ready: true, state: "live" as const, updated_at: null };
 let statusCallback: (sync: any) => void = () => {};
 beforeEach((t) => {
   t.mock.method(liveSocket, "watchStatus", (callback) => {
     statusCallback = callback;
-    callback(sync);
+    callback("available");
     return () => {};
   });
 });
@@ -104,8 +103,6 @@ function live(t: TestContext) {
           ...next,
           sequence,
           reset: false,
-          sync,
-          revision: "r",
         });
       else {
         const oldRows = new Map(old.data.map((row: any) => [row.id, row]));
@@ -121,8 +118,6 @@ function live(t: TestContext) {
           removed: old.data
             .filter((row: any) => !ids.includes(row.id))
             .map((row: any) => ({ venue_id: row.book.venue_id, id: row.id })),
-          sync,
-          revision: "r",
         });
       }
     },
@@ -131,7 +126,7 @@ function live(t: TestContext) {
         previous = undefined;
         sequence = -1;
       }
-      if (frame.type === "sync") statusCallback(frame.sync);
+      if (frame.type === "market.status") statusCallback(frame.status);
       else receive(frame);
     },
     status(value: string) {
@@ -227,9 +222,9 @@ test("freshness frames preserve data and reconnect establishes a new animation b
   const f = live(t);
   f.deliver(["a", "b"]);
   const data = f.state.orders;
-  f.frame({ type: "sync", sync: { ...sync, state: "stale" }, revision: "new" });
+  f.frame({ type: "market.status", status: "delayed" });
   assert.equal(f.state.orders, data);
-  assert.equal(f.state.status, "Stale");
+  assert.equal(f.state.status, "Updates delayed");
   f.status("Reconnecting");
   f.deliver(["x", "a", "b"]);
   assert.equal(f.state.activity.size, 0);
@@ -297,8 +292,6 @@ test("pausing deep in a window freezes around its anchor and releases the snapsh
         true,
       ),
       snapshot: "frozen.1",
-      sync,
-      revision: "r1",
     });
   });
   let state: FeedState | undefined;
@@ -351,8 +344,6 @@ test("frozen navigation reuses its lease and expiration restarts around the curr
         true,
       ),
       snapshot: body.view.id ?? `lease.${bodies.length}`,
-      sync,
-      revision: "r",
     });
   });
   let state: FeedState | undefined;
@@ -401,8 +392,6 @@ test("late frozen responses release their lease without updating a closed view",
     Response.json({
       ...result(["late"]),
       snapshot: "orphan",
-      sync,
-      revision: "r",
     }),
   );
   await new Promise(setImmediate);
@@ -467,8 +456,6 @@ test("pausing and resuming keep every visited region while refreshing the visibl
         true,
       ),
       snapshot: "paused",
-      sync,
-      revision: "frozen",
     });
   });
   let frozen: FeedState | undefined;
@@ -520,7 +507,7 @@ test("sequence gaps retain visited rows and retry only the affected watch with b
     sequence: 100,
     upserts: [],
     removed: [],
-    sync,
+
     revision: "bad",
   });
   assert.deepEqual(
@@ -546,7 +533,7 @@ test("closing a watch cancels pending sequence recovery", (t) => {
     sequence: 100,
     upserts: [],
     removed: [],
-    sync,
+
     revision: "bad",
   });
   f.feed.close();

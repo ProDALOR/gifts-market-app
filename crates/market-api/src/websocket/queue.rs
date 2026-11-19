@@ -12,7 +12,7 @@ pub(super) enum Payload {
     Result(Arc<market_valuation::GiftFloorMark>),
     Connecting,
     Orders(Arc<str>),
-    ReplicaStatus(market_gifts::SyncStatus),
+    MarketStatus(crate::models::MarketStatus),
     Catalog(market_gifts::CatalogVersions),
     Error(ApiError),
     CommandError(ApiError),
@@ -32,9 +32,9 @@ impl Payload {
                 .expect("valuation result serializes")
             }
             Self::Orders(encoded) => encoded.to_string(),
-            Self::ReplicaStatus(sync) => {
-                serde_json::to_string(&ServerFrame::ReplicaStatus { sync: sync.clone() })
-                    .expect("replica status serializes")
+            Self::MarketStatus(status) => {
+                serde_json::to_string(&ServerFrame::MarketStatus { status: *status })
+                    .expect("market status serializes")
             }
             Self::Connecting => serde_json::to_string(&ServerFrame::Status {
                 id: id.into(),
@@ -116,8 +116,8 @@ pub(super) fn channel(limits: &WebSocketLimits) -> (Sender, mpsc::Receiver<Frame
     )
 }
 impl Sender {
-    pub fn status(&self, sync: market_gifts::SyncStatus) -> Result<(), QueueError> {
-        self.try_payload(Scope::Global, Payload::ReplicaStatus(sync))
+    pub fn status(&self, status: crate::models::MarketStatus) -> Result<(), QueueError> {
+        self.try_payload(Scope::Global, Payload::MarketStatus(status))
     }
     pub async fn send(
         &self,

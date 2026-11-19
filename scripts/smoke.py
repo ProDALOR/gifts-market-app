@@ -122,6 +122,13 @@ def main():
         )
         return json.loads(raw) if raw else None
 
+    def market_status():
+        result = subprocess.run(
+            ["node", str(root / "scripts/market-status-probe.mjs"), base],
+            env=base_env, text=True, capture_output=True, check=True, timeout=8,
+        )
+        return result.stdout.strip()
+
     hub_command = [
         str(hub),
         "--data-dir",
@@ -231,7 +238,7 @@ def main():
         assert (
             len(executions["data"]) == 1 and executions["data"][0]["kind"] == "executed"
         )
-        for old in ["/items", "/trades", "/status", "/market.MarketWrite/Publish"]:
+        for old in ["/items", "/trades", "/sync", "/status", "/market.MarketWrite/Publish"]:
             call(old, expected=404)
         call("/orders/query", dict(query, limit=201), expected=400)
         control = workspace / "control"
@@ -274,7 +281,7 @@ def main():
         # All public queries remain available with the hub offline, including after an app restart.
         server.kill()
         server.wait()
-        eventually(lambda: call("/sync")["state"] == "stale")
+        eventually(lambda: market_status() == "delayed")
         assert call("/orders/query", query)["data"][0]["price"] == "0.500000001"
         assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 1
         # A frozen local view survives a hub failure.
@@ -298,7 +305,7 @@ def main():
         fixture("seed-live")
         eventually(
             lambda: (
-                call("/sync")["state"] == "live"
+                market_status() == "available"
                 and len(call("/orders/query", q)["data"]) == 30
                 and call("/orders/query", query)["data"][0]["price"] == "1.25"
             )
@@ -334,7 +341,7 @@ def main():
         assert history[0]["id"] == "old-execution"
         server.kill()
         server.wait()
-        eventually(lambda: call("/sync")["state"] == "stale")
+        eventually(lambda: market_status() == "delayed")
         app_process.kill()
         app_process.wait()
         app_process = start(
@@ -349,7 +356,7 @@ def main():
         fixture("seed-recover")
         eventually(
             lambda: (
-                call("/sync")["state"] == "live"
+                market_status() == "available"
                 and len(call("/orders/query", q)["data"]) == 29
             )
         )

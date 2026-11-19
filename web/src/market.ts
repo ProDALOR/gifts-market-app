@@ -14,15 +14,9 @@ export type GiftValuationResponse =
 /** Common GUI envelope; strategy-specific calculation fields stay in the typed API result. */
 export type ValuationView = Pick<
   GiftValuationResponse,
-  | "strategy"
-  | "revision"
-  | "evaluated_at"
-  | "gift"
-  | "currency_id"
-  | "sync"
-  | "display"
+  "strategy" | "evaluated_at" | "gift" | "currency_id" | "stale" | "display"
 >;
-export type SyncStatus = components["schemas"]["SyncStatus"];
+export type MarketStatus = components["schemas"]["MarketStatus"];
 export type Order = components["schemas"]["OrderResponse"];
 export type Sort = components["schemas"]["GiftSort"];
 export type OrderQuery = components["schemas"]["GiftOrderQuery"];

@@ -1,6 +1,6 @@
 # Gift floor valuation
 
-This strategy estimates a gift from asking prices in the synchronized market. All prices use the currency selected in the market. Listings from all synchronized venues are considered.
+This strategy estimates a gift from available market asking prices. All prices use the currency selected in the market. Listings from all available venues are considered.
 
 ## The four floors
 
@@ -82,10 +82,10 @@ A metric shows an explanation rather than treating missing data as zero:
 - **Invalid baseline:** the collection floor cannot serve as a positive denominator.
 - **Calculation overflow:** a required value cannot be represented safely.
 
-Gift identity must be present in synchronized market data. Gifts missing from that data cannot be resolved for valuation. Malformed source data can make the request fail rather than supply a price.
+Gift identity must be present in available market listings. Gifts missing from that data cannot be resolved for valuation. Malformed source data can make the request fail rather than supply a price.
 
 ## Reading the result
 
-The displayed update time and revision identify the valuation's source view. Related market changes invalidate cached statistics, and time-based refreshes account for expiring asks. A stale indicator means the app is using its last synchronized market data.
+The calculation time shows when the estimate was computed. Related market changes refresh cached statistics, and periodic checks account for expiring asks. A stale indicator means updates were delayed during evaluation. If updates are interrupted while a gift is open, the app keeps its estimate flagged as potentially outdated until you refresh it after updates resume. Calculation time does not indicate when every underlying listing changed.
 
 This is an estimate based on asks, **before fees**. It is not a completed-sale price, an offer to buy, or a guarantee that a gift will sell for the final mark. Pattern, gift number and other premiums are not modeled separately by this strategy.

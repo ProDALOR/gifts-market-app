@@ -1,4 +1,3 @@
-import { liveSocket } from "../live-socket.ts";
 import { release } from "./range-source.ts";
 import {
   request,
@@ -19,7 +18,6 @@ export class HistoryController implements FeedController {
   private state = emptyFeed();
   private pages: OrderQueryResult[] = [];
   private snapshot?: string;
-  private unwatchStatus?: () => void;
   private working = false;
   private wanted: number;
   ready = false;
@@ -34,12 +32,10 @@ export class HistoryController implements FeedController {
     return { kind: "history", depth: this.wanted };
   }
   start() {
-    this.unwatchStatus = liveSocket.watchStatus((sync) => this.emit({ sync }));
     void this.load();
   }
   close() {
     this.stop.abort();
-    this.unwatchStatus?.();
     if (this.snapshot) release(this.snapshot);
   }
   setVisibleRange() {}

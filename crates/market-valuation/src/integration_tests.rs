@@ -490,10 +490,10 @@ impl Handler<ProbeMessage> for SnapshotProbe {
                 result=source.prepare(move|snapshot|{
                     if let Some(entered)=entered.lock().unwrap().take(){let _=entered.send(());}
                     if let Some(release)=release.lock().unwrap().take(){release.recv().unwrap();}
-                    Ok(crate::Prepared { prepared_at:jiff::Timestamp::now(),revision:snapshot.revision()?,data:std::thread::current().id()})
+                    Ok(crate::Prepared {stale:false, prepared_at:jiff::Timestamp::now(),revision:snapshot.revision()?,data:std::thread::current().id()})
                 })=>result?,
             }
-        }.into_actor(self).map(|result,actor,_|result.map(|prepared|Arc::new(crate::Mark::evaluated(actor.life.strategy(),crate::Prepared { prepared_at:jiff::Timestamp::now(),revision:prepared.revision,data:(std::thread::current().id(),prepared.data)}))))))
+        }.into_actor(self).map(|result,actor,_|result.map(|prepared|Arc::new(crate::Mark::evaluated(actor.life.strategy(),crate::Prepared {stale:false, prepared_at:jiff::Timestamp::now(),revision:prepared.revision,data:(std::thread::current().id(),prepared.data)}))))))
     }
 }
 #[tokio::test]

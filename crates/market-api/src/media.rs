@@ -58,7 +58,8 @@ async fn catalog_media(
     request: HttpRequest,
     kind: MediaKind,
 ) -> Result<HttpResponse> {
-    let media = media.ok_or_else(|| ApiError::unavailable("Media cache is unavailable"))?;
+    let media =
+        media.ok_or_else(|| ApiError::unavailable("Gift media is temporarily unavailable"))?;
     let _slot = media
         .slots
         .try_acquire()
@@ -83,12 +84,14 @@ async fn catalog_media(
                 ),
                 MediaError::RetryAfter(seconds) => (
                     ErrorCode::Unavailable,
-                    "Media download is cooling down",
+                    "Gift media is temporarily unavailable",
                     Some(seconds),
                 ),
-                MediaError::Unavailable => {
-                    (ErrorCode::Unavailable, "Media is not cached yet", Some(2))
-                }
+                MediaError::Unavailable => (
+                    ErrorCode::Unavailable,
+                    "Gift media is temporarily unavailable",
+                    Some(2),
+                ),
             };
             let error = ApiError {
                 details: None,

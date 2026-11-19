@@ -14,12 +14,12 @@ impl ValuationSnapshot {
                     self.entity(w::EntityKind::ItemType, collection_id)?
                 else {
                     return Err(Status::not_found(
-                        "Gift collection is not in synchronized market data",
+                        "Gift collection is not in available market data",
                     ));
                 };
                 if !market_gifts_hub::is_gift(&item) {
                     return Err(Status::not_found(
-                        "Gift collection is not in synchronized market data",
+                        "Gift collection is not in available market data",
                     ));
                 }
                 self.gift_by_number(&item, *number)
@@ -54,14 +54,14 @@ impl ValuationSnapshot {
             }
         }
         let item = collection.ok_or_else(|| {
-            Status::not_found("Canonical gift collection slug is not in synchronized market data")
+            Status::not_found("Canonical gift collection slug is not in available market data")
         })?;
         self.gift_by_number(item, slug.number())
     }
     fn gift_by_number(&self, item: &w::ItemType, number: GiftNumber) -> Result<CollectibleGift> {
         if !item.attributes.contains_key(market_gifts_hub::NUMBER) {
             return Err(Status::not_found(
-                "Gift number is unavailable in synchronized market data",
+                "Gift number is unavailable in available market data",
             ));
         }
         let currencies = market_replica::catalog_read::entities_cancellable(
@@ -119,7 +119,7 @@ impl ValuationSnapshot {
         }
         found.ok_or_else(|| {
             Status::not_found(
-                "Gift is not in synchronized market asks; unlisted gifts cannot be resolved",
+                "Gift is not in available market asks; unlisted gifts cannot be resolved",
             )
         })
     }
@@ -127,7 +127,7 @@ impl ValuationSnapshot {
 fn merge<T: PartialEq>(current: &mut Option<T>, next: Option<T>) -> Result<()> {
     match (current.as_ref(), next) {
         (Some(current), Some(next)) if current != &next => Err(Status::unavailable(
-            "Conflicting gift traits in synchronized market orders",
+            "Conflicting gift traits in market listings",
         )),
         (None, next) => {
             *current = next;

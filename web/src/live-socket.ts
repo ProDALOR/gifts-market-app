@@ -37,12 +37,28 @@ type Operation = Subscription | Pending;
 /** One bounded connection: persistent subscriptions reconnect; one-shot requests fail once. */
 export class LiveSocket {
   private statusListeners = new Set<
-    (sync: components["schemas"]["SyncStatus"]) => void
+    (status: components["schemas"]["MarketStatus"]) => void
   >();
-  private lastStatus?: components["schemas"]["SyncStatus"];
-  watchStatus(callback: (sync: components["schemas"]["SyncStatus"]) => void) {
+  private availability: Readonly<{
+    status: components["schemas"]["MarketStatus"];
+    generation: number;
+  }> = { status: "unavailable", generation: 0 };
+  readonly statusSnapshot = () => this.availability;
+  private publishStatus(status: components["schemas"]["MarketStatus"]) {
+    if (status === this.availability.status) return;
+    const generation =
+      this.availability.generation +
+      Number(
+        this.availability.status === "available" && status !== "available",
+      );
+    this.availability = { status, generation };
+    for (const callback of this.statusListeners) callback(status);
+  }
+  watchStatus(
+    callback: (status: components["schemas"]["MarketStatus"]) => void,
+  ) {
     this.statusListeners.add(callback);
-    if (this.lastStatus) callback(this.lastStatus);
+    callback(this.availability.status);
     this.ensureConnected();
     return () => {
       this.statusListeners.delete(callback);
@@ -213,7 +229,7 @@ export class LiveSocket {
     clearTimeout(this.timer);
     this.timer = undefined;
     this.failures = 0;
-    this.lastStatus = undefined;
+    this.publishStatus("unavailable");
     const socket = this.socket;
     this.socket = undefined;
     this.opened = false;
@@ -228,10 +244,7 @@ export class LiveSocket {
     this.opened = false;
     socket.onclose = null;
     socket.close();
-    if (this.lastStatus) {
-      this.lastStatus = { ...this.lastStatus, state: "stale" };
-      for (const callback of this.statusListeners) callback(this.lastStatus);
-    }
+    this.publishStatus("unavailable");
     this.operations.clear();
     for (const operation of [...this.pending])
       operation.finish(
@@ -302,9 +315,8 @@ export class LiveSocket {
         this.disconnected(socket);
         return;
       }
-      if (value.type === "replica.status") {
-        this.lastStatus = value.sync;
-        for (const callback of this.statusListeners) callback(value.sync);
+      if (value.type === "market.status") {
+        this.publishStatus(value.status);
         return;
       }
       if (value.type === "command_error") {

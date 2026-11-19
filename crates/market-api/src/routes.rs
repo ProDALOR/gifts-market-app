@@ -8,16 +8,12 @@ use actix_web::{HttpRequest, HttpResponse, http::header, web};
 pub(crate) async fn health() -> HttpResponse {
     HttpResponse::Ok().finish()
 }
-#[utoipa::path(get,path="/readyz",tag="Health",summary="Replica readiness",responses((status=200,description="A complete gift replica is available"),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/readyz",tag="Health",summary="Market data readiness",responses((status=200,description="Market data is available"),(status=503,body=ErrorResponse)))]
 pub(crate) async fn ready(state: web::Data<MarketApi>) -> Result<HttpResponse> {
     state.ready().await?;
     Ok(HttpResponse::Ok().finish())
 }
-#[utoipa::path(get,path="/sync",tag="Health",summary="Synchronization status",responses((status=200,body=SyncStatus),(status=503,body=ErrorResponse)))]
-pub(crate) async fn sync(state: web::Data<MarketApi>) -> Result<web::Json<SyncStatus>> {
-    Ok(web::Json(state.sync().await?))
-}
-#[utoipa::path(get,path="/catalog",tag="Catalog",summary="Collections, currencies and venues",description="Catalog data. Use GET /sync for replica readiness and freshness.",responses((status=200,body=GiftCatalog,headers(("ETag"=String,description="Catalog content revision"))),(status=304,description="Catalog content is unchanged"),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/catalog",tag="Catalog",summary="Collections, currencies and venues",description="Discover available gift markets.",responses((status=200,body=GiftCatalog,headers(("ETag"=String,description="Catalog content revision"))),(status=304,description="Catalog content is unchanged"),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn catalog(state: web::Data<MarketApi>, req: HttpRequest) -> Result<HttpResponse> {
     Ok(catalog_response(
         state.catalog_snapshot().await?,
@@ -25,7 +21,7 @@ pub(crate) async fn catalog(state: web::Data<MarketApi>, req: HttpRequest) -> Re
         GiftCatalog::from,
     ))
 }
-#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Collection choices. Use GET /sync for replica readiness and freshness.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Collection content revision"))),(status=304,description="Collection content is unchanged"),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Models, backdrops and patterns for one collection.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Collection content revision"))),(status=304,description="Collection content is unchanged"),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn collection(
     state: web::Data<MarketApi>,
     id: web::Path<CollectionId>,
@@ -58,7 +54,7 @@ fn catalog_response<T, U: serde::Serialize>(
         response.json(present(snapshot.data))
     }
 }
-#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with one coherent floor report",description="Accepts a Telegram gift URL, slug, or gift object with collection_id and number, plus currency_id. Resolves gift facts and all metrics from one pinned replica view. Returns collection, model, backdrop and matching model+backdrop floors; two-decimal dimensionless model/backdrop multipliers; and final_mark = round2(min(matching floor, collection floor * unrounded multipliers)). Rounding uses midpoint-to-even. Floor prices retain exact precision. Multipliers require at least three eligible listing rows for the collection and selected trait. Each metric has value or a structured error; a resolved gift returns 200 even when some metrics are unavailable. A strategy-owned display projection supplies ordered fields, labels, formatted values, emphasis, summary and note for generic clients. Typed calculation fields remain in the response. One strategy, revision, evaluated_at and sync status apply to the whole report. The response slug is null for catalog references. Unknown/unlisted gifts return 404. No Telegram account or external lookup is used.",request_body=market_valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with one coherent floor report",description="Accepts a Telegram gift URL, slug, or gift object with collection_id and number, plus currency_id. Resolves gift facts and all metrics from one consistent market view. Returns collection, model, backdrop and matching model+backdrop floors; two-decimal dimensionless model/backdrop multipliers; and final_mark = round2(min(matching floor, collection floor * unrounded multipliers)). Rounding uses midpoint-to-even. Floor prices retain exact precision. Multipliers require at least three eligible listing rows for the collection and selected trait. Each metric has value or a structured error; a resolved gift returns 200 even when some metrics are unavailable. A strategy-owned display projection supplies ordered fields, labels, formatted values, emphasis, summary and note for generic clients. Typed calculation fields remain in the response. One strategy, calculation time and stale flag apply to the whole report. The response slug is null for catalog references. Unknown/unlisted gifts return 404. No Telegram account or external lookup is used.",request_body=market_valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn gift_valuation(
     state: web::Data<MarketApi>,
     query: web::Json<market_valuation::GiftValuationRequest>,
@@ -107,7 +103,6 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
     )
     .route("/healthz", web::get().to(health))
     .route("/readyz", web::get().to(ready))
-    .route("/sync", web::get().to(sync))
     .route("/catalog", web::get().to(catalog))
     .route("/collections/{id}", web::get().to(collection))
     .service(

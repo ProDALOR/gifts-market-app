@@ -75,7 +75,6 @@ const venues = ["Telegram", "Portals", "MRKT"].map((name) => ({
   name,
 }));
 let revision = 0;
-const sync = { ready: true, state: "live", updated_at: "2026-11-17T00:00:00Z" };
 function result(query, executed = query.source === "history") {
   const filters = query.filters;
   const mode = executed ? "executed" : query.source === "bids" ? "bid" : "ask";
@@ -302,7 +301,7 @@ try {
     const collection = body.gift.collection_id;
     return {
       strategy: "gift_floor",
-      revision: "view",
+      stale: false,
       evaluated_at: "2026-11-18T12:00:00Z",
       slug: null,
       gift: {
@@ -312,7 +311,6 @@ try {
         traits: { model: "barbie", backdrop: "raspberry", pattern: "stars" },
       },
       currency_id: body.currency_id,
-      sync,
       collection_floor: { value: "8" },
       model_floor: { value: "10.000000001" },
       backdrop_floor: { value: "9" },
@@ -419,13 +417,11 @@ try {
       json: {
         ...orderResult(body, snapshots.get(id)),
         snapshot: id,
-        sync,
-        revision: String(revision),
       },
     });
   });
   await page.routeWebSocket("**/ws", (socket) => {
-    socket.send(JSON.stringify({ type: "replica.status", sync }));
+    socket.send(JSON.stringify({ type: "market.status", status: "available" }));
     socketCount++;
     openSockets.add(socket);
     let connection, catalogPeer;
@@ -465,8 +461,6 @@ try {
               frame.params.query,
               result({ ...frame.params.query, limit: 10000 }).data,
             ),
-            sync,
-            revision: String(revision),
           }),
         );
       }
@@ -848,8 +842,6 @@ try {
       JSON.stringify({
         type: "sync",
         id,
-        sync,
-        revision: String(revision),
       }),
     );
   await price("0.500000001");

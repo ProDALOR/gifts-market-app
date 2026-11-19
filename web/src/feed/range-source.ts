@@ -5,7 +5,6 @@ import { request, ApiFailure } from "../market.ts";
 import type { components } from "../gen/api.ts";
 export type OrderQuery = components["schemas"]["GiftOrderQuery"];
 export type OrderData = components["schemas"]["OrderReadResponse"];
-export type Sync = components["schemas"]["SyncStatus"];
 type Snapshot = components["schemas"]["OrderReadResponse"];
 export type Callbacks = {
   result: (result: OrderData) => void;
