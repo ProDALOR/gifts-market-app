@@ -35,12 +35,13 @@ const marketStatus = (value: unknown) =>
 const traits = (value: unknown) =>
   record(value) &&
   [value.model, value.backdrop, value.pattern].every(nullableText);
-const gift = (value: unknown) =>
+const giftFacts = (value: unknown) =>
   record(value) &&
   text(value.id) &&
-  text(value.collection_id) &&
   (value.number == null || integer(value.number)) &&
   traits(value.traits);
+const gift = (value: unknown) =>
+  giftFacts(value) && record(value) && text(value.collection_id);
 const range = (value: unknown) =>
   value == null ||
   (record(value) &&
@@ -66,25 +67,26 @@ function order(value: unknown) {
     !record(value.target)
   )
     return false;
-  switch (value.target.kind) {
+  const target = value.target;
+  if (
+    ["gift", "criteria", "reason", "collection_id"].some((field) =>
+      Object.hasOwn(target, field),
+    )
+  )
+    return false;
+  switch (target.kind) {
     case "gift":
-      return gift(value.target.gift);
+      return giftFacts(target);
     case "criteria": {
-      const c = value.target.criteria;
       return (
-        record(c) &&
-        strings(c.models) &&
-        strings(c.backdrops) &&
-        strings(c.patterns) &&
-        range(c.number)
+        strings(target.models) &&
+        strings(target.backdrops) &&
+        strings(target.patterns) &&
+        range(target.number)
       );
     }
     case "unsupported":
-      return (
-        record(value.target.reason) &&
-        text(value.target.reason.code) &&
-        text(value.target.reason.message)
-      );
+      return text(target.code) && text(target.message);
     default:
       return false;
   }
@@ -129,7 +131,8 @@ const orderingKey = (value: unknown): value is string =>
   text(value) &&
   value.length >= 2 &&
   value.length <= 8192 &&
-  /^(?:[0-9a-f]{2})+$/.test(value);
+  value.length % 4 !== 1 &&
+  /^[0-9A-Za-z_~]+$/.test(value);
 const boundary = (value: unknown) => value === null || orderingKey(value);
 function orderedRows(value: unknown): value is Record<string, unknown>[] {
   if (

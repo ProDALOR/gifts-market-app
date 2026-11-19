@@ -21,7 +21,10 @@ const order = (id: string): Order => ({
   observed_at: "2026-11-18T12:00:00Z",
   target: {
     kind: "criteria",
-    criteria: { models: [], backdrops: [], patterns: [], number: null },
+    models: [],
+    backdrops: [],
+    patterns: [],
+    number: null,
   },
 });
 const page = (ids: string[], next = ""): OrderQueryResult => ({

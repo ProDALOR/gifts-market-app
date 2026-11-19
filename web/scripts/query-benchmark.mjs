@@ -9,7 +9,10 @@ const row = (id) => ({
   observed_at: "2026-11-18T12:00:00Z",
   target: {
     kind: "criteria",
-    criteria: { models: [], backdrops: [], patterns: [], number: null },
+    models: [],
+    backdrops: [],
+    patterns: [],
+    number: null,
   },
   // Keep baseline payload fields in this fixture for comparable object sizes.
   position: `p.${id}`,

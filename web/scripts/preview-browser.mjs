@@ -15,7 +15,7 @@ import {GiftArtwork} from '/src/previews/gift-artwork.tsx';
 import { CollectionRail } from "/src/collections/collection-picker.tsx";
 import { TraitPreview } from "/src/previews/trait-preview.tsx";
 import { VenueIcon } from "/src/ui/icons.tsx";
-const order={target:{kind:'gift',gift:{id:'gift-1',collection_id:'gift',number:1,traits:{model:'model',backdrop:'backdrop',pattern:'pattern'}}}};
+const order={target:{kind:'gift',id:'gift-1',number:1,traits:{model:'model',backdrop:'backdrop',pattern:'pattern'}}};
 const options=new Map([
  ['model',{kind:'model',id:'model',name:'Model',media:{thumbnail_url:'/media/models/model',animation_url:'/media/models/model/animation'}}],
  ['backdrop',{kind:'backdrop',id:'backdrop',name:'Backdrop',palette:{center:'#b789e4',edge:'#8a5abc',pattern:'#5b10ab'}}],

@@ -13,7 +13,10 @@ const row = (id: number, rank = id): Window["data"][number] => ({
   observed_at: "2026-11-18T12:00:00Z",
   target: {
     kind: "criteria",
-    criteria: { models: [], backdrops: [], patterns: [], number: null },
+    models: [],
+    backdrops: [],
+    patterns: [],
+    number: null,
   },
 });
 const view = (data: Window["data"], before = true, after = true): Window => ({

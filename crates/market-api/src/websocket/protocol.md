@@ -8,7 +8,21 @@ Send `{"type":"request","id":"read.1","method":"orders.query","params":{"filters
 
 `source` is `asks` (default), `bids`, or `history`. Default sorts are respectively `price_asc`, `price_desc`, and `time_desc`. History accepts an optional execution `period`; other sources reject it. A query also accepts `navigation` and `view`. Unknown fields are rejected.
 
-Navigation defaults to `{type:"head"}`. `{type:"after",key}` and `{type:"before",key}` read strictly beyond the supplied ordering point; repricing its original order does not move that point. `{type:"around",key}` follows the current order identity when available, reserves one third of the slice before it, and fills available space at the edges. Each row has one opaque `key`. Compare keys lexicographically within the same filters, source, period and sort; do not decode keys or reproduce ranking rules. History keys include execution-time ties. Order identity remains `(book.venue_id,id)`.
+Navigation defaults to `{type:"head"}`. `{type:"after",key}` and `{type:"before",key}` read strictly beyond the supplied ordering point; repricing its original order does not move that point. `{type:"around",key}` follows the current order identity when available, reserves one third of the slice before it, and fills available space at the edges. Each row has one opaque `key`. Compare keys using ordinary ASCII string order (`a < b` in JavaScript), within the same filters, source, period and sort; never use locale-aware comparison. Do not decode keys or reproduce ranking rules. History keys include execution-time ties. Order identity remains `(book.venue_id,id)`.
+
+## Order payloads
+
+HTTP queries, WebSocket queries, snapshots and upserts share the same `OrderedOrderResponse`. `book` supplies venue, collection and currency. Targets have a `kind` discriminator and flat fields:
+
+```json
+{"kind":"gift","id":"gift-id","number":42,"traits":{"model":"model-id"}}
+{"kind":"criteria","models":["model-id"],"backdrops":[],"patterns":[]}
+{"kind":"unsupported","code":"invalid_attributes","message":"This listing's gift details are unavailable."}
+```
+
+An order gift's collection is `book.collection_id`; standalone valuation gifts retain their own `collection_id`. Unknown gift numbers and trait IDs are omitted. Missing `market_url`, `expires_at` and `executed_at` are omitted too; executions always include `executed_at`. The dedicated `market_url` is a validated absolute HTTP(S) link without embedded credentials or control characters. Unsupported codes are typed; arbitrary source metadata is not exposed.
+
+Protocol nulls retain meaning: `range.start`/`range.end` are always present and null denotes an open bound; finite query `next` is always present and null denotes traversal completion. An absent `snapshot` means no frozen view was retained.
 
 ## Range subscriptions
 
@@ -52,4 +66,4 @@ Reads, scans, range membership, encoded bytes, concurrency, outgoing queues and 
 
 ## Upgrading clients
 
-This contract uses `catalog.watch` and `catalog.versions`; the former catalog message names and operation-level `status` frames are removed. Navigation keys now use a compact versioned encoding. Update backend and frontend together and restart existing watches; discard navigation keys from the previous format. Keys remain opaque, query-bound and lexicographically ordered. Finite HTTP and WebSocket query results retain `next` and optional `snapshot` fields.
+This contract uses `catalog.watch` and `catalog.versions`; the former catalog message names and operation-level `status` frames are removed. Targets are flat, without `gift`, `criteria` or `reason` wrappers. Navigation keys now use version 3: unpadded Base64 with the ASCII-ordered, URL-unreserved alphabet `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~`. This reduces text length by about one third compared with hexadecimal while preserving ordinary string ordering; no repeated-character grammar is needed. Treat the encoded token as opaque. Update backend and frontend together and restart existing watches; discard navigation keys from the previous format. Keys remain query-bound. Finite HTTP and WebSocket query results retain `next` and optional `snapshot` fields.

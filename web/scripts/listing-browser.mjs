@@ -76,12 +76,9 @@ const order = (id, number) => ({
   kind: "ask",
   target: {
     kind: "gift",
-    gift: {
-      id: `g${number}`,
-      collection_id: "gift",
-      number,
-      traits: { model: "gold", backdrop: "blue", pattern: "symbol" },
-    },
+    id: `g${number}`,
+    number,
+    traits: { model: "gold", backdrop: "blue", pattern: "symbol" },
   },
   price: String(number * 10),
   quantity: 1,
@@ -98,6 +95,7 @@ let watcher;
 const frame = (rows) => watcher.frame(orderWire, rows);
 function report(body) {
   const number = body.gift.number;
+  const { kind, ...gift } = order("gift", number).target;
   const missing = {
     error: {
       code: "not_enough_data",
@@ -111,7 +109,7 @@ function report(body) {
     stale: false,
     evaluated_at: "2026-11-18T12:00:00Z",
     slug: null,
-    gift: order("gift", number).target.gift,
+    gift: { ...gift, collection_id: "gift" },
     currency_id: body.currency_id,
     collection_floor: { value: "8" },
     model_floor: { value: String(number * 10) },
@@ -1014,7 +1012,10 @@ try {
     kind: "bid",
     target: {
       kind: "criteria",
-      criteria: { models: [], backdrops: [], patterns: [], number: null },
+      models: [],
+      backdrops: [],
+      patterns: [],
+      number: null,
     },
   });
   await page
@@ -1038,7 +1039,10 @@ try {
         kind: "bid",
         target: {
           kind: "criteria",
-          criteria: { models: [], backdrops: [], patterns: [], number: null },
+          models: [],
+          backdrops: [],
+          patterns: [],
+          number: null,
         },
       }),
     b,

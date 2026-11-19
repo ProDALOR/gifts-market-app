@@ -5,9 +5,22 @@ use crate::{
     ranking::ordered_decimal,
     types::{EntityKind, Key, Position as HistoryPosition, Sort},
 };
+use base64::{
+    Engine,
+    alphabet::Alphabet,
+    engine::{GeneralPurpose, general_purpose::NO_PAD},
+};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use std::{cmp::Ordering, str::FromStr};
 use tonic::Status;
+
+// ASCII-ordered, URL-unreserved characters preserve byte order without JSON escaping.
+const KEY_ALPHABET: Alphabet =
+    match Alphabet::new("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~") {
+        Ok(value) => value,
+        Err(_) => panic!("valid ordered key alphabet"),
+    };
+const KEY_ENCODING: GeneralPurpose = GeneralPurpose::new(&KEY_ALPHABET, NO_PAD);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct QueryFingerprint([u8; 32]);
 impl QueryFingerprint {
@@ -60,10 +73,21 @@ impl PartialOrd for ReadPosition {
         Some(self.cmp(other))
     }
 }
+impl serde::Serialize for ReadPosition {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.encode())
+    }
+}
+impl<'de> serde::Deserialize<'de> for ReadPosition {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let encoded = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::decode(&encoded).map_err(serde::de::Error::custom)
+    }
+}
 impl ReadPosition {
     pub fn encode(&self) -> String {
-        let mut bytes = Vec::with_capacity(self.encoded_len() / 2);
-        bytes.push(2);
+        let mut bytes = Vec::with_capacity(self.binary_len());
+        bytes.push(3);
         bytes.extend(self.selection.0);
         bytes.push(self.sort as u8);
         bytes.push(u8::from(self.at.is_some()));
@@ -99,14 +123,14 @@ impl ReadPosition {
             }
         }
         bytes.push(self.edge as u8);
-        hex(&bytes)
+        KEY_ENCODING.encode(bytes)
     }
     pub fn decode(value: &str) -> Result<Self, Status> {
         if value.len() > READ_LIMITS.max_position_bytes {
             return Err(invalid());
         }
-        let bytes = unhex(value)?;
-        if bytes.len() < 40 || bytes[0] != 2 || bytes[34] > 1 {
+        let bytes = KEY_ENCODING.decode(value).map_err(|_| invalid())?;
+        if bytes.len() < 40 || bytes[0] != 3 || bytes[34] > 1 {
             return Err(invalid());
         }
         let selection = QueryFingerprint(bytes[1..33].try_into().map_err(|_| invalid())?);
@@ -215,7 +239,10 @@ impl ReadPosition {
         matches!(self.sort, Sort::TimeAsc | Sort::TimeDesc)
     }
     pub(crate) fn encoded_len(&self) -> usize {
-        (35 + match self.sort {
+        (self.binary_len() * 8).div_ceil(6)
+    }
+    fn binary_len(&self) -> usize {
+        35 + match self.sort {
             Sort::Identity => 0,
             Sort::TimeAsc | Sort::TimeDesc => 8,
             Sort::NumberAsc | Sort::NumberDesc => 9,
@@ -230,8 +257,7 @@ impl ReadPosition {
                 .chain(self.key.id.bytes())
                 .filter(|b| *b == 0)
                 .count()
-            + 5)
-            * 2
+            + 5
     }
 }
 // Pack the existing exact decimal order into BCD without changing durable index keys.
@@ -339,15 +365,6 @@ fn decode_decimal(raw: &[u8]) -> Result<Decimal, Status> {
     }
     Ok(value)
 }
-fn hex(raw: &[u8]) -> String {
-    const H: &[u8] = b"0123456789abcdef";
-    let mut output = String::with_capacity(raw.len() * 2);
-    for b in raw {
-        output.push(H[(b >> 4) as usize] as char);
-        output.push(H[(b & 15) as usize] as char);
-    }
-    output
-}
 fn unhex(raw: &str) -> Result<Vec<u8>, Status> {
     if !raw.len().is_multiple_of(2) {
         return Err(invalid());
@@ -419,14 +436,14 @@ mod tests {
     #[test]
     fn compact_positions_remove_redundant_ranks_without_losing_history_identity() {
         for (sort, rank, history, expected) in [
-            (Sort::Identity, Decimal::ZERO, false, 84),
-            (Sort::Identity, Decimal::from(-1), true, 100),
-            (Sort::PriceAsc, Decimal::ONE, false, 142),
-            (Sort::PriceDesc, Decimal::ONE, true, 158),
-            (Sort::TimeAsc, Decimal::from(-1), false, 100),
-            (Sort::TimeDesc, Decimal::from(-1), true, 100),
-            (Sort::NumberAsc, Decimal::MAX, false, 102),
-            (Sort::NumberDesc, Decimal::from(i64::MIN), true, 118),
+            (Sort::Identity, Decimal::ZERO, false, 56),
+            (Sort::Identity, Decimal::from(-1), true, 67),
+            (Sort::PriceAsc, Decimal::ONE, false, 95),
+            (Sort::PriceDesc, Decimal::ONE, true, 106),
+            (Sort::TimeAsc, Decimal::from(-1), false, 67),
+            (Sort::TimeDesc, Decimal::from(-1), true, 67),
+            (Sort::NumberAsc, Decimal::MAX, false, 68),
+            (Sort::NumberDesc, Decimal::from(i64::MIN), true, 79),
         ] {
             let position = ReadPosition {
                 selection: QueryFingerprint([0; 32]),
@@ -439,9 +456,11 @@ mod tests {
             let key = position.encode();
             assert_eq!(key.len(), expected);
             assert_eq!(ReadPosition::decode(&key).unwrap(), position);
-            let mut retired = key.clone();
-            retired.replace_range(..2, "01");
-            assert!(ReadPosition::decode(&retired).is_err());
+            for version in [1, 2] {
+                let mut retired = KEY_ENCODING.decode(&key).unwrap();
+                retired[0] = version;
+                assert!(ReadPosition::decode(&KEY_ENCODING.encode(retired)).is_err());
+            }
         }
     }
     #[test]
@@ -501,6 +520,9 @@ mod tests {
                             let encoded = key.encode();
                             assert_eq!(key.encoded_len(), encoded.len());
                             assert_eq!(ReadPosition::decode(&encoded).unwrap(), key);
+                            let json = serde_json::to_string(&key).unwrap();
+                            assert_eq!(json, format!("\"{encoded}\""));
+                            assert_eq!(serde_json::from_str::<ReadPosition>(&json).unwrap(), key);
                             keys.push(key);
                         }
                     }
@@ -530,15 +552,24 @@ mod tests {
         for i in 0..key.len() {
             assert!(ReadPosition::decode(&key[..i]).is_err());
         }
-        assert!(ReadPosition::decode(&key.to_uppercase()).is_err());
-        let mut wrong_version = key.clone();
-        wrong_version.replace_range(..2, "ff");
-        assert!(ReadPosition::decode(&wrong_version).is_err());
-        for (offset, value) in [(68, "02"), (70, "20"), (72, "fa")] {
-            let mut malformed = key.clone();
-            malformed.replace_range(offset..offset + 2, value);
-            assert!(ReadPosition::decode(&malformed).is_err());
+        for (offset, value) in [(0, 255), (34, 2), (35, 0x20), (36, 0xfa)] {
+            let mut malformed = KEY_ENCODING.decode(&key).unwrap();
+            malformed[offset] = value;
+            assert!(ReadPosition::decode(&KEY_ENCODING.encode(malformed)).is_err());
         }
-        assert!(ReadPosition::decode(&(key + "00")).is_err());
+        assert!(ReadPosition::decode(&(key.clone() + "=")).is_err());
+        assert!(ReadPosition::decode(&(key.clone() + "0")).is_err());
+        // This payload leaves two padding bits. A second spelling of the same
+        // bytes would break string equality and boundary comparisons.
+        assert_eq!(key.len() % 4, 3);
+        let last = KEY_ALPHABET
+            .as_str()
+            .find(key.chars().last().unwrap())
+            .unwrap();
+        let mut noncanonical = key.into_bytes();
+        *noncanonical.last_mut().unwrap() = KEY_ALPHABET.as_str().as_bytes()[last + 1];
+        let noncanonical = String::from_utf8(noncanonical).unwrap();
+        assert!(ReadPosition::decode(&noncanonical).is_err());
+        assert!(serde_json::from_value::<ReadPosition>(serde_json::json!(noncanonical)).is_err());
     }
 }

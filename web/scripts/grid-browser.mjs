@@ -9,7 +9,7 @@ import {createRoot} from 'react-dom/client';
 import {GiftGrid} from '/src/orderbook/gift-grid.tsx';
 import '/src/style.css';
 const root=createRoot(document.getElementById('fixture'));
-const make=(id)=>({id:String(id),book:{venue_id:'v',collection_id:'gift',currency_id:'GRAM'},kind:'ask',price:'1',quantity:1,target:{kind:'criteria',criteria:{models:[],backdrops:[],patterns:[],number:null}}});
+const make=(id)=>({id:String(id),book:{venue_id:'v',collection_id:'gift',currency_id:'GRAM'},kind:'ask',price:'1',quantity:1,target:{kind:'criteria',models:[],backdrops:[],patterns:[]}});
 let rows=Array.from({length:10000},(_,i)=>make(i));
 const options=new Map();const open=()=>{};const visible=(start,end)=>{window.range=[start,end]};
 const card=()=>({options,collectionName:'Gift',venueName:'Venue',selected:false,open});
@@ -143,7 +143,10 @@ try {
     observed_at: "2026-11-18T12:00:00Z",
     target: {
       kind: "criteria",
-      criteria: { models: [], backdrops: [], patterns: [], number: null },
+      models: [],
+      backdrops: [],
+      patterns: [],
+      number: null,
     },
   }));
   const anchorErrors = [],

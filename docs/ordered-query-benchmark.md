@@ -33,7 +33,23 @@ A subsequent run measured the compact key format against the preceding release t
 
 Price-key payloads shrink by 25.9% in this fixture. Timing is a local microbenchmark, not a throughput guarantee. Prices use packed decimal digits with full precision; time and gift-number ranks use integer encoding. Active identity keys omit the rank, and history identity/time keys encode execution time once. Query fingerprints, identity tie-breakers, ascending/descending ordering and before/after edges are preserved. Durable index encoding is unchanged. Navigation-key encoding is versioned; clients must discard previous-format keys and initialize a fresh watch when upgrading.
 
-The frontend benchmark retains 10,000 or 100,000 visited rows, repeatedly refreshing a 200-row interior range while changing one listing price under number ordering. It excludes fixture generation, initial population, React rendering and activity/viewport projection. The fixture retains the baseline fields to keep object sizes comparable. The new cache keeps an identity index, finds coverage by binary search and compares only incoming rows; producing the complete visited-row array still requires copying array references.
+### Ordered Base64 text encoding
+
+A further run compares the preceding compact hexadecimal release binary with version 3, using the same fixture and sampling method:
+
+| Operation | Compact hex | Ordered Base64 |
+| --- | ---: | ---: |
+| Ordering-key bytes for 200 rows | 33,200 | 22,200 |
+| Head, 200 rows, including keys | 117.71 µs | 111.17 µs |
+| Fixed range, 200 rows, including keys | 165.08 µs | 157.25 µs |
+| Native head, before encoding | 63.42 µs | 61.75 µs |
+| Native range, before encoding | 106.67 µs | 107.92 µs |
+
+Key text shrinks by 33.1%, retaining the same binary fields. Unpadded Base64 uses the ASCII-ordered, URL-unreserved alphabet `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~`, so ordinary string comparison still follows native order. Repeated-character syntax such as `0{10}` would need a custom comparator; it is not used. Native keys own one Serde string converter shared by rows, range bounds and continuations. Decoding rejects old versions, padding, noncanonical trailing bits and invalid ranks. Regression tests cover every sort, ascending/descending ties, history, prefix/Unicode identities, before/at/after edges and JSON roundtrips. Deploy frontend/backend together and restart watches when upgrading.
+
+## Visited-listing cache
+
+The frontend benchmark retains 10,000 or 100,000 visited rows, repeatedly refreshing a 200-row interior range while changing one listing price under number ordering. It excludes fixture generation, initial population, React rendering and activity/viewport projection. The new cache keeps an identity index, finds coverage by binary search and compares only incoming rows; producing the complete visited-row array still requires copying array references.
 
 | Cached rows | Before | After |
 | --- | ---: | ---: |

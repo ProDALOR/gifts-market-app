@@ -5,12 +5,13 @@ import { listingLink, serial, modelName } from "../src/orderbook.ts";
 import type { Collection, CatalogOption, Order } from "../src/market.ts";
 test("concrete gift numbers remain distinct from bid selection ranges", () => {
   const gift = {
-    target: { kind: "gift", gift: { number: 42, traits: { model: "gold" } } },
+    target: { kind: "gift", number: 42, traits: { model: "gold" } },
   } as Order;
   const bid = {
     target: {
       kind: "criteria",
-      criteria: { models: ["gold"], number: { min: 1, max: 100 } },
+      models: ["gold"],
+      number: { min: 1, max: 100 },
     },
   } as Order;
   assert.equal(serial(gift), "42");
@@ -74,12 +75,9 @@ test("gift details show traits and bid constraints without listing metadata", as
     market_url: null,
     target: {
       kind: "gift",
-      gift: {
-        id: "source-gift-id",
-        collection_id: "gift",
-        number: 42,
-        traits: { model: "model", backdrop: null, pattern: null },
-      },
+      id: "source-gift-id",
+      number: 42,
+      traits: { model: "model", backdrop: null, pattern: null },
     },
   };
   const names = new Map([
@@ -113,12 +111,10 @@ test("gift details show traits and bid constraints without listing metadata", as
     quantity: 5,
     target: {
       kind: "criteria",
-      criteria: {
-        models: [],
-        backdrops: [],
-        patterns: [],
-        number: { min: 1, max: 10 },
-      },
+      models: [],
+      backdrops: [],
+      patterns: [],
+      number: { min: 1, max: 10 },
     },
   };
   const bidRows = giftDetails(bid, names);
@@ -155,10 +151,8 @@ test("unsupported conditions remain distinct from unrestricted criteria in cards
     observed_at: "2026-11-18T12:00:00Z",
     target: {
       kind: "unsupported",
-      reason: {
-        code: "unsupported_constraints",
-        message: "Some conditions cannot be displayed yet.",
-      },
+      code: "unsupported_constraints",
+      message: "Some conditions cannot be displayed yet.",
     },
   } as Order;
   assert.equal(serial(order), undefined);
@@ -166,7 +160,7 @@ test("unsupported conditions remain distinct from unrestricted criteria in cards
   const rows = giftDetails(order, new Map());
   assert.deepEqual(rows[0], {
     label: "Conditions",
-    value: order.target.kind === "unsupported" && order.target.reason.message,
+    value: order.target.kind === "unsupported" && order.target.message,
   });
   assert.ok(!rows.some(({ value }) => value === "Any"));
 });
@@ -196,7 +190,7 @@ test("detail visuals resolve with their labels and only for a single matching tr
   const gift = {
     target: {
       kind: "gift",
-      gift: { traits: { model: "model", backdrop: "backdrop", pattern: null } },
+      traits: { model: "model", backdrop: "backdrop", pattern: null },
     },
   } as Order;
   assert.deepEqual(giftDetails(gift, names, options), [
@@ -212,12 +206,10 @@ test("detail visuals resolve with their labels and only for a single matching tr
     quantity: 1,
     target: {
       kind: "criteria",
-      criteria: {
-        models: ["model", "other"],
-        backdrops: ["model"],
-        patterns: [],
-        number: null,
-      },
+      models: ["model", "other"],
+      backdrops: ["model"],
+      patterns: [],
+      number: null,
     },
   } as Order;
   assert.ok(

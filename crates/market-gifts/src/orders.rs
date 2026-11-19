@@ -42,6 +42,7 @@ pub struct GiftCriteria {
     pub models: Vec<ModelId>,
     pub backdrops: Vec<BackdropId>,
     pub patterns: Vec<PatternId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<GiftNumberRange>,
 }
 

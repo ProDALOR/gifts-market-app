@@ -1,11 +1,18 @@
 // Synthetic opaque ordering keys for browser regressions; production keys are server-owned.
 export const position = (row) => JSON.stringify([row.book.venue_id, row.id]);
+const alphabet =
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~";
+const standard =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const encode = (value) =>
+  Buffer.from(value)
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/./g, (c) => alphabet[standard.indexOf(c)]);
 const ordered = (rows) =>
   rows.map((row, index) => ({
     ...row,
-    key: Buffer.from(
-      `${String(index).padStart(16, "0")}:${position(row)}`,
-    ).toString("hex"),
+    key: encode(`${String(index).padStart(16, "0")}:${position(row)}`),
   }));
 export function orderResult(query, rows) {
   const all = ordered(rows),

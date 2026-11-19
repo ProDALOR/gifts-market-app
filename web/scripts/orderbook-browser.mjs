@@ -103,33 +103,26 @@ function result(query, executed = query.source === "history") {
         mode === "bid" && index === 0
           ? {
               kind: "unsupported",
-              reason: {
-                code: "unsupported_constraints",
-                message:
-                  "This listing has conditions that cannot be displayed yet.",
-              },
+              code: "unsupported_constraints",
+              message:
+                "This listing has conditions that cannot be displayed yet.",
             }
           : mode === "bid"
             ? {
                 kind: "criteria",
-                criteria: {
-                  models: [],
-                  backdrops: [],
-                  patterns: [],
-                  number: null,
-                },
+                models: [],
+                backdrops: [],
+                patterns: [],
+                number: null,
               }
             : {
                 kind: "gift",
-                gift: {
-                  id: `gift-${1000 + index}`,
-                  collection_id: filters.collection_id,
-                  number: 2000 - index,
-                  traits: {
-                    model: models[index % models.length].id,
-                    backdrop: backdrops[index % backdrops.length].id,
-                    pattern: patterns[index % patterns.length].id,
-                  },
+                id: `gift-${1000 + index}`,
+                number: 2000 - index,
+                traits: {
+                  model: models[index % models.length].id,
+                  backdrop: backdrops[index % backdrops.length].id,
+                  pattern: patterns[index % patterns.length].id,
                 },
               },
       observed_at: new Date(1700000000000 + index * 1000).toISOString(),
@@ -151,7 +144,7 @@ function result(query, executed = query.source === "history") {
           !filters[key]?.length ||
           (order.target.kind === "gift" &&
             filters[key].includes(
-              order.target.gift.traits[
+              order.target.traits[
                 { models: "model", backdrops: "backdrop", patterns: "pattern" }[
                   key
                 ]
@@ -166,7 +159,7 @@ function result(query, executed = query.source === "history") {
         ? Date.parse(executed ? order.executed_at : order.observed_at)
         : query.sort?.startsWith("number_")
           ? order.target.kind === "gift"
-            ? order.target.gift.number
+            ? order.target.number
             : 0
           : Number(order.price);
     return (rank(a) - rank(b)) * (query.sort?.endsWith("_desc") ? -1 : 1);

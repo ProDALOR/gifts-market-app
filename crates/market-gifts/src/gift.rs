@@ -228,8 +228,11 @@ impl From<GiftSlug> for GiftLookup {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftTraits {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backdrop: Option<BackdropId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern: Option<PatternId>,
 }
 
@@ -239,6 +242,7 @@ pub struct GiftTraits {
 pub struct CollectibleGift {
     pub id: GiftId,
     pub collection_id: CollectionId,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<GiftNumber>,
     pub traits: GiftTraits,
 }

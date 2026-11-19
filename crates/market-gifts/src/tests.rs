@@ -1,6 +1,24 @@
 use crate::*;
 
 #[test]
+fn standalone_gifts_keep_collection_identity_and_omit_unknown_description() {
+    let value = serde_json::json!({"id":"gift","collection_id":"collection","traits":{}});
+    let gift: CollectibleGift = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(gift.number, None);
+    assert_eq!(gift.traits, GiftTraits::default());
+    assert_eq!(serde_json::to_value(gift).unwrap(), value);
+    let criteria = GiftCriteria::default();
+    assert_eq!(
+        serde_json::to_value(&criteria).unwrap(),
+        serde_json::json!({"models":[],"backdrops":[],"patterns":[]})
+    );
+    assert_eq!(
+        serde_json::from_value::<GiftCriteria>(serde_json::to_value(&criteria).unwrap()).unwrap(),
+        criteria
+    );
+}
+
+#[test]
 fn identifiers_and_exact_amounts_are_validated_at_the_json_boundary() {
     for invalid in ["", " bad", "bad\n", &"x".repeat(257)] {
         assert!(CollectionId::new(invalid).is_err());
@@ -314,7 +332,7 @@ fn one_query_resolves_source_defaults_and_rejects_ambiguous_navigation_and_views
     for navigation in [
         serde_json::json!({"type":"head","key":"aa"}),
         serde_json::json!({"type":"after"}),
-        serde_json::json!({"type":"after","key":"ABCDEF"}),
+        serde_json::json!({"type":"after","key":"ABC=EF"}),
         serde_json::json!({"type":"around","key":"a"}),
     ] {
         assert!(serde_json::from_value::<Navigation>(navigation).is_err());
@@ -331,7 +349,7 @@ fn one_query_resolves_source_defaults_and_rejects_ambiguous_navigation_and_views
     );
     let key: OrderKey = serde_json::from_str("\"0123ab\"").unwrap();
     assert_eq!(key.as_str(), "0123ab");
-    for raw in ["", "gg", "ab ", &"ff".repeat(4097)] {
+    for raw in ["", "g-g", "ab ", &"ff".repeat(4097)] {
         assert!(OrderKey::try_from(raw.to_owned()).is_err());
     }
 }

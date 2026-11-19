@@ -13,12 +13,9 @@ test("concrete previews use supplied media, never guessed paths or hypothetical 
   const gift: Pick<Order, "target"> = {
     target: {
       kind: "gift",
-      gift: {
-        id: "42",
-        collection_id: "gift",
-        number: 42,
-        traits: { model: "model", backdrop: null, pattern: null },
-      },
+      id: "42",
+      number: 42,
+      traits: { model: "model", backdrop: null, pattern: null },
     },
   };
   const media = {
@@ -39,12 +36,10 @@ test("concrete previews use supplied media, never guessed paths or hypothetical 
       {
         target: {
           kind: "criteria",
-          criteria: {
-            models: ["model"],
-            backdrops: [],
-            patterns: [],
-            number: null,
-          },
+          models: ["model"],
+          backdrops: [],
+          patterns: [],
+          number: null,
         },
       },
       options,
@@ -56,10 +51,8 @@ test("concrete previews use supplied media, never guessed paths or hypothetical 
       {
         target: {
           kind: "unsupported",
-          reason: {
-            code: "unsupported_constraints",
-            message: "Unsupported conditions",
-          },
+          code: "unsupported_constraints",
+          message: "Unsupported conditions",
         },
       },
       options,

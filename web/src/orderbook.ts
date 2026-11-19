@@ -10,8 +10,8 @@ export const traits = [
   { id: "patterns", label: "Symbol", kind: "pattern" },
 ] as const;
 export function serial(order: Order): string | undefined {
-  return order.target.kind === "gift" && order.target.gift.number != null
-    ? String(order.target.gift.number)
+  return order.target.kind === "gift" && order.target.number != null
+    ? String(order.target.number)
     : undefined;
 }
 export function modelName(
@@ -22,11 +22,11 @@ export function modelName(
   if (order.target.kind === "unsupported") return "Unsupported conditions";
   const models =
     order.target.kind === "gift"
-      ? order.target.gift.traits.model
-        ? [order.target.gift.traits.model]
+      ? order.target.traits.model
+        ? [order.target.traits.model]
         : []
       : order.target.kind === "criteria"
-        ? order.target.criteria.models
+        ? order.target.models
         : [];
   return models.length === 1
     ? options.get(models[0])?.name || fallback
@@ -60,13 +60,11 @@ export function giftDetails(
 ): GiftDetail[] {
   const target = order.target;
   if (target.kind === "unsupported")
-    return [{ label: "Conditions", value: target.reason.message }];
+    return [{ label: "Conditions", value: target.message }];
   const rows: GiftDetail[] = [];
   for (const trait of traits) {
-    const id =
-      target.kind === "gift" ? target.gift.traits[trait.kind] : undefined;
-    const ids =
-      target.kind === "criteria" ? target.criteria[trait.id] : id ? [id] : [];
+    const id = target.kind === "gift" ? target.traits[trait.kind] : undefined;
+    const ids = target.kind === "criteria" ? target[trait.id] : id ? [id] : [];
     if (target.kind === "gift" && !ids.length) continue;
     const option = ids.length === 1 ? options?.get(ids[0]) : undefined;
     rows.push({
@@ -78,7 +76,7 @@ export function giftDetails(
       ...(option?.kind === trait.kind ? { option } : {}),
     });
   }
-  const criteria = target.kind === "criteria" ? target.criteria : undefined;
+  const criteria = target.kind === "criteria" ? target : undefined;
   if (
     criteria &&
     criteria.number &&

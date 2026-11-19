@@ -104,7 +104,10 @@ test("range snapshots and atomic changes validate identities, coverage and seque
     observed_at: "2026-11-18T12:00:00Z",
     target: {
       kind: "criteria",
-      criteria: { models: [], backdrops: [], patterns: [], number: null },
+      models: [],
+      backdrops: [],
+      patterns: [],
+      number: null,
     },
     key: "000001",
   };
@@ -193,7 +196,10 @@ test("retired fields are rejected in envelopes, query results and order rows", (
     observed_at: "2026-11-19T00:00:00Z",
     target: {
       kind: "criteria",
-      criteria: { models: [], backdrops: [], patterns: [], number: null },
+      models: [],
+      backdrops: [],
+      patterns: [],
+      number: null,
     },
   };
   const data = { data: [row], range: { start: null, end: null }, next: null };
@@ -225,4 +231,52 @@ test("retired fields are rejected in envelopes, query results and order rows", (
   }
   assert.deepEqual(parseFrame(JSON.stringify(finite)), finite);
   assert.deepEqual(parseFrame(JSON.stringify(changed)), changed);
+});
+
+test("flat targets accept sparse description and reject retired nested payloads", () => {
+  const row = {
+    id: "a",
+    book: { venue_id: "v", collection_id: "gift", currency_id: "GRAM" },
+    kind: "ask",
+    quantity: 1,
+    price: "1",
+    observed_at: "2026-11-18T12:00:00Z",
+    key: "Az_~00",
+  };
+  const frame = (target: unknown, key = row.key) => ({
+    type: "orders.snapshot",
+    id: "flat",
+    sequence: 0,
+    data: [{ ...row, target, key }],
+    range: { start: null, end: null },
+  });
+  for (const target of [
+    { kind: "gift", id: "gift", traits: {} },
+    { kind: "gift", id: "gift", number: 42, traits: { model: "m" } },
+    { kind: "criteria", models: [], backdrops: [], patterns: [] },
+    {
+      kind: "unsupported",
+      code: "invalid_gift_id",
+      message: "Gift unavailable",
+    },
+  ])
+    assert.deepEqual(parseFrame(JSON.stringify(frame(target))), frame(target));
+  for (const target of [
+    { kind: "gift", gift: { id: "gift", collection_id: "gift", traits: {} } },
+    { kind: "gift", id: "gift", collection_id: "gift", traits: {} },
+    { kind: "gift", id: "gift", number: 0, traits: {} },
+    { kind: "criteria", criteria: { models: [], backdrops: [], patterns: [] } },
+    {
+      kind: "unsupported",
+      reason: { code: "invalid_gift_id", message: "Gift unavailable" },
+    },
+  ])
+    assert.throws(() => parseFrame(JSON.stringify(frame(target))));
+  for (const key of ["A", "AAAAA", "AA==", "a-b", "ab+c", "ab/c", "ab{10}"]) {
+    assert.throws(() =>
+      parseFrame(
+        JSON.stringify(frame({ kind: "gift", id: "gift", traits: {} }, key)),
+      ),
+    );
+  }
 });

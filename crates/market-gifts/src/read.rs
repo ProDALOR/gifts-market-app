@@ -25,7 +25,7 @@ pub struct SyncStatus {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "schema", schema(value_type = String, pattern="^(?:[0-9a-f]{2})+$"))]
+#[cfg_attr(feature = "schema", schema(value_type = String, pattern="^[0-9A-Za-z_~]{2,8192}$"))]
 pub struct OrderKey(String);
 impl OrderKey {
     pub fn as_str(&self) -> &str {
@@ -37,10 +37,10 @@ impl TryFrom<String> for OrderKey {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.len() < 2
             || value.len() > 8192
-            || !value.len().is_multiple_of(2)
+            || value.len() % 4 == 1
             || !value
                 .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'~')
         {
             return Err(crate::InvalidValue("invalid ordering key"));
         }

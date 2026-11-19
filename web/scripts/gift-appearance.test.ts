@@ -44,12 +44,9 @@ function order(): Pick<Order, "target"> {
   return {
     target: {
       kind: "gift",
-      gift: {
-        id: "gift-42",
-        collection_id: "collection",
-        number: 42,
-        traits: { model: "model", backdrop: "backdrop", pattern: "pattern" },
-      },
+      id: "gift-42",
+      number: 42,
+      traits: { model: "model", backdrop: "backdrop", pattern: "pattern" },
     },
   };
 }
@@ -69,19 +66,16 @@ test("missing catalog appearance and bid criteria never fabricate concrete artwo
   const conditional: Pick<Order, "target"> = {
     target: {
       kind: "criteria",
-      criteria: {
-        models: ["model"],
-        backdrops: ["backdrop"],
-        patterns: ["pattern"],
-        number: null,
-      },
+      models: ["model"],
+      backdrops: ["backdrop"],
+      patterns: ["pattern"],
+      number: null,
     },
   };
   assert.equal(giftAppearance(conditional, options()).media, undefined);
   assert.equal(giftAppearance(conditional, options()).palette, undefined);
   const noPattern = order();
-  if (noPattern.target.kind === "gift")
-    noPattern.target.gift.traits.pattern = null;
+  if (noPattern.target.kind === "gift") noPattern.target.traits.pattern = null;
   assert.ok(giftAppearance(noPattern, options()).palette);
   assert.equal(giftAppearance(noPattern, options()).patternUrl, undefined);
 });

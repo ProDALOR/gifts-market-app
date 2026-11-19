@@ -88,7 +88,7 @@ export const GiftCard = memo(function GiftCard({
             className="serial"
             title={
               order.target.kind === "unsupported"
-                ? order.target.reason.message
+                ? order.target.message
                 : undefined
             }
           >

@@ -8,7 +8,7 @@ pub use crate::catalog::{
 };
 pub use crate::orders::{
     OrderIdentity, OrderReadResponse, OrderResponse, OrderSnapshotResponse, OrderTargetResponse,
-    OrderedOrderResponse, UnsupportedTargetReason,
+    OrderedOrderResponse,
 };
 pub use crate::status::MarketStatus;
 pub use market_gifts::{

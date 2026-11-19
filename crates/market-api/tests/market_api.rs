@@ -276,7 +276,7 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     assert!(response.status().is_success());
     let body: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(body["data"][0]["price"], "1.000000001");
-    assert_eq!(body["data"][0]["target"]["gift"]["number"], 123);
+    assert_eq!(body["data"][0]["target"]["number"], 123);
     assert!(
         body["data"][0]["observed_at"]
             .as_str()
@@ -482,10 +482,7 @@ async fn public_websocket_queries_share_local_windows_and_one_replication_stream
                 if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
                     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
                     if is_order_event(&value) && event_rows(&value)[0]["price"] == price {
-                        assert_eq!(
-                            event_rows(&value)[0]["target"]["gift"]["id"],
-                            "9007199254740993"
-                        );
+                        assert_eq!(event_rows(&value)[0]["target"]["id"], "9007199254740993");
                         break;
                     }
                 }
@@ -2009,12 +2006,9 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     let rest: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(rest["data"].as_array().unwrap().len(), 2);
     assert_eq!(rest["data"][0]["kind"], "ask");
-    assert_eq!(
-        rest["data"][0]["target"]["reason"]["code"],
-        "unsupported_constraints"
-    );
-    assert!(rest["data"][0]["target"]["reason"]["message"].is_string());
-    assert!(rest["data"][0]["market_url"].is_null());
+    assert_eq!(rest["data"][0]["target"]["code"], "unsupported_constraints");
+    assert!(rest["data"][0]["target"]["message"].is_string());
+    assert!(rest["data"][0].get("market_url").is_none());
     assert_eq!(
         rest["data"][1]["market_url"],
         "https://t.me/market/app?startapp=gift42"
@@ -2023,6 +2017,11 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
         assert!(row.get("mode").is_none());
         assert!(row.get("parent_order_id").is_none());
         assert!(row.get("observed_at").is_some());
+        assert!(row.get("expires_at").is_none());
+        assert!(row.get("executed_at").is_none());
+        for wrapper in ["gift", "criteria", "reason", "collection_id"] {
+            assert!(row["target"].get(wrapper).is_none(), "{wrapper}");
+        }
     }
     for hidden in [
         "private.source.constraint",
@@ -2073,7 +2072,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     let history: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(history["data"][0]["kind"], "executed");
     assert!(history["data"][0]["executed_at"].is_string());
-    assert!(history["data"][0]["market_url"].is_null());
+    assert!(history["data"][0].get("market_url").is_none());
     assert!(!history.to_string().contains("password"));
     assert!(history["data"][0].get("parent_order_id").is_none());
 
@@ -2112,17 +2111,13 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     })
     .await
     .unwrap();
-    let mut socket_data = socket_page["data"].clone();
-    for row in socket_data.as_array_mut().unwrap() {
-        row.as_object_mut().unwrap().remove("position");
-        row.as_object_mut().unwrap().remove("sort_key");
-    }
-    assert_eq!(socket_data, rest["data"]);
+    assert_eq!(socket_page["data"], rest["data"]);
     let schema: serde_json::Value =
         serde_json::from_str(&market_api::schema_json().unwrap()).unwrap();
     let schemas = &schema["components"]["schemas"];
     assert!(schemas.get("GiftOrder").is_none());
     assert!(schemas.get("GiftTarget").is_none());
+    assert!(schemas.get("UnsupportedTargetReason").is_none());
     assert!(schemas["OrderResponse"]["properties"].get("mode").is_none());
     assert!(
         schemas["OrderResponse"]["properties"]
@@ -2440,7 +2435,7 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
             .as_str()
             .unwrap()
             .bytes()
-            .all(|b| b.is_ascii_hexdigit())
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'~')
     );
     for name in [
         "result",

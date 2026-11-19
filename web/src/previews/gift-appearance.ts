@@ -16,7 +16,7 @@ export function giftAppearance(
 ) {
   const media = modelMedia(order, options);
   const selected =
-    order.target.kind === "gift" ? order.target.gift.traits : undefined;
+    order.target.kind === "gift" ? order.target.traits : undefined;
   const backdrop = selected?.backdrop
     ? options.get(selected.backdrop)
     : undefined;

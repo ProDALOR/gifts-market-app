@@ -109,7 +109,7 @@ export function modelMedia(
   options: ReadonlyMap<string, CatalogOption>,
 ): GiftMedia | undefined {
   const id =
-    order.target.kind === "gift" ? order.target.gift.traits.model : undefined;
+    order.target.kind === "gift" ? order.target.traits.model : undefined;
   const model = id ? options.get(id) : undefined;
   return model?.kind === "model" ? model.media || undefined : undefined;
 }

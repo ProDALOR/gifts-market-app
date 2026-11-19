@@ -1,48 +1,63 @@
 //! Public order presentation shared by HTTP reads and cached WebSocket window encoding.
 use jiff::Timestamp;
 use market_gifts::{
-    Amount, CollectibleGift, GiftBook, GiftCriteria, GiftOrder, GiftOrderKind, GiftTarget, OrderId,
-    UnsupportedGiftReason,
+    Amount, BackdropId, GiftBook, GiftId, GiftNumber, GiftNumberRange, GiftOrder, GiftOrderKind,
+    GiftTarget, GiftTraits, ModelId, OrderId, PatternId, UnsupportedGiftReason,
 };
 use serde::Serialize;
 use utoipa::ToSchema;
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct UnsupportedTargetReason {
-    pub code: UnsupportedGiftReason,
-    pub message: &'static str,
-}
-impl From<UnsupportedGiftReason> for UnsupportedTargetReason {
-    fn from(code: UnsupportedGiftReason) -> Self {
-        let message = match code {
-            UnsupportedGiftReason::UnsupportedConstraints => {
-                "This listing has conditions that cannot be displayed yet."
-            }
-            UnsupportedGiftReason::InvalidAttributes => {
-                "This listing's gift details are unavailable."
-            }
-            UnsupportedGiftReason::NonConcreteGift => {
-                "This listing does not identify a single gift with known conditions."
-            }
-            UnsupportedGiftReason::InvalidGiftId => "This listing's gift identity is unavailable.",
-        };
-        Self { code, message }
-    }
-}
-#[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OrderTargetResponse<'a> {
-    Gift { gift: &'a CollectibleGift },
-    Criteria { criteria: &'a GiftCriteria },
-    Unsupported { reason: UnsupportedTargetReason },
+    Gift {
+        id: &'a GiftId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        number: Option<GiftNumber>,
+        traits: &'a GiftTraits,
+    },
+    Criteria {
+        models: &'a [ModelId],
+        backdrops: &'a [BackdropId],
+        patterns: &'a [PatternId],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        number: Option<&'a GiftNumberRange>,
+    },
+    Unsupported {
+        code: UnsupportedGiftReason,
+        message: &'static str,
+    },
 }
 impl<'a> From<&'a GiftTarget> for OrderTargetResponse<'a> {
     fn from(value: &'a GiftTarget) -> Self {
         match value {
-            GiftTarget::Gift { gift } => Self::Gift { gift },
-            GiftTarget::Criteria { criteria } => Self::Criteria { criteria },
+            GiftTarget::Gift { gift } => Self::Gift {
+                id: &gift.id,
+                number: gift.number,
+                traits: &gift.traits,
+            },
+            GiftTarget::Criteria { criteria } => Self::Criteria {
+                models: &criteria.models,
+                backdrops: &criteria.backdrops,
+                patterns: &criteria.patterns,
+                number: criteria.number.as_ref(),
+            },
             GiftTarget::Unsupported { reason } => Self::Unsupported {
-                reason: (*reason).into(),
+                code: *reason,
+                message: match reason {
+                    UnsupportedGiftReason::UnsupportedConstraints => {
+                        "This listing has conditions that cannot be displayed yet."
+                    }
+                    UnsupportedGiftReason::InvalidAttributes => {
+                        "This listing's gift details are unavailable."
+                    }
+                    UnsupportedGiftReason::NonConcreteGift => {
+                        "This listing does not identify a single gift with known conditions."
+                    }
+                    UnsupportedGiftReason::InvalidGiftId => {
+                        "This listing's gift identity is unavailable."
+                    }
+                },
             },
         }
     }
@@ -62,11 +77,14 @@ pub struct OrderResponse<'a> {
     /// When the source last observed the order, not its creation/listing time.
     #[schema(value_type = String, format = DateTime)]
     pub observed_at: Timestamp,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>, format = DateTime)]
     pub expires_at: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>, format = DateTime)]
     pub executed_at: Option<Timestamp>,
-    /// Validated absolute HTTP(S) source link without embedded credentials; null if unavailable.
+    /// Validated absolute HTTP(S) source link without embedded credentials; omitted if unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub market_url: Option<String>,
 }
 impl<'a> From<&'a GiftOrder> for OrderResponse<'a> {
@@ -90,15 +108,8 @@ impl<'a> From<&'a GiftOrder> for OrderResponse<'a> {
 pub struct OrderedOrderResponse<'a> {
     #[serde(flatten)]
     pub order: OrderResponse<'a>,
-    #[serde(serialize_with = "serialize_key")]
     #[schema(value_type=market_gifts::OrderKey)]
     pub key: &'a market_actors::ReadPosition,
-}
-fn serialize_key<S: serde::Serializer>(
-    key: &market_actors::ReadPosition,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(&key.encode())
 }
 impl<'a> From<&'a market_actors::OrderedEntry> for OrderedOrderResponse<'a> {
     fn from(row: &'a market_actors::OrderedEntry) -> Self {
@@ -110,25 +121,13 @@ impl<'a> From<&'a market_actors::OrderedEntry> for OrderedOrderResponse<'a> {
 }
 #[derive(Debug, Serialize)]
 pub struct OrderRangeResponse<'a> {
-    #[serde(serialize_with = "serialize_bound")]
     pub start: Option<&'a market_actors::ReadPosition>,
-    #[serde(serialize_with = "serialize_bound")]
     pub end: Option<&'a market_actors::ReadPosition>,
-}
-fn serialize_bound<S: serde::Serializer>(
-    key: &Option<&market_actors::ReadPosition>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    match key {
-        Some(key) => serializer.serialize_some(&key.encode()),
-        None => serializer.serialize_none(),
-    }
 }
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OrderReadResponse<'a> {
     #[serde(flatten)]
     pub orders: OrderSnapshotResponse<'a>,
-    #[serde(serialize_with = "serialize_bound")]
     #[schema(value_type=Option<market_gifts::OrderKey>, required=true)]
     pub next: Option<&'a market_actors::ReadPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -182,6 +181,133 @@ fn market_link(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use market_gifts::GiftCriteria;
+    use serde_json::json;
+
+    #[test]
+    fn target_schemas_describe_flat_payloads_without_strict_allof_wrappers() {
+        let schema =
+            serde_json::to_value(<OrderTargetResponse<'_> as utoipa::PartialSchema>::schema())
+                .unwrap();
+        let variants = schema["oneOf"].as_array().unwrap();
+        for (variant, (kind, fields, required)) in variants.iter().zip([
+            (
+                "gift",
+                vec!["id", "kind", "number", "traits"],
+                vec!["id", "traits", "kind"],
+            ),
+            (
+                "criteria",
+                vec!["backdrops", "kind", "models", "number", "patterns"],
+                vec!["models", "backdrops", "patterns", "kind"],
+            ),
+            (
+                "unsupported",
+                vec!["code", "kind", "message"],
+                vec!["code", "message", "kind"],
+            ),
+        ]) {
+            assert_eq!(variant["properties"]["kind"]["enum"], json!([kind]));
+            assert_eq!(
+                variant["properties"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                fields
+            );
+            assert_eq!(variant["required"], json!(required));
+            assert!(variant.get("allOf").is_none());
+        }
+        let schema =
+            serde_json::to_value(<OrderResponse<'_> as utoipa::PartialSchema>::schema()).unwrap();
+        let required = schema["required"].as_array().unwrap();
+        for field in ["expires_at", "executed_at", "market_url"] {
+            assert!(schema["properties"].get(field).is_some());
+            assert!(!required.contains(&json!(field)));
+        }
+    }
+
+    #[test]
+    fn targets_are_flat_and_order_gifts_use_the_books_collection() {
+        let gift = market_gifts::CollectibleGift {
+            id: "gift".into(),
+            collection_id: "collection".into(),
+            number: Some(GiftNumber::new(42).unwrap()),
+            traits: GiftTraits {
+                model: Some("model".into()),
+                ..Default::default()
+            },
+        };
+        for (target, expected) in [
+            (
+                GiftTarget::Gift { gift },
+                json!({"kind":"gift","id":"gift","number":42,"traits":{"model":"model"}}),
+            ),
+            (
+                GiftTarget::Criteria {
+                    criteria: GiftCriteria::default(),
+                },
+                json!({"kind":"criteria","models":[],"backdrops":[],"patterns":[]}),
+            ),
+            (
+                GiftTarget::Unsupported {
+                    reason: UnsupportedGiftReason::InvalidGiftId,
+                },
+                json!({"kind":"unsupported","code":"invalid_gift_id","message":"This listing's gift identity is unavailable."}),
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_value(OrderTargetResponse::from(&target)).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn absent_description_is_omitted_but_present_links_and_execution_times_remain() {
+        let mut draft = market_gifts::GiftOrderData {
+            id: "order".into(),
+            book: GiftBook {
+                venue_id: "venue".into(),
+                collection_id: "collection".into(),
+                currency_id: "GRAM".into(),
+            },
+            kind: GiftOrderKind::Ask,
+            target: GiftTarget::Gift {
+                gift: market_gifts::CollectibleGift {
+                    id: "gift".into(),
+                    collection_id: "collection".into(),
+                    number: None,
+                    traits: GiftTraits::default(),
+                },
+            },
+            price: "1.25".into(),
+            quantity: 1,
+            observed_at: Timestamp::UNIX_EPOCH,
+            expires_at: None,
+            executed_at: None,
+            market_url: None,
+        };
+        let order = GiftOrder::try_from(draft.clone()).unwrap();
+        let value = serde_json::to_value(OrderResponse::from(&order)).unwrap();
+        assert_eq!(
+            value["target"],
+            json!({"kind":"gift","id":"gift","traits":{}})
+        );
+        for field in ["expires_at", "executed_at", "market_url"] {
+            assert!(value.get(field).is_none(), "{field}");
+        }
+        draft.kind = GiftOrderKind::Executed;
+        draft.executed_at = Some(Timestamp::UNIX_EPOCH);
+        draft.market_url = Some("https://example.com/gift".into());
+        let order = GiftOrder::try_from(draft).unwrap();
+        let value = serde_json::to_value(OrderResponse::from(&order)).unwrap();
+        assert_eq!(value["executed_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(value["market_url"], "https://example.com/gift");
+    }
+
     #[test]
     fn public_links_are_absolute_http_links_without_credentials_or_controls() {
         for value in [

@@ -7,7 +7,7 @@ import type { Order, ValuationView } from "../market";
 
 /** One cancellable read shared by the price summary and calculation breakdown. */
 export function useGiftValuation(order: Order) {
-  const gift = order.target.kind === "gift" ? order.target.gift : undefined;
+  const gift = order.target.kind === "gift" ? order.target : undefined;
   const number = gift?.number;
   const giftId = gift?.id;
   const available = !!number && !!giftId;
