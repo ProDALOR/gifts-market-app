@@ -1,49 +1,56 @@
 import type { components } from "../gen/api.ts";
 import { orderKey } from "../orderbook/order-activity.ts";
-type Result = components["schemas"]["OrderResultResponse"];
+type Result = components["schemas"]["OrderReadResponse"];
 type Entry = Result["data"][number];
-
-/** Visited rows stay available; a server window refreshes its exact ordering range. */
+export function lowerBound(
+  rows: readonly Entry[],
+  key: string,
+  exclusive = false,
+) {
+  let lo = 0,
+    hi = rows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (rows[mid].key < key || (exclusive && rows[mid].key === key))
+      lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+/** A persistent identity index and sorted visited rows. Only covered rows are reconciled. */
 export class LoadedOrders {
   rows: Entry[] = [];
+  private identities = new Map<string, Entry>();
   hasBefore = false;
   hasAfter = true;
   merge(view: Result) {
-    const previous = new Map(this.rows.map((row) => [orderKey(row), row]));
-    const keys = new Set(view.data.map(orderKey));
-    const first = view.range.start?.sort_key;
-    const last = view.range.end?.sort_key;
-    const retained = this.rows.filter(
-      (row) =>
-        !keys.has(orderKey(row)) &&
-        ((first !== undefined && row.sort_key < first) ||
-          (last !== undefined && row.sort_key > last)),
-    );
+    const { start, end } = view.range;
+    const first = start === null ? 0 : lowerBound(this.rows, start);
+    const last =
+      end === null ? this.rows.length : lowerBound(this.rows, end, true);
+    const moved = new Set<Entry>();
     const incoming = view.data.map((row) => {
-      const old = previous.get(orderKey(row));
-      return old && JSON.stringify(old) === JSON.stringify(row) ? old : row;
+      const old = this.identities.get(orderKey(row));
+      if (old && (old.key < (start ?? "") || (end !== null && old.key > end)))
+        moved.add(old);
+      return old && (old === row || JSON.stringify(old) === JSON.stringify(row))
+        ? old
+        : row;
     });
-    const merged: Entry[] = [];
-    let left = 0,
-      right = 0;
-    while (left < retained.length && right < incoming.length)
-      merged.push(
-        retained[left].sort_key < incoming[right].sort_key
-          ? retained[left++]
-          : incoming[right++],
-      );
-    this.rows = merged.concat(retained.slice(left), incoming.slice(right));
-    if (
-      first === undefined ||
-      !this.rows.length ||
-      this.rows[0].sort_key >= first
-    )
-      this.hasBefore = first !== undefined;
-    if (
-      last === undefined ||
-      !this.rows.length ||
-      this.rows.at(-1)!.sort_key <= last
-    )
-      this.hasAfter = last !== undefined;
+    for (let i = first; i < last; i++)
+      this.identities.delete(orderKey(this.rows[i]));
+    for (const row of incoming) this.identities.set(orderKey(row), row);
+    const head = this.rows.slice(0, first),
+      tail = this.rows.slice(last);
+    this.rows = (
+      moved.size ? head.filter((row) => !moved.has(row)) : head
+    ).concat(
+      incoming,
+      moved.size ? tail.filter((row) => !moved.has(row)) : tail,
+    );
+    if (start === null || !this.rows.length || this.rows[0].key >= start)
+      this.hasBefore = start !== null;
+    if (end === null || !this.rows.length || this.rows.at(-1)!.key <= end)
+      this.hasAfter = end !== null;
   }
 }

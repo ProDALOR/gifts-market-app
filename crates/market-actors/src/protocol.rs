@@ -1,13 +1,9 @@
 //! Replica envelopes and actor errors; gift interpretation belongs to market-gifts-hub.
 use crate::error::{DataError, Result};
 use market_gifts::*;
-use market_gifts_hub::order;
 use market_hub_protocol::wire as w;
 pub(crate) fn invalid(value: impl std::fmt::Display) -> DataError {
     DataError::unavailable(value.to_string())
-}
-fn required<T>(value: Option<T>) -> Result<T> {
-    value.ok_or_else(|| invalid("missing gift market field"))
 }
 fn time(value: i64) -> Result<jiff::Timestamp> {
     jiff::Timestamp::from_millisecond(value).map_err(invalid)
@@ -27,39 +23,19 @@ pub(crate) fn sync(value: market_replica::SyncStatus) -> Result<SyncStatus> {
         updated_at: value.updated_at.map(time).transpose()?,
     })
 }
-pub(crate) fn orders(result: market_replica::ReadResult) -> Result<Page<GiftOrder>> {
-    Ok(Page {
-        sync: sync(result.sync)?,
-        cursor: result.page.cursor,
-        next_page_token: result.page.next_page_token,
-        data: result
-            .page
-            .entities
-            .into_iter()
-            .map(order_entity)
-            .collect::<Result<_>>()?,
-    })
-}
-
-fn order_entity(entity: w::Entity) -> Result<GiftOrder> {
-    match required(entity.entity)? {
-        w::entity::Entity::Order(value) => order(value).map_err(invalid),
-        _ => Err(invalid("expected a gift order")),
-    }
-}
-pub(crate) fn order_result(
-    result: market_replica::WindowReadResult,
-    coverage: Option<OrderRange>,
-) -> Result<(OrderResult, SyncStatus)> {
-    let sync = sync(result.sync)?;
+pub(crate) fn order_result(result: market_replica::ReadBatch) -> Result<crate::OrderRead> {
     let data: Vec<_> = result
         .entries
         .into_iter()
         .map(|entry| {
-            Ok(OrderedEntry {
-                order: order_entity(entry.entity)?,
-                position: entry.position,
-                sort_key: entry.sort_key,
+            Ok(crate::OrderedEntry {
+                order: match entry.entity.entity.as_ref() {
+                    Some(w::entity::Entity::Order(order)) => {
+                        market_gifts_hub::order_ref(order).map_err(invalid)?
+                    }
+                    _ => return Err(invalid("expected a gift order")),
+                },
+                key: entry.key,
             })
         })
         .collect::<Result<_>>()?;
@@ -72,23 +48,14 @@ pub(crate) fn order_result(
             "Duplicate order identities in query result",
         ));
     }
-    let boundary = |entry: &OrderedEntry<GiftOrder>| OrderBoundary {
-        position: entry.position.clone(),
-        sort_key: entry.sort_key.clone(),
-    };
-    let range = coverage.unwrap_or_else(|| OrderRange {
-        start: if result.has_before {
-            data.first().map(boundary)
-        } else {
-            None
+    Ok(crate::OrderRead {
+        result: crate::OrderResult {
+            data,
+            range: result.range,
         },
-        end: if result.has_after {
-            data.last().map(boundary)
-        } else {
-            None
-        },
-    });
-    Ok((OrderResult { data, range }, sync))
+        next: result.next,
+        snapshot: result.snapshot,
+    })
 }
 
 /// Gift-specific eligibility belongs outside the generic replica's bounded scan.
@@ -99,4 +66,14 @@ pub(crate) fn include_order(entity: &w::Entity) -> std::result::Result<bool, ton
             .map_err(|e| tonic::Status::unavailable(e.to_string())),
         _ => Err(tonic::Status::unavailable("expected a gift order")),
     }
+}
+
+/// Projection stays inside the admitted blocking read, including its cancellation/slot lifetime.
+pub(crate) fn projected_read(
+    batch: market_replica::ReadBatch,
+) -> std::result::Result<(crate::OrderRead, market_replica::ReadRevision), tonic::Status> {
+    let revision = batch.revision;
+    let read =
+        order_result(batch).map_err(|error| tonic::Status::unavailable(error.to_string()))?;
+    Ok((read, revision))
 }

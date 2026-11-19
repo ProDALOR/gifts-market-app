@@ -38,9 +38,12 @@ pub(super) async fn run(
         let work = async {
             match request {
                 crate::models::ApiRequest::Orders { id, params } => {
-                    let read = market.read_orders(*params).await?;
+                    let read = market.query_orders(*params).await?;
                     market
-                        .encode_orders(crate::encoding::OrderEvent::Read { id, read })
+                        .encode_orders(crate::encoding::OrderEvent::Read {
+                            id,
+                            read: Box::new(read),
+                        })
                         .await
                         .map(Payload::Orders)
                 }
@@ -76,7 +79,7 @@ pub(super) async fn run(
         }
     };
     let mut previous = None;
-    let mut epoch = None;
+    let mut epoch: Option<market_actors::ReadRevision> = None;
     let mut sequence = 0u64;
     loop {
         let update = updates.borrow_and_update().clone();
@@ -86,17 +89,21 @@ pub(super) async fn run(
             DataUpdate::Error(error) => (Payload::Error(error.into()), true),
             DataUpdate::Orders {
                 result,
-                epoch: next_epoch,
-                sync,
-                revision,
+                version: next_epoch,
             } => {
-                let reset = epoch.as_ref().is_some_and(|old| old != &next_epoch);
+                let reset = epoch
+                    .as_ref()
+                    .is_some_and(|old| !old.same_dataset(&next_epoch));
                 if !reset
                     && previous
                         .as_ref()
                         .is_some_and(|old| std::sync::Arc::ptr_eq(old, &result))
                 {
-                    (Payload::Sync { sync, revision }, false)
+                    let changed = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=updates.changed()=>result};
+                    if changed.is_err() {
+                        return End::Failed;
+                    }
+                    continue;
                 } else {
                     let next_sequence = if previous.is_none() {
                         Some(0)
@@ -123,8 +130,6 @@ pub(super) async fn run(
                         current: result.clone(),
                         sequence: next_sequence,
                         reset,
-                        sync,
-                        revision,
                     };
                     let encoded = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=market.encode_orders(event)=>result};
                     match encoded {

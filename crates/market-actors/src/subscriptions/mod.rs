@@ -9,6 +9,7 @@ use crate::{
 };
 use actix::prelude::*;
 use messages::{Release, SubscribeCatalog, WatchOrders};
+use prost::Message as _;
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -72,7 +73,7 @@ impl Handler<WatchOrders> for MarketSubscriptionsActor {
             FeedSpec::Orders(Box::new(types::OrdersFeed {
                 range: message.range,
                 request: message.request,
-                window: message.window,
+                slice: message.slice,
             })),
             ctx,
         )
@@ -97,7 +98,19 @@ impl MarketSubscriptionsActor {
         let id = SubscriberId(next);
         let key = match &spec {
             FeedSpec::Catalog(ids) => QueryKey::Catalog(ids.clone()),
-            FeedSpec::Orders(_) => QueryKey::View(id),
+            FeedSpec::Orders(selection) => match &selection.range {
+                Some(range) => QueryKey::Range {
+                    selection: selection
+                        .request
+                        .selection
+                        .as_ref()
+                        .map(|s| s.encode_to_vec())
+                        .unwrap_or_default(),
+                    sort: selection.request.sort,
+                    range: Box::new(range.clone()),
+                },
+                None => QueryKey::View(id),
+            },
         };
         let running = self
             .feeds

@@ -58,22 +58,6 @@ fn catalog_response<T, U: serde::Serialize>(
         response.json(present(snapshot.data))
     }
 }
-#[utoipa::path(post,path="/orders/query",tag="Orders",summary="Query current asks or bids",request_body=GiftOrdersQuery,responses((status=200,body=OrderPageResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub(crate) async fn orders(
-    state: web::Data<MarketApi>,
-    query: web::Json<GiftOrdersQuery>,
-) -> Result<HttpResponse> {
-    let page = state.orders(query.into_inner()).await?;
-    Ok(HttpResponse::Ok().json(OrderPageResponse::from(&page)))
-}
-#[utoipa::path(post,path="/history/query",tag="History",summary="Query confirmed executions",request_body=GiftHistoryQuery,responses((status=200,body=OrderPageResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub(crate) async fn executions(
-    state: web::Data<MarketApi>,
-    query: web::Json<GiftHistoryQuery>,
-) -> Result<HttpResponse> {
-    let page = state.executions(query.into_inner()).await?;
-    Ok(HttpResponse::Ok().json(OrderPageResponse::from(&page)))
-}
 #[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with one coherent floor report",description="Accepts a Telegram gift URL, slug, or gift object with collection_id and number, plus currency_id. Resolves gift facts and all metrics from one pinned replica view. Returns collection, model, backdrop and matching model+backdrop floors; two-decimal dimensionless model/backdrop multipliers; and final_mark = round2(min(matching floor, collection floor * unrounded multipliers)). Rounding uses midpoint-to-even. Floor prices retain exact precision. Multipliers require at least three eligible listing rows for the collection and selected trait. Each metric has value or a structured error; a resolved gift returns 200 even when some metrics are unavailable. A strategy-owned display projection supplies ordered fields, labels, formatted values, emphasis, summary and note for generic clients. Typed calculation fields remain in the response. One strategy, revision, evaluated_at and sync status apply to the whole report. The response slug is null for catalog references. Unknown/unlisted gifts return 404. No Telegram account or external lookup is used.",request_body=market_valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn gift_valuation(
     state: web::Data<MarketApi>,
@@ -85,17 +69,17 @@ pub(crate) async fn gift_valuation(
         .json(GiftValuationResponse::from(result.as_ref())))
 }
 
-#[utoipa::path(post,path="/orders/read",tag="Orders",summary="Read a latest or frozen ordered slice",description="Latest is the default and retains no view. Set consistency to snapshot to open or reuse a snapshot lease. Positions are portable across latest, frozen and WebSocket reads. The server enforces read budgets. Expired leases return restart_read.",request_body=market_gifts::OrderReadQuery,responses((status=200,body=crate::orders::OrderReadResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/orders/query",tag="Orders",summary="Read a latest or frozen ordered slice",description="Latest is the default and retains no view. Set view.kind to snapshot to open or reuse a snapshot lease. Ordering keys are portable across latest, frozen and WebSocket reads. The server enforces read budgets. Expired leases return restart_read.",request_body=GiftOrderQuery,responses((status=200,body=crate::orders::OrderReadResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn read_orders(
     state: web::Data<MarketApi>,
-    query: web::Json<market_gifts::OrderReadQuery>,
+    query: web::Json<GiftOrderQuery>,
 ) -> Result<HttpResponse> {
-    let result = state.read_orders(query.into_inner()).await?;
+    let result = state.query_orders(query.into_inner()).await?;
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
         .json(crate::orders::OrderReadResponse::from(&result)))
 }
-#[utoipa::path(delete,path="/orders/read",tag="Orders",summary="Release a frozen read",request_body=market_gifts::ReleaseReadSnapshot,responses((status=204,description="Released or already expired"),(status=400,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(delete,path="/orders/query",tag="Orders",summary="Release a frozen read",request_body=market_gifts::ReleaseReadSnapshot,responses((status=204,description="Released or already expired"),(status=400,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn release_read(
     state: web::Data<MarketApi>,
     query: web::Json<market_gifts::ReleaseReadSnapshot>,
@@ -126,13 +110,11 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
     .route("/sync", web::get().to(sync))
     .route("/catalog", web::get().to(catalog))
     .route("/collections/{id}", web::get().to(collection))
-    .route("/orders/query", web::post().to(orders))
     .service(
-        web::resource("/orders/read")
+        web::resource("/orders/query")
             .route(web::post().to(read_orders))
             .route(web::delete().to(release_read)),
     )
-    .route("/history/query", web::post().to(executions))
     .route("/valuations/gift", web::post().to(gift_valuation))
     .route(
         "/media/models/{id}",

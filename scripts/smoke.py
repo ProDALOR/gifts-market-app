@@ -197,17 +197,19 @@ def main():
         wait(base + "/readyz")
         query = {
             "filters": {"collection_id": "tg.gift.123", "currency_id": "GRAM"},
-            "side": "ask",
+            "source": "asks",
             "limit": 1,
         }
-        page = call("/orders/query", query)
+        frozen_query=dict(query,view={"kind":"snapshot"})
+        page = call("/orders/query", frozen_query)
         assert page["data"][0]["price"] == "1.25"
         assert page["data"][0]["book"]["venue_id"] == "partner"
         assert "T" in page["data"][0]["observed_at"]
-        stale = page["next_page_token"]
-        second = call("/orders/query", dict(query, page_token=page["next_page_token"]))
+        stale = page["next"]
+        frozen_query["view"]["id"]=page["snapshot"]
+        second = call("/orders/query", dict(frozen_query,navigation={"type":"after","key":stale}))
         assert second["data"][0]["price"] == "2.25"
-        assert second["cursor"] == page["cursor"]
+        assert second["snapshot"] == page["snapshot"]
         q = dict(query, limit=200)
         result = call("/orders/query", q)
         prices = [Decimal(v["price"]) for v in result["data"]]
@@ -225,7 +227,7 @@ def main():
             "/orders/query", dict(q, filters=dict(q["filters"], currency_id="XTR"))
         )
         assert stars["data"][0]["price"] == "1250"
-        executions = call("/history/query", {"filters": query["filters"]})
+        executions = call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})
         assert (
             len(executions["data"]) == 1 and executions["data"][0]["kind"] == "executed"
         )
@@ -274,10 +276,10 @@ def main():
         server.wait()
         eventually(lambda: call("/sync")["state"] == "stale")
         assert call("/orders/query", query)["data"][0]["price"] == "0.500000001"
-        assert len(call("/history/query", {"filters": query["filters"]})["data"]) == 1
+        assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 1
         # A frozen local view survives a hub failure.
         assert (
-            call("/orders/query", dict(query, page_token=stale))["data"][0]["price"]
+            call("/orders/query", dict(frozen_query,navigation={"type":"after","key":stale}))["data"][0]["price"]
             == "2.25"
         )
         app_process.kill()
@@ -287,9 +289,9 @@ def main():
         )
         wait(base + "/readyz")
         assert call("/orders/query", query)["data"][0]["price"] == "0.500000001"
-        assert len(call("/history/query", {"filters": query["filters"]})["data"]) == 1
+        assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 1
         assert len(call("/catalog")["collections"]) == 2
-        call("/orders/query", dict(query, page_token=stale), expected=409)
+        call("/orders/query", dict(frozen_query,navigation={"type":"after","key":stale}), expected=409)
         # Hub restart invalidates the Watch cursor: rebuild and swap the replica atomically.
         server = start("hub", hub_command, env, root)
         wait(f"http://127.0.0.1:{admin}/healthz")
@@ -301,12 +303,12 @@ def main():
                 and call("/orders/query", query)["data"][0]["price"] == "1.25"
             )
         )
-        assert len(call("/history/query", {"filters": query["filters"]})["data"]) == 1
-        # REST cursors remain reusable as live boundaries after their snapshot root expires.
-        live = call("/orders/query", dict(query, page_token=stale, consistency="live"))
+        assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 1
+        # Ordering keys remain reusable after their snapshot lease expires.
+        live = call("/orders/query", dict(query,navigation={"type":"after","key":stale}))
         assert live["data"][0]["price"] == "2.25"
-        assert call("/orders/query", dict(query, page_token=live["next_page_token"]))["data"][0]["price"] == "3.25"
-        # WebSockets use portable positions, not REST continuation tokens.
+        assert call("/orders/query", dict(query,navigation={"type":"after","key":live["next"]}))["data"][0]["price"] == "3.25"
+        # REST and WebSockets use the same query-bound ordering keys.
         subprocess.run(
             ["node", str(root / "scripts/range-probe.mjs")],
             env=dict(base_env, PUBLIC_QUERY=json.dumps(query), PUBLIC_URL=base),
@@ -318,17 +320,17 @@ def main():
         eventually(
             lambda: (
                 len(call("/orders/query", q)["data"]) == 29
-                and len(call("/history/query", {"filters": query["filters"]})["data"])
+                and len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"])
                 == 2
             )
         )
         fixture("backfill")
         eventually(
             lambda: (
-                len(call("/history/query", {"filters": query["filters"]})["data"]) == 3
+                len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 3
             )
         )
-        history = call("/history/query", {"filters": query["filters"]})["data"]
+        history = call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]
         assert history[0]["id"] == "old-execution"
         server.kill()
         server.wait()
@@ -339,7 +341,7 @@ def main():
             "app", app_command, dict(base_env, MARKET_HUB_TOKEN=token), root
         )
         wait(base + "/readyz")
-        assert len(call("/history/query", {"filters": query["filters"]})["data"]) == 3
+        assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 3
         assert len(call("/orders/query", q)["data"]) == 29
         # Leave the optional preview connected after testing persisted, disconnected reads.
         server = start("hub", hub_command, env, root)
@@ -351,7 +353,7 @@ def main():
                 and len(call("/orders/query", q)["data"]) == 29
             )
         )
-        assert len(call("/history/query", {"filters": query["filters"]})["data"]) == 3
+        assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 3
         (workspace / "preview.json").write_text(
             json.dumps(
                 {

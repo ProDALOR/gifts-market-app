@@ -4,7 +4,7 @@ use crate::{
     models::{ApiResult, ServerFrame},
     orders::*,
 };
-use market_gifts::{OrderRead, OrderResult, SyncStatus};
+use market_actors::{OrderRead, OrderResult};
 use std::{
     collections::HashMap,
     io::{self, Write},
@@ -15,7 +15,7 @@ use tokio_util::task::TaskTracker;
 pub(crate) enum OrderEvent {
     Read {
         id: String,
-        read: OrderRead,
+        read: Box<OrderRead>,
     },
     Update {
         id: String,
@@ -23,8 +23,6 @@ pub(crate) enum OrderEvent {
         current: Arc<OrderResult>,
         sequence: u64,
         reset: bool,
-        sync: SyncStatus,
-        revision: String,
     },
 }
 pub(crate) struct OrderEncoder {
@@ -90,7 +88,7 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
             &mut writer,
             &ServerFrame::Result(ApiResult::Orders {
                 id,
-                data: (&read).into(),
+                data: read.as_ref().into(),
             }),
         ),
         OrderEvent::Update {
@@ -99,13 +97,13 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
             current,
             sequence,
             reset,
-            sync,
-            revision,
         } => {
             if let Some(previous) = previous.filter(|_| !reset) {
-                let key = |row: &market_gifts::OrderedEntry<market_gifts::GiftOrder>| {
-                    (row.order.book.venue_id.clone(), row.order.id.clone())
-                };
+                fn key(
+                    row: &market_actors::OrderedEntry,
+                ) -> (&market_gifts::VenueId, &market_gifts::OrderId) {
+                    (&row.order.book.venue_id, &row.order.id)
+                }
                 let old: HashMap<_, _> = previous.data.iter().map(|row| (key(row), row)).collect();
                 let new: HashMap<_, _> = current.data.iter().map(|row| (key(row), row)).collect();
                 let upserts = current
@@ -127,14 +125,9 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
                     &mut writer,
                     &ServerFrame::OrdersChanged {
                         id,
-                        base_sequence: sequence
-                            .checked_sub(1)
-                            .ok_or_else(|| ApiError::invalid("Invalid change sequence"))?,
                         sequence,
                         upserts,
                         removed,
-                        sync: &sync,
-                        revision: &revision,
                     },
                 )
             } else {
@@ -143,13 +136,7 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
                     &ServerFrame::OrdersSnapshot {
                         id,
                         sequence,
-                        reset,
-                        data: OrderReadResponse {
-                            result: (&*current).into(),
-                            snapshot: None,
-                            sync: &sync,
-                            revision: &revision,
-                        },
+                        data: OrderReadResponse::latest(&current),
                     },
                 )
             }
@@ -172,7 +159,7 @@ mod tests {
     fn empty() -> OrderResult {
         OrderResult {
             data: vec![],
-            range: market_gifts::OrderRange {
+            range: market_actors::KeyRange {
                 start: None,
                 end: None,
             },
@@ -184,18 +171,13 @@ mod tests {
         let read = OrderRead {
             result: empty(),
             snapshot: None,
-            sync: SyncStatus {
-                ready: true,
-                state: market_gifts::SyncState::Live,
-                updated_at: None,
-            },
-            revision: "r".into(),
+            next: None,
         };
         let expected = serde_json::to_value(OrderReadResponse::from(&read)).unwrap();
         let text = encoder
             .encode(OrderEvent::Read {
                 id: "x".into(),
-                read,
+                read: Box::new(read),
             })
             .await
             .unwrap();
@@ -210,12 +192,6 @@ mod tests {
                     current: Arc::new(empty()),
                     sequence: 0,
                     reset: false,
-                    sync: SyncStatus {
-                        ready: true,
-                        state: market_gifts::SyncState::Live,
-                        updated_at: None
-                    },
-                    revision: "r".into()
                 })
                 .await
                 .is_err()

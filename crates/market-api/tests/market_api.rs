@@ -254,7 +254,7 @@ async fn setup() -> (MarketApi, TestMarket, Peer, CancellationToken) {
     (api, runtime, peer, stop)
 }
 fn query() -> serde_json::Value {
-    serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"side":"ask","limit":25})
+    serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","limit":25})
 }
 #[actix_web::test]
 async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_credentials() {
@@ -350,8 +350,7 @@ async fn rest_is_read_only_preserves_exact_values_and_never_exposes_service_cred
     assert_eq!(status["ready"], true);
     assert!(status["state"].is_string());
     assert!(status.get("updated_at").is_some());
-    // Other response kinds retain their own freshness envelope.
-    assert!(body["sync"]["ready"].as_bool().unwrap());
+    assert!(body.get("sync").is_none());
     for field in ["models", "backdrops", "patterns"] {
         assert!(collection[field].is_array());
     }
@@ -486,9 +485,10 @@ async fn public_websocket_queries_share_local_windows_and_one_replication_stream
         loop {
             if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = a.next().await {
                 let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-                if value["type"] == "sync" && value["sync"]["state"] == "stale" {
+                if value["type"] == "replica.status" && value["sync"]["state"] == "stale" {
                     assert!(value.get("page").is_none());
-                    assert!(value["revision"].is_string());
+                    assert!(value.get("revision").is_none());
+                    assert!(value.get("id").is_none());
                     break;
                 }
             }
@@ -514,8 +514,9 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
     assert!(properties.get("parent_order_id").is_none());
     assert!(properties.get("kind").is_some());
     assert_eq!(properties["quantity"]["minimum"], 1);
-    let page_ref = serde_json::json!({"$ref":"#/components/schemas/OrderPageResponse"});
-    for path in ["/orders/query", "/history/query"] {
+    let page_ref = serde_json::json!({"$ref":"#/components/schemas/OrderReadResponse"});
+    {
+        let path = "/orders/query";
         assert_eq!(
             schema["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"],
             page_ref
@@ -523,8 +524,7 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
     }
     for (path, method) in [
         ("/orders/query", "post"),
-        ("/history/query", "post"),
-        ("/orders/read", "post"),
+        ("/orders/query", "post"),
         ("/catalog", "get"),
         ("/collections/{id}", "get"),
     ] {
@@ -545,7 +545,7 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
         );
     }
     assert!(
-        schema["paths"]["/orders/read"]["delete"]["responses"]
+        schema["paths"]["/orders/query"]["delete"]["responses"]
             .get("503")
             .is_some()
     );
@@ -1000,224 +1000,6 @@ async fn oversized_order_batches_report_terminal_errors_and_release_the_id() {
 }
 
 #[actix_web::test]
-async fn live_rest_continuations_do_not_consume_retained_snapshot_capacity() {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    let directory = tempfile::tempdir().unwrap();
-    let mut writer = market_replica::ReplicaWriter::open(directory.path(), "scroll-test").unwrap();
-    let mut rows = page("1.000000001").entities;
-    let mut second = rows
-        .iter()
-        .find_map(|entity| match &entity.entity {
-            Some(w::entity::Entity::Order(order)) => Some(order.clone()),
-            _ => None,
-        })
-        .unwrap();
-    second.id = "second".into();
-    second.price = "2".into();
-    rows.push(w::Entity {
-        entity: Some(w::entity::Entity::Order(second)),
-    });
-    let mut snapshot = writer.begin_snapshot().unwrap();
-    snapshot
-        .append(
-            &rows
-                .into_iter()
-                .map(|entity| w::Change {
-                    change: Some(w::change::Change::Upsert(entity)),
-                })
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-    writer
-        .install_snapshot(snapshot.finish("scroll-cursor").unwrap())
-        .unwrap();
-    let reads =
-        market_replica::ReadRuntime::new(writer.reader(), 2, CancellationToken::new()).unwrap();
-    let service = MarketDataService::start(reads.handle(), 2).await.unwrap();
-    let (valuation, valuation_task) =
-        market_valuation::ValuationHandle::start(&service.arbiter(), reads.handle())
-            .await
-            .unwrap();
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(MarketApi::new(
-                service.handle,
-                valuation.clone(),
-            )))
-            .configure(configure),
-    )
-    .await;
-    let token_json = |token: &str| {
-        serde_json::from_slice::<serde_json::Value>(&URL_SAFE_NO_PAD.decode(token).unwrap())
-            .unwrap()
-    };
-    let mut body = query();
-    body["limit"] = 1.into();
-    body["consistency"] = "live".into();
-    let mut token = String::new();
-    for _ in 0..160 {
-        let response = test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri("/orders/query")
-                .set_json(&body)
-                .to_request(),
-        )
-        .await;
-        assert_eq!(
-            response.status(),
-            200,
-            "live requests must not fill the 128-view snapshot budget"
-        );
-        let response: serde_json::Value = test::read_body_json(response).await;
-        token = response["next_page_token"].as_str().unwrap().to_owned();
-        assert!(token_json(&token)["snapshot"].is_null());
-    }
-    body["page_token"] = token.into();
-    let response: serde_json::Value = test::read_body_json(
-        test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri("/orders/query")
-                .set_json(&body)
-                .to_request(),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(response["data"][0]["id"], "second");
-    assert_eq!(response["next_page_token"], "");
-    body.as_object_mut().unwrap().remove("consistency");
-    body.as_object_mut().unwrap().remove("page_token");
-    let response: serde_json::Value = test::read_body_json(
-        test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri("/orders/query")
-                .set_json(&body)
-                .to_request(),
-        )
-        .await,
-    )
-    .await;
-    assert!(
-        token_json(response["next_page_token"].as_str().unwrap())["snapshot"].is_string(),
-        "REST defaults still pin snapshots"
-    );
-    valuation_task.shutdown().await.unwrap();
-    let stop = CancellationToken::new();
-    stop.cancel();
-    service.task.run(stop).await.unwrap();
-    reads.shutdown().await;
-}
-
-#[actix_web::test]
-async fn gift_query_schema_matches_flat_wire_filters_and_required_identities() {
-    use market_gifts::{GiftFilters, GiftHistoryQuery, GiftOrdersQuery};
-    let schema = serde_json::to_value(ApiDoc::openapi()).unwrap();
-    let filters = &schema["components"]["schemas"]["GiftFilters"];
-    assert_eq!(filters["type"], "object");
-    assert_eq!(filters["additionalProperties"], false);
-    assert!(
-        filters.get("allOf").is_none(),
-        "a closed flattened criteria schema rejects identity fields"
-    );
-    let wire = serde_json::to_value(GiftOrdersQuery::new(GiftFilters::new(
-        "gift".into(),
-        "GRAM".into(),
-    )))
-    .unwrap();
-    let properties = filters["properties"].as_object().unwrap();
-    let keys: std::collections::BTreeSet<_> = wire["filters"].as_object().unwrap().keys().collect();
-    assert_eq!(keys, properties.keys().collect());
-    let required = filters["required"].as_array().unwrap();
-    for key in ["collection_id", "currency_id"] {
-        assert!(required.contains(&serde_json::json!(key)));
-    }
-    for example in [
-        serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM"}}),
-        serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM","models":["model"],"number":{"min":1}},"side":"bid"}),
-    ] {
-        let parsed: GiftOrdersQuery = serde_json::from_value(example).unwrap();
-        assert!(
-            serde_json::from_value::<GiftOrdersQuery>(serde_json::to_value(parsed).unwrap())
-                .is_ok()
-        );
-    }
-    for example in [
-        serde_json::json!({}),
-        serde_json::json!({"filters":{"collection_id":"gift"}}),
-        serde_json::json!({"filters":{"currency_id":"GRAM"}}),
-    ] {
-        assert!(serde_json::from_value::<GiftOrdersQuery>(example).is_err());
-    }
-    assert!(serde_json::from_value::<GiftHistoryQuery>(serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM","mode":"ask"}})).is_err());
-    assert!(serde_json::from_value::<GiftOrdersQuery>(serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM"},"side":"executed"})).is_err());
-}
-
-#[actix_web::test]
-async fn rest_snapshot_pagination_reuses_retained_views_across_http_requests() {
-    let (state, runtime, peer, stop) = setup().await;
-    let mut fixture = page("1");
-    fixture.cursor = "pagination".into();
-    let mut second = fixture.entities.last().unwrap().clone();
-    if let Some(w::entity::Entity::Order(order)) = &mut second.entity {
-        order.id = "second".into();
-        order.price = "2".into();
-    }
-    fixture.entities.push(second);
-    peer.page.send_replace(fixture);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while state
-            .orders(serde_json::from_value(query()).unwrap())
-            .await
-            .unwrap()
-            .cursor
-            != "pagination"
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(state))
-            .configure(configure),
-    )
-    .await;
-    let mut request = query();
-    request["limit"] = 1.into();
-    let first: serde_json::Value = test::read_body_json(
-        test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri("/orders/query")
-                .set_json(&request)
-                .to_request(),
-        )
-        .await,
-    )
-    .await;
-    assert!(!first["next_page_token"].as_str().unwrap().is_empty());
-    request["page_token"] = first["next_page_token"].clone();
-    let second = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/orders/query")
-            .set_json(request)
-            .to_request(),
-    )
-    .await;
-    assert_eq!(second.status(), 200);
-    let second: serde_json::Value = test::read_body_json(second).await;
-    assert_eq!(second["data"][0]["id"], "second");
-    assert_eq!(second["cursor"], first["cursor"]);
-    stop.cancel();
-    runtime.shutdown().await.unwrap();
-}
-
-#[actix_web::test]
 #[ignore = "requires the production frontend build and Playwright Chromium"]
 async fn developer_docs_render_rest_and_websocket_console_with_local_assets() {
     let (_state, runtime, _peer, stop) = setup().await;
@@ -1631,7 +1413,12 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
             if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
                 socket.next().await
             {
-                break serde_json::from_str::<serde_json::Value>(&text).unwrap();
+                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if frame["type"] == "replica.status" {
+                    assert!(frame.get("id").is_none());
+                    continue;
+                }
+                break frame;
             }
         }
     })
@@ -1661,7 +1448,12 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
             if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
                 socket.next().await
             {
-                break serde_json::from_str::<serde_json::Value>(&text).unwrap();
+                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if frame["type"] == "replica.status" {
+                    assert!(frame.get("id").is_none());
+                    continue;
+                }
+                break frame;
             }
         }
     })
@@ -1978,13 +1770,7 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
         peer.page.send_replace(page);
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let page = state
-                    .orders(market_gifts::GiftOrdersQuery::new(
-                        market_gifts::GiftFilters::new("tg.gift.123".into(), "GRAM".into()),
-                    ))
-                    .await
-                    .unwrap();
-                if page.cursor == case {
+                if runtime.reads.handle().reader().cursor().unwrap() == case {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2129,13 +1915,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     peer.page.send_replace(source);
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            let result = state
-                .orders(market_gifts::GiftOrdersQuery::new(
-                    market_gifts::GiftFilters::new("tg.gift.123".into(), "GRAM".into()),
-                ))
-                .await
-                .unwrap();
-            if result.cursor == "order-presentation" {
+            if runtime.reads.handle().reader().cursor().unwrap() == "order-presentation" {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2196,8 +1976,8 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     assert_eq!(first.status(), 200);
     let first: serde_json::Value = test::read_body_json(first).await;
     assert_eq!(first["data"].as_array().unwrap().len(), 1);
-    assert!(!first["next_page_token"].as_str().unwrap().is_empty());
-    paged_query["page_token"] = first["next_page_token"].clone();
+    assert!(!first["next"].as_str().unwrap().is_empty());
+    paged_query["navigation"] = serde_json::json!({"type":"after","key":first["next"]});
     let second = test::call_service(
         &app,
         test::TestRequest::post()
@@ -2209,14 +1989,14 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
     assert_eq!(second.status(), 200);
     let second: serde_json::Value = test::read_body_json(second).await;
     assert_eq!(second["data"].as_array().unwrap().len(), 1);
-    assert_eq!(second["next_page_token"], "");
+    assert!(second["next"].is_null());
     assert_ne!(first["data"][0]["id"], second["data"][0]["id"]);
     let response = test::call_service(
         &app,
         test::TestRequest::post()
-            .uri("/history/query")
+            .uri("/orders/query")
             .set_json(
-                serde_json::json!({"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"}}),
+                serde_json::json!({"source":"history","filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"}}),
             )
             .to_request(),
     )
@@ -2255,7 +2035,7 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
                 let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
                 assert_ne!(frame["type"], "error", "{frame}");
                 if frame["type"] == "orders.snapshot" {
-                    break frame["result"].clone();
+                    break serde_json::json!({"data":frame["data"],"range":frame["range"],"next":frame["next"]});
                 }
             }
         }
@@ -2279,11 +2059,12 @@ async fn rest_and_websocket_share_public_order_fields_reasons_and_link_validatio
             .get("parent_order_id")
             .is_none()
     );
-    for path in ["/orders/query", "/history/query"] {
+    {
+        let path = "/orders/query";
         assert_eq!(
             schema["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
                 ["$ref"],
-            "#/components/schemas/OrderPageResponse"
+            "#/components/schemas/OrderReadResponse"
         );
     }
     socket.close(None).await.unwrap();
@@ -2306,7 +2087,7 @@ async fn atomic_range_changes_share_public_presentation_without_http_continuatio
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
         .await
         .unwrap();
-    let command = serde_json::json!({"type":"orders.watch","id":"orders.1","params":{"query":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","sort":"price_asc","direction":"around","limit":50}}});
+    let command = serde_json::json!({"type":"orders.watch","id":"orders.1","params":{"query":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","sort":"price_asc","limit":50}}});
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
             command.to_string().into(),
@@ -2336,18 +2117,21 @@ async fn atomic_range_changes_share_public_presentation_without_http_continuatio
     }
     let first = receive(&mut socket, "1.000000001").await;
     assert_eq!(first["id"], "orders.1");
-    assert!(first["result"]["range"]["start"].is_null());
-    assert!(first["result"]["range"]["end"].is_null());
-    assert!(first["result"]["data"][0]["position"].is_string());
-    assert_eq!(first["result"]["data"][0]["kind"], "ask");
-    assert!(first["result"]["data"][0].get("parent_order_id").is_none());
-    assert!(first["revision"].is_string());
+    assert!(first["range"]["start"].is_null());
+    assert!(first["range"]["end"].is_null());
+    assert!(first["data"][0]["key"].is_string());
+    assert_eq!(first["data"][0]["kind"], "ask");
+    assert!(first["data"][0].get("parent_order_id").is_none());
+    assert!(first.get("revision").is_none());
     peer.page.send_replace(page("2.000000002"));
     let next = receive(&mut socket, "2.000000002").await;
-    assert_ne!(first["revision"], next["revision"]);
+    assert_ne!(first["data"][0]["key"], next["upserts"][0]["key"]);
     assert_eq!(first["type"], "orders.snapshot");
     assert_eq!(next["type"], "orders.changed");
-    assert_eq!(next["base_sequence"], first["sequence"]);
+    assert_eq!(
+        next["sequence"].as_u64(),
+        first["sequence"].as_u64().map(|n| n + 1)
+    );
     assert_eq!(peer.reads.load(Ordering::SeqCst), 1);
     assert_eq!(peer.watches.load(Ordering::SeqCst), 1);
     socket
@@ -2373,136 +2157,12 @@ fn event_rows(frame: &serde_json::Value) -> &serde_json::Value {
     if frame["type"] == "orders.changed" {
         &frame["upserts"]
     } else {
-        &frame["result"]["data"]
+        &frame["data"]
     }
 }
 fn slice_query() -> serde_json::Value {
     let query = query();
-    serde_json::json!({"filters":query["filters"],"source":"asks","sort":query.get("sort").cloned().unwrap_or("price_asc".into()),"position":null,"limit":50})
-}
-
-#[actix_web::test]
-async fn paused_window_is_anchored_frozen_and_explicitly_released() {
-    let (state, runtime, peer, stop) = setup().await;
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(state.clone()))
-            .configure(market_api::configure),
-    )
-    .await;
-    let body = serde_json::json!({"query":slice_query(),"consistency":"snapshot","snapshot":null});
-    let first: serde_json::Value = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/orders/read")
-            .set_json(body.clone())
-            .to_request(),
-    )
-    .await;
-    assert_eq!(first["result"]["data"][0]["price"], "1.000000001");
-    assert!(first["snapshot"].is_string());
-    assert_eq!(
-        first["result"]["range"],
-        serde_json::json!({"start":null,"end":null})
-    );
-    assert!(first["result"].get("cursor").is_none());
-    let latest_body = serde_json::json!({"query": slice_query()});
-    let latest: serde_json::Value = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/orders/read")
-            .set_json(&latest_body)
-            .to_request(),
-    )
-    .await;
-    assert_eq!(latest["result"], first["result"]);
-    assert_eq!(latest["revision"], first["revision"]);
-    assert!(
-        latest.get("snapshot").is_none(),
-        "latest reads must not allocate snapshot leases"
-    );
-    let invalid = test::call_service(&app, test::TestRequest::post().uri("/orders/read")
-        .set_json(serde_json::json!({"query":slice_query(),"consistency":"latest","snapshot":first["snapshot"]})).to_request()).await;
-    assert_eq!(invalid.status(), 400);
-    let removed = test::call_service(
-        &app,
-        test::TestRequest::get().uri("/capabilities").to_request(),
-    )
-    .await;
-    assert_eq!(removed.status(), 404);
-    let mut too_large = slice_query();
-    too_large["limit"] = (market_actors::READ_LIMITS.max_rows + 1).into();
-    let oversized = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/orders/read")
-            .set_json(serde_json::json!({"query":too_large}))
-            .to_request(),
-    )
-    .await;
-    assert_eq!(oversized.status(), 400);
-    peer.page.send_replace(page("2.000000002"));
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if state
-                .orders(serde_json::from_value(query()).unwrap())
-                .await
-                .unwrap()
-                .data[0]
-                .price
-                .as_str()
-                == "2.000000002"
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    let latest: serde_json::Value = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/orders/read")
-            .set_json(&latest_body)
-            .to_request(),
-    )
-    .await;
-    assert_eq!(latest["result"]["data"][0]["price"], "2.000000002");
-    assert_ne!(latest["revision"], first["revision"]);
-    let mut next = body;
-    next["snapshot"] = first["snapshot"].clone();
-    next["query"]["position"] = first["result"]["data"][0]["position"].clone();
-    let frozen: serde_json::Value = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/orders/read")
-            .set_json(next.clone())
-            .to_request(),
-    )
-    .await;
-    assert_eq!(frozen["result"]["data"], first["result"]["data"]);
-    assert_eq!(frozen["revision"], first["revision"]);
-    let release = test::call_service(
-        &app,
-        test::TestRequest::delete()
-            .uri("/orders/read")
-            .set_json(serde_json::json!({"snapshot":first["snapshot"]}))
-            .to_request(),
-    )
-    .await;
-    assert_eq!(release.status(), 204);
-    let expired = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/orders/read")
-            .set_json(next)
-            .to_request(),
-    )
-    .await;
-    assert_eq!(expired.status(), 409);
-    stop.cancel();
-    runtime.shutdown().await.unwrap();
+    serde_json::json!({"filters":query["filters"],"source":"asks","sort":query.get("sort").cloned().unwrap_or("price_asc".into()),"limit":50})
 }
 
 #[actix_web::test]
@@ -2528,7 +2188,7 @@ async fn server_deadline_bounds_json_extraction_without_stopping_the_service() {
     let job = tokio::spawn(api.run(api_stop.clone()));
     // Complete headers, but leave JSON unfinished. A header-only timeout cannot bound this.
     let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
-    socket.write_all(b"POST /orders/read HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nOrigin: https://example.test\r\nContent-Length: 200\r\nConnection: close\r\n\r\n{").await.unwrap();
+    socket.write_all(b"POST /orders/query HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nOrigin: https://example.test\r\nContent-Length: 200\r\nConnection: close\r\n\r\n{").await.unwrap();
     let response = tokio::time::timeout(Duration::from_secs(2), async {
         let mut bytes = Vec::new();
         let mut chunk = [0; 1024];
@@ -2601,7 +2261,7 @@ async fn range_watch_smoke_probe_uses_portable_positions_and_frozen_leases() {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if state
-                .orders(serde_json::from_value(query()).unwrap())
+                .test_orders(serde_json::from_value(query()).unwrap())
                 .await
                 .unwrap()
                 .data
@@ -2645,4 +2305,155 @@ async fn range_watch_smoke_probe_uses_portable_positions_and_frozen_leases() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+struct TestOrders {
+    data: Vec<market_gifts::GiftOrder>,
+}
+trait QueryFixture {
+    async fn test_orders(
+        &self,
+        query: market_gifts::GiftOrderQuery,
+    ) -> Result<TestOrders, market_api::error::ApiError>;
+}
+impl QueryFixture for MarketApi {
+    async fn test_orders(
+        &self,
+        query: market_gifts::GiftOrderQuery,
+    ) -> Result<TestOrders, market_api::error::ApiError> {
+        Ok(TestOrders {
+            data: self
+                .query_orders(query)
+                .await?
+                .result
+                .data
+                .into_iter()
+                .map(|row| row.order)
+                .collect(),
+        })
+    }
+}
+#[actix_web::test]
+async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases() {
+    let (state, runtime, peer, stop) = setup().await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure),
+    )
+    .await;
+    let send = |body: serde_json::Value| {
+        test::TestRequest::post()
+            .uri("/orders/query")
+            .set_json(body)
+            .to_request()
+    };
+    let latest: serde_json::Value = test::call_and_read_body_json(&app, send(query())).await;
+    assert_eq!(latest["data"][0]["price"], "1.000000001");
+    assert!(
+        latest["data"][0]["key"]
+            .as_str()
+            .unwrap()
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
+    );
+    for name in [
+        "result",
+        "revision",
+        "sync",
+        "cursor",
+        "next_page_token",
+        "snapshot",
+    ] {
+        assert!(latest.get(name).is_none(), "{name}");
+    }
+    for name in ["position", "sort_key"] {
+        assert!(latest["data"][0].get(name).is_none());
+    }
+    assert!(latest["next"].is_null());
+    let mut frozen_query = query();
+    frozen_query["view"] = serde_json::json!({"kind":"snapshot"});
+    let frozen: serde_json::Value =
+        test::call_and_read_body_json(&app, send(frozen_query.clone())).await;
+    frozen_query["view"]["id"] = frozen["snapshot"].clone();
+    peer.page.send_replace(page("2.000000002"));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if state
+                .test_orders(serde_json::from_value(query()).unwrap())
+                .await
+                .unwrap()
+                .data[0]
+                .price
+                .as_str()
+                == "2.000000002"
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let same: serde_json::Value =
+        test::call_and_read_body_json(&app, send(frozen_query.clone())).await;
+    assert_eq!(same["data"], frozen["data"]);
+    let row_key = frozen["data"][0]["key"].clone();
+    for direction in ["after", "before"] {
+        let mut next = frozen_query.clone();
+        next["navigation"] = serde_json::json!({"type":direction,"key":row_key});
+        let result: serde_json::Value = test::call_and_read_body_json(&app, send(next)).await;
+        assert!(result["data"].as_array().unwrap().is_empty());
+    }
+    let response = test::call_service(
+        &app,
+        test::TestRequest::delete()
+            .uri("/orders/query")
+            .set_json(serde_json::json!({"snapshot":frozen["snapshot"]}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 204);
+    assert_eq!(
+        test::call_service(&app, send(frozen_query)).await.status(),
+        409
+    );
+    for route in ["/orders/read", "/history/query", "/capabilities"] {
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(route)
+                    .set_json(query())
+                    .to_request()
+            )
+            .await
+            .status(),
+            404
+        );
+    }
+    for field in ["page_token", "position", "consistency", "direction", "side"] {
+        let mut invalid = query();
+        invalid[field] = "old".into();
+        assert_eq!(test::call_service(&app, send(invalid)).await.status(), 400);
+    }
+    let mut history = query();
+    history["source"] = "history".into();
+    let result: serde_json::Value = test::call_and_read_body_json(&app, send(history)).await;
+    assert!(result["data"].as_array().unwrap().is_empty());
+    let schema = serde_json::to_value(ApiDoc::openapi()).unwrap();
+    assert!(schema["paths"]["/orders/query"]["post"].is_object());
+    assert!(schema["paths"].get("/orders/read").is_none());
+    for old in [
+        "GiftOrdersQuery",
+        "GiftHistoryQuery",
+        "OrderReadQuery",
+        "OrderBoundary",
+        "OrderPageResponse",
+        "ReadConsistency",
+    ] {
+        assert!(schema["components"]["schemas"].get(old).is_none(), "{old}");
+    }
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
 }

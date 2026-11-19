@@ -1,7 +1,7 @@
 //! Shared HTTP/WebSocket adapter over gift-domain actor capabilities.
 use super::{error::Result, models::*};
 use market_actors::{DataSubscription, DataUpdate, MarketDataHandle};
-use market_gifts::{GiftOrder, MediaTarget, Page, TelegramDocumentId};
+use market_gifts::{MediaTarget, TelegramDocumentId};
 use std::sync::Arc;
 use tokio::sync::watch;
 #[derive(Clone)]
@@ -11,6 +11,9 @@ pub struct MarketApi {
     encoder: Arc<crate::encoding::OrderEncoder>,
 }
 impl MarketApi {
+    pub(crate) fn status_updates(&self) -> watch::Receiver<SyncStatus> {
+        self.data.status_updates()
+    }
     pub fn new(data: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
         Self::with_order_limit(
             data,
@@ -74,20 +77,14 @@ impl MarketApi {
     pub(crate) async fn media_document(&self, target: MediaTarget) -> Result<TelegramDocumentId> {
         Ok(self.data.media_document(target).await?)
     }
-    pub(crate) async fn read_orders(
+    pub async fn query_orders(&self, query: GiftOrderQuery) -> Result<market_actors::OrderRead> {
+        Ok(self.data.query_orders(query).await?)
+    }
+    pub(crate) async fn release_read_snapshot(
         &self,
-        query: market_gifts::OrderReadQuery,
-    ) -> Result<market_gifts::OrderRead> {
-        Ok(self.data.read_orders(query).await?)
-    }
-    pub(crate) async fn release_read_snapshot(&self, snapshot: String) -> Result<()> {
+        snapshot: market_gifts::ReadSnapshotId,
+    ) -> Result<()> {
         Ok(self.data.release_read_snapshot(snapshot).await?)
-    }
-    pub async fn orders(&self, query: GiftOrdersQuery) -> Result<Page<GiftOrder>> {
-        Ok(self.data.orders(query).await?)
-    }
-    pub(crate) async fn executions(&self, query: GiftHistoryQuery) -> Result<Page<GiftOrder>> {
-        Ok(self.data.executions(query).await?)
     }
     pub async fn gift_valuation(
         &self,

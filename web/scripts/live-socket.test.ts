@@ -362,3 +362,28 @@ test("command rejections do not complete or cancel the original request", async 
   socket.receive(result(id));
   assert.deepEqual(await promise, report);
 });
+
+test("one connection status stream is shared, replayed and released independently", (t) => {
+  const { Socket, live } = setup(t);
+  const states: string[] = [];
+  const a = live.watchStatus((sync) => states.push(sync.state));
+  const socket = Socket.all[0];
+  socket.onopen?.();
+  socket.receive({
+    type: "replica.status",
+    sync: { ready: true, state: "live", updated_at: null },
+  });
+  const b = live.watchStatus((sync) => states.push(`b:${sync.state}`));
+  assert.equal(Socket.all.length, 1);
+  assert.deepEqual(states, ["live", "b:live"]);
+  a();
+  assert.equal(socket.closed, false);
+  socket.onerror?.();
+  assert.equal(states.at(-1), "b:stale");
+  t.mock.timers.tick(1000);
+  assert.equal(Socket.all.length, 2);
+  b();
+  assert.equal(Socket.all[1].closed, true);
+  t.mock.timers.tick(60000);
+  assert.equal(Socket.all.length, 2);
+});

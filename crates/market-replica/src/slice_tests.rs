@@ -24,28 +24,22 @@ fn setup() -> (tempfile::TempDir, ReplicaWriter) {
 fn window(
     reader: &ReplicaReader,
     sort: i32,
-    anchor: Option<String>,
+    anchor: Option<ReadPosition>,
     before: u32,
     after: u32,
-) -> WindowReadResult {
+) -> ReadBatch {
     let mut request = read(1, false);
     request.sort = sort;
     reader
-        .read_window_checked(
+        .read_slice_checked(
             request,
-            WindowRequest {
-                fill_edges: true,
-                anchor,
-                before,
-                after,
-                snapshot: None,
-            },
+            seed(anchor, before, after, None),
             |_, _| Ok(()),
             |_| Ok(true),
         )
         .unwrap()
 }
-fn ids(window: &WindowReadResult) -> Vec<String> {
+fn ids(window: &ReadBatch) -> Vec<String> {
     window
         .entries
         .iter()
@@ -63,29 +57,23 @@ fn window_navigation_is_contiguous_in_both_directions_and_fills_at_edges() {
             first
                 .entries
                 .windows(2)
-                .all(|pair| pair[0].sort_key < pair[1].sort_key)
+                .all(|pair| pair[0].key < pair[1].key)
         );
-        assert!(!first.has_before);
-        assert!(first.has_after);
-        let middle = window(&reader, sort, Some(first.entries[4].position.clone()), 2, 2);
-        assert_eq!(middle.entries[2].position, first.entries[4].position);
-        assert!(middle.has_before);
-        assert!(middle.has_after);
-        let back = window(
-            &reader,
-            sort,
-            Some(middle.entries[0].position.clone()),
-            2,
-            2,
-        );
+        assert!(!first.range.start.is_some());
+        assert!(first.range.end.is_some());
+        let middle = window(&reader, sort, Some(first.entries[4].key.clone()), 2, 2);
+        assert_eq!(middle.entries[1].key, first.entries[4].key);
+        assert!(middle.range.start.is_some());
+        assert!(middle.range.end.is_some());
+        let back = window(&reader, sort, Some(first.entries[1].key.clone()), 2, 2);
         assert_eq!(ids(&back), ids(&first));
         let mut last = middle;
-        while last.has_after {
-            last = window(&reader, sort, Some(last.entries[4].position.clone()), 2, 2);
+        while last.range.end.is_some() {
+            last = window(&reader, sort, Some(last.entries[4].key.clone()), 2, 2);
         }
         assert_eq!(last.entries.len(), 5);
-        assert!(last.has_before);
-        assert!(!last.has_after);
+        assert!(last.range.start.is_some());
+        assert!(!last.range.end.is_some());
     }
 }
 #[test]
@@ -93,9 +81,9 @@ fn inserts_removals_and_price_moves_preserve_identity_and_nearest_fallback() {
     let (_dir, mut writer) = setup();
     let reader = writer.reader();
     let initial = window(&reader, 1, None, 2, 2);
-    let anchor = initial.entries[4].position.clone();
+    let anchor = initial.entries[4].key.clone();
     let old = window(&reader, 1, Some(anchor.clone()), 2, 2);
-    assert_eq!(ids(&old), ["03", "04", "05", "06", "07"]);
+    assert_eq!(ids(&old), ["04", "05", "06", "07", "08"]);
     writer
         .commit(
             vec![upsert(entity(E::Order(order("new", "4.5", None))))],
@@ -103,7 +91,7 @@ fn inserts_removals_and_price_moves_preserve_identity_and_nearest_fallback() {
         )
         .unwrap();
     let next = window(&reader, 1, Some(anchor.clone()), 2, 2);
-    assert_eq!(ids(&next), ["04", "new", "05", "06", "07"]);
+    assert_eq!(ids(&next), ["new", "05", "06", "07", "08"]);
     writer
         .commit(
             vec![upsert(entity(E::Order(order("05", "15.5", None))))],
@@ -111,8 +99,8 @@ fn inserts_removals_and_price_moves_preserve_identity_and_nearest_fallback() {
         )
         .unwrap();
     let next = window(&reader, 1, Some(anchor), 2, 2);
-    assert_eq!(ids(&next), ["14", "15", "05", "16", "17"]);
-    let moved = next.entries[2].position.clone();
+    assert_eq!(ids(&next), ["15", "05", "16", "17", "18"]);
+    let moved = next.entries[1].key.clone();
     writer
         .commit(
             vec![w::Change {
@@ -129,7 +117,7 @@ fn inserts_removals_and_price_moves_preserve_identity_and_nearest_fallback() {
         )
         .unwrap();
     let next = window(&reader, 1, Some(moved), 2, 2);
-    assert_eq!(ids(&next), ["14", "15", "16", "17", "18"]);
+    assert_eq!(ids(&next), ["15", "16", "17", "18", "19"]);
 }
 #[test]
 fn a_window_and_its_revision_are_pinned_even_when_a_commit_occurs_during_scan() {
@@ -140,15 +128,9 @@ fn a_window_and_its_revision_are_pinned_even_when_a_commit_occurs_during_scan() 
     let mut request = read(1, false);
     request.sort = 1;
     let actual = reader
-        .read_window_checked(
+        .read_slice_checked(
             request,
-            WindowRequest {
-                fill_edges: true,
-                anchor: None,
-                before: 2,
-                after: 2,
-                snapshot: None,
-            },
+            seed(None, 2, 2, None),
             |_, _| Ok(()),
             |_| {
                 if let Some(mut writer) = writer.lock().unwrap().take() {
@@ -176,15 +158,9 @@ fn anchors_are_query_bound_and_limits_and_cancellation_are_enforced() {
     request.sort = 2;
     assert!(
         reader
-            .read_window_checked(
+            .read_slice_checked(
                 request,
-                WindowRequest {
-                    fill_edges: true,
-                    anchor: Some(first.entries[0].position.clone()),
-                    before: 2,
-                    after: 2,
-                    snapshot: None,
-                },
+                seed(Some(first.entries[0].key.clone()), 2, 2, None),
                 |_, _| Ok(()),
                 |_| Ok(true)
             )
@@ -193,15 +169,9 @@ fn anchors_are_query_bound_and_limits_and_cancellation_are_enforced() {
     for (before, after) in [(200, 0), (u32::MAX, 1)] {
         assert!(
             reader
-                .read_window_checked(
+                .read_slice_checked(
                     read(1, false),
-                    WindowRequest {
-                        fill_edges: true,
-                        anchor: None,
-                        before,
-                        after,
-                        snapshot: None,
-                    },
+                    seed(None, before, after, None),
                     |_, _| Ok(()),
                     |_| Ok(true)
                 )
@@ -213,15 +183,9 @@ fn anchors_are_query_bound_and_limits_and_cancellation_are_enforced() {
     assert!(
         reader
             .with_cancellation(cancel)
-            .read_window_checked(
+            .read_slice_checked(
                 read(1, false),
-                WindowRequest {
-                    fill_edges: true,
-                    anchor: None,
-                    before: 1,
-                    after: 1,
-                    snapshot: None,
-                },
+                seed(None, 1, 1, None),
                 |_, _| Ok(()),
                 |_| Ok(true)
             )
@@ -266,21 +230,15 @@ fn bid_windows_share_ranking_and_apply_row_policy_before_accounting() {
     scope.modes = vec![2];
     let result = writer
         .reader()
-        .read_window_checked(
+        .read_slice_checked(
             request,
-            WindowRequest {
-                fill_edges: true,
-                anchor: None,
-                before: 2,
-                after: 2,
-                snapshot: None,
-            },
+            seed(None, 2, 2, None),
             |_, _| Ok(()),
             |e| Ok(state::order(e).unwrap().quantity != "0"),
         )
         .unwrap();
     assert_eq!(ids(&result), ["19", "18", "17", "16", "15"]);
-    assert!(result.has_after);
+    assert!(result.range.end.is_some());
 }
 #[test]
 fn empty_history_seeds_and_oversized_reads_do_not_return_partial_results() {
@@ -288,15 +246,9 @@ fn empty_history_seeds_and_oversized_reads_do_not_return_partial_results() {
     let reader = writer.reader();
     assert!(
         reader
-            .read_window_checked(
+            .read_slice_checked(
                 read(1, true),
-                WindowRequest {
-                    fill_edges: true,
-                    anchor: None,
-                    before: 1,
-                    after: 1,
-                    snapshot: None,
-                },
+                seed(None, 1, 1, None),
                 |_, _| Ok(()),
                 |_| Ok(true)
             )
@@ -319,15 +271,9 @@ fn empty_history_seeds_and_oversized_reads_do_not_return_partial_results() {
         })
         .unwrap();
     let error = reader
-        .read_window_checked(
+        .read_slice_checked(
             read(1, false),
-            WindowRequest {
-                fill_edges: true,
-                anchor: None,
-                before: 1,
-                after: 1,
-                snapshot: None,
-            },
+            seed(None, 1, 1, None),
             |_, _| Ok(()),
             |_| Ok(true),
         )
@@ -342,23 +288,17 @@ fn frozen_windows_open_at_a_live_anchor_stay_frozen_and_release_their_view() {
     let (_dir, mut writer) = setup();
     let reader = writer.reader();
     let live = window(&reader, 1, None, 0, 19);
-    let anchor = live.entries[15].position.clone();
+    let anchor = live.entries[15].key.clone();
     let frozen = reader
-        .read_window_checked(
+        .read_slice_checked(
             read(0, false),
-            WindowRequest {
-                fill_edges: true,
-                anchor: Some(anchor.clone()),
-                before: 2,
-                after: 2,
-                snapshot: None,
-            },
+            seed(Some(anchor.clone()), 2, 2, None),
             |_, _| Ok(()),
             |_| Ok(true),
         )
         .unwrap();
-    assert_eq!(ids(&frozen), ["14", "15", "16", "17", "18"]);
-    let lease = frozen.snapshot.clone().unwrap();
+    assert_eq!(ids(&frozen), ["15", "16", "17", "18", "19"]);
+    let lease = frozen.snapshot.unwrap();
     writer
         .apply(w::Batch {
             cursor: "moved".into(),
@@ -366,15 +306,9 @@ fn frozen_windows_open_at_a_live_anchor_stay_frozen_and_release_their_view() {
         })
         .unwrap();
     let same = reader
-        .read_window_checked(
+        .read_slice_checked(
             read(0, false),
-            WindowRequest {
-                fill_edges: true,
-                anchor: Some(anchor.clone()),
-                before: 2,
-                after: 2,
-                snapshot: Some(lease.clone()),
-            },
+            seed(Some(anchor.clone()), 2, 2, Some(lease)),
             |_, _| Ok(()),
             |_| Ok(true),
         )
@@ -382,19 +316,20 @@ fn frozen_windows_open_at_a_live_anchor_stay_frozen_and_release_their_view() {
     assert_eq!(ids(&same), ids(&frozen));
     assert_eq!(same.revision, frozen.revision);
     assert_ne!(ids(&window(&reader, 1, Some(anchor), 2, 2)), ids(&frozen));
-    reader.release_snapshot(&lease).unwrap();
-    reader.release_snapshot(&lease).unwrap();
-    assert!(!reader.0.views.lock().unwrap().contains_key(&lease));
+    reader.release_snapshot(lease).unwrap();
+    reader.release_snapshot(lease).unwrap();
+    assert!(
+        !reader
+            .0
+            .views
+            .lock()
+            .unwrap()
+            .contains_key(&lease.to_string())
+    );
     let error = reader
-        .read_window_checked(
+        .read_slice_checked(
             read(0, false),
-            WindowRequest {
-                fill_edges: true,
-                anchor: Some(same.entries[2].position.clone()),
-                before: 2,
-                after: 2,
-                snapshot: Some(lease),
-            },
+            seed(Some(same.entries[2].key.clone()), 2, 2, Some(lease)),
             |_, _| Ok(()),
             |_| Ok(true),
         )
@@ -408,45 +343,40 @@ fn releasing_a_snapshot_wins_over_an_inflight_window_read() {
     let (_dir, writer) = setup();
     let reader = writer.reader();
     let first = reader
-        .read_window_checked(
+        .read_slice_checked(
             read(0, false),
-            WindowRequest {
-                fill_edges: true,
-                anchor: None,
-                before: 2,
-                after: 2,
-                snapshot: None,
-            },
+            seed(None, 2, 2, None),
             |_, _| Ok(()),
             |_| Ok(true),
         )
         .unwrap();
     let lease = first.snapshot.unwrap();
-    let result = reader.read_window_checked(
+    let result = reader.read_slice_checked(
         read(0, false),
-        WindowRequest {
-            fill_edges: true,
-            anchor: Some(first.entries[0].position.clone()),
-            before: 2,
-            after: 2,
-            snapshot: Some(lease.clone()),
-        },
+        seed(Some(first.entries[0].key.clone()), 2, 2, Some(lease)),
         |_, _| Ok(()),
         |_| {
-            reader.release_snapshot(&lease)?;
+            reader.release_snapshot(lease)?;
             Ok(true)
         },
     );
     assert!(result.is_err());
-    assert!(!reader.0.views.lock().unwrap().contains_key(&lease));
+    assert!(
+        !reader
+            .0
+            .views
+            .lock()
+            .unwrap()
+            .contains_key(&lease.to_string())
+    );
 }
 
 #[test]
 fn public_ordering_keys_preserve_exact_rank_identity_prefixes_and_direction() {
     let key = Key::order("v".into(), "a".into());
     assert_eq!(
-        super::window::ordering_key(Decimal::ZERO, &key, Sort::PriceAsc),
-        super::window::ordering_key(Decimal::from_str_exact("-0").unwrap(), &key, Sort::PriceAsc)
+        super::slice::ordering_key(Decimal::ZERO, &key, Sort::PriceAsc),
+        super::slice::ordering_key(Decimal::from_str_exact("-0").unwrap(), &key, Sort::PriceAsc)
     );
     let ranks = [
         Decimal::from_str_exact("10000000000000000.000000001").unwrap(),
@@ -463,7 +393,7 @@ fn public_ordering_keys_preserve_exact_rank_identity_prefixes_and_direction() {
         }
         let encoded = ordered
             .into_iter()
-            .map(|(rank, key)| super::window::ordering_key(rank, &key, sort))
+            .map(|(rank, key)| super::slice::ordering_key(rank, &key, sort))
             .collect::<Vec<_>>();
         assert!(encoded.windows(2).all(|pair| pair[0] < pair[1]));
     }
@@ -477,15 +407,9 @@ fn latest_windows_do_not_retain_views_and_reject_snapshot_leases() {
     assert!(latest.snapshot.is_none());
     assert!(reader.0.views.lock().unwrap().is_empty());
     let error = reader
-        .read_window_checked(
+        .read_slice_checked(
             read(1, false),
-            WindowRequest {
-                fill_edges: true,
-                anchor: None,
-                before: 0,
-                after: 0,
-                snapshot: Some("lease".into()),
-            },
+            seed(None, 0, 0, Some(SnapshotId::fresh())),
             |_, _| Ok(()),
             |_| Ok(true),
         )
@@ -499,7 +423,7 @@ fn anchor_falls_back_to_previous_at_end_and_reports_empty_when_no_rows_remain() 
     let (_dir, mut writer) = setup();
     let reader = writer.reader();
     let all = window(&reader, 1, None, 0, 19);
-    let anchor = all.entries.last().unwrap().position.clone();
+    let anchor = all.entries.last().unwrap().key.clone();
     let remove = |id: &str| w::Change {
         change: Some(w::change::Change::Remove(w::Removal {
             key: Some(w::Key {
@@ -523,7 +447,7 @@ fn anchor_falls_back_to_previous_at_end_and_reports_empty_when_no_rows_remain() 
         .unwrap();
     let empty = window(&reader, 1, Some(anchor), 2, 2);
     assert!(empty.entries.is_empty());
-    assert!(!empty.has_before && !empty.has_after);
+    assert!(!empty.range.start.is_some() && !empty.range.end.is_some());
 }
 
 #[test]
@@ -531,9 +455,9 @@ fn fixed_ranges_use_original_ordering_bounds_after_anchor_repricing() {
     let (_dir, mut writer) = setup();
     let reader = writer.reader();
     let all = window(&reader, 1, None, 0, 19);
-    let coverage = WindowRange {
-        start: Some(all.entries[9].position.clone()),
-        end: Some(all.entries[14].position.clone()),
+    let coverage = KeyRange {
+        start: Some(all.entries[9].key.clone()),
+        end: Some(all.entries[14].key.clone()),
     };
     writer
         .commit(
@@ -583,15 +507,9 @@ fn history_slices_follow_all_ranked_indexes_and_include_late_backfills_in_covera
         let mut query = read(1, true);
         query.sort = sort;
         let slice = reader
-            .read_window_checked(
+            .read_slice_checked(
                 query.clone(),
-                WindowRequest {
-                    fill_edges: true,
-                    anchor: None,
-                    before: 1,
-                    after: 1,
-                    snapshot: None,
-                },
+                seed(None, 1, 1, None),
                 |_, _| Ok(()),
                 |_| Ok(true),
             )
@@ -601,14 +519,14 @@ fn history_slices_follow_all_ranked_indexes_and_include_late_backfills_in_covera
             slice
                 .entries
                 .windows(2)
-                .all(|pair| pair[0].sort_key < pair[1].sort_key)
+                .all(|pair| pair[0].key < pair[1].key)
         );
         let singleton = reader
             .read_range_checked(
                 query.clone(),
-                WindowRange {
-                    start: Some(slice.entries[1].position.clone()),
-                    end: Some(slice.entries[1].position.clone()),
+                KeyRange {
+                    start: Some(slice.entries[1].key.clone()),
+                    end: Some(slice.entries[1].key.clone()),
                 },
                 |_, _| Ok(()),
                 |_| Ok(true),
@@ -616,15 +534,9 @@ fn history_slices_follow_all_ranked_indexes_and_include_late_backfills_in_covera
             .unwrap();
         assert_eq!(ids(&singleton), vec![ids(&slice)[1].clone()]);
         let middle = reader
-            .read_window_checked(
+            .read_slice_checked(
                 query,
-                WindowRequest {
-                    fill_edges: true,
-                    anchor: Some(slice.entries[1].position.clone()),
-                    before: 1,
-                    after: 1,
-                    snapshot: None,
-                },
+                seed(Some(slice.entries[1].key.clone()), 1, 1, None),
                 |_, _| Ok(()),
                 |_| Ok(true),
             )
@@ -634,23 +546,17 @@ fn history_slices_follow_all_ranked_indexes_and_include_late_backfills_in_covera
     let mut query = read(1, true);
     query.sort = w::ReadSort::TimeDesc as i32;
     let slice = reader
-        .read_window_checked(
+        .read_slice_checked(
             query.clone(),
-            WindowRequest {
-                fill_edges: true,
-                anchor: None,
-                before: 0,
-                after: 1,
-                snapshot: None,
-            },
+            seed(None, 0, 1, None),
             |_, _| Ok(()),
             |_| Ok(true),
         )
         .unwrap();
     assert_eq!(ids(&slice), ["h2", "h4"]);
-    let coverage = WindowRange {
+    let coverage = KeyRange {
         start: None,
-        end: Some(slice.entries[1].position.clone()),
+        end: Some(slice.entries[1].key.clone()),
     };
     writer
         .commit(
@@ -670,7 +576,7 @@ fn history_slices_follow_all_ranked_indexes_and_include_late_backfills_in_covera
         current
             .entries
             .windows(2)
-            .all(|pair| pair[0].sort_key < pair[1].sort_key)
+            .all(|pair| pair[0].key < pair[1].key)
     );
 }
 
@@ -702,33 +608,189 @@ fn directional_slices_do_not_fill_from_the_opposite_side() {
     let reader = writer.reader();
     let all = window(&reader, 1, None, 0, 19);
     let forward = reader
-        .read_window_checked(
+        .read_slice_checked(
             read(1, false),
-            WindowRequest {
-                fill_edges: false,
-                anchor: Some(all.entries[18].position.clone()),
-                before: 0,
-                after: 4,
+            SliceRequest {
+                navigation: Navigation::After(all.entries[18].key.clone()),
+                limit: 5,
                 snapshot: None,
             },
             |_, _| Ok(()),
             |_| Ok(true),
         )
         .unwrap();
-    assert_eq!(ids(&forward), ["19", "20"]);
+    assert_eq!(ids(&forward), ["20"]);
     let backward = reader
-        .read_window_checked(
+        .read_slice_checked(
             read(1, false),
-            WindowRequest {
-                fill_edges: false,
-                anchor: Some(all.entries[1].position.clone()),
-                before: 4,
-                after: 0,
+            SliceRequest {
+                navigation: Navigation::Before(all.entries[1].key.clone()),
+                limit: 5,
                 snapshot: None,
             },
             |_, _| Ok(()),
             |_| Ok(true),
         )
         .unwrap();
-    assert_eq!(ids(&backward), ["01", "02"]);
+    assert_eq!(ids(&backward), ["01"]);
+}
+
+fn seed(
+    anchor: Option<ReadPosition>,
+    before: u32,
+    after: u32,
+    snapshot: Option<SnapshotId>,
+) -> SliceRequest {
+    SliceRequest {
+        navigation: anchor.map(Navigation::Around).unwrap_or(Navigation::Head),
+        limit: before.saturating_add(after).saturating_add(1),
+        snapshot,
+    }
+}
+
+#[test]
+fn strict_keys_paginate_every_sort_without_repeating_or_following_repriced_orders() {
+    let (_directory, mut writer) = setup();
+    for sort in 0..=6 {
+        let mut request = read(1, false);
+        request.sort = sort;
+        let reader = writer.reader();
+        let mut navigation = Navigation::Head;
+        let mut observed = vec![];
+        loop {
+            let batch = reader
+                .read_slice_checked(
+                    request.clone(),
+                    SliceRequest {
+                        navigation,
+                        limit: 3,
+                        snapshot: None,
+                    },
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
+                .unwrap();
+            observed.extend(ids(&batch));
+            let Some(next) = batch.next else {
+                break;
+            };
+            navigation = Navigation::After(next);
+        }
+        assert_eq!(observed.len(), 20);
+        assert_eq!(
+            observed
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            20
+        );
+    }
+    let reader = writer.reader();
+    let request = {
+        let mut r = read(1, false);
+        r.sort = 1;
+        r
+    };
+    let head = reader
+        .read_slice_checked(
+            request.clone(),
+            SliceRequest {
+                navigation: Navigation::Head,
+                limit: 3,
+                snapshot: None,
+            },
+            |_, _| Ok(()),
+            |_| Ok(true),
+        )
+        .unwrap();
+    let key = head.next.unwrap();
+    writer
+        .commit(
+            vec![upsert(entity(E::Order(order("03", "19.5", None))))],
+            "reprice".into(),
+        )
+        .unwrap();
+    let after = reader
+        .read_slice_checked(
+            request.clone(),
+            SliceRequest {
+                navigation: Navigation::After(key.clone()),
+                limit: 3,
+                snapshot: None,
+            },
+            |_, _| Ok(()),
+            |_| Ok(true),
+        )
+        .unwrap();
+    assert_eq!(ids(&after), ["04", "05", "06"]);
+    let before = reader
+        .read_slice_checked(
+            request,
+            SliceRequest {
+                navigation: Navigation::Before(key),
+                limit: 3,
+                snapshot: None,
+            },
+            |_, _| Ok(()),
+            |_| Ok(true),
+        )
+        .unwrap();
+    assert_eq!(ids(&before), ["01", "02"]);
+}
+
+#[test]
+fn bounded_empty_slices_return_a_progress_key_without_claiming_unscanned_coverage() {
+    let (_dir, mut writer) = setup();
+    writer
+        .commit(
+            (1..=10_002)
+                .map(|i| {
+                    upsert(entity(E::Order(order(
+                        &format!("{i:05}"),
+                        &i.to_string(),
+                        None,
+                    ))))
+                })
+                .collect(),
+            "sparse".into(),
+        )
+        .unwrap();
+    let reader = writer.reader();
+    let mut query = read(1, false);
+    query.sort = 1;
+    let include =
+        |e: &w::Entity| Ok(state::order(e).unwrap().price.parse::<u32>().unwrap() > 10_000);
+    let first = reader
+        .read_slice_checked(
+            query.clone(),
+            SliceRequest {
+                navigation: Navigation::Head,
+                limit: 2,
+                snapshot: None,
+            },
+            |_, _| Ok(()),
+            include,
+        )
+        .unwrap();
+    assert!(first.entries.is_empty());
+    assert!(first.next.is_some());
+    assert_eq!(first.range.end, first.next);
+    let complete = reader
+        .read_range_checked(query.clone(), first.range, |_, _| Ok(()), include)
+        .unwrap();
+    assert!(complete.entries.is_empty());
+    let second = reader
+        .read_slice_checked(
+            query,
+            SliceRequest {
+                navigation: Navigation::After(first.next.unwrap()),
+                limit: 2,
+                snapshot: None,
+            },
+            |_, _| Ok(()),
+            include,
+        )
+        .unwrap();
+    assert_eq!(ids(&second), ["10001", "10002"]);
+    assert!(second.next.is_none());
 }

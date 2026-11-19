@@ -60,6 +60,36 @@ impl MarketDataService {
             stop: stop.clone(),
             panicked: panicked.clone(),
         };
+        let mut status_source = reader.status_updates();
+        let (status_tx, status_updates) = tokio::sync::watch::channel(
+            crate::protocol::sync(status_source.borrow_and_update().clone())
+                .map_err(|e| Status::unavailable(e.to_string()))?,
+        );
+        let status_stop = stop.clone();
+        jobs.spawn(async move {
+            loop {
+                tokio::select! { biased;
+                    _ = status_stop.cancelled() => break,
+                    changed = status_source.changed() => if changed.is_err() { break; },
+                }
+                let status = match crate::protocol::sync(status_source.borrow_and_update().clone())
+                {
+                    Ok(status) => status,
+                    Err(_) => {
+                        status_stop.cancel();
+                        break;
+                    }
+                };
+                status_tx.send_if_modified(|old| {
+                    if *old == status {
+                        false
+                    } else {
+                        *old = status;
+                        true
+                    }
+                });
+            }
+        });
         let budget = reads.budget();
         let exit_guard = exited.clone().drop_guard();
         let (ready, started) = tokio::sync::oneshot::channel();
@@ -97,6 +127,7 @@ impl MarketDataService {
                     )
                     .start();
                     MarketDataHandle {
+                        status_updates,
                         orderbooks,
                         catalog,
                         subscriptions,
@@ -107,7 +138,10 @@ impl MarketDataService {
                 }
                 let _ = system.run();
             })
-            .map_err(|_| Status::unavailable("Market data actor could not start"))?;
+            .map_err(|_| {
+                stop.cancel();
+                Status::unavailable("Market data actor could not start")
+            })?;
         let mut task = MarketDataTask {
             stop: stop.clone(),
             exited,

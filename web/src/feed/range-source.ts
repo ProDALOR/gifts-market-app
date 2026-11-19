@@ -4,12 +4,11 @@ import { liveSocket } from "../live-socket.ts";
 import { request, ApiFailure } from "../market.ts";
 import type { components } from "../gen/api.ts";
 export type OrderQuery = components["schemas"]["GiftOrderQuery"];
-export type OrderData = components["schemas"]["OrderResultResponse"];
+export type OrderData = components["schemas"]["OrderReadResponse"];
 export type Sync = components["schemas"]["SyncStatus"];
 type Snapshot = components["schemas"]["OrderReadResponse"];
 export type Callbacks = {
-  result: (result: OrderData, sync: Sync) => void;
-  sync: (sync: Sync) => void;
+  result: (result: OrderData) => void;
   status: (status: string) => void;
   error: (error: unknown) => void;
   reset: () => void;
@@ -61,12 +60,10 @@ export class LiveRanges implements RangeSource {
             clearTimeout(this.recovery);
             this.recovery = undefined;
             this.failures = 0;
-            if (frame.reset) this.callbacks.reset();
+            this.callbacks.reset();
           }
-          this.callbacks.result(result, frame.sync);
-        } else if (frame.type === "sync" && this.recovery === undefined)
-          this.callbacks.sync(frame.sync);
-        else if (frame.type === "error") {
+          this.callbacks.result(result);
+        } else if (frame.type === "error") {
           this.clear();
           this.callbacks.error(
             new ApiFailure(frame.error.code, frame.error.message),
@@ -91,8 +88,8 @@ export class LiveRanges implements RangeSource {
     this.clear();
   }
 }
-const release = (snapshot: string) => {
-  void fetch("/orders/read", {
+export const release = (snapshot: string) => {
+  void fetch("/orders/query", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ snapshot }),
@@ -119,8 +116,8 @@ export class FrozenReads implements RangeSource {
     while (!this.closed && !attempt.signal.aborted) {
       try {
         const result = await request<Snapshot>(
-          "/orders/read",
-          { query, consistency: "snapshot", snapshot: this.snapshot ?? null },
+          "/orders/query",
+          { ...query, view: { kind: "snapshot", id: this.snapshot ?? null } },
           attempt.signal,
         );
         if (!result.snapshot)
@@ -131,7 +128,7 @@ export class FrozenReads implements RangeSource {
           return;
         }
         this.snapshot = result.snapshot;
-        this.callbacks.result(result.result, result.sync);
+        this.callbacks.result(result);
         return;
       } catch (error) {
         if (this.closed || attempt.signal.aborted) return;

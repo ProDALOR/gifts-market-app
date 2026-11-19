@@ -24,7 +24,7 @@ fn identifiers_and_exact_amounts_are_validated_at_the_json_boundary() {
 
 #[test]
 fn gift_queries_accept_named_traits_and_reject_the_generic_contract() {
-    let query: GiftOrdersQuery = serde_json::from_value(serde_json::json!({"filters": {
+    let query: GiftOrderQuery = serde_json::from_value(serde_json::json!({"filters": {
         "collection_id":"collection", "currency_id":"GRAM", "models":["model"],
         "number":{"min":1,"max":100}
     }}))
@@ -39,7 +39,7 @@ fn gift_queries_accept_named_traits_and_reject_the_generic_contract() {
         serde_json::json!({"filters":{"models":[""]}}),
         serde_json::json!({"filters":{"number":{"min":-1}}}),
     ] {
-        assert!(serde_json::from_value::<GiftOrdersQuery>(value).is_err());
+        assert!(serde_json::from_value::<GiftOrderQuery>(value).is_err());
     }
 }
 
@@ -296,4 +296,42 @@ fn checked_orders_require_execution_time_exactly_for_executions() {
     draft.quantity = 2;
     assert!(GiftOrder::try_from(draft).is_err());
     assert_eq!(order.quantity, 1);
+}
+
+#[test]
+fn one_query_resolves_source_defaults_and_rejects_ambiguous_navigation_and_views() {
+    for (source, expected) in [
+        (OrderSource::Asks, GiftSort::PriceAsc),
+        (OrderSource::Bids, GiftSort::PriceDesc),
+        (OrderSource::History, GiftSort::TimeDesc),
+    ] {
+        let mut query = GiftOrderQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
+        query.source = source;
+        assert_eq!(query.sort(), expected);
+        query.sort = Some(GiftSort::NumberAsc);
+        assert_eq!(query.sort(), GiftSort::NumberAsc);
+    }
+    for navigation in [
+        serde_json::json!({"type":"head","key":"aa"}),
+        serde_json::json!({"type":"after"}),
+        serde_json::json!({"type":"after","key":"ABCDEF"}),
+        serde_json::json!({"type":"around","key":"a"}),
+    ] {
+        assert!(serde_json::from_value::<Navigation>(navigation).is_err());
+    }
+    assert!(
+        serde_json::from_value::<ReadView>(
+            serde_json::json!({"kind":"latest","id":"00000000-0000-0000-0000-000000000001"})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ReadView>(serde_json::json!({"kind":"snapshot","id":"bad"}))
+            .is_err()
+    );
+    let key: OrderKey = serde_json::from_str("\"0123ab\"").unwrap();
+    assert_eq!(key.as_str(), "0123ab");
+    for raw in ["", "gg", "ab ", &"ff".repeat(4097)] {
+        assert!(OrderKey::try_from(raw.to_owned()).is_err());
+    }
 }

@@ -25,14 +25,15 @@ export type ValuationView = Pick<
 export type SyncStatus = components["schemas"]["SyncStatus"];
 export type Order = components["schemas"]["OrderResponse"];
 export type Sort = components["schemas"]["GiftSort"];
-export type HistoryQuery = components["schemas"]["GiftHistoryQuery"];
+export type OrderQuery = components["schemas"]["GiftOrderQuery"];
+export type HistoryQuery = Pick<
+  OrderQuery,
+  "filters" | "sort" | "period" | "limit"
+>;
 export type FeedQuery =
   | {
       kind: "orders";
-      query: Pick<
-        components["schemas"]["GiftOrdersQuery"],
-        "filters" | "side" | "sort"
-      >;
+      query: Pick<OrderQuery, "filters" | "sort"> & { side?: "ask" | "bid" };
     }
   | { kind: "history"; query: HistoryQuery };
 export type GiftMedia = components["schemas"]["GiftMedia"];
@@ -44,7 +45,7 @@ export type Model = components["schemas"]["GiftModel"];
 export type Backdrop = components["schemas"]["GiftBackdrop"];
 export type Pattern = components["schemas"]["GiftPattern"];
 export type BackdropPalette = components["schemas"]["BackdropPalette"];
-export type OrderPage = components["schemas"]["OrderPageResponse"];
+export type OrderQueryResult = components["schemas"]["OrderReadResponse"];
 export type TraitKey = "models" | "backdrops" | "patterns";
 export type TraitFilters = Partial<Record<TraitKey, string[]>>;
 export type CatalogOption =

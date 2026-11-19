@@ -7,15 +7,15 @@ pub use crate::catalog::{
     GiftCatalog, GiftCollection, GiftCollectionCatalog, GiftMedia, GiftModel, GiftPattern,
 };
 pub use crate::orders::{
-    OrderIdentity, OrderPageResponse, OrderReadResponse, OrderResponse, OrderResultResponse,
-    OrderTargetResponse, OrderedOrderResponse, UnsupportedTargetReason,
+    OrderIdentity, OrderReadResponse, OrderResponse, OrderTargetResponse, OrderedOrderResponse,
+    UnsupportedTargetReason,
 };
 pub use market_gifts::{
     Amount, BackdropId, BackdropPalette, CatalogVersions, CollectibleGift, CollectionId,
     CollectionSlug, Currency, CurrencyId, GiftBackdrop, GiftBook, GiftCriteria, GiftFilters,
-    GiftHistoryQuery, GiftNumber, GiftNumberRange, GiftOrderKind, GiftOrderQuery, GiftOrdersQuery,
-    GiftSide, GiftSlug, GiftSort, GiftTraits, ModelId, OrderId, PatternId, Period, PriceRange,
-    ReadConsistency, SyncState, SyncStatus, UnsupportedGiftReason, Venue, VenueId,
+    GiftNumber, GiftNumberRange, GiftOrderKind, GiftOrderQuery, GiftSide, GiftSlug, GiftSort,
+    GiftTraits, ModelId, OrderId, PatternId, Period, PriceRange, SyncState, SyncStatus,
+    UnsupportedGiftReason, Venue, VenueId,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -46,7 +46,7 @@ pub enum ApiRequest {
     #[serde(rename = "orders.query")]
     Orders {
         id: String,
-        params: Box<market_gifts::OrderReadQuery>,
+        params: Box<market_gifts::GiftOrderQuery>,
     },
     #[serde(rename = "valuation.evaluate")]
     Valuation {
@@ -75,7 +75,6 @@ pub enum ServerFrame<'a> {
     OrdersSnapshot {
         id: String,
         sequence: u64,
-        reset: bool,
         #[serde(flatten)]
         data: crate::orders::OrderReadResponse<'a>,
     },
@@ -83,20 +82,16 @@ pub enum ServerFrame<'a> {
     OrdersChanged {
         id: String,
         sequence: u64,
-        base_sequence: u64,
         upserts: Vec<crate::orders::OrderedOrderResponse<'a>>,
         removed: Vec<crate::orders::OrderIdentity<'a>>,
-        sync: &'a SyncStatus,
-        revision: &'a str,
     },
     Status {
         id: String,
         state: SubscriptionStatus,
     },
-    Sync {
-        id: String,
+    #[serde(rename = "replica.status")]
+    ReplicaStatus {
         sync: SyncStatus,
-        revision: String,
     },
     Catalog {
         id: String,

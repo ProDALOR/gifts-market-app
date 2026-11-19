@@ -120,7 +120,7 @@ async fn cancelling_a_worker_stops_its_scan_at_the_next_page_and_releases_capaci
 
 #[tokio::test]
 async fn valuation_and_data_actor_queries_share_one_admission_budget() {
-    use market_gifts::{GiftFilters, GiftOrdersQuery};
+    use market_gifts::{GiftFilters, GiftOrderQuery};
     let (_dir, writer) = fixture();
     let data = MarketDataService::start(writer.reader(), 1, 1)
         .await
@@ -128,7 +128,7 @@ async fn valuation_and_data_actor_queries_share_one_admission_budget() {
     let held = data.reader.executor.budget().try_query().unwrap();
     let error = data
         .handle
-        .orders(GiftOrdersQuery::new(GiftFilters::new(
+        .query_orders(GiftOrderQuery::new(GiftFilters::new(
             "gift".into(),
             "GRAM".into(),
         )))

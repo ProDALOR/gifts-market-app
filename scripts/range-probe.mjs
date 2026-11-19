@@ -8,14 +8,13 @@ const query = {
   filters: input.filters,
   source: input.side === "bid" ? "bids" : "asks",
   sort: input.sort ?? "price_asc",
-  position: null,
+  navigation: { type: "head" },
   limit: 4,
-  direction: "around",
 };
 const leases = new Set();
 const socket = new WebSocket(new URL("/ws", base).href.replace(/^http/, "ws"));
 async function api(method, body, expected = 200) {
-  const response = await fetch(new URL("/orders/read", base), {
+  const response = await fetch(new URL("/orders/query", base), {
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -26,7 +25,10 @@ async function api(method, body, expected = 200) {
   return data;
 }
 async function freeze(query, snapshot = null) {
-  const data = await api("POST", { query, consistency: "snapshot", snapshot });
+  const data = await api("POST", {
+    ...query,
+    view: { kind: "snapshot", id: snapshot },
+  });
   leases.add(data.snapshot);
   return data;
 }
@@ -92,55 +94,62 @@ try {
       socket.addEventListener("error", reject, { once: true });
     }),
   );
-  const latest = await api("POST", { query });
+  const latest = await api("POST", query);
   assert.equal(latest.snapshot, undefined);
-  assert.ok(latest.result.data.length >= 3, "Seed at least three listings");
+  assert.ok(latest.data.length >= 3, "Seed at least three listings");
   const oneShot = await receive("read", () =>
     socket.send(
       JSON.stringify({
         type: "request",
         id: "read",
         method: "orders.query",
-        params: { query },
+        params: query,
       }),
     ),
   );
-  assert.deepEqual(oneShot.data.result, latest.result);
+  assert.deepEqual(oneShot.data, latest);
   const first = await freeze(query);
-  const selected = first.result.data[1];
+  const selected = first.data[1];
   await release(first.snapshot);
   const expired = await api(
     "POST",
-    { query, consistency: "snapshot", snapshot: first.snapshot },
+    { ...query, view: { kind: "snapshot", id: first.snapshot } },
     409,
   );
   assert.equal(expired.error.code, "restart_read");
-  const selection = { ...query, position: selected.position };
+  const selection = {
+    ...query,
+    navigation: { type: "around", key: selected.key },
+  };
   const live = await watch("live", selection);
   assert.equal(live.sequence, 0);
-  assert.equal(live.reset, false);
+  assert.equal(live.reset, undefined);
   assert.ok(
-    live.result.data.some(
+    live.data.some(
       (row) =>
         JSON.stringify(identity(row)) === JSON.stringify(identity(selected)),
     ),
   );
   socket.send(JSON.stringify({ type: "cancel", id: "live" }));
-  const exact = await watch("range", selection, live.result.range);
-  assert.deepEqual(exact.result, live.result);
+  const exact = await watch("range", selection, live.range);
+  assert.deepEqual(exact.data, live.data);
+  assert.deepEqual(exact.range, live.range);
   socket.send(JSON.stringify({ type: "cancel", id: "range" }));
   const paused = await freeze(selection);
-  const nextPosition = paused.result.data.at(-1).position;
+  const nextPosition = paused.data.at(-1).key;
   const moved = await freeze(
-    { ...query, position: nextPosition },
+    { ...query, navigation: { type: "around", key: nextPosition } },
     paused.snapshot,
   );
   assert.equal(moved.snapshot, paused.snapshot);
-  assert.equal(moved.revision, paused.revision);
-  assert.ok(moved.result.data.some((row) => row.position === nextPosition));
+  assert.equal(moved.revision, undefined);
+  assert.ok(moved.data.some((row) => row.key === nextPosition));
   await release(paused.snapshot);
-  const resumed = await watch("resume", { ...query, position: nextPosition });
-  assert.ok(resumed.result.data.some((row) => row.position === nextPosition));
+  const resumed = await watch("resume", {
+    ...query,
+    navigation: { type: "around", key: nextPosition },
+  });
+  assert.ok(resumed.data.some((row) => row.key === nextPosition));
   socket.send(JSON.stringify({ type: "cancel", id: "resume" }));
   console.log(
     "Range probe passed: REST/WS parity, query-bound coverage, frozen reads, release and resume.",

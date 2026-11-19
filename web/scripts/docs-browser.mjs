@@ -175,7 +175,8 @@ try {
     ["result", "data"],
     ["cancel", "id"],
     ["orders.watch", "params"],
-    ["orders.snapshot", "result"],
+    ["orders.snapshot", "data"],
+    ["replica.status", "sync"],
   ]) {
     await page
       .locator(`[id="ws-message-${message}"] td code`)

@@ -114,27 +114,16 @@ function display(value: unknown) {
 }
 const sequence = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-const boundary = (value: unknown) =>
-  value === null ||
-  (record(value) &&
-    text(value.position) &&
-    value.position.length > 0 &&
-    text(value.sort_key) &&
-    value.sort_key.length > 0 &&
-    /^[\x20-\x7e]+$/.test(value.sort_key));
+const orderingKey = (value: unknown): value is string =>
+  text(value) &&
+  value.length >= 2 &&
+  value.length <= 8192 &&
+  /^(?:[0-9a-f]{2})+$/.test(value);
+const boundary = (value: unknown) => value === null || orderingKey(value);
 function orderedRows(value: unknown): value is Record<string, unknown>[] {
   if (
     !Array.isArray(value) ||
-    !value.every(
-      (row) =>
-        order(row) &&
-        record(row) &&
-        text(row.position) &&
-        row.position.length > 0 &&
-        text(row.sort_key) &&
-        row.sort_key.length > 0 &&
-        /^[\x20-\x7e]+$/.test(row.sort_key),
-    )
+    !value.every((row) => order(row) && record(row) && orderingKey(row.key))
   )
     return false;
   const rows = value as Record<string, unknown>[];
@@ -147,34 +136,26 @@ function orderedRows(value: unknown): value is Record<string, unknown>[] {
         ]),
       ),
     ).size === rows.length &&
-    new Set(rows.map((row) => row.position)).size === rows.length &&
+    new Set(rows.map((row) => row.key)).size === rows.length &&
     rows.every(
-      (row, i) =>
-        i === 0 || (rows[i - 1].sort_key as string) < (row.sort_key as string),
+      (row, i) => i === 0 || (rows[i - 1].key as string) < (row.key as string),
     )
   );
 }
 function readResult(value: unknown) {
-  if (
-    !record(value) ||
-    !record(value.result) ||
-    !orderedRows(value.result.data) ||
-    !record(value.result.range)
-  )
+  if (!record(value) || !orderedRows(value.data) || !record(value.range))
     return false;
-  const { start, end } = value.result.range;
-  if (!boundary(start) || !boundary(end)) return false;
-  const lower = record(start) ? (start.sort_key as string) : undefined;
-  const upper = record(end) ? (end.sort_key as string) : undefined;
+  const { start, end } = value.range;
   return (
-    !(lower !== undefined && upper !== undefined && lower > upper) &&
-    value.result.data.every(
+    boundary(start) &&
+    boundary(end) &&
+    boundary(value.next) &&
+    !(text(start) && text(end) && start > end) &&
+    value.data.every(
       (row) =>
-        (lower === undefined || (row.sort_key as string) >= lower) &&
-        (upper === undefined || (row.sort_key as string) <= upper),
+        (start === null || (row.key as string) >= (start as string)) &&
+        (end === null || (row.key as string) <= (end as string)),
     ) &&
-    sync(value.sync) &&
-    text(value.revision) &&
     nullableText(value.snapshot)
   );
 }
@@ -185,7 +166,11 @@ export function parseFrame(raw: unknown): LiveFrame {
   const value: unknown = JSON.parse(raw);
   if (
     !record(value) ||
-    !(id(value.id) || (value.type === "error" && value.id === ""))
+    !(
+      id(value.id) ||
+      (value.type === "error" && value.id === "") ||
+      (value.type === "replica.status" && value.id === undefined)
+    )
   )
     throw new Error("Invalid operation envelope");
   let valid = false;
@@ -201,22 +186,17 @@ export function parseFrame(raw: unknown): LiveFrame {
         text(value.error.message) &&
         (value.error.details == null || record(value.error.details));
       break;
-    case "sync":
-      valid = sync(value.sync) && text(value.revision);
+    case "replica.status":
+      valid = sync(value.sync);
       break;
     case "orders.snapshot":
-      valid =
-        sequence(value.sequence) &&
-        typeof value.reset === "boolean" &&
-        readResult(value);
+      valid = sequence(value.sequence) && readResult(value);
       break;
     case "orders.changed": {
       const removed = value.removed;
       const upserts = value.upserts;
       valid =
         sequence(value.sequence) &&
-        sequence(value.base_sequence) &&
-        value.sequence === (value.base_sequence as number) + 1 &&
         orderedRows(upserts) &&
         Array.isArray(removed) &&
         removed.every(
@@ -231,9 +211,7 @@ export function parseFrame(raw: unknown): LiveFrame {
               row.venue_id ===
                 (upsert.book as Record<string, unknown>).venue_id,
           ),
-        ) &&
-        sync(value.sync) &&
-        text(value.revision);
+        );
       break;
     }
     case "catalog":

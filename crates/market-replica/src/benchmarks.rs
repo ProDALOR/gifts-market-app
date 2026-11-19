@@ -29,7 +29,7 @@ fn predicate(value: w::attribute_value::Value) -> w::AttributePredicate {
         })),
     }
 }
-fn fixture(count: usize) -> Vec<w::Change> {
+pub(super) fn fixture(count: usize) -> Vec<w::Change> {
     let mut rows = Vec::new();
     for i in 0..8 {
         rows.push(entity(w::entity::Entity::Venue(w::Venue {

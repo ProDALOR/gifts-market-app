@@ -2,7 +2,7 @@
 use jiff::Timestamp;
 use market_gifts::{
     Amount, CollectibleGift, GiftBook, GiftCriteria, GiftOrder, GiftOrderKind, GiftTarget, OrderId,
-    Page, SyncStatus, UnsupportedGiftReason,
+    UnsupportedGiftReason,
 };
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -85,71 +85,76 @@ impl<'a> From<&'a GiftOrder> for OrderResponse<'a> {
         }
     }
 }
-/// Paged public orders with continuation and replica freshness.
-// Borrow actor data during serialization, without cloning large gift/criteria payloads.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct OrderPageResponse<'a> {
-    pub data: Vec<OrderResponse<'a>>,
-    pub next_page_token: &'a str,
-    pub cursor: &'a str,
-    pub sync: &'a SyncStatus,
-}
-impl<'a> From<&'a Page<GiftOrder>> for OrderPageResponse<'a> {
-    fn from(page: &'a Page<GiftOrder>) -> Self {
-        Self {
-            data: page.data.iter().map(Into::into).collect(),
-            next_page_token: &page.next_page_token,
-            cursor: &page.cursor,
-            sync: &page.sync,
-        }
-    }
-}
-/// One order with query-bound navigation and an ASCII ordering key.
+/// One opaque key provides both ordering and navigation within its query.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OrderedOrderResponse<'a> {
     #[serde(flatten)]
     pub order: OrderResponse<'a>,
-    pub position: &'a str,
-    pub sort_key: &'a str,
+    #[serde(serialize_with = "serialize_key")]
+    #[schema(value_type=market_gifts::OrderKey)]
+    pub key: &'a market_actors::ReadPosition,
 }
-impl<'a> From<&'a market_gifts::OrderedEntry<GiftOrder>> for OrderedOrderResponse<'a> {
-    fn from(row: &'a market_gifts::OrderedEntry<GiftOrder>) -> Self {
+fn serialize_key<S: serde::Serializer>(
+    key: &market_actors::ReadPosition,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&key.encode())
+}
+impl<'a> From<&'a market_actors::OrderedEntry> for OrderedOrderResponse<'a> {
+    fn from(row: &'a market_actors::OrderedEntry) -> Self {
         Self {
             order: (&row.order).into(),
-            position: &row.position,
-            sort_key: &row.sort_key,
+            key: &row.key,
         }
     }
 }
-#[derive(Debug, Serialize, ToSchema)]
-pub struct OrderResultResponse<'a> {
-    pub data: Vec<OrderedOrderResponse<'a>>,
-    /// Fixed, inclusive coverage. Null boundaries include the open head/tail.
-    pub range: &'a market_gifts::OrderRange,
+#[derive(Debug, Serialize)]
+pub struct OrderRangeResponse<'a> {
+    #[serde(serialize_with = "serialize_bound")]
+    pub start: Option<&'a market_actors::ReadPosition>,
+    #[serde(serialize_with = "serialize_bound")]
+    pub end: Option<&'a market_actors::ReadPosition>,
 }
-impl<'a> From<&'a market_gifts::OrderResult> for OrderResultResponse<'a> {
-    fn from(result: &'a market_gifts::OrderResult) -> Self {
-        Self {
-            data: result.data.iter().map(Into::into).collect(),
-            range: &result.range,
-        }
+fn serialize_bound<S: serde::Serializer>(
+    key: &Option<&market_actors::ReadPosition>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match key {
+        Some(key) => serializer.serialize_some(&key.encode()),
+        None => serializer.serialize_none(),
     }
 }
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OrderReadResponse<'a> {
-    pub result: OrderResultResponse<'a>,
+    pub data: Vec<OrderedOrderResponse<'a>>,
+    #[schema(value_type=market_gifts::OrderRange)]
+    pub range: OrderRangeResponse<'a>,
+    #[serde(serialize_with = "serialize_bound")]
+    #[schema(value_type=Option<market_gifts::OrderKey>, required=true)]
+    pub next: Option<&'a market_actors::ReadPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub snapshot: Option<&'a str>,
-    pub sync: &'a SyncStatus,
-    pub revision: &'a str,
+    #[schema(value_type=Option<market_gifts::ReadSnapshotId>)]
+    pub snapshot: Option<String>,
 }
-impl<'a> From<&'a market_gifts::OrderRead> for OrderReadResponse<'a> {
-    fn from(read: &'a market_gifts::OrderRead) -> Self {
+impl<'a> OrderReadResponse<'a> {
+    pub fn latest(result: &'a market_actors::OrderResult) -> Self {
         Self {
-            result: (&read.result).into(),
-            snapshot: read.snapshot.as_deref(),
-            sync: &read.sync,
-            revision: &read.revision,
+            data: result.data.iter().map(Into::into).collect(),
+            range: OrderRangeResponse {
+                start: result.range.start.as_ref(),
+                end: result.range.end.as_ref(),
+            },
+            next: None,
+            snapshot: None,
+        }
+    }
+}
+impl<'a> From<&'a market_actors::OrderRead> for OrderReadResponse<'a> {
+    fn from(read: &'a market_actors::OrderRead) -> Self {
+        Self {
+            next: read.next.as_ref(),
+            snapshot: read.snapshot.map(|id| id.to_string()),
+            ..Self::latest(&read.result)
         }
     }
 }

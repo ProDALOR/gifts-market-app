@@ -80,3 +80,9 @@ impl ValuationSnapshot {
 }
 #[cfg(test)]
 mod tests;
+
+/// Internal bounded traversal result used by strategy preparation.
+pub struct Page<T> {
+    pub data: Vec<T>,
+    pub next_page_token: String,
+}

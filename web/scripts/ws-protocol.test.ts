@@ -102,8 +102,7 @@ test("range snapshots and atomic changes validate identities, coverage and seque
       kind: "criteria",
       criteria: { models: [], backdrops: [], patterns: [], number: null },
     },
-    position: "p.a",
-    sort_key: "00001",
+    key: "000001",
   };
   const frame = {
     type: "orders.snapshot",
@@ -112,22 +111,22 @@ test("range snapshots and atomic changes validate identities, coverage and seque
     reset: false,
     sync,
     revision: "r",
-    result: { data: [row], range: { start: null, end: null } },
+    data: [row],
+    next: null,
+    range: { start: null, end: null },
   };
   assert.deepEqual(parseFrame(JSON.stringify(frame)), frame);
   for (const invalid of [
     { ...frame, sequence: -1 },
     { ...frame, sequence: Number.MAX_SAFE_INTEGER + 1 },
-    { ...frame, result: { ...frame.result, data: [row, row] } },
-    { ...frame, result: { ...frame.result, data: [{ ...row, position: "" }] } },
+    { ...frame, data: [row, row] },
+    { ...frame, data: [{ ...row, key: "" }] },
     {
       ...frame,
-      result: {
-        data: [row],
-        range: { start: { position: "p.b", sort_key: "00002" }, end: null },
-      },
+      data: [row],
+      range: { start: "000002", end: null },
     },
-    { ...frame, result: { data: [row], range: { start: null } } },
+    { ...frame, range: { start: null } },
   ])
     assert.throws(() => parseFrame(JSON.stringify(invalid)));
   const change = {
@@ -142,7 +141,7 @@ test("range snapshots and atomic changes validate identities, coverage and seque
   };
   assert.deepEqual(parseFrame(JSON.stringify(change)), change);
   for (const invalid of [
-    { ...change, sequence: 2 },
+    { ...change, sequence: -1 },
     { ...change, upserts: [row, row] },
     { ...change, removed: [{ venue_id: "v", id: "a" }] },
     { ...change, removed: [{ id: "a" }] },
@@ -150,17 +149,14 @@ test("range snapshots and atomic changes validate identities, coverage and seque
     assert.throws(() => parseFrame(JSON.stringify(invalid)));
   const history = {
     ...frame,
-    result: {
-      ...frame.result,
-      data: [{ ...row, kind: "executed", executed_at: "2026-11-18T12:00:00Z" }],
-    },
+    data: [{ ...row, kind: "executed", executed_at: "2026-11-18T12:00:00Z" }],
   };
   assert.deepEqual(parseFrame(JSON.stringify(history)), history);
   const finite = {
     type: "result",
     id: "q",
     method: "orders.query",
-    data: { result: frame.result, sync, revision: "r" },
+    data: { data: frame.data, range: frame.range, next: null },
   };
   assert.deepEqual(parseFrame(JSON.stringify(finite)), finite);
 });

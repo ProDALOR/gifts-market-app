@@ -12,10 +12,7 @@ pub(super) enum Payload {
     Result(Arc<market_valuation::GiftFloorMark>),
     Connecting,
     Orders(Arc<str>),
-    Sync {
-        sync: market_gifts::SyncStatus,
-        revision: String,
-    },
+    ReplicaStatus(market_gifts::SyncStatus),
     Catalog(market_gifts::CatalogVersions),
     Error(ApiError),
     CommandError(ApiError),
@@ -23,7 +20,7 @@ pub(super) enum Payload {
 impl Payload {
     #[cfg(test)]
     pub fn test_orders(result: Arc<str>) -> Self {
-        Self::Orders(format!("{{\"type\":\"orders.snapshot\",\"id\":\"offers\",\"sequence\":0,\"reset\":false,\"result\":{result},\"sync\":{{\"ready\":false,\"state\":\"starting\",\"updated_at\":null}},\"revision\":\"1\"}}").into())
+        Self::Orders(serde_json::json!({"type":"orders.snapshot","id":"offers","sequence":0,"data":[],"range":{"start":null,"end":null},"next":null,"padding":&*result}).to_string().into())
     }
     pub fn text(&self, id: &str) -> String {
         match self {
@@ -35,12 +32,10 @@ impl Payload {
                 .expect("valuation result serializes")
             }
             Self::Orders(encoded) => encoded.to_string(),
-            Self::Sync { sync, revision } => serde_json::to_string(&ServerFrame::Sync {
-                id: id.into(),
-                sync: sync.clone(),
-                revision: revision.clone(),
-            })
-            .expect("sync frame serializes"),
+            Self::ReplicaStatus(sync) => {
+                serde_json::to_string(&ServerFrame::ReplicaStatus { sync: sync.clone() })
+                    .expect("replica status serializes")
+            }
             Self::Connecting => serde_json::to_string(&ServerFrame::Status {
                 id: id.into(),
                 state: SubscriptionStatus::Connecting,
@@ -121,6 +116,9 @@ pub(super) fn channel(limits: &WebSocketLimits) -> (Sender, mpsc::Receiver<Frame
     )
 }
 impl Sender {
+    pub fn status(&self, sync: market_gifts::SyncStatus) -> Result<(), QueueError> {
+        self.try_payload(Scope::Global, Payload::ReplicaStatus(sync))
+    }
     pub async fn send(
         &self,
         scope: Scope,

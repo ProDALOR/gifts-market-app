@@ -39,15 +39,18 @@ pub fn document() -> serde_json::Result<Value> {
             .enumerate()
         {
             let name = message_tag(schema).expect("serde message tag");
-            messages.insert(name.into(), json!({
+            let mut message = json!({
                 "name":name,
                 "title":name,
                 "summary": summary(name),
                 "contentType":"application/json",
-                "correlationId":{"location":"$message.payload#/id", "description":"Unique operation ID. Empty on connection-level errors."},
                 "payload":{"$ref":format!("#/components/schemas/{root}/oneOf/{index}")},
                 "examples": examples(name)?
-            }));
+            });
+            if name != "replica.status" {
+                message["correlationId"] = json!({"location":"$message.payload#/id","description":"Unique operation ID. Empty on connection-level errors."});
+            }
+            messages.insert(name.into(), message);
             channel_messages.insert(
                 name.into(),
                 json!({"$ref":format!("#/components/messages/{name}")}),
@@ -107,7 +110,9 @@ fn summary(name: &str) -> &'static str {
         "cancel" => "Cancel a pending request or subscription. No acknowledgement is sent.",
         "orders.watch" => "Watch a fixed ordered range with an atomic initial snapshot.",
         "orders.snapshot" => "Initialize or reset range state atomically.",
-        "orders.changed" => "Apply removals and upserts atomically after checking base_sequence.",
+        "orders.changed" => {
+            "Apply removals and upserts atomically after checking sequence continuity."
+        }
         "watch_catalog" => {
             "Watch catalog content revisions for up to eight collections, without polling."
         }
@@ -115,8 +120,8 @@ fn summary(name: &str) -> &'static str {
             "Current catalog content revisions. Compare with HTTP ETags to revalidate changed entries."
         }
         "status" => "The subscription is connecting.",
-        "sync" => {
-            "Update freshness and revision without replacing orders. The server has checked the subscribed range."
+        "replica.status" => {
+            "Connection-level replica readiness and freshness, independent of queries and watches."
         }
         "error" => {
             "A request, subscription or connection-level error. Inspect code and operation ID."
@@ -172,34 +177,27 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         "orders.watch" => serde_json::to_value(Command::WatchOrders {
             id: "orders.1".into(),
             params: Box::new(serde_json::from_value(
-                json!({"query":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","sort":"price_asc","position":null,"limit":150,"direction":"around"}}),
+                json!({"query":{"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM"},"source":"asks","sort":"price_asc","limit":150}}),
             )?),
         })?,
         "orders.snapshot" => serde_json::to_value(ServerFrame::OrdersSnapshot {
             id: "orders.1".into(),
             sequence: 0,
-            reset: false,
             data: OrderReadResponse {
-                result: OrderResultResponse {
-                    data: vec![],
-                    range: &market_gifts::OrderRange {
-                        start: None,
-                        end: None,
-                    },
+                data: vec![],
+                range: crate::orders::OrderRangeResponse {
+                    start: None,
+                    end: None,
                 },
+                next: None,
                 snapshot: None,
-                sync: &sync,
-                revision: "opaque-revision",
             },
         })?,
         "orders.changed" => serde_json::to_value(ServerFrame::OrdersChanged {
             id: "orders.1".into(),
             sequence: 1,
-            base_sequence: 0,
             upserts: vec![],
             removed: vec![],
-            sync: &sync,
-            revision: "opaque-revision-2",
         })?,
         "watch_catalog" => serde_json::to_value(Command::WatchCatalog {
             id: "catalog".into(),
@@ -220,11 +218,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             id: "offers".into(),
             state: SubscriptionStatus::Connecting,
         })?,
-        "sync" => serde_json::to_value(ServerFrame::Sync {
-            id: "offers".into(),
-            sync,
-            revision: "opaque-book-revision".into(),
-        })?,
+        "replica.status" => serde_json::to_value(ServerFrame::ReplicaStatus { sync })?,
         "command_error" => serde_json::to_value(ServerFrame::CommandError {
             id: "offers".into(),
             error: crate::error::ApiError::invalid("duplicate operation ID"),

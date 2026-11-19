@@ -151,6 +151,7 @@ try {
   let anchorChecks = 0,
     nearTopChecks = 0;
   await page.routeWebSocket("**/ws", (socket) => {
+    socket.send(JSON.stringify({ type: "replica.status", sync }));
     let current;
     socket.onMessage((message) => {
       const incoming = JSON.parse(String(message));
@@ -163,7 +164,7 @@ try {
         const command = incoming;
         if (command.type !== "orders.watch") return;
         subscriptions++;
-        lastAnchor = command.params.query.position;
+        lastAnchor = command.params.query.navigation?.key;
         const marker = await page
           .locator(".card-open")
           .evaluateAll((cards, operation) => {
@@ -186,9 +187,8 @@ try {
           JSON.stringify({
             type: "orders.snapshot",
             sequence: 0,
-            reset: false,
             id: command.id,
-            result: window,
+            ...window,
             sync,
             revision: "view",
           }),
@@ -247,7 +247,7 @@ try {
   let nextSnapshot = 0;
   const released = [];
   const frozenRequests = [];
-  await page.route("**/orders/read", (route) => {
+  await page.route("**/orders/query", (route) => {
     const body = route.request().postDataJSON();
     if (route.request().method() === "DELETE") {
       released.push(body.snapshot);
@@ -255,11 +255,11 @@ try {
       return route.fulfill({ status: 204 });
     }
     frozenRequests.push(body);
-    const snapshot = body.snapshot ?? `snapshot.${++nextSnapshot}`;
+    const snapshot = body.view?.id ?? `snapshot.${++nextSnapshot}`;
     if (!frozen.has(snapshot)) frozen.set(snapshot, rows.slice());
     return route.fulfill({
       json: {
-        result: orderResult(body.query, frozen.get(snapshot)),
+        ...orderResult(body, frozen.get(snapshot)),
         snapshot,
         sync,
         revision: "frozen",
@@ -356,7 +356,7 @@ try {
     subscriptions > previousSubscriptions,
     "Returning to cached rows refreshes their live window",
   );
-  assert.equal(lastAnchor, JSON.stringify(["v", "0"]));
+  assert.equal(lastAnchor, orderResult({ limit: 1 }, rows).data[0].key);
   assert.equal(
     await page.evaluate(() => window.feedView().orders.length),
     loadedCount,

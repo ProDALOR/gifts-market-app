@@ -34,7 +34,6 @@ export function useOrderFeed(
                 ...next,
                 orders: previous.orders,
                 sync: previous.sync,
-                cursor: previous.cursor,
                 displayOrders: previous.displayOrders,
                 activity: previous.activity,
                 hasMore: previous.hasMore,

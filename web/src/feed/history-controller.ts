@@ -1,8 +1,10 @@
+import { liveSocket } from "../live-socket.ts";
+import { release } from "./range-source.ts";
 import {
   request,
   ApiFailure,
   type HistoryQuery,
-  type OrderPage,
+  type OrderQueryResult,
 } from "../market.ts";
 import { orderKey } from "../orderbook/order-activity.ts";
 import {
@@ -15,7 +17,9 @@ import {
 export class HistoryController implements FeedController {
   private stop = new AbortController();
   private state = emptyFeed();
-  private pages: OrderPage[] = [];
+  private pages: OrderQueryResult[] = [];
+  private snapshot?: string;
+  private unwatchStatus?: () => void;
   private working = false;
   private wanted: number;
   ready = false;
@@ -30,10 +34,13 @@ export class HistoryController implements FeedController {
     return { kind: "history", depth: this.wanted };
   }
   start() {
+    this.unwatchStatus = liveSocket.watchStatus((sync) => this.emit({ sync }));
     void this.load();
   }
   close() {
     this.stop.abort();
+    this.unwatchStatus?.();
+    if (this.snapshot) release(this.snapshot);
   }
   setVisibleRange() {}
   loadMore() {
@@ -52,21 +59,32 @@ export class HistoryController implements FeedController {
     let restarted = false;
     try {
       while (this.pages.length < this.wanted) {
-        const token = this.pages.at(-1)?.next_page_token || "";
+        const token = this.pages.at(-1)?.next || null;
         if (this.pages.length && !token) break;
         try {
-          const page = await request<OrderPage>(
-            "/history/query",
-            { ...this.query, page_token: token },
+          const page = await request<OrderQueryResult>(
+            "/orders/query",
+            {
+              ...this.query,
+              source: "history",
+              navigation: token
+                ? { type: "after", key: token }
+                : { type: "head" },
+              view: { kind: "snapshot", id: this.snapshot ?? null },
+            },
             this.stop.signal,
           );
-          if (this.stop.signal.aborted) return;
+          if (this.stop.signal.aborted) {
+            if (page.snapshot) release(page.snapshot);
+            return;
+          }
+          if (!page.snapshot)
+            throw new Error("Snapshot lease missing from history read");
+          this.snapshot = page.snapshot;
           if (
-            page.next_page_token &&
-            (page.next_page_token === token ||
-              this.pages.some(
-                (p) => p.next_page_token === page.next_page_token,
-              ))
+            page.next &&
+            (page.next === token ||
+              this.pages.some((p) => p.next === page.next))
           )
             throw new Error("Market returned a repeated continuation");
           this.pages.push(page);
@@ -78,6 +96,8 @@ export class HistoryController implements FeedController {
           ) {
             restarted = true;
             this.pages = [];
+            if (this.snapshot) release(this.snapshot);
+            this.snapshot = undefined;
             continue;
           }
           throw error;
@@ -96,9 +116,7 @@ export class HistoryController implements FeedController {
       this.emit({
         orders,
         displayOrders: orders,
-        sync: this.pages[0]?.sync ?? this.state.sync,
-        cursor: this.pages.at(-1)?.cursor ?? "",
-        hasMore: !!this.pages.at(-1)?.next_page_token,
+        hasMore: !!this.pages.at(-1)?.next,
         status: "Snapshot",
         error: "",
       });

@@ -15,3 +15,6 @@ pub use handle::MarketDataHandle;
 pub use market_replica::{READ_LIMITS, ReadLimits};
 pub use service::{MarketDataService, MarketDataTask};
 pub use subscriptions::{DataSubscription, DataUpdate};
+
+mod reads;
+pub use reads::*;

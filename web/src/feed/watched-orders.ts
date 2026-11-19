@@ -1,46 +1,66 @@
 import type { components } from "../gen/api.ts";
 import { orderKey } from "../orderbook/order-activity.ts";
 import type { LiveFrame } from "../ws-protocol.ts";
-type Result = components["schemas"]["OrderResultResponse"];
+import { lowerBound } from "./loaded-orders.ts";
+type Result = components["schemas"]["OrderReadResponse"];
+type Entry = Result["data"][number];
 type Snapshot = Extract<LiveFrame, { type: "orders.snapshot" }>;
 type Changed = Extract<LiveFrame, { type: "orders.changed" }>;
 export class WatchedOrders {
   private result?: Result;
   private sequence?: number;
+  private identities = new Map<string, Entry>();
   clear() {
     this.result = undefined;
     this.sequence = undefined;
+    this.identities.clear();
   }
   apply(frame: Snapshot | Changed): Result {
     if (frame.type === "orders.snapshot") {
       if (
         this.sequence === undefined
           ? frame.sequence !== 0
-          : !frame.reset || frame.sequence !== this.sequence + 1
+          : frame.sequence !== this.sequence + 1
       )
         throw new Error("Unexpected order snapshot sequence");
       this.sequence = frame.sequence;
-      return (this.result = frame.result);
+      this.identities = new Map(frame.data.map((row) => [orderKey(row), row]));
+      return (this.result = {
+        data: frame.data,
+        range: frame.range,
+        next: frame.next,
+        snapshot: frame.snapshot,
+      });
     }
-    if (!this.result || frame.base_sequence !== this.sequence)
+    if (!this.result || frame.sequence !== this.sequence! + 1)
       throw new Error("Order subscription sequence gap");
-    const rows = new Map(this.result.data.map((row) => [orderKey(row), row]));
-    for (const row of frame.removed)
-      rows.delete(JSON.stringify([row.venue_id, row.id]));
-    for (const row of frame.upserts) {
+    // Validate the entire batch before mutating either index.
+    for (const row of frame.upserts)
       if (
-        (this.result.range.start &&
-          row.sort_key < this.result.range.start.sort_key) ||
-        (this.result.range.end && row.sort_key > this.result.range.end.sort_key)
+        (this.result.range.start !== null &&
+          row.key < this.result.range.start) ||
+        (this.result.range.end !== null && row.key > this.result.range.end)
       )
         throw new Error("Order outside subscribed coverage");
-      rows.set(orderKey(row), row);
+    const data = this.result.data.slice();
+    const remove = (id: string) => {
+      const old = this.identities.get(id);
+      if (old) {
+        const i = lowerBound(data, old.key);
+        data.splice(i, 1);
+      }
+    };
+    for (const row of frame.removed)
+      remove(JSON.stringify([row.venue_id, row.id]));
+    for (const row of frame.upserts) {
+      remove(orderKey(row));
+      const i = lowerBound(data, row.key);
+      if (data[i]?.key === row.key) throw new Error("Duplicate order rank");
+      data.splice(i, 0, row);
     }
-    const data = [...rows.values()].sort((a, b) =>
-      a.sort_key < b.sort_key ? -1 : a.sort_key > b.sort_key ? 1 : 0,
-    );
-    if (new Set(data.map((row) => row.sort_key)).size !== data.length)
-      throw new Error("Duplicate order rank");
+    for (const row of frame.removed)
+      this.identities.delete(JSON.stringify([row.venue_id, row.id]));
+    for (const row of frame.upserts) this.identities.set(orderKey(row), row);
     this.sequence = frame.sequence;
     return (this.result = { ...this.result, data });
   }

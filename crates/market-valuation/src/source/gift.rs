@@ -85,13 +85,14 @@ impl ValuationSnapshot {
                 min: Some(number),
                 max: Some(number),
             });
-            let mut query = GiftOrdersQuery::new(filters);
-            query.sort = GiftSort::NumberAsc;
+            let mut query = GiftOrderQuery::new(filters);
+            query.sort = Some(GiftSort::NumberAsc);
             query.limit = 200;
+            let mut continuation = String::new();
             loop {
                 self.check_cancelled()?;
                 budget.page()?;
-                let page = self.gifts(query.clone())?;
+                let page = self.gifts(query.clone(), continuation)?;
                 for gift in page.data {
                     if gift.number != Some(number) {
                         continue;
@@ -113,7 +114,7 @@ impl ValuationSnapshot {
                 if page.next_page_token.is_empty() {
                     break;
                 }
-                query.page_token = page.next_page_token;
+                continuation = page.next_page_token;
             }
         }
         found.ok_or_else(|| {

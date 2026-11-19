@@ -10,6 +10,11 @@ use futures_util::{
 };
 use std::{panic::AssertUnwindSafe, time::Instant};
 use tokio_util::sync::CancellationToken;
+struct Settings {
+    limits: WebSocketLimits,
+    stop: CancellationToken,
+    status: Option<tokio::sync::watch::Receiver<market_gifts::SyncStatus>>,
+}
 type Start = dyn Fn(
     Key,
     operations::Operation,
@@ -27,11 +32,15 @@ pub(super) async fn run(
     limits: WebSocketLimits,
     stop: CancellationToken,
 ) {
+    let status = Some(market.status_updates());
     drive(
         session,
         messages,
-        limits,
-        stop,
+        Settings {
+            limits,
+            stop,
+            status,
+        },
         move |key, query, tx, cancel, limits| {
             operations::run(market.clone(), key, query, tx, cancel, limits).boxed_local()
         },
@@ -41,8 +50,7 @@ pub(super) async fn run(
 async fn drive(
     session: actix_ws::Session,
     messages: impl Stream<Item = Result<AggregatedMessage, actix_ws::ProtocolError>> + Unpin,
-    limits: WebSocketLimits,
-    stop: CancellationToken,
+    settings: Settings,
     start: impl Fn(
         Key,
         operations::Operation,
@@ -52,13 +60,12 @@ async fn drive(
     ) -> LocalBoxFuture<'static, End>
     + 'static,
 ) {
-    drive_with_writer(session, messages, limits, stop, start, write_frame).await;
+    drive_with_writer(session, messages, settings, start, write_frame).await;
 }
 async fn drive_with_writer(
     session: actix_ws::Session,
     mut messages: impl Stream<Item = Result<AggregatedMessage, actix_ws::ProtocolError>> + Unpin,
-    limits: WebSocketLimits,
-    stop: CancellationToken,
+    settings: Settings,
     start: impl Fn(
         Key,
         operations::Operation,
@@ -69,9 +76,20 @@ async fn drive_with_writer(
     + 'static,
     writer: impl Fn(actix_ws::Session, queue::Frame, WebSocketLimits) -> Write,
 ) {
+    let Settings {
+        limits,
+        stop,
+        mut status,
+    } = settings;
     let mut jobs = FuturesUnordered::<Job>::new();
     let mut registry = Registry::new(limits.subscriptions, limits.requests);
     let (tx, mut rx) = queue::channel(&limits);
+    if let Some(status) = &mut status {
+        let value = status.borrow_and_update().clone();
+        if tx.status(value).is_err() {
+            return;
+        }
+    }
     let mut write: Option<Write> = None;
     let mut controls = FuturesUnordered::<LocalBoxFuture<'static, bool>>::new();
     let mut heartbeat = tokio::time::interval(limits.heartbeat);
@@ -80,6 +98,11 @@ async fn drive_with_writer(
     let close = loop {
         tokio::select! {
             _=stop.cancelled()=>break CloseCode::Away,
+            result=async {status.as_mut().expect("guarded status").changed().await},if status.is_some()=>{
+                if result.is_err(){break CloseCode::Away;}
+                let value=status.as_mut().expect("status present").borrow_and_update().clone();
+                if tx.status(value).is_err(){break CloseCode::Again;}
+            }
             Some((key,end))=jobs.next(),if !jobs.is_empty()=>{
                 if registry.current(&key) {
                     match end {

@@ -31,8 +31,11 @@ async fn connect(
     actix_web::rt::spawn(drive_with_writer(
         session,
         messages.aggregate_continuations(),
-        limits,
-        scenario.stop.child_token(),
+        Settings {
+            limits,
+            stop: scenario.stop.child_token(),
+            status: None,
+        },
         move |key, query, tx, cancel, _| {
             let scenario = scenario.clone();
             async move {
@@ -48,8 +51,7 @@ async fn connect(
             }
             if query.limit==4 {return End::SlowConsumer;}
             let label=if query.limit==3 {"😀".repeat(20_000)} else {"ready".into()};
-            let window=serde_json::json!({"data":[],"range":{"start":null,"end":null}}).to_string();
-            let payload = queue::Payload::Orders(serde_json::json!({"type":"orders.snapshot","id":key.id.as_str(),"sequence":0,"reset":false,"result":serde_json::from_str::<serde_json::Value>(&window).unwrap(),"sync":{"ready":false,"state":"starting","updated_at":null},"revision":label}).to_string().into());
+            let payload = queue::Payload::Orders(serde_json::json!({"type":"orders.snapshot","id":key.id.as_str(),"sequence":0,"data":[],"range":{"start":null,"end":null},"next":null,"label":label}).to_string().into());
             if tx.send(Scope::Operation(key),payload,false,&cancel).await.is_err() {return End::SlowConsumer;}
             cancel.cancelled().await;scenario.cancelled.notify_one();End::Cancelled
         }.boxed_local()
@@ -159,7 +161,7 @@ async fn pending_setup_does_not_block_ping_cancel_replacement_or_shutdown() {
         panic!("missing replacement page")
     };
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&text).unwrap()["revision"],
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()["label"],
         "ready"
     );
     tokio::time::timeout(
@@ -183,7 +185,7 @@ async fn fragmented_large_unicode_pages_preserve_one_json_message() {
         panic!("missing page")
     };
     let page: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(page["revision"].as_str().unwrap().chars().count(), 20_000);
+    assert_eq!(page["label"].as_str().unwrap().chars().count(), 20_000);
     socket.close(None).await.unwrap();
     scenario.stop.cancel();
     server.stop(true).await;

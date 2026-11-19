@@ -1,4 +1,4 @@
-//! Live window and catalog computation; subscriber registration belongs to the actor.
+//! Live slice and catalog computation; subscriber registration belongs to the actor.
 use super::{DataUpdate, QueryFeed};
 use crate::error::DataError;
 use crate::{orderbooks::handle::OrderbooksHandle, runtime::ActorEnvironment};
@@ -98,7 +98,7 @@ pub(super) fn start_orders(
 ) {
     let super::types::OrdersFeed {
         request,
-        window,
+        slice,
         range: mut coverage,
     } = selection;
     let sender = feed.sender.clone();
@@ -112,50 +112,31 @@ pub(super) fn start_orders(
         let _permit = permit;
         let mut changed = reader.changes();
         let work = async {
-            let mut previous: Option<Arc<market_gifts::OrderResult>> = None;
+            let mut previous: Option<Arc<crate::OrderResult>> = None;
             let mut revision = None;
-            let mut freshness = None;
             loop {
                 changed.borrow_and_update();
                 let current = reader.read_revision(&request)?;
                 if revision != Some(current) {
                     let read = async {
                         if let Some(range) = &coverage {
-                            let range = market_replica::WindowRange {
-                                start: range.start.as_ref().map(|b| b.position.clone()),
-                                end: range.end.as_ref().map(|b| b.position.clone()),
-                            };
-                            orders.range_wait(request.clone(), range).await
+                            orders.range_wait(request.clone(), range.clone()).await
                         } else {
-                            orders.window_wait(request.clone(), window.clone()).await
+                            orders.slice_wait(request.clone(), slice.clone()).await
                         }
                     };
                     let result = tokio::select! {biased;_=stop.cancelled()=>return Ok(()),_=sender.closed()=>return Ok(()),result=read=>result?};
-                    let current = result.revision;
-                    let (next, sync) = crate::protocol::order_result(result, coverage.clone())?;
+                    let (next, current) = result;
+                    let next = next.result;
                     coverage = Some(next.range.clone());
                     if previous.as_ref().is_none_or(|old| **old != next) {
                         previous = Some(Arc::new(next));
                     }
                     revision = Some(current);
-                    freshness = Some(sync.clone());
                     sender.send_replace(DataUpdate::Orders {
-                        epoch: current.dataset_token(),
-                        result: previous.as_ref().expect("window loaded").clone(),
-                        sync,
-                        revision: current.token(),
+                        version: current,
+                        result: previous.as_ref().expect("range loaded").clone(),
                     });
-                } else {
-                    let sync = crate::protocol::sync(reader.status())?;
-                    if freshness.as_ref() != Some(&sync) {
-                        freshness = Some(sync.clone());
-                        sender.send_replace(DataUpdate::Orders {
-                            epoch: revision.expect("revision loaded").dataset_token(),
-                            result: previous.as_ref().expect("window loaded").clone(),
-                            sync,
-                            revision: revision.expect("revision loaded").token(),
-                        });
-                    }
                 }
                 tokio::select! {_=stop.cancelled()=>return Ok(()),_=sender.closed()=>return Ok(()),result=changed.changed()=>result.map_err(|_|Status::unavailable("Replica updates stopped"))?}
                 tokio::select! {_=stop.cancelled()=>return Ok(()),_=tokio::time::sleep(Duration::from_millis(100))=>{}}

@@ -1,3 +1,4 @@
+import { liveSocket } from "../live-socket.ts";
 import { LoadedOrders } from "./loaded-orders.ts";
 import type { Order } from "../market.ts";
 import { OrderActivityTracker, orderKey } from "../orderbook/order-activity.ts";
@@ -25,6 +26,7 @@ export class RangeController implements FeedController {
   private state = emptyFeed();
   private activity = new OrderActivityTracker();
   private source: RangeSource;
+  private unwatchStatus?: () => void;
   private current?: OrderData;
   private activeStart = 0;
   private cache: LoadedOrders;
@@ -32,6 +34,7 @@ export class RangeController implements FeedController {
   private anchor?: string;
   private visibleKey?: string;
   private requested?: string;
+  private navigation: "around" | "after" | "before" = "around";
   private movingTo?: string;
   private working = false;
   private closed = false;
@@ -50,9 +53,7 @@ export class RangeController implements FeedController {
         : new LoadedOrders();
     this.requested = bookmark?.kind === "range" ? bookmark.anchor : undefined;
     const callbacks = {
-      result: (data: OrderData, sync: Sync) => this.accept(data, sync),
-      sync: (sync: Sync) =>
-        this.emit({ sync, status: sync.state === "live" ? "Live" : "Stale" }),
+      result: (data: OrderData) => this.accept(data),
       status: (status: string) => {
         this.requested = this.anchor ?? this.requested;
         this.activity.rebase();
@@ -81,6 +82,16 @@ export class RangeController implements FeedController {
     };
   }
   start() {
+    this.unwatchStatus = liveSocket.watchStatus((sync) =>
+      this.emit({
+        sync,
+        status: this.frozen
+          ? "Paused"
+          : sync.state === "live"
+            ? "Live"
+            : "Stale",
+      }),
+    );
     this.working = true;
     this.emit({
       loadingMore: true,
@@ -92,6 +103,7 @@ export class RangeController implements FeedController {
     if (this.closed) return;
     this.closed = true;
     this.source.close();
+    this.unwatchStatus?.();
     clearTimeout(this.expiry);
     clearTimeout(this.movement);
   }
@@ -103,9 +115,12 @@ export class RangeController implements FeedController {
     const point = this.activity.liveRange(anchor, anchor).start;
     const row = this.cache.rows[point];
     if (row) {
-      this.anchor = row.position;
+      this.anchor = row.key;
       this.visibleKey = orderKey(row);
-      this.source.remember?.({ ...this.query(), position: row.position });
+      this.source.remember?.({
+        ...this.query(),
+        navigation: { type: "around", key: row.key },
+      });
     }
     if (!this.current || this.working || this.state.error) return;
     clearTimeout(this.movement);
@@ -124,9 +139,10 @@ export class RangeController implements FeedController {
       filters,
       source: side === "bid" ? "bids" : "asks",
       sort,
-      position: this.requested ?? null,
+      navigation: this.requested
+        ? { type: this.navigation, key: this.requested }
+        : { type: "head" },
       limit: 150,
-      direction: "around",
       period: null,
     };
   }
@@ -134,10 +150,16 @@ export class RangeController implements FeedController {
     if (!this.current || this.working || this.closed) return;
     const anchor =
       this.anchor ??
-      this.current.data[0]?.position ??
-      this.current.range.end?.position ??
-      this.current.range.start?.position;
+      this.current.data[0]?.key ??
+      this.current.range.end ??
+      this.current.range.start;
     if (!anchor || anchor === this.requested) return;
+    this.navigation =
+      !this.current.data.length && !this.cache.rows.length
+        ? this.current.range.end
+          ? "after"
+          : "before"
+        : "around";
     this.requested = anchor;
     this.movingTo = this.visibleKey;
     this.working = true;
@@ -145,7 +167,7 @@ export class RangeController implements FeedController {
     this.emit({ loadingMore: true, error: "" });
     this.source.move(this.query());
   }
-  private accept(current: OrderData, sync: Sync) {
+  private accept(current: OrderData) {
     if (this.closed) return;
     if (
       this.working &&
@@ -163,15 +185,13 @@ export class RangeController implements FeedController {
     this.current = current;
     this.activeStart = Math.max(
       0,
-      this.cache.rows.findIndex(
-        (row) => row.position === current.data[0]?.position,
-      ),
+      this.cache.rows.findIndex((row) => row.key === current.data[0]?.key),
     );
     this.working = false;
     this.ready = true;
     this.anchor =
-      this.cache.rows.find((row) => orderKey(row) === this.visibleKey)
-        ?.position ?? current.data[0]?.position;
+      this.cache.rows.find((row) => orderKey(row) === this.visibleKey)?.key ??
+      current.data[0]?.key;
     if (this.requested && this.anchor) {
       this.requested = this.anchor;
       this.source.remember?.(this.query());
@@ -179,7 +199,7 @@ export class RangeController implements FeedController {
     const orders = this.cache.rows.map((entry) => {
       let order = this.projected.get(entry);
       if (!order) {
-        const { position: _, sort_key: __, ...data } = entry;
+        const { key: _, ...data } = entry;
         order = data;
         this.projected.set(entry, order);
       }
@@ -189,12 +209,15 @@ export class RangeController implements FeedController {
     this.emit({
       orders,
       ...this.activity.update(orders),
-      sync,
 
       hasMore: this.cache.hasAfter,
       loadingMore: false,
       error: "",
-      status: this.frozen ? "Paused" : sync.state === "live" ? "Live" : "Stale",
+      status: this.frozen
+        ? "Paused"
+        : this.state.sync.state === "live"
+          ? "Live"
+          : "Stale",
     });
     this.scheduleExpiry();
     if (

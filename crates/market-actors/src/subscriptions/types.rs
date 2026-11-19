@@ -9,10 +9,8 @@ pub enum DataUpdate {
     Connecting,
     Catalog(market_gifts::CatalogVersions),
     Orders {
-        result: Arc<market_gifts::OrderResult>,
-        epoch: String,
-        sync: market_gifts::SyncStatus,
-        revision: String,
+        result: Arc<crate::OrderResult>,
+        version: market_replica::ReadRevision,
     },
     Error(DataError),
 }
@@ -22,11 +20,16 @@ pub(super) struct SubscriberId(pub u64);
 pub(super) enum QueryKey {
     Catalog(Vec<market_gifts::CollectionId>),
     View(SubscriberId),
+    Range {
+        selection: Vec<u8>,
+        sort: i32,
+        range: Box<market_replica::KeyRange>,
+    },
 }
 pub(super) struct OrdersFeed {
-    pub range: Option<market_gifts::OrderRange>,
+    pub range: Option<market_replica::KeyRange>,
     pub request: market_hub_protocol::wire::ReadRequest,
-    pub window: market_replica::WindowRequest,
+    pub slice: market_replica::SliceRequest,
 }
 pub(super) enum FeedSpec {
     Catalog(Vec<market_gifts::CollectionId>),

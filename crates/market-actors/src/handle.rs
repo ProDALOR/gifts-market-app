@@ -15,60 +15,43 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub struct MarketDataHandle {
     pub(crate) orderbooks: OrderbooksHandle,
+    pub(crate) status_updates: watch::Receiver<SyncStatus>,
     pub(crate) catalog: CatalogHandle,
     pub(crate) subscriptions: Addr<MarketSubscriptionsActor>,
 }
 impl MarketDataHandle {
+    pub fn status_updates(&self) -> watch::Receiver<SyncStatus> {
+        self.status_updates.clone()
+    }
     pub async fn watch_orders(
         &self,
         query: OrderWatchQuery,
     ) -> error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
         self.orderbooks.budget.check()?;
-        let (request, window) = crate::query::selection(query.query, w::ReadMode::Live, None)?;
-        crate::query::range(query.range.as_ref())?;
+        let (request, slice) = crate::query::selection(query.query)?;
+        let range = crate::query::range(query.range.as_ref())?;
+        if request.mode != w::ReadMode::Live as i32 {
+            return Err(error::DataError::invalid("watches require latest reads"));
+        }
         self.subscriptions
             .send(crate::subscriptions::messages::WatchOrders {
                 request,
-                window,
-                range: query.range,
+                slice,
+                range,
             })
             .await
             .map_err(closed)?
             .map_err(Into::into)
     }
-    pub async fn read_orders(&self, query: OrderReadQuery) -> error::Result<OrderRead> {
-        let mode = match query.consistency {
-            ReadView::Latest => w::ReadMode::Live,
-            ReadView::Snapshot => w::ReadMode::Snapshot,
-        };
-        let (request, window) = crate::query::selection(query.query, mode, query.snapshot)?;
-        let result = self.orderbooks.window(request, window).await?;
-        let snapshot = result.snapshot.clone();
-        let revision = result.revision.token();
-        let (result, sync) = protocol::order_result(result, None)?;
-        Ok(OrderRead {
-            result,
-            snapshot,
-            sync,
-            revision,
-        })
+    pub async fn query_orders(&self, query: GiftOrderQuery) -> error::Result<crate::OrderRead> {
+        let (request, slice) = crate::query::selection(query)?;
+        Ok(self.orderbooks.slice(request, slice).await?.0)
     }
-    pub async fn release_read_snapshot(&self, snapshot: String) -> error::Result<()> {
-        Ok(self.orderbooks.release_snapshot(snapshot).await?)
-    }
-    pub async fn orders(&self, query: GiftOrdersQuery) -> error::Result<Page<GiftOrder>> {
-        let mode = match query.consistency {
-            ReadConsistency::Snapshot => w::ReadMode::Snapshot,
-            ReadConsistency::Live => w::ReadMode::Live,
-        };
-        protocol::orders(
-            self.orderbooks
-                .read(crate::query::orders(query, mode)?)
-                .await?,
-        )
-    }
-    pub async fn executions(&self, query: GiftHistoryQuery) -> error::Result<Page<GiftOrder>> {
-        protocol::orders(self.orderbooks.read(crate::query::history(query)?).await?)
+    pub async fn release_read_snapshot(&self, snapshot: ReadSnapshotId) -> error::Result<()> {
+        Ok(self
+            .orderbooks
+            .release_snapshot(snapshot.as_str().parse()?)
+            .await?)
     }
     pub async fn catalog_snapshot(&self) -> error::Result<crate::CatalogSnapshot<GiftCatalog>> {
         Ok(self.catalog.bootstrap().await?)

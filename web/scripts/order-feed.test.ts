@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, beforeEach, type TestContext } from "node:test";
 import { createOrderFeed, type FeedState } from "../src/order-feed.ts";
 import { liveSocket } from "../src/live-socket.ts";
-import type { Order, OrderPage, FeedQuery } from "../src/market.ts";
+import type { Order, OrderQueryResult, FeedQuery } from "../src/market.ts";
 const sync = { ready: true, state: "live" as const, updated_at: null };
+let statusCallback: (sync: any) => void = () => {};
+beforeEach((t) => {
+  t.mock.method(liveSocket, "watchStatus", (callback) => {
+    statusCallback = callback;
+    callback(sync);
+    return () => {};
+  });
+});
 const order = (id: string): Order => ({
   id,
   book: { venue_id: "v", collection_id: "gift", currency_id: "GRAM" },
@@ -16,11 +24,11 @@ const order = (id: string): Order => ({
     criteria: { models: [], backdrops: [], patterns: [], number: null },
   },
 });
-const page = (ids: string[], next = ""): OrderPage => ({
-  data: ids.map(order),
-  next_page_token: next,
-  cursor: "r",
-  sync,
+const page = (ids: string[], next = ""): OrderQueryResult => ({
+  data: ids.map((id) => ({ ...order(id), key: id })),
+  next: next || null,
+  range: { start: null, end: null },
+  snapshot: "lease",
 });
 const query: Extract<FeedQuery, { kind: "orders" }>["query"] = {
   filters: { collection_id: "gift", currency_id: "GRAM" },
@@ -30,15 +38,12 @@ const query: Extract<FeedQuery, { kind: "orders" }>["query"] = {
 const result = (ids: string[], before = false, after = true) => {
   const data = ids.map((id) => ({
     ...order(id),
-    position: `p.${id}`,
-    sort_key: `${String(/^\d+$/.test(id) ? Number(id) + 1 : id === "x" ? 0 : 1).padStart(16, "0")}:${id}`,
+    key: `${String(/^\d+$/.test(id) ? Number(id) + 1 : id === "x" ? 0 : 1).padStart(16, "0")}:${id}`,
   }));
-  const boundary = (row: (typeof data)[number]) => ({
-    position: row.position,
-    sort_key: row.sort_key,
-  });
+  const boundary = (row: (typeof data)[number]) => row.key;
   return {
     data,
+    next: null,
     range: {
       start: before && data.length ? boundary(data[0]) : null,
       end: after && data.length ? boundary(data.at(-1)!) : null,
@@ -96,7 +101,7 @@ function live(t: TestContext) {
         receive({
           type: "orders.snapshot",
           id: "offers",
-          result: next,
+          ...next,
           sequence,
           reset: false,
           sync,
@@ -126,7 +131,8 @@ function live(t: TestContext) {
         previous = undefined;
         sequence = -1;
       }
-      receive(frame);
+      if (frame.type === "sync") statusCallback(frame.sync);
+      else receive(frame);
     },
     status(value: string) {
       previous = undefined;
@@ -138,7 +144,7 @@ function live(t: TestContext) {
 test("live windows refresh their covered region while keeping previously loaded edges", (t) => {
   const f = live(t);
   assert.equal(f.commands[0].type, "orders.watch");
-  assert.equal(f.commands[0].params.query.position, null);
+  assert.deepEqual(f.commands[0].params.query.navigation, { type: "head" });
   f.deliver(["a", "b", "c"]);
   assert.deepEqual(
     f.state.orders.map((o) => o.id),
@@ -167,7 +173,10 @@ test("scrolling requests anchored windows in both directions and retains the old
   f.feed.setVisibleRange(110, 140, 120);
   t.mock.timers.tick(80);
   assert.equal(f.commands.length, 2);
-  assert.equal(f.commands[1].params.query.position, "p.120");
+  assert.deepEqual(f.commands[1].params.query.navigation, {
+    type: "around",
+    key: result(["120"]).data[0].key,
+  });
   assert.equal(f.state.loadingMore, true);
   assert.equal(f.state.orders[0].id, "0");
   f.deliver(
@@ -180,7 +189,10 @@ test("scrolling requests anchored windows in both directions and retains the old
   assert.equal(f.state.activity.size, 0);
   f.feed.setVisibleRange(5, 30, 10);
   t.mock.timers.tick(80);
-  assert.equal(f.commands[2].params.query.position, "p.10");
+  assert.deepEqual(f.commands[2].params.query.navigation, {
+    type: "around",
+    key: result(["10"]).data[0].key,
+  });
   f.deliver(
     Array.from({ length: 150 }, (_, i) => String(i)),
     false,
@@ -201,7 +213,10 @@ test("scroll intent is debounced, active requests are bounded and cancellation r
   t.mock.timers.tick(79);
   assert.equal(f.commands.length, 1);
   t.mock.timers.tick(1);
-  assert.equal(f.commands[1].params.query.position, "p.7");
+  assert.deepEqual(f.commands[1].params.query.navigation, {
+    type: "around",
+    key: result(["7"]).data[0].key,
+  });
   f.feed.setVisibleRange(130, 149, 140);
   t.mock.timers.tick(1000);
   assert.equal(f.commands.length, 2);
@@ -244,7 +259,10 @@ test("scrolling back during an in-flight move keeps the displayed window until t
   );
   assert.equal(f.state.orders[0].id, "0");
   assert.equal(f.state.loadingMore, true);
-  assert.equal(f.commands.at(-1).params.query.position, "p.10");
+  assert.deepEqual(f.commands.at(-1).params.query.navigation, {
+    type: "around",
+    key: result(["10"]).data[0].key,
+  });
   f.deliver(
     Array.from({ length: 150 }, (_, i) => String(i)),
     false,
@@ -269,11 +287,11 @@ test("pausing deep in a window freezes around its anchor and releases the snapsh
     const body = JSON.parse(init.body as string);
     calls.push({ method: init.method, body });
     if (init.method === "DELETE") return new Response(null, { status: 204 });
-    assert.equal(url, "/orders/read");
-    assert.equal(body.query.position, "p.2000");
-    assert.equal(body.consistency, "snapshot");
+    assert.equal(url, "/orders/query");
+    assert.equal(body.navigation?.key, result(["2000"]).data[0].key);
+    assert.equal(body.view.kind, "snapshot");
     return Response.json({
-      result: result(
+      ...result(
         Array.from({ length: 150 }, (_, i) => String(1950 + i)),
         true,
         true,
@@ -288,7 +306,7 @@ test("pausing deep in a window freezes around its anchor and releases the snapsh
     { kind: "orders", query },
     true,
     (next) => (state = next),
-    { kind: "range", anchor: "p.2000" },
+    { kind: "range", anchor: result(["2000"]).data[0].key },
   );
   feed.start();
   await new Promise(setImmediate);
@@ -297,7 +315,7 @@ test("pausing deep in a window freezes around its anchor and releases the snapsh
   feed.setVisibleRange(50, 80, 50);
   assert.equal(feed.bookmark.kind, "range");
   if (feed.bookmark.kind === "range") {
-    assert.equal(feed.bookmark.anchor, "p.2000");
+    assert.equal(feed.bookmark.anchor, result(["2000"]).data[0].key);
     assert.equal(feed.bookmark.cache?.rows.length, 150);
   }
   feed.close();
@@ -314,25 +332,25 @@ test("frozen navigation reuses its lease and expiration restarts around the curr
     if (init.method === "DELETE") return new Response(null, { status: 204 });
     const body = JSON.parse(init.body as string);
     bodies.push(body);
-    if (body.snapshot && fail) {
+    if (body.view.id && fail) {
       fail = false;
       return Response.json(
         { error: { code: "restart_read", message: "Expired" } },
         { status: 409 },
       );
     }
-    const pivot = body.query.position
-      ? Number(body.query.position.slice(2))
+    const pivot = body.navigation?.key
+      ? Number(body.navigation?.key.split(":")[1])
       : 0;
     return Response.json({
-      result: result(
+      ...result(
         Array.from({ length: 150 }, (_, i) =>
           String(Math.max(0, pivot - 50) + i),
         ),
         pivot > 50,
         true,
       ),
-      snapshot: body.snapshot ?? `lease.${bodies.length}`,
+      snapshot: body.view.id ?? `lease.${bodies.length}`,
       sync,
       revision: "r",
     });
@@ -348,15 +366,15 @@ test("frozen navigation reuses its lease and expiration restarts around the curr
   feed.setVisibleRange(110, 140, 120);
   feed.loadMore();
   await new Promise(setImmediate);
-  assert.equal(bodies[1].snapshot, "lease.1");
-  assert.equal(bodies[1].query.position, "p.120");
+  assert.equal(bodies[1].view.id, "lease.1");
+  assert.equal(bodies[1].navigation.key, result(["120"]).data[0].key);
   fail = true;
   feed.setVisibleRange(170, 210, 190);
   feed.loadMore();
   await new Promise(setImmediate);
   await new Promise(setImmediate);
-  assert.equal(bodies.at(-1).snapshot, null);
-  assert.equal(bodies.at(-1).query.position, "p.190");
+  assert.equal(bodies.at(-1).view.id, null);
+  assert.equal(bodies.at(-1).navigation.key, result(["190"]).data[0].key);
   assert.equal(state!.status, "Paused");
   feed.close();
 });
@@ -381,7 +399,7 @@ test("late frozen responses release their lease without updating a closed view",
   const closed = state;
   finish(
     Response.json({
-      result: result(["late"]),
+      ...result(["late"]),
       snapshot: "orphan",
       sync,
       revision: "r",
@@ -395,10 +413,11 @@ test("history alone uses forward snapshot pagination and restarts expired traver
   let expired = true;
   const tokens: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
-    assert.equal(url, "/history/query");
+    assert.equal(url, "/orders/query");
     const body = JSON.parse(init.body as string);
-    assert.equal(body.consistency, undefined);
-    const token = body.page_token;
+    if (init.method === "DELETE") return new Response(null, { status: 204 });
+    assert.equal(body.view.kind, "snapshot");
+    const token = body.navigation?.key ?? "";
     tokens.push(token);
     if (token && expired) {
       expired = false;
@@ -441,9 +460,9 @@ test("pausing and resuming keep every visited region while refreshing the visibl
   t.mock.method(globalThis, "fetch", async (_: string, init: RequestInit) => {
     if (init.method === "DELETE") return new Response(null, { status: 204 });
     const body = JSON.parse(init.body as string);
-    assert.equal(body.query.position, "p.150");
+    assert.equal(body.navigation?.key, result(["150"]).data[0].key);
     return Response.json({
-      result: result(
+      ...result(
         Array.from({ length: 150 }, (_, i) => String(i + 100)),
         true,
       ),
@@ -548,7 +567,10 @@ test("revisiting cached rows moves away from an active range that became empty",
   assert.equal(f.state.orders.length, 100);
   f.feed.setVisibleRange(0, 20, 10);
   t.mock.timers.tick(80);
-  assert.equal(f.commands.at(-1).params.query.position, "p.10");
+  assert.deepEqual(f.commands.at(-1).params.query.navigation, {
+    type: "around",
+    key: result(["10"]).data[0].key,
+  });
   assert.equal(f.state.loadingMore, true);
   f.deliver(Array.from({ length: 150 }, (_, i) => String(i)));
   assert.equal(f.state.loadingMore, false);
@@ -560,7 +582,10 @@ test("an emptied range queries beyond its boundary once instead of leaving the G
   f.deliver([]);
   assert.equal(f.state.orders.length, 0);
   t.mock.timers.tick(80);
-  assert.equal(f.commands.at(-1).params.query.position, "p.149");
+  assert.deepEqual(f.commands.at(-1).params.query.navigation, {
+    type: "after",
+    key: result(["149"]).data[0].key,
+  });
   const count = f.commands.length;
   f.deliver([], false, false);
   t.mock.timers.tick(1000);

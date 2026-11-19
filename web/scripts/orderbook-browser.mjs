@@ -76,13 +76,9 @@ const venues = ["Telegram", "Portals", "MRKT"].map((name) => ({
 }));
 let revision = 0;
 const sync = { ready: true, state: "live", updated_at: "2026-11-17T00:00:00Z" };
-function result(query, executed = false) {
+function result(query, executed = query.source === "history") {
   const filters = query.filters;
-  const mode = executed
-    ? "executed"
-    : query.source === "bids"
-      ? "bid"
-      : query.side || "ask";
+  const mode = executed ? "executed" : query.source === "bids" ? "bid" : "ask";
   let rows = Array.from(
     { length: executed ? 75 : mode === "bid" ? 4 : 125 },
     (_, index) => ({
@@ -176,14 +172,7 @@ function result(query, executed = false) {
           : Number(order.price);
     return (rank(a) - rank(b)) * (query.sort?.endsWith("_desc") ? -1 : 1);
   });
-  const start = Number(query.page_token || 0),
-    limit = query.limit || 50;
-  return {
-    data: rows.slice(start, start + limit),
-    next_page_token: start + limit < rows.length ? String(start + limit) : "",
-    cursor: "fixture",
-    sync,
-  };
+  return { data: rows.slice(0, query.limit || 50) };
 }
 try {
   await server.listen();
@@ -274,12 +263,6 @@ try {
       });
     },
   );
-  for (const path of ["orders", "history"])
-    await page.route(`**/${path}/query`, (route) =>
-      route.fulfill({
-        json: result(route.request().postDataJSON(), path === "history"),
-      }),
-    );
   const connections = new Set();
   const catalogPeers = new Set();
   const openSockets = new Set();
@@ -423,18 +406,18 @@ try {
   );
   const snapshots = new Map();
   let snapshotSequence = 0;
-  await page.route("**/orders/read", (route) => {
+  await page.route("**/orders/query", (route) => {
     const body = route.request().postDataJSON();
     if (route.request().method() === "DELETE") {
       snapshots.delete(body.snapshot);
       return route.fulfill({ status: 204 });
     }
-    const id = body.snapshot ?? `snapshot.${++snapshotSequence}`;
+    const id = body.view?.id ?? `snapshot.${++snapshotSequence}`;
     if (!snapshots.has(id))
-      snapshots.set(id, result({ ...body.query, limit: 10000 }).data);
+      snapshots.set(id, result({ ...body, limit: 10000 }).data);
     return route.fulfill({
       json: {
-        result: orderResult(body.query, snapshots.get(id)),
+        ...orderResult(body, snapshots.get(id)),
         snapshot: id,
         sync,
         revision: String(revision),
@@ -442,6 +425,7 @@ try {
     });
   });
   await page.routeWebSocket("**/ws", (socket) => {
+    socket.send(JSON.stringify({ type: "replica.status", sync }));
     socketCount++;
     openSockets.add(socket);
     let connection, catalogPeer;
@@ -476,9 +460,8 @@ try {
           JSON.stringify({
             type: "orders.snapshot",
             sequence: 0,
-            reset: false,
             id: frame.id,
-            result: orderResult(
+            ...orderResult(
               frame.params.query,
               result({ ...frame.params.query, limit: 10000 }).data,
             ),

@@ -74,43 +74,32 @@ fn sort(value: GiftSort) -> i32 {
         GiftSort::NumberDesc => w::ReadSort::NumberDesc,
     }) as i32
 }
-pub fn orders(query: GiftOrdersQuery, mode: w::ReadMode) -> Result<w::ReadRequest, InvalidValue> {
-    Ok(w::ReadRequest {
-        selection: Some(w::Selection {
-            source: Some(w::selection::Source::Scope(scope(
-                query.filters,
-                match query.side {
-                    GiftSide::Ask => w::OrderMode::Ask,
-                    GiftSide::Bid => w::OrderMode::Bid,
-                },
-            )?)),
-            ..Default::default()
-        }),
-        limit: query.limit,
-        page_token: query.page_token,
-        mode: mode as i32,
-        sort: sort(query.sort),
-    })
-}
-pub fn history(query: GiftHistoryQuery) -> Result<w::ReadRequest, InvalidValue> {
+pub fn compile(query: &GiftOrderQuery) -> Result<w::ReadRequest, InvalidValue> {
+    if query.source != OrderSource::History && query.period.is_some() {
+        return Err(InvalidValue("period is only valid for history"));
+    }
     if let Some(period) = &query.period {
         period.validate()?;
     }
     Ok(w::ReadRequest {
         selection: Some(w::Selection {
             source: Some(w::selection::Source::Scope(scope(
-                query.filters,
-                w::OrderMode::Executed,
+                query.filters.clone(),
+                match query.source {
+                    OrderSource::Asks => w::OrderMode::Ask,
+                    OrderSource::Bids => w::OrderMode::Bid,
+                    OrderSource::History => w::OrderMode::Executed,
+                },
             )?)),
-            executed_at: query.period.map(|p| w::Period {
+            executed_at: query.period.as_ref().map(|p| w::Period {
                 from_ms: p.from.map(|t| t.as_millisecond()),
                 until_ms: p.until.map(|t| t.as_millisecond()),
             }),
             ..Default::default()
         }),
         limit: query.limit,
-        page_token: query.page_token,
-        sort: sort(query.sort),
+        mode: w::ReadMode::Live as i32,
+        sort: sort(query.sort()),
         ..Default::default()
     })
 }
@@ -120,7 +109,7 @@ mod tests {
     use super::*;
     #[test]
     fn gift_queries_compile_canonical_traits_and_exact_prices_without_service_policy() {
-        let mut query = GiftOrdersQuery::new(GiftFilters::new("collection".into(), "GRAM".into()));
+        let mut query = GiftOrderQuery::new(GiftFilters::new("collection".into(), "GRAM".into()));
         query.filters.models = vec!["b".into(), "a".into(), "a".into()];
         query.filters.patterns = vec!["pattern".into()];
         query.filters.number = Some(GiftNumberRange {
@@ -131,15 +120,14 @@ mod tests {
             min: Some("1.000000001".into()),
             max: None,
         });
-        query.side = GiftSide::Bid;
-        query.sort = GiftSort::NumberDesc;
+        query.source = OrderSource::Bids;
+        query.sort = Some(GiftSort::NumberDesc);
         query.limit = 500;
-        query.page_token = "next".into();
-        let read = orders(query.clone(), w::ReadMode::Snapshot).unwrap();
-        assert_eq!(read.mode, w::ReadMode::Snapshot as i32);
+        let read = compile(&query).unwrap();
+        assert_eq!(read.mode, w::ReadMode::Live as i32);
         assert_eq!(read.sort, w::ReadSort::NumberDesc as i32);
         assert_eq!(read.limit, 500);
-        assert_eq!(read.page_token, "next");
+        assert!(read.page_token.is_empty());
         let Some(w::selection::Source::Scope(scope)) = read.selection.unwrap().source else {
             panic!("missing scope")
         };
@@ -165,18 +153,19 @@ mod tests {
             min: Some(GiftNumber::new(43).unwrap()),
             max: Some(GiftNumber::new(42).unwrap()),
         });
-        assert!(orders(query, w::ReadMode::Live).is_err());
+        assert!(compile(&query).is_err());
     }
     #[test]
     fn history_uses_shared_period_validation_and_preserves_execution_bounds() {
-        let mut query = GiftHistoryQuery::new(GiftFilters::new("collection".into(), "GRAM".into()));
+        let mut query = GiftOrderQuery::new(GiftFilters::new("collection".into(), "GRAM".into()));
+        query.source = OrderSource::History;
         let from: jiff::Timestamp = "2026-01-01T00:00:00Z".parse().unwrap();
         let until: jiff::Timestamp = "2026-01-02T00:00:00Z".parse().unwrap();
         query.period = Some(Period {
             from: Some(from),
             until: Some(until),
         });
-        let read = history(query.clone()).unwrap();
+        let read = compile(&query).unwrap();
         let selection = read.selection.unwrap();
         let period = selection.executed_at.unwrap();
         assert_eq!(period.from_ms, Some(from.as_millisecond()));
@@ -189,6 +178,6 @@ mod tests {
             from: Some(until),
             until: Some(from),
         });
-        assert!(history(query).is_err());
+        assert!(compile(&query).is_err());
     }
 }

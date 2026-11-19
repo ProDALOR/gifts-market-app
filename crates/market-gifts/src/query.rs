@@ -1,7 +1,7 @@
 //! Gift query contracts and reusable range and period invariants.
 use crate::{
-    Amount, BackdropId, CollectionId, CurrencyId, GiftNumber, GiftSide, InvalidValue, ModelId,
-    PatternId, ReadConsistency, VenueId,
+    Amount, BackdropId, CollectionId, CurrencyId, GiftNumber, InvalidValue, ModelId, PatternId,
+    VenueId,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -101,36 +101,6 @@ impl GiftFilters {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct GiftOrdersQuery {
-    pub filters: GiftFilters,
-    #[serde(default)]
-    pub side: GiftSide,
-    #[serde(default)]
-    pub sort: GiftSort,
-    #[serde(default)]
-    pub consistency: ReadConsistency,
-    #[serde(default = "default_limit")]
-    #[cfg_attr(feature = "schema", schema(minimum = 1))]
-    pub limit: u32,
-    #[serde(default)]
-    pub page_token: String,
-}
-impl GiftOrdersQuery {
-    pub fn new(filters: GiftFilters) -> Self {
-        Self {
-            filters,
-            side: Default::default(),
-            sort: Default::default(),
-            consistency: Default::default(),
-            limit: default_limit(),
-            page_token: String::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -153,36 +123,7 @@ impl Period {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct GiftHistoryQuery {
-    pub filters: GiftFilters,
-    #[serde(default = "history_sort")]
-    pub sort: GiftSort,
-    pub period: Option<Period>,
-    #[serde(default = "default_limit")]
-    #[cfg_attr(feature = "schema", schema(minimum = 1))]
-    pub limit: u32,
-    #[serde(default)]
-    pub page_token: String,
-}
-fn history_sort() -> GiftSort {
-    GiftSort::Identity
-}
-impl GiftHistoryQuery {
-    pub fn new(filters: GiftFilters) -> Self {
-        Self {
-            filters,
-            sort: GiftSort::Identity,
-            period: None,
-            limit: default_limit(),
-            page_token: String::new(),
-        }
-    }
-}
-
-/// A finite ordered slice. Positions belong to the filters, source and sort.
+/// One query for latest/frozen asks, bids and history. Keys are bound to its selection and ordering.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -191,14 +132,15 @@ pub struct GiftOrderQuery {
     #[serde(default)]
     pub source: OrderSource,
     #[serde(default)]
-    pub sort: GiftSort,
+    pub sort: Option<GiftSort>,
     pub period: Option<Period>,
-    pub position: Option<String>,
+    #[serde(default)]
+    pub navigation: Navigation,
     #[serde(default = "default_limit")]
     #[cfg_attr(feature = "schema", schema(minimum = 1))]
     pub limit: u32,
     #[serde(default)]
-    pub direction: ReadDirection,
+    pub view: ReadView,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -209,14 +151,34 @@ pub enum OrderSource {
     Bids,
     History,
 }
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub enum ReadDirection {
-    #[default]
-    Forward,
-    Backward,
-    Around,
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Navigation {
+    Head {},
+    After { key: crate::OrderKey },
+    Before { key: crate::OrderKey },
+    Around { key: crate::OrderKey },
+}
+impl GiftOrderQuery {
+    pub fn new(filters: GiftFilters) -> Self {
+        Self {
+            filters,
+            source: OrderSource::Asks,
+            sort: None,
+            period: None,
+            navigation: Navigation::Head {},
+            limit: default_limit(),
+            view: ReadView::Latest {},
+        }
+    }
+    pub fn sort(&self) -> GiftSort {
+        self.sort.unwrap_or(match self.source {
+            OrderSource::Asks => GiftSort::PriceAsc,
+            OrderSource::Bids => GiftSort::PriceDesc,
+            OrderSource::History => GiftSort::TimeDesc,
+        })
+    }
 }
 /// A watch seeds its coverage from the query, or reads an explicit query-bound range.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -226,27 +188,27 @@ pub struct OrderWatchQuery {
     pub query: GiftOrderQuery,
     pub range: Option<crate::OrderRange>,
 }
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ReadView {
-    #[default]
-    Latest,
-    Snapshot,
-}
-/// Read the latest order window, or navigate a retained snapshot.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct OrderReadQuery {
-    pub query: GiftOrderQuery,
-    #[serde(default)]
-    pub consistency: ReadView,
-    pub snapshot: Option<String>,
+    Latest {},
+    Snapshot { id: Option<crate::ReadSnapshotId> },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ReleaseReadSnapshot {
-    pub snapshot: String,
+    pub snapshot: crate::ReadSnapshotId,
+}
+
+impl Default for Navigation {
+    fn default() -> Self {
+        Self::Head {}
+    }
+}
+impl Default for ReadView {
+    fn default() -> Self {
+        Self::Latest {}
+    }
 }

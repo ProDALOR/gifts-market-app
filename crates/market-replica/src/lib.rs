@@ -5,10 +5,11 @@ mod query;
 mod ranking;
 mod reader;
 pub use limits::{READ_LIMITS, ReadLimits};
-mod window;
+mod read_key;
+mod slice;
 #[cfg(test)]
-mod window_tests;
-pub use window::{WindowEntity, WindowRange, WindowReadResult, WindowRequest, position_sort_key};
+mod slice_tests;
+pub use slice::{KeyRange, Navigation, ReadBatch, ReadEntry, SliceRequest};
 mod revisions;
 pub use revisions::{DirectoryRevision, MetadataDependencies, MetadataRevision, ReadRevision};
 mod replication;
@@ -321,3 +322,14 @@ mod benchmarks;
 mod execution;
 pub use execution::{ReadBudget, ReadExecutor, ReadPermit, ReadRuntime};
 pub mod catalog_read;
+
+#[cfg(test)]
+mod query_benchmark;
+
+pub use read_key::{ReadPosition, SnapshotId};
+
+impl ReplicaReader {
+    pub fn status_updates(&self) -> watch::Receiver<SyncStatus> {
+        self.0.status.subscribe()
+    }
+}

@@ -36,6 +36,19 @@ type Pending = {
 type Operation = Subscription | Pending;
 /** One bounded connection: persistent subscriptions reconnect; one-shot requests fail once. */
 export class LiveSocket {
+  private statusListeners = new Set<
+    (sync: components["schemas"]["SyncStatus"]) => void
+  >();
+  private lastStatus?: components["schemas"]["SyncStatus"];
+  watchStatus(callback: (sync: components["schemas"]["SyncStatus"]) => void) {
+    this.statusListeners.add(callback);
+    if (this.lastStatus) callback(this.lastStatus);
+    this.ensureConnected();
+    return () => {
+      this.statusListeners.delete(callback);
+      this.closeIdle();
+    };
+  }
   private listeners = new Map<string, Subscription>();
   private operations = new Map<string, Operation>();
   private pending = new Set<Pending>();
@@ -195,10 +208,12 @@ export class LiveSocket {
     if (!this.socket && !this.timer) this.connect();
   }
   private closeIdle() {
-    if (this.listeners.size || this.pending.size) return;
+    if (this.listeners.size || this.pending.size || this.statusListeners.size)
+      return;
     clearTimeout(this.timer);
     this.timer = undefined;
     this.failures = 0;
+    this.lastStatus = undefined;
     const socket = this.socket;
     this.socket = undefined;
     this.opened = false;
@@ -213,6 +228,10 @@ export class LiveSocket {
     this.opened = false;
     socket.onclose = null;
     socket.close();
+    if (this.lastStatus) {
+      this.lastStatus = { ...this.lastStatus, state: "stale" };
+      for (const callback of this.statusListeners) callback(this.lastStatus);
+    }
     this.operations.clear();
     for (const operation of [...this.pending])
       operation.finish(
@@ -227,14 +246,19 @@ export class LiveSocket {
       listener.wire = undefined;
       listener.status?.("Reconnecting");
     }
-    if (this.listeners.size)
+    if (this.listeners.size || this.statusListeners.size)
       this.timer = setTimeout(
         () => this.connect(),
         retryDelay(this.failures++, this.random),
       );
   }
   private connect() {
-    if (!this.listeners.size && !this.pending.size) return;
+    if (
+      !this.listeners.size &&
+      !this.pending.size &&
+      !this.statusListeners.size
+    )
+      return;
     this.timer = undefined;
     let socket: WebSocket;
     try {
@@ -246,7 +270,7 @@ export class LiveSocket {
         operation.finish(
           new ApiFailure("unavailable", "WebSocket is unavailable"),
         );
-      if (this.listeners.size)
+      if (this.listeners.size || this.statusListeners.size)
         this.timer = setTimeout(
           () => this.connect(),
           retryDelay(this.failures++, this.random),
@@ -276,6 +300,11 @@ export class LiveSocket {
         value = parseFrame(event.data);
       } catch {
         this.disconnected(socket);
+        return;
+      }
+      if (value.type === "replica.status") {
+        this.lastStatus = value.sync;
+        for (const callback of this.statusListeners) callback(value.sync);
         return;
       }
       if (value.type === "command_error") {
@@ -320,8 +349,7 @@ export class LiveSocket {
           operation.command.type !== "watch_catalog") ||
         ((value.type === "orders.snapshot" ||
           value.type === "orders.changed") &&
-          operation.command.type !== "orders.watch") ||
-        (value.type === "sync" && operation.command.type === "watch_catalog")
+          operation.command.type !== "orders.watch")
       ) {
         this.disconnected(socket);
         return;

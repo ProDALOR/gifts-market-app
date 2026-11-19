@@ -24,10 +24,15 @@ pub(super) fn request(scope: &BookScope) -> w::ReadRequest {
     }
 }
 impl ValuationSnapshot {
-    pub(super) fn gifts(&self, query: GiftOrdersQuery) -> Result<Page<CollectibleGift>> {
+    pub(super) fn gifts(
+        &self,
+        query: GiftOrderQuery,
+        continuation: String,
+    ) -> Result<Page<CollectibleGift>> {
         self.check_cancelled()?;
-        let request = market_gifts_hub::query::orders(query, w::ReadMode::Live)
+        let mut request = market_gifts_hub::query::compile(&query)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        request.page_token = continuation;
         let page = self
             .reader
             .read_checked(
@@ -47,8 +52,6 @@ impl ValuationSnapshot {
             )?
             .page;
         Ok(Page {
-            sync: self.sync()?,
-            cursor: page.cursor,
             next_page_token: page.next_page_token,
             data: page
                 .entities
@@ -85,8 +88,6 @@ impl ValuationSnapshot {
         Ok(Page {
             data,
             next_page_token: page.next_page_token,
-            cursor: page.cursor,
-            sync: self.sync()?,
         })
     }
 }

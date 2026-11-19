@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LoadedOrders } from "../src/feed/loaded-orders.ts";
 import type { components } from "../src/gen/api.ts";
-type Window = components["schemas"]["OrderResultResponse"];
+type Window = components["schemas"]["OrderReadResponse"];
 const row = (id: number, rank = id): Window["data"][number] => ({
   id: String(id),
-  position: `p.${id}`,
-  sort_key: `${String(rank * 1000).padStart(16, "0")}:${String(id).padStart(16, "0")}`,
+  key: `${String(rank * 1000).padStart(16, "0")}:${String(id).padStart(16, "0")}`,
   book: { venue_id: "v", collection_id: "gift", currency_id: "GRAM" },
   kind: "ask",
   quantity: 1,
@@ -19,15 +18,10 @@ const row = (id: number, rank = id): Window["data"][number] => ({
 });
 const view = (data: Window["data"], before = true, after = true): Window => ({
   data,
+  next: null,
   range: {
-    start:
-      before && data.length
-        ? { position: data[0].position, sort_key: data[0].sort_key }
-        : null,
-    end:
-      after && data.length
-        ? { position: data.at(-1)!.position, sort_key: data.at(-1)!.sort_key }
-        : null,
+    start: before && data.length ? data[0].key : null,
+    end: after && data.length ? data.at(-1)!.key : null,
   },
 });
 const range = (start: number, end: number) =>
@@ -82,7 +76,7 @@ test("identical listing IDs at different venues stay distinct", () => {
     b = {
       ...row(1),
       book: { ...row(1).book, venue_id: "w" },
-      sort_key: `${a.sort_key}w`,
+      key: `${a.key}w`,
     };
   cache.merge(view([a, b], false, false));
   cache.merge(view([{ ...a, price: "9" }, b], false, false));
@@ -95,9 +89,10 @@ test("an empty bounded result clears its full coverage while retaining visited n
   cache.merge(view(rows, false, false));
   cache.merge({
     data: [],
+    next: null,
     range: {
-      start: { position: rows[3].position, sort_key: rows[3].sort_key },
-      end: { position: rows[6].position, sort_key: rows[6].sort_key },
+      start: rows[3].key,
+      end: rows[6].key,
     },
   });
   assert.deepEqual(

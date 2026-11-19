@@ -1,7 +1,7 @@
 //! Shared budgets for bounded replica reads and retained views.
 #[derive(Debug, Clone, Copy)]
 pub struct ReadLimits {
-    /// Maximum window size and default generic page size; public actors cap pages here too.
+    /// Maximum slice size; public actors apply this bound before read admission.
     pub max_rows: u32,
     /// Larger pages remain available to internal bounded batch readers.
     pub max_batch_rows: u32,

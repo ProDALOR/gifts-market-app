@@ -6,7 +6,6 @@ export type FeedState = {
   displayOrders: Order[];
   activity: ReadonlyMap<string, OrderActivity>;
   sync: SyncStatus;
-  cursor: string;
   status: string;
   error: string;
   loadingMore: boolean;
@@ -28,7 +27,6 @@ export const emptyFeed = (): FeedState => ({
   displayOrders: [],
   activity: new Map(),
   sync: { ready: false, state: "starting", updated_at: null },
-  cursor: "",
   status: "Connecting",
   error: "",
   loadingMore: false,

@@ -1,11 +1,8 @@
-use super::{
-    OrderbooksActor,
-    messages::{GetStatus, ReadOrders},
-};
+use super::{OrderbooksActor, messages::GetStatus};
 use crate::runtime::{QueryBudget, closed};
 use actix::Addr;
 use market_hub_protocol::wire as w;
-use market_replica::{ReadResult, SyncStatus};
+use market_replica::SyncStatus;
 use tonic::Status;
 #[derive(Clone)]
 pub(crate) struct OrderbooksHandle {
@@ -14,33 +11,33 @@ pub(crate) struct OrderbooksHandle {
 }
 impl OrderbooksHandle {
     /// Foreground reads reject overload; persistent producers have bounded waiting admission.
-    pub async fn window(
+    pub async fn slice(
         &self,
         request: w::ReadRequest,
-        window: market_replica::WindowRequest,
-    ) -> Result<market_replica::WindowReadResult, Status> {
-        self.read_window(request, window, self.budget.try_query()?)
+        slice: market_replica::SliceRequest,
+    ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
+        self.read_slice(request, slice, self.budget.try_query()?)
             .await
     }
-    pub async fn window_wait(
+    pub async fn slice_wait(
         &self,
         request: w::ReadRequest,
-        window: market_replica::WindowRequest,
-    ) -> Result<market_replica::WindowReadResult, Status> {
-        self.read_window(request, window, self.budget.wait().await?)
+        slice: market_replica::SliceRequest,
+    ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
+        self.read_slice(request, slice, self.budget.wait().await?)
             .await
     }
-    async fn read_window(
+    async fn read_slice(
         &self,
         request: w::ReadRequest,
-        window: market_replica::WindowRequest,
+        slice: market_replica::SliceRequest,
         permit: market_replica::ReadPermit,
-    ) -> Result<market_replica::WindowReadResult, Status> {
+    ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
         let _cancel = permit.cancel_on_drop();
         self.address
-            .send(super::messages::ReadWindow {
+            .send(super::messages::ReadSlice {
                 request,
-                window,
+                slice,
                 permit,
             })
             .await
@@ -50,8 +47,8 @@ impl OrderbooksHandle {
     pub async fn range_wait(
         &self,
         request: w::ReadRequest,
-        range: market_replica::WindowRange,
-    ) -> Result<market_replica::WindowReadResult, Status> {
+        range: market_replica::KeyRange,
+    ) -> Result<(crate::OrderRead, market_replica::ReadRevision), Status> {
         let permit = self.budget.wait().await?;
         let _cancel = permit.cancel_on_drop();
         self.address
@@ -63,15 +60,10 @@ impl OrderbooksHandle {
             .await
             .map_err(closed)?
     }
-    pub async fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
-        let permit = self.budget.try_query()?;
-        let _cancel = permit.cancel_on_drop();
-        self.address
-            .send(ReadOrders { request, permit })
-            .await
-            .map_err(closed)?
-    }
-    pub async fn release_snapshot(&self, snapshot: String) -> Result<(), Status> {
+    pub async fn release_snapshot(
+        &self,
+        snapshot: market_replica::SnapshotId,
+    ) -> Result<(), Status> {
         self.budget.check()?;
         self.address
             .send(super::messages::ReleaseSnapshot { snapshot })

@@ -206,17 +206,25 @@ pub fn is_exhausted(value: &w::Order) -> Result<bool> {
     ) && quantity == rust_decimal::Decimal::ZERO)
 }
 pub fn order(value: w::Order) -> Result<GiftOrder> {
+    order_ref(&value)
+}
+/// Borrow raw replica data and copy only gift fields retained by the projection.
+pub fn order_ref(value: &w::Order) -> Result<GiftOrder> {
     if value.mode != w::OrderMode::Executed as i32 && value.parent_order_id.is_some() {
         return Err(invalid("active gift orders cannot have execution lineage"));
     }
-    let book = book(required(value.book)?)?;
+    let book = book(required(value.book.clone())?)?;
     let quantity = gift_quantity(&value.quantity)?;
     let market_url = ["url", "listing_url", "market_url", "link"]
         .into_iter()
         .find_map(|key| value.meta.get(key).cloned());
     let order = GiftOrderData {
-        id: value.id.try_into().map_err(invalid)?,
-        target: target(value.item_id, book.collection_id.clone(), value.attributes),
+        id: value.id.clone().try_into().map_err(invalid)?,
+        target: target(
+            value.item_id.clone(),
+            book.collection_id.clone(),
+            value.attributes.clone(),
+        ),
         book,
         kind: match w::OrderMode::try_from(value.mode) {
             Ok(w::OrderMode::Ask) => GiftOrderKind::Ask,
@@ -224,7 +232,7 @@ pub fn order(value: w::Order) -> Result<GiftOrder> {
             Ok(w::OrderMode::Executed) => GiftOrderKind::Executed,
             _ => return Err(invalid("unknown gift order kind")),
         },
-        price: value.price.try_into().map_err(invalid)?,
+        price: value.price.clone().try_into().map_err(invalid)?,
         quantity,
         observed_at: time(value.observed_at_ms)?,
         expires_at: value.expires_at_ms.map(time).transpose()?,
