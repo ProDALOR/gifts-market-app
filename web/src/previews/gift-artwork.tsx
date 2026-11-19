@@ -103,7 +103,6 @@ function Artwork({
       (settled && playback !== "interaction"));
   useEffect(() => () => clearTimeout(hoverTimer.current), [canInteract]);
   const [attempt, setAttempt] = useState(0);
-  const [recovered, setRecovered] = useState<string[]>([]);
   const [failed, setFailed] = useState(false);
   // One owner for poster, animation and loading UI; either ready source stops outlines.
   const [ready, setReady] = useState({ still: false, animation: false });
@@ -122,28 +121,21 @@ function Artwork({
   useEffect(() => {
     if (shouldAnimate) setRequested(true);
   }, [shouldAnimate]);
-  const recoveryUrl =
-    previewFailed && preferred && !recovered.includes(preferred)
-      ? preferred
-      : failed && url && !recovered.includes(url)
-        ? url
-        : undefined;
+  const recoveryUrl = previewFailed ? preferred : failed ? url : undefined;
   useEffect(() => {
     if (!recoveryUrl || !visible || !pageVisible) return;
     const stop = new AbortController();
-    const settled = (success: boolean) => {
-      if (stop.signal.aborted) return;
-      setRecovered((urls) => [...urls, recoveryUrl]);
-      if (success) {
+    void recoverImage(recoveryUrl, stop.signal).then(
+      () => {
+        if (stop.signal.aborted) return;
         if (recoveryUrl === preferred) setPreviewFailed(false);
         setFailed(false);
         setStillReady(false);
         setAttempt((value) => value + 1);
-      }
-    };
-    void recoverImage(recoveryUrl, stop.signal).then(
-      () => settled(true),
-      () => settled(false),
+      },
+      () => {
+        /* A known missing/invalid asset retries on the next visible use after its deadline. */
+      },
     );
     return () => stop.abort();
   }, [recoveryUrl, preferred, visible, pageVisible, setStillReady]);
@@ -184,14 +176,17 @@ function Artwork({
           visible={visible && pageVisible}
         />
       )}
-      {!artworkReady && (
-        <GiftPlaceholder
-          key={media?.placeholder_url}
-          url={media?.placeholder_url}
-          active={!!url && !failed && visible && pageVisible}
-          fallback={fallback}
-        />
-      )}
+      {!artworkReady &&
+        (media ? (
+          <GiftPlaceholder
+            key={media?.placeholder_url}
+            url={media?.placeholder_url}
+            active={visible && pageVisible}
+            loading={!failed}
+          />
+        ) : (
+          <span className="gift-preview-fallback">{fallback}</span>
+        ))}
       {url && !failed && (
         <img
           key={attempt}

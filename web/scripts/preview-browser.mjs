@@ -913,13 +913,13 @@ try {
   );
   await page.evaluate(() => window.mountLoading("missing"));
   await page.waitForFunction(() =>
-    document.querySelector(".loading-test .gift-preview-fallback"),
+    document.querySelector(".loading-test .gift-loading-placeholder"),
   );
   await page.waitForTimeout(250);
   assert.equal(
     await page.locator(".gift-model-placeholder").count(),
     0,
-    "Absent outlines keep the ordinary fallback",
+    "Absent outlines keep the local silhouette",
   );
   assert.equal(
     mediaRequests.filter((url) => url.includes("/loading-missing/placeholder"))

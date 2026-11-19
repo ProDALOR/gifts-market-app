@@ -123,7 +123,7 @@ impl MediaAsset {
         Ok(Self::new(MediaKind::Thumbnail, bytes, content_type))
     }
     pub fn animation(bytes: Vec<u8>) -> Result<Self, MediaError> {
-        crate::tgs::validate(&bytes)?;
+        let bytes = crate::tgs::normalize(bytes)?;
         Ok(Self::new(
             MediaKind::Animation,
             bytes,

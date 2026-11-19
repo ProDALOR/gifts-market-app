@@ -11,6 +11,7 @@ use grammers_client::{
 use market_invocations::{Priority, Replay};
 use market_media::{MAX_THUMBNAIL_BYTES, MediaAsset, MediaError, MediaKey, MediaKind};
 
+#[tracing::instrument(skip_all, fields(document_id = key.document().get(), variant = ?key.kind()))]
 pub(super) async fn get(
     client: &Client,
     invocations: &Executor,
@@ -34,10 +35,23 @@ pub(super) async fn get(
                         Replay::Safe,
                     )
                     .await
-                    .map_err(failure)?
+                    .map_err(|error| {
+                        tracing::warn!(
+                            stage = "document_lookup",
+                            ?error,
+                            "Telegram media lookup failed"
+                        );
+                        failure(error)
+                    })?
                     .into_iter()
                     .find(|document| document.id() == id)
-                    .ok_or(MediaError::NotFound)
+                    .ok_or_else(|| {
+                        tracing::warn!(
+                            stage = "document_lookup",
+                            "Telegram returned no matching media document"
+                        );
+                        MediaError::NotFound
+                    })
             })
             .await
             .clone();
@@ -85,7 +99,15 @@ pub(super) async fn get(
                     return Err(MediaError::Unavailable);
                 }
             }
-            Err(error) => return Err(failure(error.bot())),
+            Err(error) => {
+                match &error {
+                    CallError::Remote(InvocationError::Rpc(error)) => {
+                        tracing::warn!(stage = "download", rpc_code = error.code, rpc_name = %error.name, "Telegram media download failed")
+                    }
+                    _ => tracing::warn!(stage = "download", "Telegram media download interrupted"),
+                }
+                return Err(failure(error.bot()));
+            }
         }
     }
     Err(MediaError::Unavailable)
@@ -100,6 +122,7 @@ impl From<MediaError> for DownloadError {
         Self::Media(error)
     }
 }
+#[tracing::instrument(skip_all, fields(document_id = key.document().get(), variant = ?key.kind()))]
 async fn download_bytes(
     client: &Client,
     key: MediaKey,
@@ -136,12 +159,25 @@ async fn download_bytes(
         }
         MediaKind::Animation => {
             if media.mime_type() != Some("application/x-tgsticker") {
+                tracing::warn!(
+                    stage = "download",
+                    reason = "mime_type",
+                    mime_type = media.mime_type(),
+                    "Telegram animation is not TGS"
+                );
                 return Err(MediaError::NotFound.into());
             }
             if media
                 .size()
                 .is_none_or(|size| size == 0 || size > key.max_bytes())
             {
+                tracing::warn!(
+                    stage = "download",
+                    reason = "declared_size",
+                    bytes = media.size(),
+                    limit = key.max_bytes(),
+                    "Telegram animation rejected"
+                );
                 return Err(MediaError::InvalidMedia.into());
             }
             client.iter_download(&media)
@@ -150,6 +186,12 @@ async fn download_bytes(
     let mut bytes = Vec::new();
     while let Some(chunk) = download.next().await.map_err(DownloadError::Remote)? {
         if bytes.len().saturating_add(chunk.len()) > key.max_bytes() {
+            tracing::warn!(
+                stage = "download",
+                reason = "stream_size",
+                limit = key.max_bytes(),
+                "Telegram media exceeds size limit"
+            );
             return Err(MediaError::InvalidMedia.into());
         }
         bytes.extend_from_slice(&chunk);
@@ -160,9 +202,12 @@ async fn asset(key: MediaKey, bytes: Vec<u8>) -> Result<MediaAsset, MediaError> 
     match key.kind() {
         MediaKind::Preview | MediaKind::Placeholder => Err(MediaError::InvalidMedia),
         MediaKind::Thumbnail => MediaAsset::thumbnail(bytes),
-        MediaKind::Animation => tokio::task::spawn_blocking(move || MediaAsset::animation(bytes))
-            .await
-            .map_err(|_| MediaError::Unavailable)?,
+        MediaKind::Animation => {
+            let span = tracing::Span::current();
+            tokio::task::spawn_blocking(move || span.in_scope(|| MediaAsset::animation(bytes)))
+                .await
+                .map_err(|_| MediaError::Unavailable)?
+        }
     }
 }
 fn failure(error: BotError) -> MediaError {

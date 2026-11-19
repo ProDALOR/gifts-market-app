@@ -26,7 +26,7 @@ test("missing outlines are shared across consumers and remounts, then expire", a
   assert.equal(calls, 2);
 });
 
-test("transient misses respect Retry-After and bound negative cache lifetime", async (t) => {
+test("transient misses respect the full Retry-After, including long cooldowns", async (t) => {
   let now = 0,
     calls = 0;
   t.mock.method(Date, "now", () => now);
@@ -54,6 +54,9 @@ test("transient misses respect Retry-After and bound negative cache lifetime", a
   });
   await loadOutline("/outlines/long-retry", signal());
   now += 300_000;
+  await loadOutline("/outlines/long-retry", signal());
+  assert.equal(calls, 3);
+  now = 20_000 + 999999_000;
   await loadOutline("/outlines/long-retry", signal());
   assert.equal(calls, 4);
 });

@@ -38,7 +38,7 @@ Two conversions run concurrently, each with a ten-second child timeout. Generate
 
 Rendering also has limits before and during conversion: source nodes/numeric expansion, parent and precomposition depth, star/repeater expansion, aggregate geometry/draw work, and buffered SVG size. This prevents small inputs from expanding into unrestricted render batches. The helper exits with code 2 for unsupported, invalid or over-budget media and code 1 for IO failures. Permanent failures receive the longer negative-cache TTL; transient failures remain retryable. Stderr is drained concurrently while retaining at most 4 KiB for debug diagnostics.
 
-The helper accepts compressed TGS or validated JSON, rejects external assets/expressions and has no Telegram access. TGS originals and WebP thumbnails remain unchanged. GUI stills load SVG images with immediate thumbnail fallback and one bounded, visibility-aware recovery per failed URL. Recovery accepts the SVG byte budget and honors retryable HTTP statuses. Lottie is instantiated only for playback.
+The helper accepts compressed TGS or validated JSON, rejects external assets and expression-only properties, and has no Telegram access. Expression metadata beside baked values/keyframes is removed without execution. WebP thumbnails and ordinary TGS originals remain unchanged; expression-bearing TGS is normalized before caching or delivery. GUI stills load SVG images with immediate thumbnail fallback and visibility-aware recovery governed by shared retry deadlines. Recovery checks native decoding before remounting, so malformed successful responses cannot cause loops. Recovery accepts the SVG byte budget and honors retryable HTTP statuses. Lottie is instantiated only for playback.
 
 ## Transparent loading outlines
 
@@ -46,6 +46,23 @@ The helper accepts compressed TGS or validated JSON, rejects external assets/exp
 
 Placeholder requests share document resolution with thumbnail/TGS requests, then extract the embedded bytes without another file-transfer invocation. `<document-id>.placeholder.svg` uses the existing disk quota, coalescing, negative caching and offline reads. Missing outlines are optional and return 404. Their ETags are weak because HTTP can compress SVG representations. No preview-render slot is consumed.
 
-The GUI loads silhouettes only after visible artwork remains pending for 150 ms. One shared resource caches validated path data for five minutes (up to 64 entries and 256 KiB). React renders the path with a local SVG clip and a CSS-transform shimmer, avoiding a second CSS-image request. Source SVG markup is never injected; no object URLs or CSP changes are needed. Missing outlines are cached for 60 seconds; transient failures for two seconds or the server's Retry-After, capped at five minutes. Cancellation is never cached as a miss. Expired entries retry on the next visible use.
+The GUI shows a local gift silhouette immediately instead of an initial letter. Cached outlines skip the delay; it requests an uncached model-specific outline after visible artwork remains pending for 150 ms; absent outlines retain the local shape. Outline requests remain independent of thumbnail availability, and terminal still failures stop shimmer. One shared resource caches validated path data for five minutes (up to 64 entries and 256 KiB). React renders the path with a local SVG clip and a CSS-transform shimmer, avoiding a second CSS-image request. Source SVG markup is never injected; no object URLs or CSP changes are needed. Outlines, animations, patterns and image recovery share one failure policy: missing/invalid assets are cached for 60 seconds, and transient failures for two seconds or the full server Retry-After. Long hints are not shortened; visible image recovery schedules cancellable waits until the deadline. Cancellation is never cached as a miss. Expired entries retry on the next visible use.
 
 Stills and animations report to one artwork-readiness state. Either becoming ready cancels pending outline work and removes the shimmer. Fast artwork skips outlines entirely. Scrolling offscreen, hiding the page or unmounting stops shimmer and releases its request consumer; other visible copies can finish the shared fetch. Reduced motion keeps a static silhouette. Each retry reenters the priority queue after its delay, so waiting outlines do not occupy the four active HTTP-transfer slots or block interactive animation downloads.
+
+
+## Wise Owl expression compatibility
+
+Wise Owl (`5413686816387672057`, Myth Mask) exposed a rejection before rendering: its 18,894-byte TGS includes a path expression at `layers[41].shapes[0].it[0].ks.x`, alongside baked shape keyframes. Rejecting every string `x` made the animation return 404; SVG generation depends on that animation and also returned 404.
+
+`market-media` now removes expression metadata from properties with a baked value or keyframes. Neither Rust nor browser players execute it. Ordinary TGS bytes stay identical; changed TGS is compressed once, validated and content-hashed before persistence or HTTP delivery. The renderer uses the same normalization rules for direct JSON/TGS input. External assets, fonts, expression-only properties, decompression and rendering limits remain enforced.
+
+The real source SHA-256 was `4e6fabf6327f5eedcc02ef3b33e1a0df3936238b46bd3d8fa050826fdc8c44df`. At 512px, the native SVG matched Lottie light with PSNR 38.73 dB and 0.54% changed pixels; all four sampled animation frames differed. The source and generated artwork stay outside the repository. Small synthetic tests reproduce the expression/path structure, verify unchanged keyframes, expression-free output, idempotent normalization, original-byte preservation and useful validation logs.
+
+To repeat the real-file download/cache/renderer/offline-restart regression after building `market-media-render`:
+
+```sh
+MARKET_TEST_TGS=/path/to/wise-owl.tgs cargo test -p market-media wise_owl_download_preview_and_offline_restart -- --ignored
+```
+
+Media failure logs include document ID, variant and stage. Telegram lookup/download failures report RPC code/name or MIME/size rejection; TGS validation reports a stable reason such as `expression_without_keyframes`, `external_asset` or `expanded_size`. Renderer spawn, timeout and exit failures are visible at warning level. Payloads, expressions and Telegram file credentials are not logged. Failed jobs are negatively cached, so repeated HTTP requests do not repeat the source failure log. To trace rare successes/normalizations as well, use `RUST_LOG=info,market_media=debug,market_telegram_client=debug`.

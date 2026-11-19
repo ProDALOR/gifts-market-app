@@ -242,6 +242,67 @@ async fn real_corpus_generates_valid_cached_previews() {
     cache.shutdown().await;
 }
 
+#[tokio::test]
+#[ignore = "requires MARKET_TEST_TGS pointing to Wise Owl's real TGS and the built Rust renderer"]
+async fn wise_owl_download_preview_and_offline_restart() {
+    let input =
+        std::env::var_os("MARKET_TEST_TGS").expect("Set MARKET_TEST_TGS to the real TGS path");
+    let raw = std::fs::read(input).unwrap();
+    let source = MediaAsset::animation(raw.clone()).unwrap();
+    assert_ne!(
+        source.bytes(),
+        raw,
+        "The real expression-bearing source must be normalized"
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = tempfile::tempdir().unwrap();
+    let (cache, mut downloads) = MediaCache::with_renderer(
+        directory.path(),
+        Default::default(),
+        root.join("target/debug/market-media-render"),
+    )
+    .await
+    .unwrap();
+    let worker = tokio::spawn(async move {
+        downloads
+            .run(|_| async { MediaAsset::animation(raw.clone()) })
+            .await;
+    });
+    let document = DocumentId::new(5413686816387672057).unwrap();
+    let key = MediaKey::animation(document);
+    let (animation, svg) = tokio::join!(cache.get(key), cache.preview(document));
+    assert_eq!(animation.unwrap().bytes(), source.bytes());
+    let svg = svg.unwrap();
+    assert_eq!(svg.content_type(), "image/svg+xml");
+    assert_eq!(cache.stats().downloads, 1);
+    assert_eq!(cache.stats().preview_generations, 1);
+    let persisted = std::fs::read(directory.path().join("5413686816387672057.tgs")).unwrap();
+    assert_eq!(
+        persisted,
+        source.bytes(),
+        "Only expression-free TGS reaches disk"
+    );
+    assert_eq!(
+        MediaAsset::animation(persisted).unwrap().etag(),
+        source.etag()
+    );
+    cache.shutdown().await;
+    worker.await.unwrap();
+    let (cache, downloads) = MediaCache::with_renderer(
+        directory.path(),
+        Default::default(),
+        directory.path().join("not-installed"),
+    )
+    .await
+    .unwrap();
+    drop(downloads);
+    assert_eq!(cache.get(key).await.unwrap().bytes(), source.bytes());
+    assert_eq!(cache.preview(document).await.unwrap().bytes(), svg.bytes());
+    assert_eq!(cache.stats().downloads, 0);
+    assert_eq!(cache.stats().preview_generations, 0);
+    cache.shutdown().await;
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn preview_survives_source_eviction_and_restart_without_a_provider() {

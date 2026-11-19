@@ -1,5 +1,5 @@
-import { ResourceCache } from "../resources/cache.ts";
-import { fetchMedia, MediaHttpError } from "./media-client.ts";
+import { MediaResource, MediaFailure } from "./media-resource.ts";
+import { fetchMedia } from "./media-client.ts";
 
 const namespace = "http://www.w3.org/2000/svg";
 /** Extract data only. Source SVG markup is never inserted into the document. */
@@ -39,33 +39,26 @@ export function decodeOutline(bytes: Uint8Array): string {
   return data;
 }
 
-// Paths are shared by all visible copies. Cache optional misses, too, so collection
-// switches don't repeat known 404s. Cancellation is never recorded as a miss.
-const outlines = new ResourceCache<string | null>(
+// Paths and optional failures use the same retention/retry policy as other media.
+const outlines = new MediaResource<string>(
   async (url, signal) => {
-    try {
-      const path = decodeOutline(
-        await fetchMedia(url, signal, "placeholder", -10),
-      );
-      return { value: path, bytes: path.length * 2 };
-    } catch (error) {
-      signal.throwIfAborted();
-      const maxAge =
-        error instanceof MediaHttpError && error.status === 404
-          ? 60_000
-          : Math.min(
-              error instanceof MediaHttpError
-                ? (error.retryAfterMs ?? 2000)
-                : 2000,
-              300_000,
-            );
-      return { value: null, bytes: 1, maxAge };
-    }
+    const path = decodeOutline(
+      await fetchMedia(url, signal, "placeholder", -10),
+    );
+    return { value: path, bytes: path.length * 2 };
   },
   256 * 1024,
   4,
   300_000,
 );
 
-export const loadOutline = (url: string, signal: AbortSignal) =>
-  outlines.get(url, signal, -10);
+export const outlineCached = (url: string) => outlines.hasFresh(url);
+export async function loadOutline(url: string, signal: AbortSignal) {
+  try {
+    return await outlines.get(url, signal, -10);
+  } catch (error) {
+    signal.throwIfAborted();
+    if (error instanceof MediaFailure) return null;
+    throw error;
+  }
+}

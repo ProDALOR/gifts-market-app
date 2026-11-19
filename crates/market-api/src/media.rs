@@ -69,7 +69,7 @@ impl MediaPath {
     params(("kind"=MediaCategory,Path,description="Catalog media category"),
            ("id"=String,Path,description="Catalog model or pattern ID; never an arbitrary Telegram file ID"),
            ("variant"=MediaVariant,Path,description="Models support all variants; patterns support thumbnail only. Missing outlines return 404.")),
-    responses((status=200,description="Thumbnail (PNG/JPEG/WebP), preview/placeholder (passive SVG), or animation (original gzip-compressed TGS)",
+    responses((status=200,description="Thumbnail (PNG/JPEG/WebP), preview/placeholder (passive SVG), or animation (validated, expression-free gzip-compressed TGS)",
                content(("image/png"),("image/jpeg"),("image/webp"),("image/svg+xml"),("application/x-tgsticker"))),
               (status=304,description="Cached media unchanged"),(status=400,body=crate::error::ErrorResponse),
               (status=404,body=crate::error::ErrorResponse),(status=429,description="Media capacity exceeded; Retry-After is included",body=crate::error::ErrorResponse),

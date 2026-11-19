@@ -221,10 +221,11 @@ impl Running {
             && !self.cache.0.stop.is_cancelled()
         {
             self.cache.failed(self.job.key, error);
-            tracing::debug!(
+            tracing::warn!(
                 document_id = self.job.key.document().get(),
+                variant = ?self.job.key.kind(),
                 ?error,
-                "media job failed"
+                "media job failed; caching failure"
             );
         }
         self.job.result.send_replace(Some(result));

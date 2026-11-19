@@ -1,8 +1,8 @@
-import { ResourceCache } from "../resources/cache.ts";
+import { MediaResource } from "./media-resource.ts";
 import { fetchMedia } from "./media-client.ts";
 // Decode once per pattern URL, then tint once per color. Both caches account for
 // decoded RGBA bytes rather than compressed image sizes or an arbitrary count.
-const symbols = new ResourceCache<HTMLCanvasElement>(
+const symbols = new MediaResource<HTMLCanvasElement>(
   async (url, signal) => {
     const bytes = await fetchMedia(url, signal, "image");
     const bitmap = await createImageBitmap(new Blob([bytes]), {
@@ -23,7 +23,7 @@ const symbols = new ResourceCache<HTMLCanvasElement>(
   },
   2 * 1024 * 1024,
 );
-const frames = new ResourceCache<HTMLCanvasElement>(
+const frames = new MediaResource<HTMLCanvasElement>(
   async (key, signal) => {
     const [url, color] = JSON.parse(key) as [string, string];
     const symbol = await symbols.get(url, signal);

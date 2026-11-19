@@ -55,7 +55,7 @@
 .gift-preview .gift-model-image.loaded {
   opacity: 1;
 }
-.gift-model-placeholder {
+.gift-loading-placeholder {
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -125,7 +125,7 @@
 .gift-preview .model-animation {
   z-index: 2;
 }
-.gift-preview-decorated .gift-model-placeholder,
+.gift-preview-decorated .gift-loading-placeholder,
 .gift-preview-decorated .gift-model-image,
 .gift-preview-decorated .model-animation {
   inset: 12%;

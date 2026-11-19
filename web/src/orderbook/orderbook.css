@@ -253,6 +253,7 @@
     rgba(19, 12, 27, 0.56)
   );
 }
+.card-preview .gift-loading-placeholder,
 .card-preview .gift-model-image,
 .card-preview .model-animation {
   inset: 8px auto auto calc(50% - 22px);
@@ -276,6 +277,7 @@
   border-radius: 0;
   margin: 0;
 }
+.detail-art .gift-preview .gift-loading-placeholder,
 .detail-art .gift-preview .gift-model-image,
 .detail-art .gift-preview .model-animation {
   inset: 14%;

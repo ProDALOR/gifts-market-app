@@ -248,7 +248,12 @@ impl MediaCache {
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| {
-                tracing::debug!(?error, "preview renderer could not start");
+                tracing::warn!(
+                    document_id = job.key.document().get(),
+                    stage = "preview_spawn",
+                    ?error,
+                    "preview renderer could not start"
+                );
                 MediaError::Unavailable
             })?;
         let mut stderr = child.stderr.take().ok_or(MediaError::Unavailable)?;
@@ -275,11 +280,18 @@ impl MediaCache {
         let Some((status, diagnostics)) = status else {
             let _ = child.kill().await;
             let _ = child.wait().await;
+            if !self.0.stop.is_cancelled() && job.has_demand() {
+                tracing::warn!(
+                    document_id = job.key.document().get(),
+                    stage = "preview_render",
+                    "preview renderer timed out"
+                );
+            }
             return Err(MediaError::Unavailable);
         };
         let status = status.map_err(|_| MediaError::Unavailable)?;
         if !status.success() {
-            tracing::debug!(document_id = job.key.document().get(), ?status,
+            tracing::warn!(document_id = job.key.document().get(), stage = "preview_render", ?status,
                 diagnostic = %String::from_utf8_lossy(&diagnostics), "preview renderer failed");
             // Exit 2 is the helper protocol for unsupported/over-budget input.
             return Err(if status.code() == Some(2) {

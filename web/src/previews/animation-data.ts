@@ -1,4 +1,4 @@
-import { ResourceCache } from "../resources/cache.ts";
+import { MediaResource } from "./media-resource.ts";
 import { fetchMedia } from "./media-client.ts";
 import { Gunzip } from "fflate";
 
@@ -98,7 +98,7 @@ export function decodeTgs(bytes: Uint8Array): AnimationData {
   }
   return data;
 }
-const animations = new ResourceCache<AnimationData>(
+const animations = new MediaResource<AnimationData>(
   async (url, signal, priority) => {
     const data = decodeTgs(await fetchMedia(url, signal, "tgs", priority));
     return {

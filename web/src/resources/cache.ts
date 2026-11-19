@@ -9,11 +9,14 @@ export class ResourceCache<T> {
       key: string,
       signal: AbortSignal,
       priority: number,
-    ) => Promise<{ value: T; bytes: number; maxAge?: number }>,
+    ) => Promise<{ value: T; bytes: number }>,
     private budget = 16 * 1024 * 1024,
     concurrency = 4,
     private maxAge = Infinity,
     private now: () => number = () => Date.now(),
+    private failure?: (
+      error: unknown,
+    ) => { error: unknown; expires: number } | undefined,
   ) {
     this.queue = new TaskQueue(concurrency);
   }
@@ -48,10 +51,10 @@ export class ResourceCache<T> {
           controller.signal,
           priority,
         )
-        .then(({ value, bytes, maxAge }) => {
+        .then(({ value, bytes }) => {
           controller.signal.throwIfAborted();
           if (this.entries.get(key) === created) {
-            created.expires = this.now() + (maxAge ?? this.maxAge);
+            created.expires = this.now() + this.maxAge;
             created.bytes = bytes;
             this.bytes += bytes;
             created.settled = true;
@@ -60,6 +63,15 @@ export class ResourceCache<T> {
           return value;
         })
         .catch((error) => {
+          const failure = !controller.signal.aborted && this.failure?.(error);
+          if (failure && this.entries.get(key) === created) {
+            created.expires = failure.expires;
+            created.settled = true;
+            created.bytes = 1;
+            this.bytes++;
+            this.trim();
+            throw failure.error;
+          }
           this.remove(key, created);
           throw error;
         })

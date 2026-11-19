@@ -13,6 +13,7 @@
     "validate:previews": "node scripts/svg-validation.mjs",
     "test:previews": "node scripts/preview-browser.mjs",
     "test:outlines": "node scripts/outline-browser.mjs",
+    "test:media-retries": "node scripts/media-retry-browser.mjs",
     "test:orderbook": "node scripts/orderbook-browser.mjs",
     "test:grid": "node scripts/grid-browser.mjs",
     "test:traits": "node scripts/trait-preview-browser.mjs",

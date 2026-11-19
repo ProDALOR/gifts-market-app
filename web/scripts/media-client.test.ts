@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setImmediate as flush } from "node:timers/promises";
 import { ResourceCache } from "../src/resources/cache.ts";
-import { fetchMedia, MediaHttpError } from "../src/previews/media-client.ts";
+import { fetchMedia } from "../src/previews/media-client.ts";
+import { MediaHttpError } from "../src/previews/media-resource.ts";
 const signal = () => new AbortController().signal;
 test("resource cache uses byte limits and least-recently-used eviction", async () => {
   const calls: string[] = [];
@@ -68,6 +69,8 @@ test("downloads bound retry attempts, honor Retry-After and never retry missing 
     [503, new Date(3000).toUTCString(), 3000],
     [404, undefined, undefined],
     [503, "300", 300_000],
+    [500, "60", 60_000],
+    [404, "60", 60_000],
     [503, "invalid", undefined],
   ] as const) {
     let calls = 0;
@@ -82,7 +85,10 @@ test("downloads bound retry attempts, honor Retry-After and never retry missing 
       (error) => error,
     );
     await flush();
-    const retry = delay !== undefined && delay <= 10_000;
+    const retry =
+      (status === 429 || status >= 500) &&
+      delay !== undefined &&
+      delay <= 10_000;
     if (retry) {
       t.mock.timers.tick(delay);
       await flush();
@@ -129,34 +135,6 @@ test("a transient response retries once and abort cancels backoff", async (t) =>
   await flush();
   stop.abort();
   await assert.rejects(cancelled);
-});
-
-test("per-result expiry caches misses briefly without shortening successful resources", async () => {
-  let now = 0;
-  const calls: string[] = [];
-  const store = new ResourceCache<string | null>(
-    async (key) => {
-      calls.push(key);
-      return key === "missing"
-        ? { value: null, bytes: 1, maxAge: 10 }
-        : { value: key, bytes: 4 };
-    },
-    64,
-    4,
-    100,
-    () => now,
-  );
-  await store.get("missing", signal());
-  await store.get("present", signal());
-  now = 9;
-  assert.equal(await store.get("missing", signal()), null);
-  now = 10;
-  assert.equal(store.hasFresh("missing"), false);
-  await store.get("missing", signal());
-  assert.equal(store.hasFresh("present"), true);
-  now = 100;
-  await store.get("present", signal());
-  assert.deepEqual(calls, ["missing", "present", "missing", "present"]);
 });
 
 test("background retry delays release transfer slots for interactive media and cancel cleanly", async (t) => {
