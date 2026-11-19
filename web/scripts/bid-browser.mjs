@@ -1,4 +1,4 @@
-// Bid alternatives use shared static picker art, bounded card summaries and complete details.
+// Bid alternatives use the picker composition, bounded static art and complete details.
 import assert from "node:assert/strict";
 import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,7 +24,9 @@ const base={id:'bid',book:{collection_id:'gift',venue_id:'venue',currency_id:'GR
 const any={...base,id:'any',quantity:1,target:{kind:'criteria',models:[],backdrops:[],patterns:[]}};
 const missing={...base,id:'missing',quantity:2,target:{kind:'criteria',models:['missing','pattern-0'],backdrops:[],patterns:[]}};
 const concrete={...base,id:'concrete',quantity:1,target:{kind:'gift',id:'gift-42',number:42,traits:{model:'model-0',backdrop:'backdrop-0',pattern:'pattern-0'}}};
-function App(){const[selected,select]=useState();window.selectBid=select;return React.createElement('main',{className:'orderbook'},React.createElement('section',{className:'market-results'},React.createElement('h1',null,'Bids'),React.createElement(GiftGrid,{orders:[base,any,missing,concrete],busy:false,visible:()=>{},card:()=>({options,collectionName:'Liberty Figure',venueName:'MRKT',selected:false,open:select})})),selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Liberty Figure',close:()=>select(undefined)}));}
+const single={...base,id:'single',target:{kind:'criteria',models:['model-0'],backdrops:['backdrop-0'],patterns:['pattern-0']}};
+const backdrop={...base,id:'backdrop',target:{kind:'criteria',models:[],backdrops:['backdrop-1'],patterns:['pattern-1']}};
+function App(){const[selected,select]=useState();window.selectBid=select;return React.createElement('main',{className:'orderbook'},React.createElement('section',{className:'market-results'},React.createElement('h1',null,'Bids'),React.createElement(GiftGrid,{orders:[base,any,missing,concrete,single,backdrop],busy:false,visible:()=>{},card:()=>({options,collectionName:'Liberty Figure',venueName:'MRKT',selected:false,open:select})})),selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Liberty Figure',close:()=>select(undefined)}));}
 createRoot(document.getElementById('fixture')).render(React.createElement(App));
 </script></body></html>`;
 let symbol;
@@ -109,35 +111,78 @@ try {
   const card = page
     .locator(".gift-card")
     .filter({ has: page.locator('[data-order-id="bid"]') });
+  const checkLayout = async () => {
+    assert.equal(
+      await card.evaluate((node) => {
+        const models = node
+          .querySelector(".preview-models")
+          .getBoundingClientRect();
+        const summary = node
+          .querySelector(".bid-preview-summary")
+          .getBoundingClientRect();
+        const number = node
+          .querySelector(".bid-number")
+          .getBoundingClientRect();
+        return models.bottom <= summary.top && summary.bottom <= number.top;
+      }),
+      true,
+      "Artwork, overflow and number must not overlap",
+    );
+  };
   await card.locator("img.loaded").first().waitFor();
-  assert.equal(await card.locator(".condition-chip").count(), 3);
+  assert.equal(await card.locator(".preview-model").count(), 4);
+  assert.equal(await card.locator(".preview-band").count(), 3);
+  await card.locator(".preview-symbols canvas").waitFor();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".bid-card .preview-symbols canvas")?.width > 1,
+  );
   assert.deepEqual(
-    await card.locator(".condition-overflow").allTextContents(),
-    ["+7", "+2", "+3"],
+    await card.locator(".bid-preview-summary span").allTextContents(),
+    ["+4 models"],
+  );
+  assert.equal(await card.locator(".condition-chip,.reset-traits").count(), 0);
+  assert.match(
+    await card.locator("figure").getAttribute("aria-label"),
+    /Model 7/,
   );
   assert.equal(await card.locator(".serial").textContent(), "Bid · ×8");
-  assert.match(
-    await card.locator('[data-condition="number"]').textContent(),
-    /#1 – 1000/,
-  );
+  assert.match(await card.locator(".bid-number").textContent(), /#1 – 1000/);
   const any = page
     .locator(".gift-card")
     .filter({ has: page.locator('[data-order-id="any"]') });
   await any.getByText("Any model", { exact: true }).waitFor();
-  assert.equal(await any.locator("[data-condition]").count(), 1);
   assert.equal(
-    await any.locator(".bid-conditions img,.gift-preview-fallback").count(),
+    await any.locator(".preview-model,.preview-band,.preview-symbols").count(),
+    0,
+  );
+  assert.equal(
+    await any.locator(".trait-preview img,.gift-preview-fallback").count(),
     0,
   );
   const missing = page
     .locator(".gift-card")
     .filter({ has: page.locator('[data-order-id="missing"]') });
   await missing.getByText("Unavailable model", { exact: true }).waitFor();
+  assert.equal(await missing.locator(".preview-model").count(), 0);
+  await missing.getByText("2 unavailable models", { exact: true }).waitFor();
   assert.equal(
-    await missing.locator(".condition-any").count(),
+    await missing.getByText("Any model", { exact: true }).count(),
     0,
     "Missing catalog entries cannot turn a restricted bid into Any",
   );
+  const single = page
+    .locator(".gift-card")
+    .filter({ has: page.locator('[data-order-id="single"]') });
+  assert.equal(await single.locator(".preview-model").count(), 1);
+  assert.equal(await single.locator(".preview-band").count(), 1);
+  assert.equal(await single.locator(".bid-preview-summary span").count(), 0);
+  const backdrop = page
+    .locator(".gift-card")
+    .filter({ has: page.locator('[data-order-id="backdrop"]') });
+  await backdrop.getByText("Any model", { exact: true }).waitFor();
+  assert.equal(await backdrop.locator(".preview-band").count(), 1);
+  assert.equal(await backdrop.locator(".preview-symbols").count(), 1);
   assert.equal(
     await card.evaluate((c) => c.scrollWidth <= c.clientWidth),
     true,
@@ -146,9 +191,10 @@ try {
     await page
       .locator(".gift-grid")
       .evaluate((c) => getComputedStyle(c).gridAutoRows),
-    "156px",
+    "168px",
   );
   await card.hover();
+  await checkLayout();
   await page.waitForTimeout(300);
   assert.equal(await page.locator(".model-animation").count(), 0);
   await page.screenshot({ path: join(output, "bid-cards-mobile.png") });
@@ -199,6 +245,7 @@ try {
     true,
   );
   await page.screenshot({ path: join(output, "bid-cards-desktop.png") });
+  await checkLayout();
   await card.locator(".card-open").click();
   await details.waitFor();
   assert.ok((await details.boundingBox()).width <= 640);
@@ -241,7 +288,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "Bid browser passed: shared static SVG art, compact overflow, complete conditions, unknown traits, keyboard details, responsive layout and no valuation/animation requests.",
+    "Bid browser passed: shared picker composition, static SVG models, backdrop bands, tiled symbols, compact overflow, complete conditions, unknown traits and no valuation/animation requests.",
   );
 } finally {
   await browser?.close();

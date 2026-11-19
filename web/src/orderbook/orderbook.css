@@ -715,9 +715,9 @@
     opacity 250ms ease-out;
 }
 
-/* Bids describe accepted alternatives using the same static art as the pickers. */
+/* Bid cards share the picker composition; all alternatives remain in details. */
 .gift-grid-bids {
-  grid-auto-rows: 156px;
+  grid-auto-rows: 168px;
 }
 .card-preview.bid-card {
   isolation: isolate;
@@ -729,25 +729,47 @@
   padding: 5px;
   border-radius: 13px;
   overflow: hidden;
-  color: var(--ink);
-  background: var(--surface);
+  color: white;
+  background: var(--raised);
 }
-.bid-card::after {
-  content: none;
+.bid-card > .trait-preview {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.bid-card .preview-models {
+  position: absolute;
+  inset: 24px 0 64px;
+  height: auto;
+  padding: 0 3px;
+}
+.bid-card .preview-model {
+  margin-inline: 2px;
+}
+.bid-card .preview-model > span {
+  font-size: 9px;
+  line-height: 12px;
 }
 .bid-card .serial {
   max-width: calc(100% - 24px);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  background: var(--tint);
-  color: var(--accent);
+  background: #24192c91;
+  color: white;
 }
 .bid-card .card-head {
   height: 22px;
   flex: none;
 }
 .bid-card .card-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
   flex: none;
   padding-top: 3px;
 }
@@ -793,57 +815,42 @@
   color: var(--muted);
   font-size: 12px;
 }
-.condition-overflow {
-  flex: none;
-  padding: 1px 4px;
-  border-radius: 5px;
-  color: var(--accent);
-  background: var(--tint);
-  font-size: 10px;
-  font-weight: 650;
-}
-.bid-conditions.compact {
-  flex: 1;
-  align-content: center;
-  width: 100%;
-  gap: 3px;
-  margin: 0;
-  pointer-events: none;
-}
-.bid-conditions.compact dt {
+.bid-preview-empty {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  inset: 24px 5px 64px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 650;
+  text-shadow: 0 1px 3px #251a27;
+}
+.bid-preview-summary {
+  position: absolute;
+  bottom: 50px;
+  inset-inline: 5px;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-height: 28px;
   overflow: hidden;
-  clip-path: inset(50%);
 }
-.bid-conditions.compact dd {
-  flex-wrap: nowrap;
-  gap: 3px;
-  min-height: 20px;
-}
-.bid-conditions.compact .condition-chip {
-  padding: 1px 3px;
-  gap: 3px;
-  border-color: transparent;
-  font-size: 10px;
-  line-height: 18px;
-  flex: 0 1 auto;
-}
-.bid-conditions.compact .option-art {
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-}
-.bid-conditions.compact .condition-name {
+.bid-preview-summary span,
+.bid-number {
+  max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  border-radius: 4px;
+  padding: 0 3px;
+  color: white;
+  background: #24192c91;
+  font-size: 9px;
+  line-height: 13px;
 }
-.bid-conditions.compact .condition-any,
-.bid-conditions.compact .condition-range {
-  font-size: 10px;
-  line-height: 20px;
+.bid-number {
+  display: block;
 }
 .detail.detail-criteria[open] {
   display: flex;
@@ -881,15 +888,4 @@
   .bid-detail-heading {
     padding: 28px 64px 0 24px;
   }
-  .market-results .bid-card .option-art {
-    width: 20px;
-    height: 20px;
-  }
-}
-
-.bid-conditions.compact .condition-range {
-  max-width: 100%;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }

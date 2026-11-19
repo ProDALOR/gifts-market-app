@@ -1,8 +1,8 @@
 import { memo, useMemo } from "react";
 import type { Order } from "../market";
 import type { CatalogOption } from "../orderbook";
-import { serial, modelName } from "../orderbook";
-import { BidConditions } from "./bid-conditions";
+import { serial, modelName, giftNumberRange } from "../orderbook";
+import { BidPreview } from "./bid-preview";
 import { GiftPreview } from "../previews/gift-preview";
 import type { OrderActivity } from "./order-activity";
 import { FRESHNESS_MS } from "./order-activity";
@@ -88,10 +88,12 @@ export const GiftCard = memo(function GiftCard({
           <VenueIcon name={venueName} />
         </span>
       </div>
-      {criteria && (
-        <BidConditions criteria={criteria} options={options} compact />
-      )}
       <div className="card-copy">
+        {criteria?.number && (
+          <span className="bid-number">
+            #{giftNumberRange(criteria.number)}
+          </span>
+        )}
         {!criteria && (
           <strong>{modelName(order, options, collectionName)}</strong>
         )}
@@ -125,7 +127,10 @@ export const GiftCard = memo(function GiftCard({
       aria-setsize={total}
     >
       {criteria ? (
-        <div className="card-preview bid-card">{content}</div>
+        <div className="card-preview bid-card">
+          <BidPreview criteria={criteria} options={options} />
+          {content}
+        </div>
       ) : (
         <GiftPreview
           order={order}

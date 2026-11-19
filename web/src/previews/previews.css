@@ -16,6 +16,23 @@
   background: #b5a3b6;
 }
 
+.trait-preview {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  height: 84px;
+  margin: var(--control-gap) 0 0;
+  border-radius: 13px;
+  background: var(--raised);
+  color: white;
+}
+.trait-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(0deg, #1e17274a, transparent 55%);
+}
 .preview-model {
   align-self: center;
   margin: 0 4px;

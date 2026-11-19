@@ -3,30 +3,23 @@ import { traits, giftNumberRange } from "../orderbook";
 import type { BidCriteria } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
 
-/** Present accepted alternatives; never compose them into a hypothetical gift. */
+/** Complete accepted alternatives for bid details. */
 export function BidConditions({
   criteria,
   options,
   names,
   quantity,
-  compact = false,
 }: {
   criteria: BidCriteria;
   options: ReadonlyMap<string, CatalogOption>;
   names?: ReadonlyMap<string, string>;
   quantity?: number;
-  compact?: boolean;
 }) {
   const number = giftNumberRange(criteria.number);
   return (
-    <dl
-      className={`bid-conditions${compact ? " compact" : ""}`}
-      aria-label="Bid conditions"
-    >
+    <dl className="bid-conditions" aria-label="Bid conditions">
       {traits.map((trait) => {
         const ids = criteria[trait.id];
-        if (compact && trait.id !== "models" && !ids.length) return null;
-        const shown = compact ? ids.slice(0, 1) : ids;
         return (
           <div key={trait.id} data-condition={trait.kind}>
             <dt>{trait.label}</dt>
@@ -36,7 +29,7 @@ export function BidConditions({
                   Any {trait.label.toLowerCase()}
                 </span>
               )}
-              {shown.map((id) => {
+              {ids.map((id) => {
                 const candidate = options.get(id);
                 const option =
                   candidate?.kind === trait.kind ? candidate : undefined;
@@ -51,14 +44,6 @@ export function BidConditions({
                   </span>
                 );
               })}
-              {shown.length < ids.length && (
-                <span
-                  className="condition-overflow"
-                  aria-label={`${ids.length - shown.length} more ${trait.label.toLowerCase()} choices`}
-                >
-                  +{ids.length - shown.length}
-                </span>
-              )}
             </dd>
           </div>
         );
@@ -73,7 +58,7 @@ export function BidConditions({
           </dd>
         </div>
       )}
-      {!compact && quantity != null && (
+      {quantity != null && (
         <div data-condition="quantity">
           <dt>Quantity</dt>
           <dd>{quantity.toLocaleString()}</dd>
