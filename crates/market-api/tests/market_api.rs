@@ -1095,8 +1095,37 @@ async fn developer_docs_render_rest_and_websocket_console_with_local_assets() {
 }
 
 #[actix_web::test]
-async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
+async fn catalog_tokens_match_etags_selectively_update_and_recover_after_reconnect() {
+    fn catalog_page(price: &str) -> w::Page {
+        let mut data = page(price);
+        let mut other = data
+            .entities
+            .iter()
+            .find_map(|row| match &row.entity {
+                Some(w::entity::Entity::ItemType(item)) => Some(item.clone()),
+                _ => None,
+            })
+            .unwrap();
+        other.id = "tg.gift.456".into();
+        other.name = "Other gift".into();
+        other.aliases[0].id = "456".into();
+        data.entities.push(w::Entity {
+            entity: Some(w::entity::Entity::ItemType(other)),
+        });
+        data.cursor = format!("catalog-{price}");
+        data
+    }
     let (state, runtime, peer, stop) = setup().await;
+    let initial = catalog_page("1.000000001");
+    let initial_cursor = initial.cursor.clone();
+    peer.page.send_replace(initial);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while runtime.reads.handle().reader().cursor().unwrap() != initial_cursor {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let app = test::init_service(
         App::new()
             .app_data(web::Data::new(state))
@@ -1113,7 +1142,13 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
         .await
         .unwrap();
-    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({"type":"catalog.watch","id":"catalog","collection_ids":["tg.gift.123","missing"]}).to_string().into())).await.unwrap();
+    let watch = serde_json::json!({"type":"catalog.watch","id":"catalog","collection_ids":["tg.gift.123","tg.gift.456","missing"]}).to_string();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            watch.clone().into(),
+        ))
+        .await
+        .unwrap();
     async fn receive(
         socket: &mut tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -1143,7 +1178,18 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
             "/collections/tg.gift.123",
             &first["collections"]["tg.gift.123"],
         ),
+        (
+            "/collections/tg.gift.456",
+            &first["collections"]["tg.gift.456"],
+        ),
     ] {
+        let token = revision.as_str().unwrap();
+        assert_eq!(token.len(), 22);
+        assert!(
+            token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        );
         let response =
             test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
         assert_eq!(response.status(), 200);
@@ -1166,7 +1212,7 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
         assert_eq!(cached.status(), 304);
         assert!(test::read_body(cached).await.is_empty());
     }
-    peer.page.send_replace(page("2.000000002"));
+    peer.page.send_replace(catalog_page("2.000000002"));
     let unexpected_catalog = tokio::time::timeout(Duration::from_millis(350), async {
         loop {
             if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
@@ -1184,10 +1230,12 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
         unexpected_catalog.is_err(),
         "Price updates must not emit catalog invalidations"
     );
-    let mut renamed = page("2.000000002");
+    let mut renamed = catalog_page("2.000000002");
     renamed.cursor = "catalog-renamed".into();
     for entity in &mut renamed.entities {
-        if let Some(w::entity::Entity::ItemType(item)) = &mut entity.entity {
+        if let Some(w::entity::Entity::ItemType(item)) = &mut entity.entity
+            && item.id == "tg.gift.123"
+        {
             item.name = "Renamed gift".into();
         }
     }
@@ -1198,6 +1246,25 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
         changed["collections"]["tg.gift.123"],
         first["collections"]["tg.gift.123"]
     );
+    assert_eq!(
+        changed["collections"]["tg.gift.456"],
+        first["collections"]["tg.gift.456"]
+    );
+    let unchanged = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/collections/tg.gift.456")
+            .insert_header((
+                "if-none-match",
+                format!(
+                    "\"{}\"",
+                    first["collections"]["tg.gift.456"].as_str().unwrap()
+                ),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(unchanged.status(), 304);
     let response = test::call_service(
         &app,
         test::TestRequest::get()
@@ -1214,6 +1281,42 @@ async fn catalog_notifications_match_http_etags_and_ignore_price_changes() {
     );
     let body: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(body["collection"]["name"], "Renamed gift");
+    socket.close(None).await.unwrap();
+    // Changes while disconnected are recovered from the next complete manifest.
+    let mut missed = catalog_page("2.000000002");
+    missed.cursor = "catalog-missed".into();
+    for row in &mut missed.entities {
+        if let Some(w::entity::Entity::ItemType(item)) = &mut row.entity
+            && item.id == "tg.gift.123"
+        {
+            item.name = "Changed offline".into();
+        }
+    }
+    peer.page.send_replace(missed);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while runtime.reads.handle().reader().cursor().unwrap() != "catalog-missed" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(watch.into()))
+        .await
+        .unwrap();
+    let reconnected = receive(&mut socket).await;
+    assert_ne!(
+        reconnected["collections"]["tg.gift.123"],
+        changed["collections"]["tg.gift.123"]
+    );
+    assert_eq!(
+        reconnected["collections"]["tg.gift.456"],
+        changed["collections"]["tg.gift.456"]
+    );
+    assert!(reconnected["collections"]["missing"].is_null());
     socket.close(None).await.unwrap();
     api_stop.cancel();
     job.await.unwrap().unwrap();

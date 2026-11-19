@@ -21,7 +21,7 @@ pub struct SyncStatus {
     pub updated_at: Option<Timestamp>,
 }
 
-/// Opaque, versioned ordering position, reusable across filters with the same sort/source.
+/// Opaque ordering position, reusable across filters with the same sort/source.
 /// Compare in ordinary ASCII order. Price ranks use the supplied query's currency units.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]

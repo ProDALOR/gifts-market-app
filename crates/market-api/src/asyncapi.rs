@@ -119,7 +119,7 @@ fn summary(name: &str) -> &'static str {
             "Watch catalog content revisions for up to eight collections, without polling."
         }
         "catalog.versions" => {
-            "Current catalog content revisions. Compare with HTTP ETags to revalidate changed entries."
+            "Compact opaque catalog content tokens. Compare with unquoted HTTP ETags to revalidate changed entries."
         }
         "market.status" => {
             "Market availability: available, delayed or unavailable, independent of query lifetimes."
@@ -197,14 +197,10 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         })?,
         "catalog.versions" => serde_json::to_value(ServerFrame::Catalog {
             id: "catalog".into(),
-            versions: CatalogVersions {
-                directory: "opaque-directory-content-revision".into(),
-                collections: [(
-                    "tg.gift.123".into(),
-                    Some("opaque-collection-content-revision".into()),
-                )]
-                .into(),
-            },
+            versions: crate::catalog::versions(CatalogVersions {
+                directory: "directory".into(),
+                collections: [("tg.gift.123".into(), Some("collection".into()))].into(),
+            }),
         })?,
         "market.status" => serde_json::to_value(ServerFrame::MarketStatus {
             status: MarketStatus::Available,
@@ -243,6 +239,13 @@ mod tests {
         assert!(refs.iter().all(|name| names.contains(name)));
         assert!(!names.contains("GiftCatalog"));
         assert!(!names.contains("Session"));
+        let versions = &spec["components"]["messages"]["catalog.versions"]["examples"][0]["payload"]
+            ["versions"];
+        assert_eq!(versions["directory"], crate::catalog::revision("directory"));
+        assert_eq!(
+            versions["collections"]["tg.gift.123"],
+            crate::catalog::revision("collection")
+        );
         for command in ["catalog.watch", "orders.watch", "request", "cancel"] {
             serde_json::from_value::<Command>(
                 spec["components"]["messages"][command]["examples"][0]["payload"].clone(),

@@ -131,3 +131,40 @@ test("gift valuation preserves every strategy outcome and uses typed requests an
     return true;
   });
 });
+
+test("catalog reads preserve opaque compact versions from strong and weak ETags", async (t) => {
+  const { catalog, collectionCatalog } = await import("../src/market.ts");
+  const token = "f3MgDfNxr-4kEnhwdAqItQ";
+  let tag: string | undefined;
+  const paths: string[] = [];
+  t.mock.method(globalThis, "fetch", async (path: string) => {
+    paths.push(path);
+    return new Response("{}", { headers: tag ? { etag: tag } : {} });
+  });
+  for (const [header, expected] of [
+    [`"${token}"`, token],
+    [`W/"${token}"`, token],
+    ['"catalog-v2-legacy"', "catalog-v2-legacy"],
+    [undefined, undefined],
+  ]) {
+    tag = header;
+    for (const read of [
+      catalog,
+      (signal: AbortSignal, received?: (value: string) => void) =>
+        collectionCatalog("gift/id", signal, received),
+    ]) {
+      let received: string | undefined;
+      await read(new AbortController().signal, (value) => {
+        received = value;
+      });
+      assert.equal(received, expected);
+    }
+  }
+  assert.deepEqual(
+    paths,
+    Array.from({ length: 4 }, () => [
+      "/catalog",
+      "/collections/gift%2Fid",
+    ]).flat(),
+  );
+});

@@ -61,6 +61,10 @@ Version 4 removes the 32-byte query fingerprint from every key. A three-byte hea
 
 Key text shrinks by a further 38.7%. Timing remains a local microbenchmark. Positions can be reused across filters and execution periods with compatible sort/source; the supplied query always determines the returned rows. Price ranks use the new query's currency units without conversion or validation of the original currency. Internal generic read continuations retain their existing query validation. The key-only fingerprint type and hexadecimal parsing helpers are removed. Regression tests cover reuse in finite reads and fixed ranges for every sort, identical keys across filters, REST-to-WebSocket reuse, sort/direction/source mismatches and canonical encoding. Clients must discard version 3 keys and initialize fresh watches when upgrading.
 
+### Removing format-version markers
+
+The current encoding packs sort/direction and source into one header byte, removing the format-version byte and a separate source byte. It retains canonical decoding, sort/source validation, identity tie-breakers and boundary ordering. For the short `v`/`x` identity fixture, keys shrink from 14 to 11 characters; price keys shrink from 52 to 50. The tables above describe their historical formats. Catalog content tokens are separate equality-only validators and now carry 22 Base64url characters without a format-version prefix. Discard previously encoded order keys and restart watches on upgrade; older catalog ETags automatically revalidate.
+
 ## Visited-listing cache
 
 The frontend benchmark retains 10,000 or 100,000 visited rows, repeatedly refreshing a 200-row interior range while changing one listing price under number ordering. It excludes fixture generation, initial population, React rendering and activity/viewport projection. The new cache keeps an identity index, finds coverage by binary search and compares only incoming rows; producing the complete visited-row array still requires copying array references.

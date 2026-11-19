@@ -69,8 +69,9 @@ export async function request<T>(
       value.error?.message || "Market data is unavailable",
       value.error?.details,
     );
-  const etag = response.headers.get("etag");
-  if (etag) revision?.(etag.replace(/^W\//, "").replace(/^"|"$/g, ""));
+  // Catalog manifests carry the same opaque token without HTTP's ETag quotes.
+  const etag = response.headers.get("etag")?.match(/^(?:W\/)?"([^"]*)"$/);
+  if (etag) revision?.(etag[1]);
   return value;
 }
 export const valuation = (

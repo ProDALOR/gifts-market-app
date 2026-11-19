@@ -13,7 +13,7 @@ pub(crate) async fn ready(state: web::Data<MarketApi>) -> Result<HttpResponse> {
     state.ready().await?;
     Ok(HttpResponse::Ok().finish())
 }
-#[utoipa::path(get,path="/catalog",tag="Catalog",summary="Collections, currencies and venues",description="Discover available gift markets.",responses((status=200,body=GiftCatalog,headers(("ETag"=String,description="Catalog content revision"))),(status=304,description="Catalog content is unchanged"),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/catalog",tag="Catalog",summary="Collections, currencies and venues",description="Discover available gift markets.",responses((status=200,body=GiftCatalog,headers(("ETag"=String,description="Quoted opaque content token; matches catalog.versions.directory without the quotes"))),(status=304,description="Catalog content is unchanged"),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn catalog(state: web::Data<MarketApi>, req: HttpRequest) -> Result<HttpResponse> {
     Ok(catalog_response(
         state.catalog_snapshot().await?,
@@ -21,7 +21,7 @@ pub(crate) async fn catalog(state: web::Data<MarketApi>, req: HttpRequest) -> Re
         GiftCatalog::from,
     ))
 }
-#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Models, backdrops and patterns for one collection.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Collection content revision"))),(status=304,description="Collection content is unchanged"),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Models, backdrops and patterns for one collection.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Quoted opaque content token; matches the collection entry in catalog.versions without the quotes"))),(status=304,description="Collection content is unchanged"),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn collection(
     state: web::Data<MarketApi>,
     id: web::Path<CollectionId>,
@@ -38,7 +38,7 @@ fn catalog_response<T, U: serde::Serialize>(
     req: &HttpRequest,
     present: impl FnOnce(T) -> U,
 ) -> HttpResponse {
-    let etag = format!("\"{}\"", crate::catalog::revision(snapshot.revision));
+    let etag = format!("\"{}\"", crate::catalog::revision(&snapshot.revision));
     let unchanged = crate::http::etag_matches(req, &etag);
     let mut response = if unchanged {
         HttpResponse::NotModified()
@@ -139,11 +139,8 @@ mod tests {
             data: (),
             revision: "content".into(),
         };
-        for condition in [
-            "\"catalog-v2-content\"",
-            "\"old\", W/\"catalog-v2-content\"",
-            "*",
-        ] {
+        let etag = format!("\"{}\"", crate::catalog::revision("content"));
+        for condition in [etag.clone(), format!("\"old\", W/{etag}"), "*".into()] {
             let request = actix_web::test::TestRequest::get()
                 .insert_header((header::IF_NONE_MATCH, condition))
                 .to_http_request();
@@ -151,25 +148,31 @@ mod tests {
                 panic!("Unchanged catalog must not clone models or build media URLs")
             });
             assert_eq!(response.status(), 304);
-            assert_eq!(
-                response.headers().get(header::ETAG).unwrap(),
-                "\"catalog-v2-content\""
-            );
+            assert_eq!(response.headers().get(header::ETAG).unwrap(), etag.as_str());
             assert_eq!(
                 response.headers().get(header::CACHE_CONTROL).unwrap(),
                 "no-cache"
             );
         }
-        let request = actix_web::test::TestRequest::get().to_http_request();
-        let response =
-            catalog_response(snapshot(), &request, |()| serde_json::json!({"models":[]}));
-        assert_eq!(response.status(), 200);
-        let bytes = actix_web::body::to_bytes(response.into_body())
-            .await
-            .unwrap();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
-            serde_json::json!({"models":[]})
-        );
+        for condition in [None, Some(format!("\"catalog-v2-{}\"", "0".repeat(64)))] {
+            let mut request = actix_web::test::TestRequest::get();
+            if let Some(condition) = condition {
+                request = request.insert_header((header::IF_NONE_MATCH, condition));
+            }
+            let response = catalog_response(
+                snapshot(),
+                &request.to_http_request(),
+                |()| serde_json::json!({"models":[]}),
+            );
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.headers().get(header::ETAG).unwrap(), etag.as_str());
+            let bytes = actix_web::body::to_bytes(response.into_body())
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                serde_json::json!({"models":[]})
+            );
+        }
     }
 }

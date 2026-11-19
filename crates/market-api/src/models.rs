@@ -91,6 +91,7 @@ pub enum ServerFrame<'a> {
     MarketStatus {
         status: MarketStatus,
     },
+    /// Compact opaque content tokens matching unquoted catalog HTTP ETags.
     #[serde(rename = "catalog.versions")]
     Catalog {
         id: String,

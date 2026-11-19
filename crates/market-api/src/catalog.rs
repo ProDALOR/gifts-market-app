@@ -1,6 +1,8 @@
 //! HTTP presentation of catalog data. Domain media references never contain routes.
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use market_gifts as gifts;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -115,14 +117,20 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
         }
     }
 }
-/// Namespace content revisions by the public representation. Bump if URL/JSON mapping changes.
-pub(crate) fn revision(domain: String) -> String {
-    format!("catalog-v2-{domain}")
+/// Internal representation namespace; update if URL/JSON mapping changes.
+const REPRESENTATION: &[u8] = b"gift-catalog:media-routes\0";
+/// A stable 128-bit cache validator; tokens are opaque and provide no authentication.
+pub(crate) fn revision(domain: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(REPRESENTATION);
+    hash.update(domain);
+    let digest = hash.finalize();
+    URL_SAFE_NO_PAD.encode(&digest[..16])
 }
 pub(crate) fn versions(mut value: gifts::CatalogVersions) -> gifts::CatalogVersions {
-    value.directory = revision(value.directory);
+    value.directory = revision(&value.directory);
     for version in value.collections.values_mut().flatten() {
-        *version = revision(std::mem::take(version));
+        *version = revision(version);
     }
     value
 }
@@ -130,6 +138,42 @@ pub(crate) fn versions(mut value: gifts::CatalogVersions) -> gifts::CatalogVersi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn revisions_are_short_stable_opaque_tokens_derived_from_the_full_content_version() {
+        assert_eq!(revision("content"), "f3MgDfNxr-4kEnhwdAqItQ");
+        let original = "0".repeat(64);
+        let mut changed = original.clone();
+        changed.replace_range(63.., "1");
+        assert_ne!(revision(&original), revision(&changed));
+        for domain in ["content", original.as_str(), changed.as_str()] {
+            let token = revision(domain);
+            assert_eq!(token.len(), 22);
+            assert_eq!(URL_SAFE_NO_PAD.decode(&token).unwrap().len(), 16);
+            assert!(
+                token
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            );
+        }
+        let versions = versions(gifts::CatalogVersions {
+            directory: "content".into(),
+            collections: [
+                ("gift".into(), Some(original.clone())),
+                ("missing".into(), None),
+            ]
+            .into(),
+        });
+        assert_eq!(versions.directory, revision("content"));
+        assert_eq!(
+            versions.collections[&gifts::CollectionId::from("gift")],
+            Some(revision(&original))
+        );
+        assert_eq!(
+            versions.collections[&gifts::CollectionId::from("missing")],
+            None
+        );
+    }
+
     #[test]
     fn http_media_urls_are_encoded_by_the_presentation_layer() {
         let model = GiftMedia::from(gifts::GiftMedia {

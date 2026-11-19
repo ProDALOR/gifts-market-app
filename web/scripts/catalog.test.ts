@@ -417,3 +417,58 @@ test("rapid switching bounds in-flight reads and discarded responses cannot publ
   assert.equal(f.controller.getSnapshot().selectedId, "c");
   assert.equal(f.controller.getSnapshot().options.has("c.0"), true);
 });
+
+test("compact tokens retain selective refreshes and recover missed changes on reconnect", async (t) => {
+  const f = fixture(t);
+  const directory = "RCdlHdPhcr-iTt64ylBkPA";
+  const a = "_y_lqMGEh6UieJB3_3_TTw";
+  const b = "EnnK_4Kr2qgEkLGpYM3NxA";
+  const updated = "a2aLbICR6oEhXOMFiOrwxw";
+  const latest = "O7mGrcSR3nu-zTm_kIaNJw";
+  f.directory(directory);
+  f.definitions.get("a")!.version = a;
+  f.definitions.get("b")!.version = b;
+  await f.start();
+  const selected = f.controller.getSnapshot().options;
+  f.controller.select("b");
+  await until(() => f.controller.getSnapshot().options.get("b.0")?.name === b);
+  f.controller.select("a");
+  const count = f.requests.length;
+  f.status("Reconnecting");
+  f.emit();
+  await tick();
+  assert.equal(f.controller.getSnapshot().options, selected);
+  assert.equal(
+    f.requests.length,
+    count,
+    "Unchanged reconnects need no HTTP reads",
+  );
+  // An inactive collection changes while offline; the next manifest marks it stale.
+  f.status("Reconnecting");
+  f.definitions.get("b")!.version = updated;
+  f.emit();
+  await tick();
+  assert.equal(f.requests.length, count);
+  f.controller.select("b");
+  await until(
+    () => f.controller.getSnapshot().options.get("b.0")?.name === updated,
+  );
+  assert.equal(choiceCalls(f, "b"), 2);
+  assert.equal(choiceCalls(f, "a"), 1);
+  assert.equal(f.requests.filter((r) => r.kind === "directory").length, 1);
+  // An active collection updates once; a repeated manifest reuses the fresh value.
+  f.definitions.get("b")!.version = latest;
+  f.emit();
+  await until(
+    () => f.controller.getSnapshot().options.get("b.0")?.name === latest,
+  );
+  assert.equal(choiceCalls(f, "b"), 3);
+  f.emit();
+  await tick();
+  assert.equal(choiceCalls(f, "b"), 3);
+  f.definitions.delete("b");
+  f.emit();
+  await until(() => !!f.controller.getSnapshot().optionsError);
+  assert.match(f.controller.getSnapshot().optionsError, /no longer available/);
+  assert.equal(choiceCalls(f, "b"), 3);
+});

@@ -1,4 +1,4 @@
-//! Native query positions and their versioned, order-preserving boundary encoding.
+//! Native query positions and their order-preserving boundary encoding.
 use crate::{
     READ_LIMITS,
     query::Filter,
@@ -21,8 +21,7 @@ const KEY_ALPHABET: Alphabet =
         Err(_) => panic!("valid ordered key alphabet"),
     };
 const KEY_ENCODING: GeneralPurpose = GeneralPurpose::new(&KEY_ALPHABET, NO_PAD);
-const KEY_VERSION: u8 = 4;
-const HEADER_LEN: usize = 3;
+const HEADER_LEN: usize = 1;
 /// Selected order modes and active/history storage, packed into one byte.
 /// Filters and query identity do not belong to an ordering position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -45,7 +44,8 @@ impl PositionSource {
         Self(modes | if filter.history() { 8 } else { 0 })
     }
     pub(crate) fn decode(value: u8) -> Result<Self, Status> {
-        if value & 7 == 0 || value > 15 {
+        // Executions alone always use history storage.
+        if value & 7 == 0 || value == 4 || value > 15 {
             return Err(invalid());
         }
         Ok(Self(value))
@@ -110,7 +110,7 @@ impl<'de> serde::Deserialize<'de> for ReadPosition {
 impl ReadPosition {
     pub fn encode(&self) -> String {
         let mut bytes = Vec::with_capacity(self.binary_len());
-        bytes.extend([KEY_VERSION, self.sort as u8, self.source.0]);
+        bytes.push((self.sort as u8) << 4 | self.source.0);
         match self.sort {
             Sort::Identity => {}
             Sort::TimeAsc | Sort::TimeDesc => bytes.extend(ordered_integer(integer(self.rank))),
@@ -150,11 +150,11 @@ impl ReadPosition {
             return Err(invalid());
         }
         let bytes = KEY_ENCODING.decode(value).map_err(|_| invalid())?;
-        if bytes.len() < HEADER_LEN + 5 || bytes[0] != KEY_VERSION {
+        if bytes.len() < HEADER_LEN + 5 {
             return Err(invalid());
         }
-        let sort = Sort::try_from(i32::from(bytes[1]))?;
-        let source = PositionSource::decode(bytes[2])?;
+        let sort = Sort::try_from(i32::from(bytes[0] >> 4))?;
+        let source = PositionSource::decode(bytes[0] & 15)?;
         let edge = match bytes.last() {
             Some(0x7f) => Edge::Before,
             Some(0x80) => Edge::At,
@@ -437,14 +437,14 @@ mod tests {
     #[test]
     fn compact_positions_remove_redundant_ranks_without_losing_history_identity() {
         for (sort, rank, history, expected) in [
-            (Sort::Identity, Decimal::ZERO, false, 14),
-            (Sort::Identity, Decimal::from(-1), true, 24),
-            (Sort::PriceAsc, Decimal::ONE, false, 52),
-            (Sort::PriceDesc, Decimal::ONE, true, 63),
-            (Sort::TimeAsc, Decimal::from(-1), false, 24),
-            (Sort::TimeDesc, Decimal::from(-1), true, 24),
-            (Sort::NumberAsc, Decimal::MAX, false, 26),
-            (Sort::NumberDesc, Decimal::from(i64::MIN), true, 36),
+            (Sort::Identity, Decimal::ZERO, false, 11),
+            (Sort::Identity, Decimal::from(-1), true, 22),
+            (Sort::PriceAsc, Decimal::ONE, false, 50),
+            (Sort::PriceDesc, Decimal::ONE, true, 60),
+            (Sort::TimeAsc, Decimal::from(-1), false, 22),
+            (Sort::TimeDesc, Decimal::from(-1), true, 22),
+            (Sort::NumberAsc, Decimal::MAX, false, 23),
+            (Sort::NumberDesc, Decimal::from(i64::MIN), true, 34),
         ] {
             let position = ReadPosition {
                 source: PositionSource(if history { 12 } else { 1 }),
@@ -457,15 +457,11 @@ mod tests {
             let key = position.encode();
             assert_eq!(key.len(), expected);
             assert_eq!(ReadPosition::decode(&key).unwrap(), position);
-            for version in [1, 2, 3] {
-                let mut retired = KEY_ENCODING.decode(&key).unwrap();
-                retired[0] = version;
-                assert!(ReadPosition::decode(&KEY_ENCODING.encode(retired)).is_err());
-            }
         }
     }
     #[test]
     fn one_key_roundtrips_and_matches_native_order_for_every_sort_and_edge() {
+        let mut contexts = Vec::new();
         for sort in [
             Sort::Identity,
             Sort::PriceAsc,
@@ -534,12 +530,19 @@ mod tests {
                     keys.windows(2).all(|p| p[0].encode() < p[1].encode()),
                     "{sort:?}, history={history}"
                 );
+                contexts.extend(keys);
             }
         }
+        contexts.sort();
+        assert!(
+            contexts
+                .windows(2)
+                .all(|pair| pair[0].encode() < pair[1].encode())
+        );
     }
     #[test]
     fn malformed_and_noncanonical_keys_are_rejected_without_panics() {
-        for input in ["", "0", "GG", "00", &"ff".repeat(5000)] {
+        for input in ["", "0", "GG", "00", "1001TW00OG00W0", &"ff".repeat(5000)] {
             assert!(ReadPosition::decode(input).is_err());
         }
         let key = ReadPosition {
@@ -555,13 +558,13 @@ mod tests {
             assert!(ReadPosition::decode(&key[..i]).is_err());
         }
         for (offset, value) in [
-            (0, 255),
-            (1, 255),
-            (2, 0),
-            (2, 8),
-            (2, 16),
-            (3, 0x20),
-            (4, 0xfa),
+            (0, 0xff),
+            (0, 0x71),
+            (0, 0x10),
+            (0, 0x14),
+            (0, 0x18),
+            (1, 0x20),
+            (2, 0xfa),
         ] {
             let mut malformed = KEY_ENCODING.decode(&key).unwrap();
             malformed[offset] = value;
@@ -569,9 +572,9 @@ mod tests {
         }
         assert!(ReadPosition::decode(&(key.clone() + "=")).is_err());
         assert!(ReadPosition::decode(&(key.clone() + "0")).is_err());
-        // This payload leaves four padding bits. A second spelling of the same
+        // This payload leaves two padding bits. A second spelling of the same
         // bytes would break string equality and boundary comparisons.
-        assert_eq!(key.len() % 4, 2);
+        assert_eq!(key.len() % 4, 3);
         let last = KEY_ALPHABET
             .as_str()
             .find(key.chars().last().unwrap())

@@ -201,14 +201,18 @@ try {
       body: Buffer.from(png, "base64"),
     }),
   );
-  const collectionRevisions = { bunny: "bunny.0", pepe: "pepe.0" };
+  const directoryRevision = "RCdlHdPhcr-iTt64ylBkPA";
+  const collectionRevisions = {
+    bunny: "_y_lqMGEh6UieJB3_3_TTw",
+    pepe: "EnnK_4Kr2qgEkLGpYM3NxA",
+  };
   let catalogRequests = 0;
   let failOptions = true,
     optionRequests = 0;
   await page.route("**/catalog", (route) => {
     catalogRequests++;
     return route.fulfill({
-      headers: { etag: '"directory.0"' },
+      headers: { etag: `"${directoryRevision}"` },
       json: {
         collections,
         venues,
@@ -266,7 +270,7 @@ try {
         type: "catalog.versions",
         id: peer.id,
         versions: {
-          directory: "directory.0",
+          directory: directoryRevision,
           collections: Object.fromEntries(
             peer.ids.map((id) => [id, collectionRevisions[id] ?? null]),
           ),
@@ -1029,7 +1033,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 100));
   let beforeRequests = optionRequests;
   const beforeCatalog = catalogRequests;
-  collectionRevisions.pepe = "pepe.1";
+  collectionRevisions.pepe = "a2aLbICR6oEhXOMFiOrwxw";
   notifyCatalog();
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(optionRequests, beforeRequests, "Inactive changes remain lazy");
@@ -1037,7 +1041,7 @@ try {
   await button("History").click();
   await cards(50);
   models[0].name = "Live model";
-  collectionRevisions.bunny = "bunny.1";
+  collectionRevisions.bunny = "kupF-YY6C-CXFMtJ4jmY6A";
   notifyCatalog();
   await button("Model").click();
   await button("Live model").waitFor();
@@ -1069,7 +1073,7 @@ try {
     "An unchanged reconnect reuses cached metadata",
   );
   models[0].name = "Updated while disconnected";
-  collectionRevisions.bunny = "bunny.2";
+  collectionRevisions.bunny = "O7mGrcSR3nu-zTm_kIaNJw";
   [...catalogPeers][0].socket.close();
   await button("Model").click();
   await button("Updated while disconnected").waitFor();
