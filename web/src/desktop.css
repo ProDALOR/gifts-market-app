@@ -32,10 +32,6 @@
   .sidebar-heading {
     margin-bottom: 16px;
   }
-  .sidebar-heading .brand {
-    font-size: 17px;
-    letter-spacing: 1.5px;
-  }
   .market-sidebar .collection-rail {
     flex: 1;
     flex-direction: column;

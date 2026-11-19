@@ -72,7 +72,6 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "bot")]
     if let Some(bot) = bot.as_mut() {
         bot.set_media_downloader(downloads);
-        runtime.start_media_warmup(media.clone())?;
     } else {
         drop(downloads);
     }

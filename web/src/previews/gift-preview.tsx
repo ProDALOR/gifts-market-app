@@ -15,7 +15,7 @@ export function GiftPreview({
   options: ReadonlyMap<string, GiftOption>;
 } & Omit<
   ComponentProps<typeof GiftArtwork>,
-  "media" | "palette" | "patternUrl" | "label"
+  "media" | "palette" | "patternUrls" | "label"
 >) {
   const appearance = giftAppearance(order, options);
   const palette = useMemo(
@@ -31,7 +31,7 @@ export function GiftPreview({
       {...props}
       media={appearance.media}
       palette={palette}
-      patternUrl={appearance.patternUrl}
+      patternUrls={appearance.patternUrls}
       label={appearance.label}
     />
   );

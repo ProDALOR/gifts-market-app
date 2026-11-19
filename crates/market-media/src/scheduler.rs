@@ -5,22 +5,16 @@ use std::{
     future::Future,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::{Notify, OnceCell, watch};
-#[derive(Debug, Clone, Copy)]
-pub enum MediaPriority {
-    Prefetch,
-    Interactive,
-}
 pub(crate) struct Job {
     pub key: MediaKey,
     pub disk: OnceCell<Result<Option<crate::MediaAsset>, MediaError>>,
     pub result: watch::Sender<Option<MediaResult>>,
     pub queued: AtomicBool,
     waiters: AtomicUsize,
-    priority: AtomicU8,
     abandoned: Notify,
 }
 impl Job {
@@ -31,13 +25,11 @@ impl Job {
             result: watch::channel(None).0,
             queued: AtomicBool::new(false),
             waiters: AtomicUsize::new(0),
-            priority: AtomicU8::new(0),
             abandoned: Notify::new(),
         }
     }
-    pub fn demand(self: &Arc<Self>, priority: MediaPriority) -> Demand {
+    pub fn demand(self: &Arc<Self>) -> Demand {
         self.waiters.fetch_add(1, Ordering::AcqRel);
-        self.priority.fetch_max(priority as u8, Ordering::AcqRel);
         Demand(self.clone())
     }
     pub(crate) async fn abandoned(&self) {
@@ -95,13 +87,7 @@ impl Queue {
     }
     fn pop(&self) -> Option<Arc<Job>> {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
-        let index = jobs
-            .iter()
-            .position(|job| {
-                job.priority.load(Ordering::Acquire) > 0 && job.waiters.load(Ordering::Acquire) > 0
-            })
-            .unwrap_or(0);
-        jobs.remove(index)
+        jobs.pop_front()
     }
     pub fn len(&self) -> usize {
         self.jobs.lock().unwrap_or_else(|e| e.into_inner()).len()
@@ -126,7 +112,7 @@ impl MediaDownloader {
     pub(crate) fn new(cache: MediaCache) -> Self {
         Self { cache }
     }
-    /// Bounded parallel downloads, shared pacing, foreground priority and abandoned-job removal.
+    /// Bounded parallel downloads, shared pacing and abandoned-job removal.
     /// Cancelling the transport publishes a retryable result; queued work survives reconnects.
     pub async fn run<F, Fut>(&mut self, fetch: F)
     where

@@ -3,7 +3,6 @@ use std::sync::Arc;
 pub const MAX_ANIMATION_BYTES: usize = 256 * 1024;
 pub const MAX_TGS_JSON_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_THUMBNAIL_BYTES: usize = 256 * 1024;
-pub const MAX_PLACEHOLDER_BYTES: usize = 8 * 1024;
 pub const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 pub const PREVIEW_VERSION: &str = "2";
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -21,7 +20,6 @@ pub enum MediaKind {
     Thumbnail,
     Animation,
     Preview,
-    Placeholder,
 }
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct MediaKey {
@@ -41,13 +39,6 @@ impl MediaKey {
         Self {
             document,
             kind: MediaKind::Animation,
-            source: None,
-        }
-    }
-    pub fn placeholder(document: DocumentId) -> Self {
-        Self {
-            document,
-            kind: MediaKind::Placeholder,
             source: None,
         }
     }
@@ -72,14 +63,12 @@ impl MediaKey {
             MediaKind::Thumbnail => MAX_THUMBNAIL_BYTES,
             MediaKind::Animation => MAX_ANIMATION_BYTES,
             MediaKind::Preview => MAX_PREVIEW_BYTES,
-            MediaKind::Placeholder => MAX_PLACEHOLDER_BYTES,
         }
     }
     pub(crate) fn extension(self) -> String {
         match self.kind {
             MediaKind::Thumbnail => "thumb".into(),
             MediaKind::Animation => "tgs".into(),
-            MediaKind::Placeholder => "placeholder.svg".into(),
             MediaKind::Preview => {
                 let hash = self
                     .source
@@ -134,15 +123,6 @@ impl MediaAsset {
         crate::preview::validate(&bytes)?;
         Ok(Self::new(MediaKind::Preview, bytes, "image/svg+xml"))
     }
-    /// Build a passive, transparent silhouette from a decoded vector path.
-    pub fn placeholder(path: &str) -> Result<Self, MediaError> {
-        let bytes = crate::placeholder::svg(path)?;
-        Ok(Self::new(MediaKind::Placeholder, bytes, "image/svg+xml"))
-    }
-    pub(crate) fn placeholder_svg(bytes: Vec<u8>) -> Result<Self, MediaError> {
-        crate::placeholder::validate(&bytes)?;
-        Ok(Self::new(MediaKind::Placeholder, bytes, "image/svg+xml"))
-    }
     fn new(kind: MediaKind, bytes: Vec<u8>, content_type: &'static str) -> Self {
         let digest = Sha256::digest(&bytes);
         // SVG can be compressed by HTTP middleware; weak tags identify equivalent representations.
@@ -164,7 +144,6 @@ impl MediaAsset {
             MediaKind::Thumbnail => Self::thumbnail(bytes),
             MediaKind::Animation => Self::animation(bytes),
             MediaKind::Preview => Self::preview(bytes),
-            MediaKind::Placeholder => Self::placeholder_svg(bytes),
         }
     }
     pub fn kind(&self) -> MediaKind {

@@ -121,9 +121,6 @@ fn collection_details_batch_large_ids_preserve_colors_and_reject_wrong_media_kin
     );
     assert!(media_document(writer.reader(), MediaTarget::Model("pattern".into())).is_err());
     assert!(choices(&writer.reader().snapshot().unwrap(), "not-a-gift".into()).is_err());
-    assert_eq!(model_documents(writer.reader(), 1).unwrap().len(), 1);
-    assert_eq!(model_documents(writer.reader(), 64).unwrap().len(), 64);
-    assert_eq!(model_documents(writer.reader(), 80).unwrap().len(), 80);
 }
 #[test]
 fn palettes_require_three_valid_rgb_colors() {

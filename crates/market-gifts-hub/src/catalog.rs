@@ -120,11 +120,6 @@ pub fn model_media(option: &w::AttributeOption) -> Option<GiftMedia> {
         .then(|| media(option))
         .flatten()
 }
-pub fn model_document(option: &w::AttributeOption) -> Option<TelegramDocumentId> {
-    (option.attribute_id == MODEL)
-        .then(|| document(option))
-        .flatten()
-}
 pub fn media_document(
     option: &w::AttributeOption,
     target: &MediaTarget,

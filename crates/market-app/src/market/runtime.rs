@@ -105,19 +105,6 @@ impl MarketRuntime {
         })
     }
 
-    #[cfg(feature = "bot")]
-    pub fn start_media_warmup(&self, cache: market_media::MediaCache) -> Result<()> {
-        let data = self.handle();
-        let stop = self.supervisor.token();
-        self.supervisor
-            .spawn_job(TaskKind::MediaWarmup, async move {
-                tokio::select! {
-                    _ = stop.cancelled() => {},
-                    _ = crate::media::warmup(data, cache) => {},
-                }
-                Ok(())
-            })
-    }
     pub fn start_api(&self, server: market_api::ApiServer) -> Result<()> {
         let stop = self.supervisor.token();
         self.supervisor.spawn_critical(TaskKind::Api, async move {

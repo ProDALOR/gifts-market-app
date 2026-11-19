@@ -116,18 +116,6 @@ async fn public_actor_contract_serves_typed_queries_results_and_subscription_err
     assert_eq!(page.data[0].price.as_str(), "3");
     assert_eq!(page.data[0].kind, m::GiftOrderKind::Ask);
     let catalog = service.handle.catalog_snapshot().await.unwrap().data;
-    assert!(service.handle.model_documents(1).await.unwrap().is_empty());
-    for limit in [0, 1001] {
-        assert_eq!(
-            service
-                .handle
-                .model_documents(limit)
-                .await
-                .unwrap_err()
-                .code(),
-            DataErrorCode::InvalidQuery
-        );
-    }
     assert_eq!(catalog.books[0], page.data[0].book);
     assert_eq!(catalog.collections[0].id.as_str(), "gift");
     assert_eq!(

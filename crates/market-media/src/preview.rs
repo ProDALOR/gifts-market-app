@@ -1,7 +1,7 @@
 //! Derived SVGs share source downloads, cache quotas, admission and shutdown with other media.
 use crate::{
-    DocumentId, MAX_PREVIEW_BYTES, MediaAsset, MediaCache, MediaError, MediaKey, MediaPriority,
-    MediaResult, scheduler::Running,
+    DocumentId, MAX_PREVIEW_BYTES, MediaAsset, MediaCache, MediaError, MediaKey, MediaResult,
+    scheduler::Running,
 };
 use std::{io::Read, process::Stdio, sync::atomic::Ordering, time::Duration};
 use tokio::io::AsyncReadExt;
@@ -193,7 +193,7 @@ impl MediaCache {
             Some(job) => job,
             None => self.job(key)?,
         };
-        let _demand = job.demand(MediaPriority::Interactive);
+        let _demand = job.demand();
         if let Some(asset) = self.disk(&job).await? {
             return Ok(asset);
         }

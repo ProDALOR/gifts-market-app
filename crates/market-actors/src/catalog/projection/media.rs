@@ -3,7 +3,6 @@ use super::read::entities;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
 use market_replica::ReplicaReader;
-use std::collections::BTreeSet;
 use tonic::Status;
 pub(crate) fn media_document(
     reader: ReplicaReader,
@@ -23,39 +22,4 @@ pub(crate) fn media_document(
             _ => None,
         })
         .ok_or_else(|| Status::not_found("gift media not found"))
-}
-pub(crate) fn model_documents(
-    reader: ReplicaReader,
-    limit: usize,
-) -> Result<Vec<TelegramDocumentId>, Status> {
-    let reader = reader.snapshot()?;
-    let mut documents = BTreeSet::new();
-    let mut token = String::new();
-    for _ in 0..250 {
-        let result = reader.read(w::ReadRequest {
-            selection: Some(w::Selection {
-                kinds: vec![w::EntityKind::AttributeOption as i32],
-                ..Default::default()
-            }),
-            limit: 200,
-            page_token: token,
-            mode: w::ReadMode::Live as i32,
-            ..Default::default()
-        })?;
-        for row in result.page.entities {
-            if let Some(w::entity::Entity::AttributeOption(option)) = row.entity
-                && let Some(document) = market_gifts_hub::model_document(&option)
-            {
-                documents.insert(document);
-                if documents.len() == limit {
-                    return Ok(documents.into_iter().collect());
-                }
-            }
-        }
-        token = result.page.next_page_token;
-        if token.is_empty() {
-            break;
-        }
-    }
-    Ok(documents.into_iter().collect())
 }

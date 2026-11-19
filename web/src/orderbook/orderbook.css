@@ -27,9 +27,6 @@
   gap: 12px;
   margin-bottom: var(--control-gap);
 }
-.sidebar-heading .brand {
-  font-size: 15px;
-}
 .market-results {
   display: flex;
   flex-direction: column;
@@ -185,12 +182,6 @@
   padding: 16px 0 4px;
   color: var(--muted);
   font-size: 9px;
-}
-.brand {
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 1px;
 }
 .api-link {
   margin-left: auto;

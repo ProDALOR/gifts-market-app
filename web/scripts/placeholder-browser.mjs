@@ -21,7 +21,7 @@ import {BrandMark} from '/src/brand/brand-mark.tsx';
 const root=createRoot(document.getElementById('fixture'));
 window.mount=(name='slow')=>root.render(React.createElement('div',{style:{display:'flex',gap:12}},
  ...['gift','gift','symbol'].map((kind,index)=>React.createElement(GiftArtwork,{key:index,
- media:{thumbnail_url:'/media/'+name+'/'+index+'/thumbnail',preview_url:'/media/'+name+'/'+index+'/preview',placeholder_url:'/media/'+name+'/'+index+'/placeholder'},
+ media:{thumbnail_url:'/media/'+name+'/'+index+'/thumbnail',preview_url:'/media/'+name+'/'+index+'/preview'},
  fallback:'X',playback:'static',placeholderKind:kind}))));
 window.brand=()=>root.render(React.createElement('div',null,React.createElement(BrandMark,{animated:true}),React.createElement(BrandMark)));
 window.unavailableSymbol=()=>root.render(React.createElement(GiftArtwork,{placeholderKind:'symbol',playback:'static',fallback:''}));

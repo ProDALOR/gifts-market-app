@@ -102,7 +102,8 @@ impl DiskStore {
                         accessed,
                     },
                 );
-            } else if obsolete_preview(&name)
+            } else if retired_placeholder(&name)
+                || obsolete_preview(&name)
                 || stale_temporary(&name, &metadata, self.limits.temporary_ttl)
             {
                 let _ = fs::remove_file(item.path());
@@ -448,7 +449,6 @@ fn parse_name(name: &str) -> Option<MediaKey> {
     match extension {
         "thumb" => Some(MediaKey::thumbnail(id)),
         "tgs" => Some(MediaKey::animation(id)),
-        "placeholder.svg" => Some(MediaKey::placeholder(id)),
         _ => {
             let (version, hash) = preview_extension(extension)?;
             (version == crate::asset::PREVIEW_VERSION).then(|| MediaKey::preview(id, hash))
@@ -468,6 +468,13 @@ fn preview_extension(extension: &str) -> Option<(&str, [u8; 32])> {
         *byte = u8::from_str_radix(encoded.get(index * 2..index * 2 + 2)?, 16).ok()?;
     }
     Some((version, hash))
+}
+// Remove only our retired cache filename shape, leaving unrelated SVGs intact.
+fn retired_placeholder(name: &str) -> bool {
+    name.strip_suffix(".placeholder.svg")
+        .and_then(|id| id.parse().ok())
+        .and_then(DocumentId::new)
+        .is_some()
 }
 fn obsolete_preview(name: &str) -> bool {
     let Some((id, extension)) = name.split_once('.') else {
@@ -496,6 +503,35 @@ mod tests {
     }
     fn image() -> MediaAsset {
         MediaAsset::thumbnail(b"\x89PNG\r\n\x1a\nsynthetic".to_vec()).unwrap()
+    }
+    #[test]
+    fn retired_outlines_are_removed_on_open_and_maintenance_without_touching_other_assets() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "42.placeholder.svg",
+            "0.placeholder.svg",
+            "-1.placeholder.svg",
+            "logo.placeholder.svg",
+            "42.svg",
+            "43.thumb",
+        ] {
+            fs::write(dir.path().join(name), b"cached").unwrap();
+        }
+        let store = DiskStore::open(dir.path().into(), MediaLimits::default()).unwrap();
+        assert!(!dir.path().join("42.placeholder.svg").exists());
+        for name in [
+            "0.placeholder.svg",
+            "-1.placeholder.svg",
+            "logo.placeholder.svg",
+            "42.svg",
+            "43.thumb",
+        ] {
+            assert!(dir.path().join(name).exists(), "{name}");
+        }
+        fs::write(dir.path().join("44.placeholder.svg"), b"retired").unwrap();
+        store.maintain().unwrap();
+        assert!(!dir.path().join("44.placeholder.svg").exists());
+        assert_eq!(store.index.lock().unwrap().bytes, 6);
     }
     #[test]
     fn obsolete_preview_versions_are_removed_without_touching_other_files() {

@@ -8,22 +8,20 @@ import { observePreviewSize } from "./preview-environment";
 /** Paint a still backdrop once per size/palette change, never on animation frames. */
 export function GiftBackdrop({
   palette,
-  patternUrl,
   patternUrls,
   visible,
   layout = "gift",
   background = true,
 }: {
   palette: BackdropPalette;
-  patternUrl?: string;
-  patternUrls?: string[];
+  patternUrls?: readonly string[];
   visible: boolean;
-  layout?: "gift" | "banner" | "preview";
+  layout?: "gift" | "banner";
   background?: boolean;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const { center, edge, pattern } = palette;
-  const urls = patternUrls || (patternUrl ? [patternUrl] : []);
+  const urls = patternUrls || [];
   const key = JSON.stringify([urls, pattern]);
   const [frame, setFrame] = useState<{
     key: string;
@@ -90,7 +88,6 @@ export function GiftBackdrop({
         context.fillRect(0, 0, width, height);
       }
       if (!symbols.some(Boolean)) return;
-      const size = Math.min(width, height) * 0.17;
       context.globalAlpha = 0.3;
       if (layout === "banner") {
         for (const tile of bannerPatternTiles(width, height, symbols.length)) {
@@ -98,22 +95,14 @@ export function GiftBackdrop({
           if (symbol)
             context.drawImage(symbol, tile.x, tile.y, tile.size, tile.size);
         }
-      } else if (layout === "preview") {
+      } else {
         const symbol = symbols[0];
         if (symbol)
           for (const tile of giftPatternTiles(width, height)) {
             context.globalAlpha = tile.opacity;
             context.drawImage(symbol, tile.x, tile.y, tile.size, tile.size);
           }
-      } else
-        for (let index = 0; index < 8; index++) {
-          const angle = -Math.PI / 2 + (index * Math.PI) / 4;
-          const x = width * (0.5 + 0.46 * Math.cos(angle));
-          const y = height * (0.5 + 0.41 * Math.sin(angle));
-          const symbol = symbols[0];
-          if (symbol)
-            context.drawImage(symbol, x - size / 2, y - size / 2, size, size);
-        }
+      }
       context.globalAlpha = 1;
     };
     const unobserve = observePreviewSize(target, draw);

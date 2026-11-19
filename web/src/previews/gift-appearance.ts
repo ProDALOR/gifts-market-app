@@ -29,7 +29,7 @@ export function giftAppearance(
   return {
     media,
     palette,
-    patternUrl,
+    patternUrls: patternUrl ? [patternUrl] : [],
     label: [
       "Gift preview",
       ...(palette ? [`${backdrop!.name} backdrop`] : []),

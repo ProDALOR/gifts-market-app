@@ -121,7 +121,7 @@ async fn api_only_process_ignores_telegram_environment_and_creates_no_auth_stora
             if let Ok(mut stream) = tokio::net::TcpStream::connect(address).await {
                 stream
                     .write_all(
-                        b"GET /sync HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                        b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
                     )
                     .await
                     .unwrap();
@@ -136,7 +136,6 @@ async fn api_only_process_ignores_telegram_environment_and_creates_no_auth_stora
     .unwrap();
     child.kill().await.unwrap();
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    assert!(response.contains("\"ready\":false"));
     assert!(!data_dir.join("session.key").exists());
     assert!(!data_dir.join("bot").exists());
 }
@@ -226,7 +225,7 @@ async fn credential_free_process_starts_api_without_telegram_storage() {
                 if let Ok(mut stream) = tokio::net::TcpStream::connect(address).await {
                     stream
                         .write_all(
-                            b"GET /sync HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                            b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
                         )
                         .await
                         .unwrap();

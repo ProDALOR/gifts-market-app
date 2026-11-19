@@ -1,10 +1,10 @@
-// Compare experimental pure-Rust SVG exports against the exact native/Lottie gift corpus.
+// Validate the production Rust renderer against the pinned 43-gift Lottie corpus.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
-import { gzipSync, gunzipSync } from "node:zlib";
+import { gzipSync } from "node:zlib";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,26 +39,19 @@ assert.deepEqual(
   reference.results.map(({ id, sourceSha256 }) => ({ id, sourceSha256 })),
   corpus.gifts.map(({ id, sourceSha256 }) => ({ id, sourceSha256 })),
 );
-const candidates = [
-  {
-    id: "rust",
-    executable: path.resolve(
-      root,
-      option("--renderer", "target/debug/market-media-render"),
-    ),
-    prefix: [],
-  },
-];
+const renderer = path.resolve(
+  root,
+  option("--renderer", "target/debug/market-media-render"),
+);
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
-candidates[0].executableSha256 = sha(await readFile(candidates[0].executable));
+const rendererSha256 = sha(await readFile(renderer));
 await mkdir(output, { recursive: true });
 const assets = new Map();
 const rows = [];
 for (const gift of reference.results) {
-  const source = await readFile(path.join(media, `${gift.id}.tgs`));
+  const input = path.join(media, `${gift.id}.tgs`);
+  const source = await readFile(input);
   assert.equal(sha(source), gift.sourceSha256, `Source changed: ${gift.id}`);
-  const json = path.join(output, `${gift.id}.json`);
-  await writeFile(json, gunzipSync(source));
   const original = await readFile(
     path.join(referenceDir, gift.variants.svg.file),
   );
@@ -67,40 +60,36 @@ for (const gift of reference.results) {
     type: "image/svg+xml",
   });
   await writeFile(path.join(output, `${gift.id}.reference.svg`), original);
-  for (const candidate of candidates) {
-    const file = `${gift.id}.${candidate.id}.svg`;
-    const row = {
-      id: gift.id,
-      composition: gift.composition,
-      candidate: candidate.id,
-      sourceSha256: gift.sourceSha256,
-      referenceSha256: sha(original),
-      file,
-      warnings: [],
-    };
-    const start = performance.now();
-    const result = spawnSync(
-      candidate.executable,
-      [...candidate.prefix, json, path.join(output, file)],
-      { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 },
-    );
-    row.processMs = performance.now() - start;
-    if (result.status !== 0) {
-      row.error =
-        result.error?.message ||
-        result.stderr.trim() ||
-        `Exit ${result.status}`;
-      row.passed = false;
-      rows.push(row);
-      continue;
-    }
-    const bytes = await readFile(path.join(output, file));
-    row.svgBytes = bytes.length;
-    row.gzipBytes = gzipSync(bytes).length;
-    row.svgSha256 = sha(bytes);
-    assets.set(`/${file}`, { bytes, type: "image/svg+xml" });
+  const file = `${gift.id}.rust.svg`;
+  const row = {
+    id: gift.id,
+    composition: gift.composition,
+    sourceSha256: gift.sourceSha256,
+    referenceSha256: sha(original),
+    file,
+    diagnostics: [],
+  };
+  const start = performance.now();
+  const result = spawnSync(renderer, [input, path.join(output, file)], {
+    encoding: "utf8",
+    timeout: 10000,
+    maxBuffer: 1024 * 1024,
+  });
+  row.processMs = performance.now() - start;
+  if (result.status !== 0) {
+    row.error =
+      result.error?.message || result.stderr.trim() || `Exit ${result.status}`;
+    row.passed = false;
     rows.push(row);
+    continue;
   }
+  row.diagnostics = result.stderr.trim() ? [result.stderr.trim()] : [];
+  const bytes = await readFile(path.join(output, file));
+  row.svgBytes = bytes.length;
+  row.gzipBytes = gzipSync(bytes).length;
+  row.svgSha256 = sha(bytes);
+  assets.set(`/${file}`, { bytes, type: "image/svg+xml" });
+  rows.push(row);
 }
 const server = createServer((request, response) => {
   if (request.url === "/") {
@@ -133,9 +122,7 @@ try {
   await page.evaluate(installPreviewMetrics);
   for (const row of rows) {
     if (row.error) {
-      console.log(
-        `FAIL ${row.candidate} ${row.id}: ${row.error.slice(0, 160)}`,
-      );
+      console.log(`FAIL ${row.id}: ${row.error.slice(0, 160)}`);
       continue;
     }
     try {
@@ -172,14 +159,11 @@ try {
       row.visualPassed =
         row.quality.psnr >= 30 && row.quality.changedPercent <= 10;
       row.passed =
-        row.visualPassed && row.vectorOnly && row.warnings.length === 0;
+        row.visualPassed && row.vectorOnly && row.diagnostics.length === 0;
       const bytes = Buffer.from(png, "base64");
-      await writeFile(
-        path.join(output, `${row.id}.${row.candidate}.png`),
-        bytes,
-      );
+      await writeFile(path.join(output, `${row.id}.rust.png`), bytes);
       console.log(
-        `${row.passed ? "PASS" : "FAIL"} ${row.candidate} ${row.id}: ${row.quality.psnr.toFixed(1)} dB / ${row.quality.changedPercent.toFixed(1)}%, ${row.warnings.length} warning(s)`,
+        `${row.passed ? "PASS" : "FAIL"} ${row.id}: ${row.quality.psnr.toFixed(1)} dB / ${row.quality.changedPercent.toFixed(1)}%, ${row.diagnostics.length} diagnostic(s)`,
       );
     } catch (error) {
       row.error = error.message;
@@ -194,25 +178,21 @@ try {
       ? values[middle]
       : (values[middle - 1] + values[middle]) / 2;
   };
-  const summary = candidates.map((candidate) => {
-    const samples = rows.filter((row) => row.candidate === candidate.id);
-    const exports = samples.filter((row) => !row.error);
-    return {
-      candidate: candidate.id,
-      total: samples.length,
-      exported: exports.length,
-      visualPassed: exports.filter((row) => row.visualPassed).length,
-      passed: samples.filter((row) => row.passed).length,
-      warnings: exports.filter((row) => row.warnings.length > 0).length,
-      medianProcessMs: median(exports.map((row) => row.processMs)),
-      medianGzipBytes: median(exports.map((row) => row.gzipBytes)),
-      medianPsnr: median(
-        exports
-          .map((row) => row.quality?.psnr)
-          .filter((value) => value !== undefined),
-      ),
-    };
-  });
+  const exports = rows.filter((row) => !row.error);
+  const summary = {
+    total: rows.length,
+    exported: exports.length,
+    visualPassed: exports.filter((row) => row.visualPassed).length,
+    passed: rows.filter((row) => row.passed).length,
+    diagnostics: exports.filter((row) => row.diagnostics.length > 0).length,
+    medianProcessMs: median(exports.map((row) => row.processMs)),
+    medianGzipBytes: median(exports.map((row) => row.gzipBytes)),
+    medianPsnr: median(
+      exports
+        .map((row) => row.quality?.psnr)
+        .filter((value) => value !== undefined),
+    ),
+  };
   const report = {
     created: new Date().toISOString(),
     browser: browser.version(),
@@ -227,9 +207,9 @@ try {
       maxChannelDifference: 10,
       backgrounds: [24, 245],
       vectorOnly: true,
-      noWarnings: true,
+      noDiagnostics: true,
     },
-    candidates,
+    renderer: { executable: renderer, sha256: rendererSha256 },
     summary,
     results: rows,
   };
@@ -249,17 +229,10 @@ try {
           "'": "&#39;",
         })[char],
     );
-  const gallery = `<!doctype html><meta charset=utf-8><style>body{background:#211d25;color:#eee;font:14px system-ui}section{display:flex;gap:12px;align-items:center;margin:16px 0}aside{width:220px}article{width:256px;text-align:center}img,.error{width:256px;height:256px;background:radial-gradient(#b489ad,#674260)}small{display:block}.error{overflow:auto;text-align:left;white-space:pre-wrap}</style><h1>Rust SVG comparison</h1><pre>${escape(JSON.stringify(summary, null, 2))}</pre>${reference.results
+  const gallery = `<!doctype html><meta charset=utf-8><style>body{background:#211d25;color:#eee;font:14px system-ui}section{display:flex;gap:12px;align-items:center;margin:16px 0}aside{width:220px}article{width:256px;text-align:center}img,.error{width:256px;height:256px;background:radial-gradient(#b489ad,#674260)}small{display:block}.error{overflow:auto;text-align:left;white-space:pre-wrap}</style><h1>Rust SVG comparison</h1><pre>${escape(JSON.stringify(summary, null, 2))}</pre>${rows
     .map(
-      (gift) =>
-        `<section data-id="${gift.id}"><aside>${escape(gift.composition ?? "Untitled")}<small>${gift.id}</small></aside><article><img src="${gift.id}.reference.svg"><small>Lottie baseline</small></article>${candidates
-          .map((candidate) => {
-            const row = rows.find(
-              (row) => row.id === gift.id && row.candidate === candidate.id,
-            );
-            return `<article>${row.error ? `<div class="error">${escape(row.error)}</div>` : `<img src="${row.file}">`}<small>${candidate.id}: ${row.error ? "ERROR" : `${row.quality?.psnr.toFixed(1)} dB / ${row.quality?.changedPercent.toFixed(1)}%`}</small><small>${row.warnings.length} warning(s)</small></article>`;
-          })
-          .join("")}</section>`,
+      (row) =>
+        `<section data-id="${row.id}"><aside>${escape(row.composition ?? "Untitled")}<small>${row.id}</small></aside><article><img src="${row.id}.reference.svg"><small>Lottie baseline</small></article><article>${row.error ? `<div class="error">${escape(row.error)}</div>` : `<img src="${row.file}">`}<small>Rust: ${row.error ? "ERROR" : `${row.quality?.psnr.toFixed(1)} dB / ${row.quality?.changedPercent.toFixed(1)}%`}</small><small>${row.diagnostics.length} diagnostic(s)</small></article></section>`,
     )
     .join("")}`;
   await writeFile(path.join(output, "comparison.html"), gallery);
@@ -290,8 +263,7 @@ try {
     .screenshot({ path: path.join(output, "regression-cases.png") });
   console.log(JSON.stringify(summary, null, 2));
   console.log(`Report: ${output}`);
-  if (summary.some((candidate) => candidate.passed !== candidate.total))
-    process.exitCode = 1;
+  if (summary.passed !== summary.total) process.exitCode = 1;
 } finally {
   await browser?.close();
   await new Promise((resolve) => server.close(resolve));

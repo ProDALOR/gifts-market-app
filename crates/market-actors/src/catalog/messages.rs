@@ -21,13 +21,6 @@ pub(crate) struct MediaDocument {
     pub permit: market_replica::ReadPermit,
 }
 #[derive(Message)]
-#[rtype(result = "Result<Vec<market_gifts::TelegramDocumentId>,Status>")]
-pub(crate) struct ModelDocuments {
-    pub limit: usize,
-    pub permit: market_replica::ReadPermit,
-}
-
-#[derive(Message)]
 #[rtype(result = "Result<market_gifts::CatalogVersions,Status>")]
 pub(crate) struct Versions {
     pub ids: Vec<market_gifts::CollectionId>,

@@ -6,7 +6,7 @@ import { createServer } from "vite";
 import { chromium } from "playwright";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style.css"></head><body>
-<style>.detail-test{position:fixed;top:0;left:0;width:160px;height:160px;z-index:10}.loading-offscreen{margin-top:1800px}#fixture{margin:50px;height:4000px}.mixed-renderers{display:flex;flex-wrap:wrap;width:320px}</style><div id="fixture"></div>
+<style>.detail-test{position:fixed;top:0;left:0;width:160px;height:160px;z-index:10}.loading-offscreen{margin-top:1800px}#fixture{margin:50px;height:4000px}.layout-test .gift-preview{width:140px;height:140px;min-height:140px;aspect-ratio:1}.mixed-renderers{display:flex;flex-wrap:wrap;width:320px}</style><div id="fixture"></div>
 <script type="module">
 import React from 'react';
 import {createRoot} from 'react-dom/client';
@@ -31,6 +31,8 @@ const root=createRoot(document.getElementById('fixture'));
 window.mount=(large=false)=>root.render(React.createElement(GiftPreview,{order,options,fallback:'G',size:large?'large':'small',playback:large?'detail':'interaction'},
  React.createElement('span',{className:'venue-icon',style:{position:'relative',zIndex:4}},React.createElement(VenueIcon,{name:'MRKT'}))));
 window.unmount=()=>root.render(null);
+window.mountLayouts=()=>root.render(React.createElement('div',{className:'layout-test'},
+ ...['small','large'].map(size=>React.createElement(GiftPreview,{key:size,order,options,size,playback:'static',fallback:'G'}))));
 window.mountSelection=()=>{
  const collections=[{id:'gift',name:'Gift',preview:options.get('model').media,model_ids:['model'],backdrop_ids:[],pattern_ids:[]}];
  root.render(React.createElement(React.Fragment,null,
@@ -71,7 +73,7 @@ window.mountMixed=()=>root.render(React.createElement('div',{className:'mixed-re
 window.mountGradient=(playback='detail')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/gradient-still',preview_url:'/media/opacity-test/preview',animation_url:'/media/opacity-test/animation'},fallback:'G',playback}));
 window.mountSource=(thumbnail,playback='static')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:thumbnail,animation_url:'/media/custom-motion.tgs?v=2'},fallback:'F',playback}));
 window.mountLarge=(playback='static',preview='/media/large-preview.svg')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/large-still',preview_url:preview,animation_url:'/media/custom-motion.tgs?v=2'},fallback:'L',size:'large',playback}));
-window.mountLoading=(name='slow')=>root.render(React.createElement('div',{className:name==='offscreen'?'loading-offscreen':''},React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/models/loading-'+name+'/thumbnail',placeholder_url:'/media/models/loading-'+name+'/placeholder'},fallback:'P',playback:'static',className:'loading-test'})));
+window.mountLoading=(name='slow')=>root.render(React.createElement('div',{className:name==='offscreen'?'loading-offscreen':''},React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/models/loading-'+name+'/thumbnail'},fallback:'P',playback:'static',className:'loading-test'})));
 window.mount();
 </script></body></html>`;
 const server = await createServer({
@@ -130,6 +132,17 @@ try {
       if (window.__trackPreviewTimers && [100, 150, 180].includes(delay))
         window.__previewTimers++;
       return timeout(callback, delay, ...args);
+    };
+    const fill = CanvasRenderingContext2D.prototype.fillRect;
+    CanvasRenderingContext2D.prototype.fillRect = function (...args) {
+      if (this.canvas.closest(".layout-test")) this.canvas.symbolTiles = [];
+      return fill.apply(this, args);
+    };
+    const draw = CanvasRenderingContext2D.prototype.drawImage;
+    CanvasRenderingContext2D.prototype.drawImage = function (source, ...args) {
+      if (this.canvas.closest(".layout-test"))
+        this.canvas.symbolTiles.push([...args, this.globalAlpha]);
+      return draw.call(this, source, ...args);
     };
     const clear = CanvasRenderingContext2D.prototype.clearRect;
     CanvasRenderingContext2D.prototype.clearRect = function (...args) {
@@ -1143,6 +1156,25 @@ try {
   loadingStills.splice(0).forEach((release) => release());
   await page.evaluate(() => window.unmount());
   await page.waitForFunction(() => window.previewResizeTargets === 0);
+  await page.evaluate(() => window.mountLayouts());
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll(".layout-test .gift-backdrop")].filter(
+        (canvas) => canvas.symbolTiles?.length === 18,
+      ).length === 2,
+  );
+  const tiles = await page.evaluate(() =>
+    [...document.querySelectorAll(".layout-test .gift-backdrop")].map(
+      (canvas) => canvas.symbolTiles,
+    ),
+  );
+  assert.deepEqual(
+    tiles[0],
+    tiles[1],
+    "Cards and details share symbol geometry and opacity",
+  );
+  assert.equal(new Set(tiles[0].map((tile) => tile[4])).size > 3, true);
+  await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(
     "Preview browser lifecycle passed: hover reuse, runtime error fallback, motion, visibility, offscreen, collection/selection autoplay, details, sharp large stills, SVG retry/fallback, transparent CSS placeholders, bounded downloads/playback, responsive canvas sizes, desktop labels/menus, long-rail initialization and observer cleanup.",

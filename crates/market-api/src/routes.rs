@@ -112,7 +112,7 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
     )
     .route("/valuations/gift", web::post().to(gift_valuation))
     .service(
-        web::resource("/media/{kind}/{id}/{variant:preview|placeholder}")
+        web::resource("/media/{kind}/{id}/{variant:preview}")
             .wrap(actix_web::middleware::Compress::default())
             .route(web::get().to(crate::media::get)),
     )

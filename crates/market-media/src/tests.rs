@@ -162,7 +162,6 @@ async fn animation_and_thumbnail_have_separate_cache_entries_and_survive_offline
                 Ok(match key.kind() {
                     MediaKind::Thumbnail => image(),
                     MediaKind::Animation => animation(),
-                    MediaKind::Placeholder => unreachable!("fixture does not request outlines"),
                     MediaKind::Preview => unreachable!("Previews are generated locally"),
                 })
             })
@@ -321,23 +320,19 @@ async fn disk_quota_and_stale_temporary_cleanup_preserve_unrelated_files() {
     );
 }
 #[tokio::test]
-async fn foreground_precedes_warmup_and_abandoned_downloads_are_skipped() {
+async fn downloads_are_fifo_and_abandoned_requests_are_skipped() {
     let directory = tempfile::tempdir().unwrap();
     let (cache, mut downloads) = MediaCache::open(directory.path()).await.unwrap();
-    let prefetch_cache = cache.clone();
-    let prefetch = tokio::spawn(async move {
-        prefetch_cache
-            .get_with_priority(key(1), MediaPriority::Prefetch)
-            .await
-    });
+    let first_cache = cache.clone();
+    let first = tokio::spawn(async move { first_cache.get(key(1)).await });
     wait_for(|| cache.stats().queued == 1).await;
     let cancelled_cache = cache.clone();
     let cancelled = tokio::spawn(async move { cancelled_cache.get(key(2)).await });
     wait_for(|| cache.stats().queued == 2).await;
     cancelled.abort();
     let _ = cancelled.await;
-    let foreground_cache = cache.clone();
-    let foreground = tokio::spawn(async move { foreground_cache.get(key(3)).await });
+    let last_cache = cache.clone();
+    let last = tokio::spawn(async move { last_cache.get(key(3)).await });
     wait_for(|| cache.stats().queued == 3).await;
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let observed = order.clone();
@@ -349,10 +344,10 @@ async fn foreground_precedes_warmup_and_abandoned_downloads_are_skipped() {
             })
             .await
     });
-    foreground.await.unwrap().unwrap();
-    prefetch.await.unwrap().unwrap();
+    last.await.unwrap().unwrap();
+    first.await.unwrap().unwrap();
     wait_for(|| cache.stats().skipped_downloads == 1).await;
-    assert_eq!(*order.lock().unwrap(), [key(3), key(1)]);
+    assert_eq!(*order.lock().unwrap(), [key(1), key(3)]);
     cache.shutdown().await;
     worker.await.unwrap();
 }

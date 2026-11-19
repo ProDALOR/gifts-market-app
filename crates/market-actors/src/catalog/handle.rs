@@ -74,20 +74,4 @@ impl CatalogHandle {
             .await
             .map_err(closed)?
     }
-    pub async fn model_documents(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<market_gifts::TelegramDocumentId>, Status> {
-        if !(1..=1000).contains(&limit) {
-            return Err(Status::invalid_argument(
-                "model document limit must be 1..1000",
-            ));
-        }
-        let permit = self.budget.try_query()?;
-        let _cancel = permit.cancel_on_drop();
-        self.address
-            .send(super::messages::ModelDocuments { limit, permit })
-            .await
-            .map_err(closed)?
-    }
 }

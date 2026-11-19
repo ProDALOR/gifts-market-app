@@ -16,7 +16,7 @@ const png = Buffer.from(
 const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style.css"></head><body><div id="fixture" style="padding:25px;height:2400px"></div><script type="module">
 import React from 'react';import{createRoot}from'react-dom/client';import{GiftArtwork}from'/src/previews/gift-artwork.tsx';
 const root=createRoot(document.getElementById('fixture'));
-window.mount=name=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/still.png',preview_url:'/media/'+name+'.svg'},size:'large',playback:'static',fallback:'G'}));
+window.mount=(name,fallback='/media/still.png')=>root.render(React.createElement(GiftArtwork,{media:{thumbnail_url:fallback,preview_url:'/media/'+name+'.svg'},size:'large',playback:'static',fallback:'G'}));
 window.clear=()=>root.render(null);
 // Advance long cooldowns without faking animation frames or browser image decoding.
 const now=Date.now,timeout=setTimeout,clear=clearTimeout;let offset=0,next=-1;const timers=new Map();Date.now=()=>now()+offset;
@@ -46,8 +46,14 @@ const server = await createServer({
             "Content-Type",
             req.url.endsWith(".svg") ? "image/svg+xml" : "image/png",
           );
-          if (
-            req.url.endsWith(".svg") &&
+          if (req.url === "/media/missing.svg") {
+            res.statusCode = 404;
+            res.setHeader("Cache-Control", "no-store");
+            res.end();
+          } else if (
+            (req.url === "/media/recover.png" ||
+              req.url === "/media/cancel.png" ||
+              req.url.endsWith(".svg")) &&
             req.url !== "/media/invalid.svg" &&
             !ready.has(req.url)
           ) {
@@ -105,6 +111,59 @@ try {
     "Decode and remount reuse the warmed HTTP cache",
   );
 
+  // A terminal preferred-image miss must not starve a transient fallback.
+  await page.evaluate(() => window.mount("missing", "/media/recover.png"));
+  await page.waitForFunction(() => !document.querySelector("img"));
+  for (let i = 0; i < 100 && count("/media/recover.png") < 2; i++)
+    await page.waitForTimeout(10);
+  assert.equal(count("/media/recover.png"), 2);
+  assert.equal(count("/media/missing.svg"), 2);
+  ready.add("/media/recover.png");
+  await page.evaluate(() => window.advance(60_100));
+  await page.locator('img.loaded[src="/media/recover.png"]').waitFor();
+  assert.equal(count("/media/recover.png"), 3);
+  assert.equal(
+    count("/media/missing.svg"),
+    2,
+    "Fallback recovery does not poll a terminal SVG miss",
+  );
+  assert.equal(await page.locator(".gift-loading-placeholder").count(), 0);
+
+  await page.evaluate(() => window.mount("cancel-both", "/media/cancel.png"));
+  for (let i = 0; i < 100 && count("/media/cancel.png") < 2; i++)
+    await page.waitForTimeout(10);
+  assert.equal(count("/media/cancel.png"), 2);
+  assert.equal(count("/media/cancel-both.svg"), 2);
+  await page.evaluate(() => window.clear());
+  await page.waitForFunction(() => !document.querySelector(".gift-preview"));
+  ready.add("/media/cancel.png");
+  ready.add("/media/cancel-both.svg");
+  await page.evaluate(() => window.advance(60_100));
+  await page.waitForTimeout(30);
+  assert.equal(
+    count("/media/cancel.png"),
+    2,
+    "Unmount cancels fallback retries",
+  );
+  assert.equal(
+    count("/media/cancel-both.svg"),
+    2,
+    "Unmount cancels preferred retries",
+  );
+
+  await pending("stale");
+  await page.evaluate(() => window.mount("recover"));
+  await page.locator('img.loaded[src="/media/recover.svg"]').waitFor();
+  ready.add("/media/stale.svg");
+  await page.evaluate(() => window.advance(60_100));
+  await page.locator('img.loaded[src="/media/recover.svg"]').waitFor();
+  assert.equal(
+    count("/media/stale.svg"),
+    2,
+    "Changing artwork cancels retries owned by the previous source",
+  );
+  assert.equal(await page.locator('img[src="/media/stale.svg"]').count(), 0);
+
   await pending("reenter");
   await page.evaluate(() => window.scrollTo(0, 1300));
   await page.waitForTimeout(100);
@@ -151,7 +210,7 @@ try {
   assert.equal(await page.locator('img[src="/media/invalid.svg"]').count(), 0);
   assert.deepEqual(errors, []);
   console.log(
-    "Media retry browser passed: long Retry-After, visible recovery, cached decode/remount, cooldown reentry, cancellation and invalid-image fallback.",
+    "Media retry browser passed: long Retry-After, visible recovery, cached decode/remount, cooldown reentry, cancellation, source changes, independent fallback recovery and invalid-image fallback.",
   );
 } finally {
   await browser?.close();

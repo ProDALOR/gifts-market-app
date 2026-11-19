@@ -1,12 +1,4 @@
-import {
-  lazy,
-  memo,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
 import type { GiftMedia } from "../market";
 import type { ReactNode } from "react";
 import type { BackdropPalette } from "./gift-appearance";
@@ -16,7 +8,7 @@ import {
   usePreviewEnvironment,
   usePreviewVisibility,
 } from "./preview-environment";
-import { recoverImage } from "./media-client";
+import { useArtworkImage } from "./use-artwork-image";
 import { useSettledVisibility } from "./use-playback";
 import type { PlaybackPolicy } from "./use-playback";
 const ModelAnimation = lazy(() => import("./model-animation"));
@@ -24,7 +16,7 @@ const ModelAnimation = lazy(() => import("./model-animation"));
 type ArtworkProps = {
   media?: GiftMedia;
   palette?: BackdropPalette;
-  patternUrl?: string;
+  patternUrls?: readonly string[];
   label?: string;
   fallback: string;
   size?: "small" | "large";
@@ -51,7 +43,7 @@ export const GiftArtwork = memo(function GiftArtwork(props: ArtworkProps) {
 function Artwork({
   media,
   palette,
-  patternUrl,
+  patternUrls,
   label = "Gift preview",
   fallback,
   size = "small",
@@ -60,16 +52,19 @@ function Artwork({
   placeholderKind = "gift",
   children,
 }: ArtworkProps) {
-  const highResolution = size === "large" || playback === "detail";
-  const [previewFailed, setPreviewFailed] = useState(false);
+  const preferVectorPlayback = size === "large" || playback === "detail";
   const preferred = media?.preview_url ?? media?.thumbnail_url;
-  const url = previewFailed ? media?.thumbnail_url : preferred;
   const animationUrl = media?.animation_url;
   const host = useRef<HTMLSpanElement>(null);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const visible = usePreviewVisibility(host);
   const { pageVisible, reducedMotion } = usePreviewEnvironment();
+  const image = useArtworkImage(
+    preferred,
+    media?.thumbnail_url,
+    visible && pageVisible,
+  );
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -88,7 +83,7 @@ function Artwork({
       ? 100
       : interactive
         ? 30
-        : highResolution
+        : preferVectorPlayback
           ? 25
           : playback === "selected"
             ? 20
@@ -100,43 +95,12 @@ function Artwork({
       interactive ||
       (settled && playback !== "interaction"));
   useEffect(() => () => clearTimeout(hoverTimer.current), [canInteract]);
-  const [attempt, setAttempt] = useState(0);
-  const [failed, setFailed] = useState(false);
-  // One owner for poster, animation and loading UI; either ready source stops the placeholder.
-  const [ready, setReady] = useState({ still: false, animation: false });
-  const setStillReady = useCallback((still: boolean) => {
-    setReady((previous) =>
-      previous.still === still ? previous : { ...previous, still },
-    );
-  }, []);
-  const setAnimationReady = useCallback((animation: boolean) => {
-    setReady((previous) =>
-      previous.animation === animation ? previous : { ...previous, animation },
-    );
-  }, []);
-  const artworkReady = ready.still || ready.animation;
+  const [animationReady, setAnimationReady] = useState(false);
+  const artworkReady = image.ready || animationReady;
   const [requested, setRequested] = useState(false);
   useEffect(() => {
     if (shouldAnimate) setRequested(true);
   }, [shouldAnimate]);
-  const recoveryUrl = previewFailed ? preferred : failed ? url : undefined;
-  useEffect(() => {
-    if (!recoveryUrl || !visible || !pageVisible) return;
-    const stop = new AbortController();
-    void recoverImage(recoveryUrl, stop.signal).then(
-      () => {
-        if (stop.signal.aborted) return;
-        if (recoveryUrl === preferred) setPreviewFailed(false);
-        setFailed(false);
-        setStillReady(false);
-        setAttempt((value) => value + 1);
-      },
-      () => {
-        /* A known missing/invalid asset retries on the next visible use after its deadline. */
-      },
-    );
-    return () => stop.abort();
-  }, [recoveryUrl, preferred, visible, pageVisible, setStillReady]);
   return (
     <span
       ref={host}
@@ -157,7 +121,7 @@ function Artwork({
       onFocus={canInteract ? () => setFocused(true) : undefined}
       onBlur={() => setFocused(false)}
       tabIndex={
-        url &&
+        preferred &&
         (playback === "interaction" || playback === "selected") &&
         !children
           ? 0
@@ -170,8 +134,7 @@ function Artwork({
       {palette && (
         <GiftBackdrop
           palette={palette}
-          patternUrl={patternUrl}
-          layout={size === "large" ? "preview" : "gift"}
+          patternUrls={patternUrls}
           visible={visible && pageVisible}
         />
       )}
@@ -180,38 +143,32 @@ function Artwork({
           <GiftPlaceholder
             kind={placeholderKind}
             active={visible && pageVisible}
-            loading={!failed && (!!url || shouldAnimate)}
+            loading={image.loading || shouldAnimate}
           />
         ) : (
           <span className="gift-preview-fallback">{fallback}</span>
         ))}
-      {url && !failed && (
+      {image.sources.map((source) => (
         <img
-          key={attempt}
-          src={url}
+          key={`${source.url}:${source.attempt}`}
+          src={source.url}
           alt=""
           loading={playback === "detail" ? "eager" : "lazy"}
           decoding="async"
-          className={`gift-model-image${ready.still ? " loaded" : ""}`}
-          onLoad={() => setStillReady(true)}
-          onError={() => {
-            setStillReady(false);
-            if (!previewFailed && preferred !== media?.thumbnail_url) {
-              setPreviewFailed(true);
-              setAttempt(0);
-            } else setFailed(true);
-          }}
+          className={`gift-model-image${source.status === "ready" ? " loaded" : ""}`}
+          onLoad={source.loaded}
+          onError={source.failed}
         />
-      )}
+      ))}
       {requested && playback !== "static" && animationUrl && (
         <Suspense fallback={null}>
           <ModelAnimation
             url={animationUrl}
             active={shouldAnimate}
-            vector={highResolution}
+            vector={preferVectorPlayback}
             priority={priority}
             retain={visible && pageVisible && !reducedMotion}
-            ready={ready.animation}
+            ready={animationReady}
             onReady={setAnimationReady}
           />
         </Suspense>

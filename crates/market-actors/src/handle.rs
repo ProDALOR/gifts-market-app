@@ -70,10 +70,6 @@ impl MarketDataHandle {
     pub async fn media_document(&self, target: MediaTarget) -> error::Result<TelegramDocumentId> {
         Ok(self.catalog.media_document(target).await?)
     }
-    /// Return at most `limit` distinct model documents (1..=1000).
-    pub async fn model_documents(&self, limit: usize) -> error::Result<Vec<TelegramDocumentId>> {
-        Ok(self.catalog.model_documents(limit).await?)
-    }
     pub async fn status(&self) -> error::Result<SyncStatus> {
         protocol::sync(self.orderbooks.status().await?)
     }

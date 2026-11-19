@@ -1,7 +1,7 @@
 use crate::{
     MediaAsset, MediaError, MediaKey, MediaLimits, MediaResult,
     disk::DiskStore,
-    scheduler::{Job, MediaDownloader, MediaPriority, Queue},
+    scheduler::{Job, MediaDownloader, Queue},
 };
 use std::{
     collections::HashMap,
@@ -215,10 +215,6 @@ impl MediaCache {
         self.disk(&job).await
     }
     pub async fn get(&self, key: MediaKey) -> MediaResult {
-        self.get_with_priority(key, MediaPriority::Interactive)
-            .await
-    }
-    pub async fn get_with_priority(&self, key: MediaKey, priority: MediaPriority) -> MediaResult {
         if key.kind() == crate::MediaKind::Preview {
             return Err(MediaError::InvalidMedia);
         }
@@ -229,7 +225,7 @@ impl MediaCache {
             return Ok(asset);
         }
         let job = self.job(key)?;
-        let _demand = job.demand(priority);
+        let _demand = job.demand();
         if let Some(asset) = self.disk(&job).await? {
             return Ok(asset);
         }

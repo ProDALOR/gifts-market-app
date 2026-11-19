@@ -12,8 +12,6 @@ pub struct GiftMedia {
     pub preview_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub animation_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub placeholder_url: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GiftCollection {
@@ -63,14 +61,12 @@ impl From<gifts::GiftMedia> for GiftMedia {
         let base = format!("/media/{kind}/{id}");
         let thumbnail_url = format!("{base}/thumbnail");
         let animation_url = animated.then(|| format!("{base}/animation"));
-        let placeholder_url = animated.then(|| format!("{base}/placeholder"));
         let preview_url =
             animated.then(|| format!("{base}/preview?v={}", market_media::PREVIEW_VERSION));
         Self {
             thumbnail_url,
             animation_url,
             preview_url,
-            placeholder_url,
         }
     }
 }
@@ -129,7 +125,7 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
     }
 }
 /// Internal representation namespace; update if URL/JSON mapping changes.
-const REPRESENTATION: &[u8] = b"gift-catalog:media-variants-and-outlines\0";
+const REPRESENTATION: &[u8] = b"gift-catalog:svg-media\0";
 /// A stable 128-bit cache validator; tokens are opaque and provide no authentication.
 pub(crate) fn revision(domain: &str) -> String {
     let mut hash = Sha256::new();
@@ -151,7 +147,19 @@ mod tests {
     use super::*;
     #[test]
     fn revisions_are_short_stable_opaque_tokens_derived_from_the_full_content_version() {
-        assert_eq!(revision("content"), "ouP372k6PKyWzrwQZ6Hetg");
+        assert_eq!(revision("content"), "1q9h6blJLu4xJrwFrNXKVg");
+        let old = Sha256::digest(
+            [
+                b"gift-catalog:media-variants-and-outlines\0".as_slice(),
+                b"content",
+            ]
+            .concat(),
+        );
+        assert_ne!(
+            revision("content"),
+            URL_SAFE_NO_PAD.encode(&old[..16]),
+            "Removing placeholder URLs must invalidate existing catalog ETags and watch tokens"
+        );
         let original = "0".repeat(64);
         let mut changed = original.clone();
         changed.replace_range(63.., "1");
@@ -209,9 +217,11 @@ mod tests {
                 model.thumbnail_url.trim_end_matches("/thumbnail")
             ))
         );
-        assert_eq!(
-            model.placeholder_url.as_deref(),
-            Some("/media/models/a%2Fb%3F%23%F0%9F%92%8E/placeholder")
+        assert!(
+            serde_json::to_value(&model)
+                .unwrap()
+                .get("placeholder_url")
+                .is_none()
         );
         let pattern = GiftMedia::from(gifts::GiftMedia {
             target: gifts::MediaTarget::Pattern("pattern".into()),
@@ -219,7 +229,6 @@ mod tests {
         assert_eq!(pattern.thumbnail_url, "/media/patterns/pattern/thumbnail");
         assert!(pattern.animation_url.is_none());
         assert!(pattern.preview_url.is_none());
-        assert!(pattern.placeholder_url.is_none());
         let json = serde_json::to_value(pattern).unwrap();
         assert!(json.get("target").is_none());
         assert!(json.get("preview_url").is_none());

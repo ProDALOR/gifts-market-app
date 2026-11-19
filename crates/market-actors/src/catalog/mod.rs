@@ -52,14 +52,6 @@ impl Handler<messages::MediaDocument> for CatalogActor {
         })
     }
 }
-impl Handler<messages::ModelDocuments> for CatalogActor {
-    type Result = ResponseFuture<Result<Vec<market_gifts::TelegramDocumentId>, Status>>;
-    fn handle(&mut self, message: messages::ModelDocuments, _: &mut Self::Context) -> Self::Result {
-        self.environment.blocking(message.permit, move |reader| {
-            projection::model_documents(reader, message.limit)
-        })
-    }
-}
 
 impl Handler<messages::Versions> for CatalogActor {
     type Result = ResponseFuture<Result<market_gifts::CatalogVersions, Status>>;

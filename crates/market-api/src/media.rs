@@ -33,7 +33,6 @@ pub(crate) enum MediaVariant {
     Thumbnail,
     Preview,
     Animation,
-    Placeholder,
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct MediaPath {
@@ -60,7 +59,6 @@ impl MediaPath {
             MediaVariant::Thumbnail => MediaKind::Thumbnail,
             MediaVariant::Preview => MediaKind::Preview,
             MediaVariant::Animation => MediaKind::Animation,
-            MediaVariant::Placeholder => MediaKind::Placeholder,
         };
         Ok((target, kind))
     }
@@ -68,8 +66,8 @@ impl MediaPath {
 #[utoipa::path(get,tag="Media",path="/media/{kind}/{id}/{variant}",
     params(("kind"=MediaCategory,Path,description="Catalog media category"),
            ("id"=String,Path,description="Catalog model or pattern ID; never an arbitrary Telegram file ID"),
-           ("variant"=MediaVariant,Path,description="Models support all variants; patterns support thumbnail only. Missing outlines return 404.")),
-    responses((status=200,description="Thumbnail (PNG/JPEG/WebP), preview/placeholder (passive SVG), or animation (validated, expression-free gzip-compressed TGS)",
+           ("variant"=MediaVariant,Path,description="Models support thumbnail, preview and animation; patterns support thumbnail only.")),
+    responses((status=200,description="Thumbnail (PNG/JPEG/WebP), preview (passive SVG), or animation (validated, expression-free gzip-compressed TGS)",
                content(("image/png"),("image/jpeg"),("image/webp"),("image/svg+xml"),("application/x-tgsticker"))),
               (status=304,description="Cached media unchanged"),(status=400,body=crate::error::ErrorResponse),
               (status=404,body=crate::error::ErrorResponse),(status=429,description="Media capacity exceeded; Retry-After is included",body=crate::error::ErrorResponse),
@@ -96,7 +94,6 @@ pub(crate) async fn get(
         MediaKind::Thumbnail => media.cache.get(MediaKey::thumbnail(document)).await,
         MediaKind::Animation => media.cache.get(MediaKey::animation(document)).await,
         MediaKind::Preview => media.cache.preview(document).await,
-        MediaKind::Placeholder => media.cache.get(MediaKey::placeholder(document)).await,
     };
     let image = match asset {
         Ok(image) => image,
@@ -207,9 +204,12 @@ mod tests {
         );
         assert_eq!(
             schema["components"]["schemas"]["MediaVariant"]["enum"],
-            serde_json::json!(["thumbnail", "preview", "animation", "placeholder"])
+            serde_json::json!(["thumbnail", "preview", "animation"])
         );
         assert!(schema["paths"].get("/media/models/{id}").is_none());
+        let properties = &schema["components"]["schemas"]["GiftMedia"]["properties"];
+        assert!(properties.get("placeholder_url").is_none());
+        assert_eq!(properties.as_object().unwrap().len(), 3);
     }
     #[actix_web::test]
     async fn cached_gift_media_uses_catalog_attribute_types_and_works_without_telegram() {
@@ -278,10 +278,6 @@ mod tests {
             .unwrap();
         let tgs = tgs.finish().unwrap();
         tokio::fs::write(media_path.join("42.tgs"), &tgs)
-            .await
-            .unwrap();
-        let placeholder = market_media::MediaAsset::placeholder("M0,0L512,0L512,512z").unwrap();
-        tokio::fs::write(media_path.join("42.placeholder.svg"), placeholder.bytes())
             .await
             .unwrap();
         use sha2::Digest;
@@ -500,60 +496,10 @@ mod tests {
         .await;
         assert_eq!(encoded.status(), 200);
         assert_eq!(test::read_body(encoded).await.as_ref(), bytes);
-        let outline = test::call_service(
-            &app,
-            test::TestRequest::get()
-                .uri("/media/models/model/placeholder")
-                .insert_header((header::ACCEPT_ENCODING, "gzip"))
-                .to_request(),
-        )
-        .await;
-        assert_eq!(outline.status(), 200);
-        assert_eq!(
-            outline.headers().get(header::CONTENT_ENCODING).unwrap(),
-            "gzip"
-        );
-        assert_eq!(
-            outline.headers().get(header::CONTENT_TYPE).unwrap(),
-            "image/svg+xml"
-        );
-        assert!(
-            outline
-                .headers()
-                .contains_key(header::CONTENT_SECURITY_POLICY)
-        );
-        let outline_etag = outline
-            .headers()
-            .get(header::ETAG)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned();
-        assert!(outline_etag.starts_with("W/"));
-        let body = test::read_body(outline).await;
-        let mut decoded = Vec::new();
-        std::io::Read::read_to_end(
-            &mut flate2::read::GzDecoder::new(body.as_ref()),
-            &mut decoded,
-        )
-        .unwrap();
-        assert_eq!(decoded, placeholder.bytes());
-        let response = test::call_service(
-            &app,
-            test::TestRequest::get()
-                .uri("/media/models/model/placeholder")
-                .insert_header((header::IF_NONE_MATCH, outline_etag))
-                .to_request(),
-        )
-        .await;
-        assert_eq!(response.status(), 304);
-        assert_eq!(
-            response.headers().get(header::VARY).unwrap(),
-            "Accept-Encoding"
-        );
         for (path, status) in [
             ("/media/patterns/pattern/preview", 404),
-            ("/media/patterns/pattern/placeholder", 404),
+            ("/media/patterns/pattern/placeholder", 400),
+            ("/media/models/model/placeholder", 400),
             ("/media/patterns/pattern/animation", 404),
             ("/media/backdrops/model/thumbnail", 400),
             ("/media/models/model/video", 400),

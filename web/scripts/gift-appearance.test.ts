@@ -57,7 +57,7 @@ test("gift previews use named traits and validated catalog appearance", () => {
       animation_url: "/custom/model.tgs",
     },
     palette: { center: "#b789e4", edge: "#8a5abc", pattern: "#5b10ab" },
-    patternUrl: "/media/patterns/pattern/thumbnail",
+    patternUrls: ["/media/patterns/pattern/thumbnail"],
     label: "Gift preview, Lavender backdrop, Lion Head pattern",
   });
 });
@@ -77,7 +77,7 @@ test("missing catalog appearance and bid criteria never fabricate concrete artwo
   const noPattern = order();
   if (noPattern.target.kind === "gift") noPattern.target.traits.pattern = null;
   assert.ok(giftAppearance(noPattern, options()).palette);
-  assert.equal(giftAppearance(noPattern, options()).patternUrl, undefined);
+  assert.deepEqual(giftAppearance(noPattern, options()).patternUrls, []);
 });
 test("typed catalog option kinds and unavailable palettes preserve the placeholder", () => {
   const catalog = options();
@@ -102,5 +102,5 @@ test("typed catalog option kinds and unavailable palettes preserve the placehold
     name: "Model",
     media: null,
   });
-  assert.equal(giftAppearance(order(), invalidPattern).patternUrl, undefined);
+  assert.equal(giftAppearance(order(), invalidPattern).patternUrls.length, 0);
 });
