@@ -6,12 +6,14 @@ use std::collections::BTreeSet;
 pub enum CatalogTrait {
     Model,
     Backdrop,
+    Pattern,
 }
 impl CatalogTrait {
     pub(super) fn attribute(self) -> &'static str {
         match self {
             Self::Model => market_gifts_hub::MODEL,
             Self::Backdrop => market_gifts_hub::BACKDROP,
+            Self::Pattern => market_gifts_hub::PATTERN,
         }
     }
 }

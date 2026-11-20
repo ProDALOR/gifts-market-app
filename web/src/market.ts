@@ -23,8 +23,19 @@ export const targetValuation = (
 /** Common GUI envelope; strategy-specific calculation fields stay in the typed API result. */
 export type ValuationView = Pick<
   GiftValuationResponse,
-  "strategy" | "evaluated_at" | "gift" | "currency_id" | "stale" | "display"
->;
+  "strategy" | "evaluated_at" | "currency_id" | "stale" | "display"
+> &
+  Partial<
+    Pick<
+      GiftValuationResponse,
+      | "gift"
+      | "collection_floor"
+      | "model_floor"
+      | "backdrop_floor"
+      | "model_backdrop_floor"
+      | "evidence"
+    >
+  >;
 export type MarketStatus = components["schemas"]["MarketStatus"];
 export type Order = components["schemas"]["OrderResponse"];
 export type Sort = components["schemas"]["GiftSort"];

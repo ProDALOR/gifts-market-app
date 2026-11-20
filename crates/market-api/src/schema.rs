@@ -8,6 +8,7 @@ use utoipa::OpenApi;
         crate::routes::collection,
         crate::routes::gift_valuation,
         crate::routes::target_valuation,
+        crate::routes::market_values,
         crate::valuation::documentation,
         crate::valuation::strategies,
         crate::routes::read_orders,

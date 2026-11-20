@@ -1,6 +1,7 @@
 // Full UI workflow with an isolated local catalog/feed; no Telegram or hub login.
 import assert from "node:assert/strict";
 import { orderResult, RangeWatch } from "./range-fixture.mjs";
+import { criteriaReport, marketValues } from "./valuation-fixture.mjs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
@@ -276,6 +277,8 @@ try {
   const connections = new Set();
   const catalogPeers = new Set();
   const openSockets = new Set();
+  const valuePeers = new Set();
+  let valueSubscriptions = 0;
   let socketCount = 0,
     orderSubscriptions = 0;
   const sendCatalog = (peer) =>
@@ -343,6 +346,7 @@ try {
           },
           {
             id: "collection_floor",
+            basis: true,
             label: "Collection floor",
             primary: false,
             value: {
@@ -353,6 +357,7 @@ try {
           },
           {
             id: "model_floor",
+            basis: true,
             attribute: "model",
             label: "Model floor",
             primary: false,
@@ -364,6 +369,7 @@ try {
           },
           {
             id: "backdrop_floor",
+            basis: true,
             attribute: "backdrop",
             label: "Backdrop floor",
             primary: false,
@@ -375,6 +381,7 @@ try {
           },
           {
             id: "model_backdrop_floor",
+            basis: true,
             label: "Model × backdrop floor",
             primary: false,
             value: {
@@ -435,12 +442,13 @@ try {
     socket.send(JSON.stringify({ type: "market.status", status: "available" }));
     socketCount++;
     openSockets.add(socket);
-    let connection, catalogPeer;
+    let connection, catalogPeer, valuePeer;
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
       if (frame.type === "cancel" || frame.type === "unsubscribe") {
         if (frame.id === connection?.id) connections.delete(connection);
         if (frame.id === catalogPeer?.id) catalogPeers.delete(catalogPeer);
+        if (frame.id === valuePeer?.id) valuePeers.delete(valuePeer);
       }
       if (frame.type === "request") {
         socket.send(
@@ -453,7 +461,29 @@ try {
                   frame.params,
                   result({ ...frame.params, limit: 10000 }).data,
                 )
-              : { data: valuationReport(frame.params) }),
+              : {
+                  data:
+                    frame.method === "valuation.query"
+                      ? criteriaReport(frame.params)
+                      : valuationReport(frame.params),
+                }),
+          }),
+        );
+      }
+      if (frame.type === "market.values.watch") {
+        valueSubscriptions++;
+        valuePeers.delete(valuePeer);
+        valuePeer = { socket, id: frame.id, params: frame.params };
+        valuePeers.add(valuePeer);
+        socket.send(
+          JSON.stringify({
+            type: "market.values",
+            id: frame.id,
+            data: marketValues(
+              frame.params,
+              models.map((row) => row.id),
+              backdrops.map((row) => row.id),
+            ),
           }),
         );
       }
@@ -480,6 +510,7 @@ try {
     socket.onClose(() => {
       connections.delete(connection);
       catalogPeers.delete(catalogPeer);
+      valuePeers.delete(valuePeer);
       openSockets.delete(socket);
     });
   });
@@ -762,7 +793,15 @@ try {
   );
   // Every selected trait must appear in the composition, not only the first three.
   await button("Model").click();
+  await page.locator(".trait-option .floor-badge").first().waitFor();
+  const beforeTraitFloors = valueSubscriptions;
   for (const model of models) await button(model.name).click();
+  await page.waitForTimeout(100);
+  assert.equal(
+    valueSubscriptions,
+    beforeTraitFloors,
+    "Trait selection reuses the existing batched floor watch",
+  );
   await page.keyboard.press("Escape");
   assert.equal(await page.locator(".preview-model").count(), 5);
   assert.equal(
@@ -1165,12 +1204,30 @@ try {
     assert.ok(!labels.includes(hidden), hidden);
   assert.equal(await page.locator(".source-details").count(), 0);
   await page.locator('[data-metric="final_mark"] .valuation-value').waitFor();
+  await page.getByLabel("Collection floor: 8 GRAM", { exact: true }).waitFor();
+  const beforeFloorUpdate = valueSubscriptions;
+  for (const peer of valuePeers) {
+    const data = marketValues(
+      peer.params,
+      models.map((row) => row.id),
+      backdrops.map((row) => row.id),
+    );
+    for (const row of data.collections) row.floor.price.value = "7";
+    peer.socket.send(
+      JSON.stringify({ type: "market.values", id: peer.id, data }),
+    );
+  }
+  await page.getByLabel("Collection floor: 7 GRAM", { exact: true }).waitFor();
+  assert.equal(
+    valueSubscriptions,
+    beforeFloorUpdate,
+    "Live floor changes need no additional request",
+  );
+  await page.screenshot({
+    path: "/tmp/gifts-market-ui/shared-values-details.png",
+  });
   assert.equal(await page.locator(".valuation-breakdown").count(), 0);
-  await page
-    .locator(
-      '[data-attribute="model"] [data-metric="model_floor"] .valuation-value',
-    )
-    .waitFor();
+  await page.locator('[data-attribute="model"] .floor-badge').waitFor();
   assert.equal(
     await page
       .getByRole("button", { name: "How is this calculated?", exact: true })
@@ -1183,7 +1240,7 @@ try {
     ),
     true,
   );
-  assert.equal(await page.locator(".valuation-metrics > li").count(), 7);
+  assert.equal(await page.locator(".valuation-metrics > li").count(), 3);
   assert.equal(
     await page
       .locator('[data-metric="model_multiplier"] .valuation-value')

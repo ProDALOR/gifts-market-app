@@ -1,7 +1,7 @@
-import type { GiftValuationState } from "../valuation/use-gift-valuation";
+import type { OrderValuationState } from "../valuation/use-order-valuation";
 
 /** The popup and compact estimate describe the same report and refresh attempt. */
-export function ValuationStatus({ state }: { state: GiftValuationState }) {
+export function ValuationStatus({ state }: { state: OrderValuationState }) {
   const { report, loading, error } = state;
   if (!report) return null;
   return (

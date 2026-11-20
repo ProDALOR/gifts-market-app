@@ -1,28 +1,9 @@
 //! Pure floor, multiplier and composite calculations over one coherent statistics set.
-use super::statistics::{Floor, Statistics};
 use super::{GiftFloorEvidence, GiftFloorValuation, MINIMUM_MULTIPLIER_GIFTS};
+use crate::floors::{Floor, Statistics};
 use crate::types::*;
 use market_gifts::*;
 use rust_decimal::Decimal;
-impl Floor {
-    pub(crate) fn metric(&self, present: bool) -> ValuationMetric {
-        if !present {
-            return issue(
-                ValuationIssueCode::MissingTrait,
-                "Gift has no resolved catalog trait",
-            );
-        }
-        match &self.price {
-            Some(value) => ValuationMetric::Value {
-                value: value.clone(),
-            },
-            None => issue(
-                ValuationIssueCode::NotEnoughData,
-                "No eligible asks match this selection",
-            ),
-        }
-    }
-}
 impl Statistics {
     pub fn report(
         &self,

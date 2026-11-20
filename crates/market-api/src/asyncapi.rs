@@ -120,6 +120,12 @@ fn summary(name: &str) -> &'static str {
         "catalog.watch" => {
             "Watch catalog content revisions for up to eight collections, without polling."
         }
+        "market.values.watch" => {
+            "Watch batched current collection and selected trait ask floors, refreshed on relevant changes or expiry."
+        }
+        "market.values" => {
+            "Atomic current-ask projection in the requested currency. Missing evidence has a typed reason."
+        }
         "catalog.versions" => {
             "Compact opaque catalog content tokens. Compare with unquoted HTTP ETags to revalidate changed entries."
         }
@@ -197,6 +203,21 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             id: "catalog".into(),
             collection_ids: vec!["tg.gift.123".into()],
         })?,
+        "market.values.watch" => serde_json::to_value(Command::WatchMarketValues {
+            id: "prices".into(),
+            params: Box::new(serde_json::from_value(
+                json!({"currency_id":"GRAM","collection_ids":["tg.gift.123"],"traits_for":"tg.gift.123","pair":null}),
+            )?),
+        })?,
+        "market.values" => {
+            let data = serde_json::from_value(
+                json!({"currency_id":"GRAM","evaluated_at":"2026-11-18T12:00:00Z","stale":false,"collections":[{"collection_id":"tg.gift.123","floor":{"price":{"value":"3"},"evidence":{"listings":3,"gifts":3}}}],"traits":{"collection_id":"tg.gift.123","models":{},"backdrops":{}}}),
+            )?;
+            serde_json::to_value(ServerFrame::MarketValues {
+                id: "prices".into(),
+                data: &data,
+            })?
+        }
         "catalog.versions" => serde_json::to_value(ServerFrame::Catalog {
             id: "catalog".into(),
             versions: crate::catalog::versions(CatalogVersions {
@@ -278,14 +299,14 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            4
+            5
         );
         assert_eq!(
             spec["operations"]["sendUpdates"]["messages"]
                 .as_array()
                 .unwrap()
                 .len(),
-            7
+            8
         );
     }
 }

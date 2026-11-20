@@ -1,8 +1,9 @@
-use super::statistics::BookCache;
 use super::*;
+use crate::floors::BookCache;
 use crate::integration_tests::{entity, fixture, hold};
 use crate::source::BookScope;
 use crate::test_support::MarketDataService;
+use crate::*;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
 use std::{sync::Arc, time::Duration};
@@ -73,6 +74,7 @@ pub(crate) fn book() -> (tempfile::TempDir, market_replica::ReplicaWriter) {
     for (attribute, ids) in [
         ("tg.model", vec!["m", "otherm"]),
         ("tg.backdrop", vec!["b", "otherb"]),
+        ("tg.pattern", vec!["symbol"]),
     ] {
         changes.push(entity(w::entity::Entity::Attribute(w::Attribute {
             id: attribute.into(),
@@ -125,6 +127,7 @@ pub(crate) fn book() -> (tempfile::TempDir, market_replica::ReplicaWriter) {
                 },
             ),
             ("tg.number".into(), w::AttributeRule::default()),
+            ("tg.pattern".into(), w::AttributeRule::default()),
         ]
         .into(),
     })));

@@ -15,6 +15,7 @@ const TARGETS: &[crate::ValuationTargetKind] = &[
     crate::ValuationTargetKind::Backdrop,
     crate::ValuationTargetKind::ModelBackdrop,
     crate::ValuationTargetKind::Gift,
+    crate::ValuationTargetKind::Criteria,
 ];
 pub const ASK_FLOOR: StrategyMetadata = StrategyMetadata {
     id: "ask_floor",

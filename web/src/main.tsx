@@ -17,6 +17,10 @@ import { TraitPreview } from "./previews/trait-preview";
 import { VenueIcon } from "./ui/icons";
 import { OrderDetails } from "./orderbook/order-details";
 import { TargetValuations } from "./valuation/target-valuations";
+import {
+  MarketValuesProvider,
+  MarketValuesStatus,
+} from "./valuation/market-values";
 import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
 import { CurrencyPicker, SortPicker } from "./ui/pickers";
@@ -278,292 +282,305 @@ function App({ context }: { context: TelegramContext }) {
   );
 
   return (
-    <div className="workspace">
-      <main className="orderbook market-shell">
-        <aside
-          className="market-sidebar"
-          aria-label="Market controls"
-          data-scroll-container
-        >
-          <div className="sidebar-heading">
-            <BrandMark animated />
-            <CurrencyPicker
-              currencies={currencies}
-              value={choice.currency}
-              change={(currency) => {
-                if (currency !== choice.currency)
-                  set({ ...choice, currency, venue: "", min: "", max: "" });
-              }}
-            />
-          </div>
-          <header className="account-bar">
-            <TelegramAccount
-              telegram={telegram}
-              context={context}
-              open={accountOpen}
-              setOpen={setAccountOpen}
-              selection={new URLSearchParams(location.search)}
-            />
-          </header>
-          <CollectionRail
-            collections={availableTypes}
-            selected={choice.collection}
-            select={selectedType}
-          />
-          {(startupError || optionsError || error) && (
-            <div role="alert" className="notice">
-              {startupError || optionsError || error}
-              <button
-                onClick={() => {
-                  if (optionsError) retryOptions();
-                  else if (startupError) retryCatalog();
-                  else setReloadKey((v) => v + 1);
+    <MarketValuesProvider
+      currency={choice.currency}
+      collection={choice.collection}
+      order={selected}
+    >
+      <div className="workspace">
+        <main className="orderbook market-shell">
+          <aside
+            className="market-sidebar"
+            aria-label="Market controls"
+            data-scroll-container
+          >
+            <div className="sidebar-heading">
+              <BrandMark animated />
+              <CurrencyPicker
+                currencies={currencies}
+                value={choice.currency}
+                change={(currency) => {
+                  if (currency !== choice.currency)
+                    set({ ...choice, currency, venue: "", min: "", max: "" });
                 }}
-              >
-                Reload
-              </button>
+              />
             </div>
-          )}
-          <TraitPickers
-            key={choice.collection}
-            collection={item}
-            options={options}
-            loading={optionsLoading}
-            loadError={optionsError}
-            filters={choice.filters}
-            change={changeTrait}
-            open={openTrait}
-            setOpen={setOpenTrait}
-          />
-          <TraitPreview
-            collection={item}
-            options={options}
-            filters={choice.filters}
-            reset={resetTraits}
-          />
-          {item && (
-            <TargetValuations
-              key={`${item.id}:${choice.currency}`}
-              collection={item}
-              currency={choice.currency}
-              options={options}
-              filters={choice.filters}
+            <header className="account-bar">
+              <TelegramAccount
+                telegram={telegram}
+                context={context}
+                open={accountOpen}
+                setOpen={setAccountOpen}
+                selection={new URLSearchParams(location.search)}
+              />
+            </header>
+            <CollectionRail
+              collections={availableTypes}
+              selected={choice.collection}
+              select={selectedType}
             />
-          )}
-          <div className="market-controls">
-            <div className="segments" role="group" aria-label="Market view">
-              {(["ask", "bid", "executed"] as const).map((mode) => (
+            <MarketValuesStatus />
+            {(startupError || optionsError || error) && (
+              <div role="alert" className="notice">
+                {startupError || optionsError || error}
                 <button
-                  key={mode}
-                  aria-pressed={choice.mode === mode}
-                  className={choice.mode === mode ? "active" : ""}
                   onClick={() => {
-                    if (mode !== choice.mode)
-                      set({
-                        ...choice,
-                        mode,
-                        sort: defaultSort[mode],
-                      });
+                    if (optionsError) retryOptions();
+                    else if (startupError) retryCatalog();
+                    else setReloadKey((v) => v + 1);
                   }}
                 >
-                  {mode === "ask"
-                    ? "Asks"
-                    : mode === "bid"
-                      ? "Bids"
-                      : "History"}
+                  Reload
                 </button>
-              ))}
-            </div>
-          </div>
-          {choice.mode === "bid" && (
-            <div className="bid-matching">
-              <span>Match bid conditions</span>
-              <div className="segments" role="group" aria-label="Bid matching">
-                {(["any", "all"] as const).map((match) => (
+              </div>
+            )}
+            <TraitPickers
+              key={choice.collection}
+              collection={item}
+              options={options}
+              loading={optionsLoading}
+              loadError={optionsError}
+              filters={choice.filters}
+              change={changeTrait}
+              open={openTrait}
+              setOpen={setOpenTrait}
+            />
+            <TraitPreview
+              collection={item}
+              options={options}
+              filters={choice.filters}
+              reset={resetTraits}
+            />
+            {item && (
+              <TargetValuations
+                key={`${item.id}:${choice.currency}`}
+                collection={item}
+                currency={choice.currency}
+                options={options}
+                filters={choice.filters}
+              />
+            )}
+            <div className="market-controls">
+              <div className="segments" role="group" aria-label="Market view">
+                {(["ask", "bid", "executed"] as const).map((mode) => (
                   <button
-                    key={match}
-                    aria-pressed={choice.bid_match === match}
-                    className={choice.bid_match === match ? "active" : ""}
-                    onClick={() => set({ ...choice, bid_match: match })}
+                    key={mode}
+                    aria-pressed={choice.mode === mode}
+                    className={choice.mode === mode ? "active" : ""}
+                    onClick={() => {
+                      if (mode !== choice.mode)
+                        set({
+                          ...choice,
+                          mode,
+                          sort: defaultSort[mode],
+                        });
+                    }}
                   >
-                    {match === "any" ? "Any" : "All"}
+                    {mode === "ask"
+                      ? "Asks"
+                      : mode === "bid"
+                        ? "Bids"
+                        : "History"}
                   </button>
                 ))}
               </div>
-              <p>
-                {choice.bid_match === "any"
-                  ? "Accepts any selected value in each trait. No selections shows all bids."
-                  : "Exact bid conditions. Unselected traits must be unrestricted."}
-              </p>
             </div>
-          )}
-          {(choice.min || choice.max || choice.from || choice.until) && (
-            <div className="selection-note">
-              <span>
-                {choice.min || choice.max
-                  ? `Price ${choice.min || "0"}–${choice.max || "∞"} ${choice.currency}`
-                  : "Selected history period"}
-              </span>
-              <button
-                aria-label="Clear linked filters"
-                onClick={() =>
-                  set({ ...choice, min: "", max: "", from: "", until: "" })
-                }
-              >
-                Clear ×
-              </button>
-            </div>
-          )}
-          <div className="market-toolbar">
-            <div className="venues" role="group" aria-label="Markets">
-              {["", ...venueIds].map((id) => {
-                const name = id ? names.get(id) || id : "All venues";
-                return (
-                  <button
-                    className="venue"
-                    data-venue={name}
-                    key={id}
-                    title={name}
-                    aria-label={name}
-                    aria-pressed={choice.venue === id}
-                    onClick={() => set({ ...choice, venue: id })}
-                  >
-                    <VenueIcon name={name} />
-                  </button>
-                );
-              })}
-            </div>
-            <div
-              className="sort-control"
-              role="group"
-              aria-label="Sort listings"
-            >
-              <SortPicker
-                value={choice.sort.split("_")[0] as "time" | "number" | "price"}
-                change={(key) =>
-                  set({
-                    ...choice,
-                    sort: `${key}_${choice.sort.endsWith("_asc") ? "asc" : "desc"}` as Choice["sort"],
-                  })
-                }
-              />
-              <button
-                aria-label="Reverse sort direction"
-                title={
-                  choice.sort.endsWith("_asc")
-                    ? "Ascending; switch to descending"
-                    : "Descending; switch to ascending"
-                }
-                onClick={() =>
-                  set({
-                    ...choice,
-                    sort: `${choice.sort.split("_")[0]}_${choice.sort.endsWith("_asc") ? "desc" : "asc"}` as Choice["sort"],
-                  })
-                }
-              >
-                {choice.sort.endsWith("_asc") ? "↑" : "↓"}
-              </button>
-            </div>
-          </div>
-        </aside>
-        <div className="market-results">
-          <header className="market-heading">
-            <div>
-              <p className="market-eyebrow">
-                {choice.mode === "ask"
-                  ? "Asks"
-                  : choice.mode === "bid"
-                    ? "Bids"
-                    : "History"}
-              </p>
-              <h1>{item?.name || "Select a collection"}</h1>
-            </div>
-          </header>
-          <section className="orders" aria-label="Order book">
-            <div className="feed-status">
-              <span
-                role="status"
-                className={`status${status === "Live" ? " live" : ""}`}
-              >
-                <i />
-                {status}
-              </span>
-              <span>{orders.length} loaded</span>
-            </div>
-
-            <GiftGrid
-              orders={displayOrders}
-              busy={status === "Loading" || status === "Connecting"}
-              visible={setVisibleRange}
-              card={(order) => ({
-                options,
-                activity: activity.get(orderKey(order)),
-                collectionName:
-                  item?.name ||
-                  names.get(order.book.collection_id) ||
-                  order.book.collection_id,
-                venueName:
-                  names.get(order.book.venue_id) || order.book.venue_id,
-                selected:
-                  selected?.id === order.id &&
-                  selected.book.venue_id === order.book.venue_id,
-                open: setSelected,
-              })}
-            />
-            {!displayOrders.length && (
-              <div className="empty" role="status">
-                <span>◇</span>
-                <strong>
-                  {status === "Loading" || status === "Connecting"
-                    ? "Loading this market…"
-                    : choice.mode === "executed"
-                      ? "No confirmed executions"
-                      : "No matching orders"}
-                </strong>
+            {choice.mode === "bid" && (
+              <div className="bid-matching">
+                <span>Match bid conditions</span>
+                <div
+                  className="segments"
+                  role="group"
+                  aria-label="Bid matching"
+                >
+                  {(["any", "all"] as const).map((match) => (
+                    <button
+                      key={match}
+                      aria-pressed={choice.bid_match === match}
+                      className={choice.bid_match === match ? "active" : ""}
+                      onClick={() => set({ ...choice, bid_match: match })}
+                    >
+                      {match === "any" ? "Any" : "All"}
+                    </button>
+                  ))}
+                </div>
                 <p>
-                  {Object.keys(choice.filters).length
-                    ? "Adjust the traits to see more results."
-                    : "Orders will appear here as venues publish them."}
+                  {choice.bid_match === "any"
+                    ? "Accepts any selected value in each trait. No selections shows all bids."
+                    : "Exact bid conditions. Unselected traits must be unrestricted."}
                 </p>
               </div>
             )}
-            <ScrollLoader
-              loading={loadingMore}
-              hasMore={hasMore}
-              disabled={!!error}
-              loadMore={loadMore}
-            />
-          </section>
-          <footer className="app-footer">
-            <BrandMark />
-            <span>Every venue. One view.</span>
-            <a
-              className="api-link"
-              href="/docs"
-              target="_blank"
-              rel="noreferrer"
-            >
-              API ↗
-            </a>
-          </footer>
-        </div>
-      </main>
-      {selected && (
-        <OrderDetails
-          selected={selected}
-          options={options}
-          names={names}
-          collectionName={item?.name || ""}
-          collectionSlug={
-            types.find(
-              (collection) => collection.id === selected.book.collection_id,
-            )?.slug
-          }
-          removed={activity.get(orderKey(selected))?.state === "removed"}
-          close={() => setSelected(undefined)}
-        />
-      )}
-    </div>
+            {(choice.min || choice.max || choice.from || choice.until) && (
+              <div className="selection-note">
+                <span>
+                  {choice.min || choice.max
+                    ? `Price ${choice.min || "0"}–${choice.max || "∞"} ${choice.currency}`
+                    : "Selected history period"}
+                </span>
+                <button
+                  aria-label="Clear linked filters"
+                  onClick={() =>
+                    set({ ...choice, min: "", max: "", from: "", until: "" })
+                  }
+                >
+                  Clear ×
+                </button>
+              </div>
+            )}
+            <div className="market-toolbar">
+              <div className="venues" role="group" aria-label="Markets">
+                {["", ...venueIds].map((id) => {
+                  const name = id ? names.get(id) || id : "All venues";
+                  return (
+                    <button
+                      className="venue"
+                      data-venue={name}
+                      key={id}
+                      title={name}
+                      aria-label={name}
+                      aria-pressed={choice.venue === id}
+                      onClick={() => set({ ...choice, venue: id })}
+                    >
+                      <VenueIcon name={name} />
+                    </button>
+                  );
+                })}
+              </div>
+              <div
+                className="sort-control"
+                role="group"
+                aria-label="Sort listings"
+              >
+                <SortPicker
+                  value={
+                    choice.sort.split("_")[0] as "time" | "number" | "price"
+                  }
+                  change={(key) =>
+                    set({
+                      ...choice,
+                      sort: `${key}_${choice.sort.endsWith("_asc") ? "asc" : "desc"}` as Choice["sort"],
+                    })
+                  }
+                />
+                <button
+                  aria-label="Reverse sort direction"
+                  title={
+                    choice.sort.endsWith("_asc")
+                      ? "Ascending; switch to descending"
+                      : "Descending; switch to ascending"
+                  }
+                  onClick={() =>
+                    set({
+                      ...choice,
+                      sort: `${choice.sort.split("_")[0]}_${choice.sort.endsWith("_asc") ? "desc" : "asc"}` as Choice["sort"],
+                    })
+                  }
+                >
+                  {choice.sort.endsWith("_asc") ? "↑" : "↓"}
+                </button>
+              </div>
+            </div>
+          </aside>
+          <div className="market-results">
+            <header className="market-heading">
+              <div>
+                <p className="market-eyebrow">
+                  {choice.mode === "ask"
+                    ? "Asks"
+                    : choice.mode === "bid"
+                      ? "Bids"
+                      : "History"}
+                </p>
+                <h1>{item?.name || "Select a collection"}</h1>
+              </div>
+            </header>
+            <section className="orders" aria-label="Order book">
+              <div className="feed-status">
+                <span
+                  role="status"
+                  className={`status${status === "Live" ? " live" : ""}`}
+                >
+                  <i />
+                  {status}
+                </span>
+                <span>{orders.length} loaded</span>
+              </div>
+
+              <GiftGrid
+                orders={displayOrders}
+                busy={status === "Loading" || status === "Connecting"}
+                visible={setVisibleRange}
+                card={(order) => ({
+                  options,
+                  activity: activity.get(orderKey(order)),
+                  collectionName:
+                    item?.name ||
+                    names.get(order.book.collection_id) ||
+                    order.book.collection_id,
+                  venueName:
+                    names.get(order.book.venue_id) || order.book.venue_id,
+                  selected:
+                    selected?.id === order.id &&
+                    selected.book.venue_id === order.book.venue_id,
+                  open: setSelected,
+                })}
+              />
+              {!displayOrders.length && (
+                <div className="empty" role="status">
+                  <span>◇</span>
+                  <strong>
+                    {status === "Loading" || status === "Connecting"
+                      ? "Loading this market…"
+                      : choice.mode === "executed"
+                        ? "No confirmed executions"
+                        : "No matching orders"}
+                  </strong>
+                  <p>
+                    {Object.keys(choice.filters).length
+                      ? "Adjust the traits to see more results."
+                      : "Orders will appear here as venues publish them."}
+                  </p>
+                </div>
+              )}
+              <ScrollLoader
+                loading={loadingMore}
+                hasMore={hasMore}
+                disabled={!!error}
+                loadMore={loadMore}
+              />
+            </section>
+            <footer className="app-footer">
+              <BrandMark />
+              <span>Every venue. One view.</span>
+              <a
+                className="api-link"
+                href="/docs"
+                target="_blank"
+                rel="noreferrer"
+              >
+                API ↗
+              </a>
+            </footer>
+          </div>
+        </main>
+        {selected && (
+          <OrderDetails
+            selected={selected}
+            options={options}
+            names={names}
+            collectionName={item?.name || ""}
+            collectionSlug={
+              types.find(
+                (collection) => collection.id === selected.book.collection_id,
+              )?.slug
+            }
+            removed={activity.get(orderKey(selected))?.state === "removed"}
+            close={() => setSelected(undefined)}
+          />
+        )}
+      </div>
+    </MarketValuesProvider>
   );
 }
 

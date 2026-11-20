@@ -4,7 +4,7 @@ export type RequestCall = components["schemas"]["ApiRequest"];
 export type RequestResult = components["schemas"]["ApiResult"];
 export type SubscriptionCommand = Extract<
   components["schemas"]["Command"],
-  { type: "orders.watch" | "catalog.watch" }
+  { type: "orders.watch" | "catalog.watch" | "market.values.watch" }
 >;
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -45,6 +45,7 @@ const gift = (value: unknown) =>
   giftFacts(value) && record(value) && text(value.collection_id);
 const valuationTarget = (value: unknown) => {
   if (!record(value) || !text(value.collection_id)) return false;
+  if (value.kind !== "criteria" && value.criteria != null) return false;
   switch (value.kind) {
     case "collection":
       return (
@@ -72,6 +73,13 @@ const valuationTarget = (value: unknown) => {
         value.model_id == null &&
         value.backdrop_id == null
       );
+    case "criteria":
+      return (
+        value.model_id == null &&
+        value.backdrop_id == null &&
+        value.gift == null &&
+        criteria(value.criteria)
+      );
     default:
       return false;
   }
@@ -80,6 +88,37 @@ const range = (value: unknown) =>
   value == null ||
   (record(value) &&
     [value.min, value.max].every((n) => n == null || integer(n)));
+function criteria(value: unknown) {
+  return (
+    record(value) &&
+    strings(value.models) &&
+    strings(value.backdrops) &&
+    strings(value.patterns) &&
+    range(value.number)
+  );
+}
+function floor(value: unknown) {
+  if (
+    !record(value) ||
+    !record(value.price) ||
+    !record(value.evidence) ||
+    !sequence(value.evidence.listings) ||
+    !sequence(value.evidence.gifts) ||
+    value.evidence.gifts > value.evidence.listings
+  )
+    return false;
+  const price = value.price;
+  return (
+    (text(price.value) &&
+      price.value.length <= 128 &&
+      /^\d+(?:\.\d+)?$/.test(price.value) &&
+      !Object.hasOwn(price, "error")) ||
+    (record(price.error) &&
+      text(price.error.code) &&
+      text(price.error.message) &&
+      !Object.hasOwn(price, "value"))
+  );
+}
 function order(value: unknown) {
   if (
     !record(value) ||
@@ -112,12 +151,7 @@ function order(value: unknown) {
     case "gift":
       return giftFacts(target);
     case "criteria": {
-      return (
-        strings(target.models) &&
-        strings(target.backdrops) &&
-        strings(target.patterns) &&
-        range(target.number)
-      );
+      return criteria(target);
     }
     case "unsupported":
       return text(target.code) && text(target.message);
@@ -139,6 +173,7 @@ function display(value: unknown) {
       !text(field.id) ||
       !text(field.label) ||
       typeof field.primary !== "boolean" ||
+      (field.basis != null && typeof field.basis !== "boolean") ||
       !(
         field.attribute == null ||
         oneOf(field.attribute, ["model", "backdrop", "pattern"])
@@ -278,6 +313,42 @@ export function parseFrame(raw: unknown): LiveFrame {
         record(value.versions.collections) &&
         Object.values(value.versions.collections).every(nullableText);
       break;
+    case "market.values": {
+      const d = value.data;
+      valid =
+        record(d) &&
+        hasNoLegacyFields(d) &&
+        text(d.currency_id) &&
+        text(d.evaluated_at) &&
+        typeof d.stale === "boolean" &&
+        Array.isArray(d.collections) &&
+        d.collections.length > 0 &&
+        d.collections.length <= 8 &&
+        d.collections.every(
+          (row) => record(row) && text(row.collection_id) && floor(row.floor),
+        ) &&
+        new Set(d.collections.map((row) => record(row) && row.collection_id))
+          .size === d.collections.length &&
+        (d.traits == null ||
+          (record(d.traits) &&
+            text(d.traits.collection_id) &&
+            d.collections.some(
+              (row) =>
+                record(row) &&
+                row.collection_id ===
+                  (d.traits as Record<string, unknown>).collection_id,
+            ) &&
+            record(d.traits.models) &&
+            Object.values(d.traits.models).every(floor) &&
+            record(d.traits.backdrops) &&
+            Object.values(d.traits.backdrops).every(floor) &&
+            (d.traits.pair == null ||
+              (record(d.traits.pair) &&
+                text(d.traits.pair.model_id) &&
+                text(d.traits.pair.backdrop_id) &&
+                floor(d.traits.pair.floor)))));
+      break;
+    }
     case "result": {
       const d = value.data;
       valid =

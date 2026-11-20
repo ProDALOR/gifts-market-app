@@ -1,16 +1,8 @@
 //! The result and evidence produced by gift_floor, independent of transport presentation.
-use crate::{Multiplier, ValuationMetric};
+use crate::{FloorEvidence, Multiplier, ValuationMetric};
 use market_gifts::{CollectibleGift, CurrencyId, GiftSlug};
 use serde::{Deserialize, Serialize};
 pub const MINIMUM_MULTIPLIER_GIFTS: u32 = 3;
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct FloorEvidence {
-    pub listings: u32,
-    /// Distinct identifiable collectibles; cross-listings count once and broad criteria do not count.
-    pub gifts: u32,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

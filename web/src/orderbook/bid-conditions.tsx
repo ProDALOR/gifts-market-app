@@ -3,6 +3,7 @@ import { giftNumberRange } from "../orderbook";
 import { resolveTraits } from "../catalog/traits";
 import type { BidCriteria } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
+import { TraitFloor } from "../valuation/market-values";
 
 /** Complete accepted alternatives for bid details. */
 export function BidConditions({
@@ -10,11 +11,15 @@ export function BidConditions({
   options,
   names,
   quantity,
+  collection,
+  currency,
 }: {
   criteria: BidCriteria;
   options: ReadonlyMap<string, CatalogOption>;
   names?: ReadonlyMap<string, string>;
   quantity?: number;
+  collection?: string;
+  currency?: string;
 }) {
   const number = giftNumberRange(criteria.number);
   return (
@@ -38,6 +43,12 @@ export function BidConditions({
                   >
                     {option && <OptionArt option={option} />}
                     <span className="condition-name">{name}</span>
+                    <TraitFloor
+                      collection={collection}
+                      currency={currency}
+                      id={id}
+                      kind={trait.kind}
+                    />
                   </span>
                 );
               })}

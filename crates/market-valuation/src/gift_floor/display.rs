@@ -19,7 +19,8 @@ impl GiftFloorValuation {
                     &self.collection_floor,
                     &self.currency_id,
                     None,
-                ),
+                )
+                .basis(),
                 DisplayField::currency(
                     "model_floor",
                     "Model floor",
@@ -27,6 +28,7 @@ impl GiftFloorValuation {
                     &self.currency_id,
                     None,
                 )
+                .basis()
                 .attribute(DisplayAttribute::Model),
                 DisplayField::currency(
                     "backdrop_floor",
@@ -35,6 +37,7 @@ impl GiftFloorValuation {
                     &self.currency_id,
                     None,
                 )
+                .basis()
                 .attribute(DisplayAttribute::Backdrop),
                 DisplayField::currency(
                     "model_backdrop_floor",
@@ -42,7 +45,8 @@ impl GiftFloorValuation {
                     &self.model_backdrop_floor,
                     &self.currency_id,
                     None,
-                ),
+                )
+                .basis(),
                 DisplayField::number(
                     "model_multiplier",
                     "Model multiplier",

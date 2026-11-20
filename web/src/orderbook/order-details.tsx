@@ -3,12 +3,12 @@ import type { CatalogOption } from "../orderbook";
 import { listingLink, modelName, serial } from "../orderbook";
 import { GiftPreview } from "../previews/gift-preview";
 import { Modal } from "../ui/modal";
-import { GiftValuationSummary } from "./gift-valuations";
+import { OrderValuationSummary } from "./order-valuation";
 import { Quote } from "../ui/market-controls";
 import { VenueIcon } from "../ui/icons";
 import { OrderAttributes } from "./order-attributes";
 import { BidPreview } from "./bid-preview";
-import { useGiftValuation } from "../valuation/use-gift-valuation";
+import { useOrderValuation } from "../valuation/use-order-valuation";
 import { priceComparison } from "../valuation/price-comparison";
 export function OrderDetails({
   selected,
@@ -27,7 +27,7 @@ export function OrderDetails({
   removed?: boolean;
   close: () => void;
 }) {
-  const state = useGiftValuation(selected);
+  const state = useOrderValuation(selected);
   const criteria = selected.target.kind === "criteria";
   const selectedSerial = serial(selected),
     model =
@@ -123,7 +123,11 @@ export function OrderDetails({
               {criteria && <p className="valuation-note">Price per gift</p>}
               {comparison && <p className="price-comparison">{comparison}</p>}
             </section>
-            {!criteria && <GiftValuationSummary state={state} />}
+            <OrderValuationSummary
+              state={state}
+              criteria={criteria}
+              history={selected.kind === "executed"}
+            />
           </div>
           <OrderAttributes
             order={selected}

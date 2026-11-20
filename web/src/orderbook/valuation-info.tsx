@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useStrategy } from "../valuation/use-strategy";
 import { guideKey } from "../valuation/strategies";
-import type { GiftValuationState } from "../valuation/use-gift-valuation";
+import type { OrderValuationState } from "../valuation/use-order-valuation";
 import { Modal } from "../ui/modal";
 import { ValuationFields } from "../valuation/display";
 import { ValuationStatus } from "./valuation-status";
@@ -9,7 +9,7 @@ import { playbackBudget } from "../previews/playback-budget";
 const ValuationMethodology = lazy(() => import("./valuation-methodology"));
 
 /** Discover and load the guide on intent; closing aborts pending work. */
-export function ValuationInfo({ state }: { state: GiftValuationState }) {
+export function ValuationInfo({ state }: { state: OrderValuationState }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -36,7 +36,7 @@ function CalculationPopup({
   state,
   close,
 }: {
-  state: GiftValuationState;
+  state: OrderValuationState;
   close: () => void;
 }) {
   useEffect(() => playbackBudget.suspendAll(), []);

@@ -1,5 +1,92 @@
 use super::*;
 #[actix_web::test]
+async fn current_values_share_rest_and_watch_shapes_and_refresh_on_price_changes() {
+    let (state, runtime, peer, stop) = setup().await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let query = serde_json::json!({"currency_id":"GRAM","collection_ids":["tg.gift.123"],"traits_for":"tg.gift.123","pair":null});
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/market")
+            .set_json(&query)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let mut rest: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(
+        rest["collections"][0]["floor"]["price"]["value"],
+        "1.000000001"
+    );
+    for field in ["revision", "sync", "cursor"] {
+        assert!(rest.get(field).is_none());
+    }
+    let web_dir = peer._directory.path().join("web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "<html></html>").unwrap();
+    let server = api_server(&runtime, web_dir);
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(server.run(api_stop.child_token()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"market.values.watch","id":"prices","params":query}),
+    )
+    .await;
+    let mut ws = bid_filters::frame(&mut socket, "prices", "market.values").await["data"].clone();
+    rest.as_object_mut().unwrap().remove("evaluated_at");
+    ws.as_object_mut().unwrap().remove("evaluated_at");
+    assert_eq!(rest, ws);
+    peer.page.send_replace(page("2"));
+    let changed = bid_filters::frame(&mut socket, "prices", "market.values").await;
+    assert_eq!(
+        changed["data"]["collections"][0]["floor"]["price"]["value"],
+        "2"
+    );
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"cancel","id":"prices"}),
+    )
+    .await;
+    let mut invalid = query.clone();
+    invalid["collection_ids"] = serde_json::json!(["tg.gift.123", "tg.gift.123"]);
+    assert_eq!(
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/valuations/market")
+                .set_json(&invalid)
+                .to_request()
+        )
+        .await
+        .status(),
+        400
+    );
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"market.values.watch","id":"prices","params":invalid}),
+    )
+    .await;
+    assert_eq!(
+        bid_filters::frame(&mut socket, "prices", "error").await["error"]["code"],
+        "invalid_query"
+    );
+    socket.close(None).await.unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+#[actix_web::test]
 async fn target_strategies_share_rest_and_websocket_results_and_keep_partial_failures() {
     let (state, runtime, peer, stop) = setup().await;
     let mut data = page("3");

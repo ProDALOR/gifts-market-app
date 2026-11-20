@@ -1,18 +1,32 @@
 import { ValuationFields } from "../valuation/display";
-import type { GiftValuationState } from "../valuation/use-gift-valuation";
+import type { OrderValuationState } from "../valuation/use-order-valuation";
 import { ValuationInfo } from "./valuation-info";
 import { ValuationStatus } from "./valuation-status";
 
-export function GiftValuationSummary({ state }: { state: GiftValuationState }) {
+export function OrderValuationSummary({
+  state,
+  criteria = false,
+  history = false,
+}: {
+  state: OrderValuationState;
+  criteria?: boolean;
+  history?: boolean;
+}) {
   const { available, loading, error, report, retry } = state;
   return (
     <section
-      className="valuation-summary"
-      aria-label="Estimated value"
+      className={criteria ? "matching-floor" : "valuation-summary"}
+      aria-label={criteria ? "Matching current ask floor" : "Estimated value"}
       aria-busy={loading}
     >
       <div className="valuation-heading">
-        <h3>Estimate</h3>
+        <h3>
+          {criteria
+            ? "Matching current ask floor"
+            : history
+              ? "Current estimate"
+              : "Estimate"}
+        </h3>
         <div className="valuation-controls">
           <ValuationInfo key={state.key} state={state} />
           {available && (

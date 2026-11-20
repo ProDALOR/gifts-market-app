@@ -11,6 +11,18 @@ pub struct MarketApi {
     encoder: Arc<crate::encoding::OrderEncoder>,
 }
 impl MarketApi {
+    pub async fn market_values(
+        &self,
+        query: market_valuation::MarketValuesRequest,
+    ) -> Result<Arc<market_valuation::MarketValues>> {
+        Ok(self.valuation.values(query).await?)
+    }
+    pub(crate) async fn watch_market_values(
+        &self,
+        query: market_valuation::MarketValuesRequest,
+    ) -> Result<market_valuation::MarketValuesWatch> {
+        Ok(self.valuation.watch_values(query).await?)
+    }
     pub async fn target_valuation(
         &self,
         query: market_valuation::TargetValuationRequest,

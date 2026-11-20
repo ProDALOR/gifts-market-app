@@ -4,6 +4,7 @@ import type { TraitFilters, TraitKey } from "../market";
 import { traits } from "../orderbook";
 import type { CatalogOption, Collection } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
+import { TraitFloor } from "../valuation/market-values";
 export const TraitPickers = memo(function TraitPickers({
   collection,
   loading = false,
@@ -110,6 +111,7 @@ export const TraitPickers = memo(function TraitPickers({
                 <button
                   key={option.id}
                   className="trait-option"
+                  aria-label={option.name}
                   aria-pressed={chosen.includes(option.id)}
                   onClick={() =>
                     change(
@@ -122,6 +124,11 @@ export const TraitPickers = memo(function TraitPickers({
                 >
                   <OptionArt option={option} />
                   {option.name}
+                  <TraitFloor
+                    collection={collection?.id}
+                    id={option.id}
+                    kind={option.kind}
+                  />
                 </button>
               ))}
             {loading && !available.length && (

@@ -1,5 +1,5 @@
 //! One bounded pass supplies all components; cached data follows revisions and listing expiry.
-use super::FloorEvidence;
+use crate::{FloorEvidence, ValuationIssueCode, ValuationMetric};
 use crate::{
     ValuationError,
     source::{BookScope, CatalogTrait, ReadDependencies, ValuationSnapshot},
@@ -65,6 +65,16 @@ pub(crate) struct Statistics {
     expires_at_ms: i64,
 }
 impl Statistics {
+    pub(crate) fn deadline(&self) -> tokio::time::Instant {
+        let age = MAX_AGE.saturating_sub(self.created.elapsed());
+        let expiry = std::time::Duration::from_millis(
+            self.expires_at_ms
+                .saturating_sub(jiff::Timestamp::now().as_millisecond())
+                .max(0) as u64,
+        );
+        tokio::time::Instant::now() + age.min(expiry)
+    }
+
     pub(crate) fn selection(
         &self,
         model: Option<&ModelId>,
@@ -82,7 +92,7 @@ impl Statistics {
     }
     pub fn current(&self, snapshot: &ValuationSnapshot) -> Result<bool, ValuationError> {
         Ok(self.created.elapsed() < MAX_AGE
-            && snapshot.dependencies_current(&self.dependencies)?
+            && snapshot.dependencies_data_current(&self.dependencies)?
             && self.created.elapsed() < MAX_AGE
             && jiff::Timestamp::now().as_millisecond() < self.expires_at_ms)
     }
@@ -255,5 +265,29 @@ mod tests {
             }
         );
         assert_eq!(floor.price.unwrap().as_str(), "9");
+    }
+}
+
+impl Floor {
+    pub(crate) fn metric(&self, present: bool) -> ValuationMetric {
+        if !present {
+            return crate::market::unavailable(
+                ValuationIssueCode::MissingTrait,
+                "Gift has no resolved catalog trait",
+                None,
+                None,
+            );
+        }
+        match &self.price {
+            Some(value) => ValuationMetric::Value {
+                value: value.clone(),
+            },
+            None => crate::market::unavailable(
+                ValuationIssueCode::NotEnoughData,
+                "No eligible asks match this selection",
+                None,
+                None,
+            ),
+        }
     }
 }

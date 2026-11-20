@@ -69,6 +69,14 @@ pub struct AskFloorValuation {
     pub price: ValuationMetric,
     pub evidence: FloorEvidence,
 }
+/// Shared current-ask evidence, independent of any individual-gift strategy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct FloorEvidence {
+    pub listings: u32,
+    /// Distinct identifiable collectibles; cross-listings count once and broad criteria do not count.
+    pub gifts: u32,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ExecutionEvidence {
@@ -169,6 +177,7 @@ impl StrategyOutcome {
                         id: "price",
                         label: "Value",
                         primary: true,
+                        basis: false,
                         attribute: None,
                         value: DisplayValue::Unavailable {
                             label: "Unavailable",

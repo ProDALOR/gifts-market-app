@@ -20,9 +20,23 @@ struct Dependencies {
 impl ValuationSnapshot {
     /// Validate cached projections against this pinned view on a read worker.
     pub fn dependencies_current(&self, dependencies: &ReadDependencies) -> Result<bool> {
+        self.dependencies_match(dependencies, true)
+    }
+    /// Floor prices depend on book/catalog data; availability is projected separately.
+    pub(crate) fn dependencies_data_current(
+        &self,
+        dependencies: &ReadDependencies,
+    ) -> Result<bool> {
+        self.dependencies_match(dependencies, false)
+    }
+    fn dependencies_match(
+        &self,
+        dependencies: &ReadDependencies,
+        include_status: bool,
+    ) -> Result<bool> {
         self.check_cancelled()?;
         let deps = &dependencies.0;
-        if !self.books_current(deps)? {
+        if !self.books_current(deps, include_status)? {
             return Ok(false);
         }
         let stamp = self.reader.metadata_revision(KINDS)?;
@@ -38,9 +52,9 @@ impl ValuationSnapshot {
         }
         Ok(matches)
     }
-    fn books_current(&self, deps: &Dependencies) -> Result<bool> {
+    fn books_current(&self, deps: &Dependencies, include_status: bool) -> Result<bool> {
         let sync = self.sync()?;
-        if sync.ready != deps.sync.ready || sync.state != deps.sync.state {
+        if include_status && (sync.ready != deps.sync.ready || sync.state != deps.sync.state) {
             return Ok(false);
         }
         if let Some(expected) = &deps.collections
@@ -136,7 +150,7 @@ impl ValuationSource {
     async fn validate(&self, dependencies: &ReadDependencies) -> Result<bool> {
         let snapshot = self.snapshot()?;
         let deps = &dependencies.0;
-        if !snapshot.books_current(deps)? {
+        if !snapshot.books_current(deps, true)? {
             return Ok(false);
         }
         let stamp = snapshot.reader.metadata_revision(KINDS)?;
@@ -158,7 +172,9 @@ impl ValuationSource {
             return Ok(false);
         }
         let current = self.snapshot()?;
-        if current.reader.metadata_revision(KINDS)? != stamp || !current.books_current(deps)? {
+        if current.reader.metadata_revision(KINDS)? != stamp
+            || !current.books_current(deps, true)?
+        {
             return Ok(false);
         }
         *deps.checked.lock().unwrap() = stamp;

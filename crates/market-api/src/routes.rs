@@ -65,7 +65,7 @@ pub(crate) async fn gift_valuation(
         .json(GiftValuationResponse::from(result.as_ref())))
 }
 
-#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Value a collection, trait selection or gift with explicit strategies",description="Strategies are selected explicitly from /valuations/strategies. Targets are collection, model, backdrop, model_backdrop or gift. Execution estimators require explicit inclusive from and exclusive until bounds; at least three observations across three distinct gifts are required for collection/trait targets; an individual-gift target uses its own history. Mean weights execution records equally, independently of quantity. One report uses one pinned view; unavailable evidence or an unsupported target is reported per strategy. Available history is not guaranteed complete. Every typed result includes its strategy-owned display projection. Read budgets and cancellation are shared with the gift endpoint.",request_body=market_valuation::TargetValuationRequest,responses((status=200,body=crate::valuation::TargetValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Value a collection, trait selection or gift with explicit strategies",description="Strategies are selected explicitly from /valuations/strategies. Targets are collection, model, backdrop, model_backdrop, gift or accepted criteria. Criteria combine model/backdrop/symbol alternatives with gift-number bounds; ask_floor values the complete matching selection. Execution estimators require explicit inclusive from and exclusive until bounds; at least three observations across three distinct gifts are required for collection/trait targets; an individual-gift target uses its own history. Mean weights execution records equally, independently of quantity. One report uses one pinned view; unavailable evidence or an unsupported target is reported per strategy. Available history is not guaranteed complete. Every typed result includes its strategy-owned display projection. Read budgets and cancellation are shared with the gift endpoint.",request_body=market_valuation::TargetValuationRequest,responses((status=200,body=crate::valuation::TargetValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn target_valuation(
     state: web::Data<MarketApi>,
     query: web::Json<market_valuation::TargetValuationRequest>,
@@ -76,6 +76,15 @@ pub(crate) async fn target_valuation(
         .json(crate::valuation::TargetValuationResponse::from(
             report.as_ref(),
         )))
+}
+#[utoipa::path(post,path="/valuations/market",tag="Valuations",summary="Read current floors for visible collections and all selected traits",description="Batches up to eight collection/currency scopes into one pinned read. traits_for includes all model/backdrop floors and an optional requested pair for one selected collection. These are current asks across venues, regardless of the orders tab or its filters. WebSocket market.values.watch keeps the same projection current with scoped updates and listing expiry.",request_body=market_valuation::MarketValuesRequest,responses((status=200,body=market_valuation::MarketValues),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+pub(crate) async fn market_values(
+    state: web::Data<MarketApi>,
+    query: web::Json<market_valuation::MarketValuesRequest>,
+) -> Result<HttpResponse> {
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CACHE_CONTROL, "no-store"))
+        .json(state.market_values(query.into_inner()).await?.as_ref()))
 }
 
 #[utoipa::path(post,path="/orders/query",tag="Orders",summary="Read a latest or frozen ordered slice",description="Latest is the default and retains no view. Set view.kind to snapshot to open or reuse a snapshot lease. Ordering keys are portable across latest, frozen and WebSocket reads. The server enforces read budgets. Expired leases return restart_read.",request_body=GiftOrderQuery,responses((status=200,body=crate::orders::OrderReadResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
@@ -125,6 +134,7 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
     )
     .route("/valuations/gift", web::post().to(gift_valuation))
     .route("/valuations/query", web::post().to(target_valuation))
+    .route("/valuations/market", web::post().to(market_values))
     .service(
         web::resource("/media/{kind}/{id}/{variant:preview}")
             .wrap(actix_web::middleware::Compress::default())

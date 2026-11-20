@@ -1,7 +1,7 @@
 use super::execution::{ExecutionStatistics, MAX_OBSERVATIONS, eligible};
 use super::*;
 use crate::{
-    gift_floor::statistics::BookCache,
+    floors::BookCache,
     source::{BookScope, ValuationSnapshot},
 };
 use market_gifts::{GiftTarget, OrderSource};
@@ -86,7 +86,7 @@ pub struct AskFloor;
 impl Estimator for AskFloor {
     type Output = AskFloorValuation;
     fn evaluate(&self, context: &ValuationContext<'_>) -> Result<Self::Output, ValuationError> {
-        if context.target.gift.is_none() {
+        if context.target.gift.is_none() && context.target.criteria.is_none() {
             let stats = context.books.get(
                 context.snapshot,
                 &BookScope {

@@ -7,6 +7,7 @@ use crate::{MarketApi, config::WebSocketLimits, error::ApiError};
 use market_actors::DataUpdate;
 use tokio_util::sync::CancellationToken;
 pub(super) enum Operation {
+    MarketValues(Box<market_valuation::MarketValuesRequest>),
     Request(crate::models::ApiRequest),
     Orders(Box<market_gifts::GiftOrderQuery>),
     Catalog(Vec<market_gifts::CollectionId>),
@@ -34,6 +35,45 @@ pub(super) async fn run(
     limits: WebSocketLimits,
 ) -> End {
     let _cancel_on_exit = cancel.clone().drop_guard();
+    if let Operation::MarketValues(request) = query {
+        let setup = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=tokio::time::timeout(limits.setup_timeout,market.watch_market_values(*request))=>result.unwrap_or_else(|_|Err(ApiError::timed_out("Market values setup timed out")))};
+        let mut watch = match setup {
+            Ok(watch) => watch,
+            Err(error) => {
+                return end(tx
+                    .send(Scope::Operation(key), Payload::Error(error), true, &cancel)
+                    .await);
+            }
+        };
+        let mut value = watch.current();
+        loop {
+            if let Err(error) = tx
+                .send(
+                    Scope::Operation(key.clone()),
+                    Payload::MarketValues(value),
+                    false,
+                    &cancel,
+                )
+                .await
+            {
+                return end(Err(error));
+            }
+            let changed = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,value=watch.changed()=>value};
+            match changed {
+                Ok(next) => value = next,
+                Err(error) => {
+                    return end(tx
+                        .send(
+                            Scope::Operation(key),
+                            Payload::Error(error.into()),
+                            true,
+                            &cancel,
+                        )
+                        .await);
+                }
+            }
+        }
+    }
     if let Operation::Request(request) = query {
         let work = async {
             match request {
@@ -65,6 +105,7 @@ pub(super) async fn run(
     }
     let setup = async {
         match query {
+            Operation::MarketValues(_) => unreachable!("values handled above"),
             Operation::Request(_) => unreachable!("requests handled above"),
             Operation::Orders(query) => market.watch_orders(*query).await,
             Operation::Catalog(ids) => market.subscribe_catalog(ids).await,

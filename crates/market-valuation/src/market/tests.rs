@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     gift_floor::tests::{ask, book},
+    integration_tests::entity,
     test_support::MarketDataService,
 };
 use market_gifts::*;
@@ -242,4 +243,99 @@ fn strategies_and_execution_periods_are_explicit_and_validated() {
     assert!(q.validate().is_err());
     q.strategies = vec![StrategyId::new("unknown").unwrap()];
     assert!(q.validate().is_err());
+}
+
+#[tokio::test]
+async fn bid_criteria_value_the_joint_selection_including_symbols_and_numbers() {
+    let (_dir, mut writer) = book();
+    let mut changes = vec![
+        entity(w::entity::Entity::Attribute(w::Attribute {
+            id: "tg.pattern".into(),
+            name: "Symbol".into(),
+            value_type: w::AttributeType::Enum as i32,
+            ..Default::default()
+        })),
+        entity(w::entity::Entity::AttributeOption(w::AttributeOption {
+            id: "symbol".into(),
+            attribute_id: "tg.pattern".into(),
+            name: "Symbol".into(),
+            ..Default::default()
+        })),
+    ];
+    let mut row = ask("selected", "m", "b", "120", 555, None);
+    if let Some(w::change::Change::Upsert(w::Entity {
+        entity: Some(w::entity::Entity::Order(order)),
+    })) = &mut row.change
+    {
+        order.attributes.insert(
+            "tg.pattern".into(),
+            w::AttributePredicate {
+                predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                    value: Some(w::attribute_value::Value::OptionId("symbol".into())),
+                })),
+            },
+        );
+    }
+    changes.push(row);
+    writer
+        .apply(w::Batch {
+            cursor: "joint".into(),
+            changes,
+        })
+        .unwrap();
+    let data = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    for (criteria, expected) in [
+        (GiftCriteria::default(), Some("3")),
+        (
+            GiftCriteria {
+                models: vec!["m".into()],
+                backdrops: vec!["b".into()],
+                ..Default::default()
+            },
+            Some("100"),
+        ),
+        (
+            GiftCriteria {
+                models: vec!["m".into()],
+                backdrops: vec!["b".into()],
+                patterns: vec!["symbol".into()],
+                number: Some(GiftNumberRange {
+                    min: Some(GiftNumber::new(500).unwrap()),
+                    max: Some(GiftNumber::new(600).unwrap()),
+                }),
+            },
+            Some("120"),
+        ),
+        (
+            GiftCriteria {
+                number: Some(GiftNumberRange {
+                    min: Some(GiftNumber::new(999_999).unwrap()),
+                    max: None,
+                }),
+                ..Default::default()
+            },
+            None,
+        ),
+    ] {
+        let mut query = request(ValuationTarget::Criteria {
+            collection_id: "gift".into(),
+            criteria,
+        });
+        query.strategies = vec![StrategyId::new("ask_floor").unwrap()];
+        query.period = None;
+        let result = handle.query(query).await.unwrap();
+        let StrategyOutcome::Value(StrategyValuation::AskFloor(value)) = &result.results[0] else {
+            panic!("{:?}", result.results)
+        };
+        assert_eq!(value.price.value().map(Amount::as_str), expected);
+    }
+    task.shutdown().await.unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
 }

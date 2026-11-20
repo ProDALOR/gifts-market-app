@@ -23,6 +23,12 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    #[serde(rename = "market.values.watch")]
+    WatchMarketValues {
+        #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
+        id: String,
+        params: Box<market_valuation::MarketValuesRequest>,
+    },
     Request(ApiRequest),
     #[serde(rename = "orders.watch")]
     WatchOrders {
@@ -74,6 +80,12 @@ impl ApiRequest {
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame<'a> {
+    #[serde(rename = "market.values")]
+    MarketValues {
+        #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
+        id: String,
+        data: &'a market_valuation::MarketValues,
+    },
     Result(ApiResult<'a>),
     /// Rejected command; active operations continue unchanged. Empty ID if no valid ID was parsed.
     CommandError {

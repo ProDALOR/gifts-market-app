@@ -1,5 +1,6 @@
 // Bid alternatives use the picker composition, bounded static art and complete details.
 import assert from "node:assert/strict";
+import { criteriaReport } from "./valuation-fixture.mjs";
 import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -96,6 +97,21 @@ try {
     "base64",
   );
   page.setDefaultTimeout(10000);
+  await page.routeWebSocket("**/ws", (peer) => {
+    peer.send(JSON.stringify({ type: "market.status", status: "available" }));
+    peer.onMessage((message) => {
+      const command = JSON.parse(String(message));
+      if (command.type === "request" && command.method === "valuation.query")
+        peer.send(
+          JSON.stringify({
+            type: "result",
+            id: command.id,
+            method: command.method,
+            data: criteriaReport(command.params),
+          }),
+        );
+    });
+  });
   const errors = [],
     unexpected = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -233,6 +249,7 @@ try {
     0,
   );
   await details.getByText("Price per gift", { exact: true }).waitFor();
+  await details.locator(".matching-floor .valuation-value").waitFor();
   assert.equal(
     await details.locator('[data-condition="quantity"] dd').textContent(),
     "8",
@@ -477,11 +494,11 @@ try {
   assert.deepEqual(
     unexpected,
     [],
-    "Criteria bids need no additional API requests",
+    "Criteria bid previews need no HTTP API requests",
   );
   assert.deepEqual(errors, []);
   console.log(
-    `Bid browser passed: normal-flow summaries, partial catalog recovery, ${mountedChipImages}/210 chip images admitted on opening a large bid, scroll admission, warm reopening and no valuation/animation requests.`,
+    `Bid browser passed: matching current floor, normal-flow summaries, partial catalog recovery, ${mountedChipImages}/210 chip images admitted on opening a large bid, scroll admission, warm reopening and no animation requests.`,
   );
 } finally {
   await browser?.close();

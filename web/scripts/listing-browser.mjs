@@ -1,4 +1,5 @@
 import { RangeWatch, orderResult } from "./range-fixture.mjs";
+import { criteriaReport } from "./valuation-fixture.mjs";
 // Live transitions and valuation lifecycle against isolated React components and a fake feed.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -354,6 +355,17 @@ try {
             id: command.id,
             method: command.method,
             ...orderResult(command.params, [a, b]),
+          }),
+        );
+        return;
+      }
+      if (command.method === "valuation.query") {
+        peer.send(
+          JSON.stringify({
+            type: "result",
+            id: command.id,
+            method: command.method,
+            data: criteriaReport(command.params),
           }),
         );
         return;
@@ -1145,7 +1157,7 @@ try {
       })
       .waitFor();
   }
-  // No spurious valuation calls for criteria or missing trait media.
+  // Criteria use one matching-ask request, without invoking the individual gift estimate.
   const countBeforeCriteria = requests.length;
   await page.evaluate((order) => window.selectListing(order), {
     ...b,
@@ -1174,7 +1186,8 @@ try {
     "Unnumbered bids have no gift number",
   );
   assert.equal(symbolAnimations, 0);
-  // Standalone criteria details have no valuation to keep a status socket alive for.
+  await page.locator(".matching-floor .valuation-value").waitFor();
+  // Standalone criteria details retain status while the matching-ask result is shown.
   const connectionsBeforeCriteria = connections;
   await page.evaluate(
     (order) =>
@@ -1193,12 +1206,12 @@ try {
   );
   await page.locator(".detail-criteria").waitFor();
   assert.equal(await page.locator(".detail .valuation-summary").count(), 0);
-  await page.waitForTimeout(50);
-  assert.equal(connections, connectionsBeforeCriteria);
+  await page.waitForTimeout(500);
+  assert.ok(connections >= connectionsBeforeCriteria);
   assert.equal(
     activeConnections,
-    0,
-    "criteria-only details must release status subscriptions",
+    1,
+    "criteria details retain the availability subscription until closed",
   );
   assert.equal(requests.length, countBeforeCriteria);
   // Retained activity timestamps prevent entry replay after virtualized remounts.

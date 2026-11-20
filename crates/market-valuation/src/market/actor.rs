@@ -1,5 +1,5 @@
 use super::*;
-use crate::{gift_floor::statistics::BookCache, source::ValuationSource};
+use crate::{floors::BookCache, source::ValuationSource};
 use actix::{Actor, Context, Handler, ResponseFuture};
 use std::{sync::Arc, time::Duration};
 pub(crate) struct MarketValuationActor {
@@ -22,13 +22,13 @@ impl Actor for MarketValuationActor {
         self.life.started(ctx);
     }
 }
-impl Handler<Evaluate<TargetValuationRequest, TargetValuationReport, ValuationError>>
+impl Handler<Evaluate<crate::service::Work, crate::service::Output, ValuationError>>
     for MarketValuationActor
 {
-    type Result = ResponseFuture<Result<Arc<Mark<TargetValuationReport>>, ValuationError>>;
+    type Result = ResponseFuture<Result<Arc<Mark<crate::service::Output>>, ValuationError>>;
     fn handle(
         &mut self,
-        message: Evaluate<TargetValuationRequest, TargetValuationReport, ValuationError>,
+        message: Evaluate<crate::service::Work, crate::service::Output, ValuationError>,
         _: &mut Self::Context,
     ) -> Self::Result {
         let (input, request) = message.into_parts();
@@ -37,58 +37,78 @@ impl Handler<Evaluate<TargetValuationRequest, TargetValuationReport, ValuationEr
         let stop = self.life.stop_token();
         let strategy = self.life.strategy();
         Box::pin(async move {
-            input.validate()?;
             let cancelled = request.cancelled.clone();
             let _request = request;
             let work = source.prepare(move |snapshot| -> Result<_, ValuationError> {
-                let context = ValuationContext::new(&snapshot, &input, &books)?;
-                let mut results = Vec::with_capacity(input.strategies.len());
-                for id in &input.strategies {
-                    snapshot.check_cancelled()?;
-                    let result = match id.as_str() {
-                        "ask_floor" => AskFloor.evaluate(&context).map(StrategyValuation::AskFloor),
-                        "execution_mean" => ExecutionMean
-                            .evaluate(&context)
-                            .map(StrategyValuation::ExecutionMean),
-                        "execution_median" => ExecutionMedian
-                            .evaluate(&context)
-                            .map(StrategyValuation::ExecutionMedian),
-                        "gift_floor" => match &input.target {
-                            ValuationTarget::Gift { gift } => context
-                                .gift_floor(gift.clone())
-                                .map(StrategyValuation::GiftFloor),
-                            _ => Err(ValuationError::with_details(
-                                ValuationErrorCode::UnsupportedTarget,
-                                "gift_floor requires an individual gift",
-                                ValuationErrorDetails::strategy(id.clone()),
-                            )),
-                        },
-                        _ => return Err(ValuationError::invalid("unknown valuation strategy")),
-                    };
-                    results.push(match result {
-                        Ok(result) => StrategyOutcome::Value(result),
-                        Err(error) => StrategyOutcome::Error {
-                            strategy: id.clone(),
-                            error: StrategyFailure {
-                                code: error.code(),
-                                message: error.message().to_owned(),
-                            },
-                        },
-                    });
-                }
-                snapshot.check_cancelled()?;
-                let evaluated_at = jiff::Timestamp::now();
-                let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
-                let report = TargetValuationReport {
-                    target: context.target.clone(),
-                    currency_id: input.currency_id.clone(),
-                    evaluated_at,
-                    stale,
-                    results,
+                let output = match input {
+                    crate::service::Work::Values { request, previous } => {
+                        crate::service::Output::Values(crate::values::ValuesRead::read(
+                            &snapshot,
+                            &request,
+                            &books,
+                            previous.as_ref(),
+                        )?)
+                    }
+                    crate::service::Work::Query(input) => {
+                        input.validate()?;
+                        let context = ValuationContext::new(&snapshot, &input, &books)?;
+                        let mut results = Vec::with_capacity(input.strategies.len());
+                        for id in &input.strategies {
+                            snapshot.check_cancelled()?;
+                            let result = match id.as_str() {
+                                "ask_floor" => {
+                                    AskFloor.evaluate(&context).map(StrategyValuation::AskFloor)
+                                }
+                                "execution_mean" => ExecutionMean
+                                    .evaluate(&context)
+                                    .map(StrategyValuation::ExecutionMean),
+                                "execution_median" => ExecutionMedian
+                                    .evaluate(&context)
+                                    .map(StrategyValuation::ExecutionMedian),
+                                "gift_floor" => match &input.target {
+                                    ValuationTarget::Gift { gift } => context
+                                        .gift_floor(gift.clone())
+                                        .map(StrategyValuation::GiftFloor),
+                                    _ => Err(ValuationError::with_details(
+                                        ValuationErrorCode::UnsupportedTarget,
+                                        "gift_floor requires an individual gift",
+                                        ValuationErrorDetails::strategy(id.clone()),
+                                    )),
+                                },
+                                _ => {
+                                    return Err(ValuationError::invalid(
+                                        "unknown valuation strategy",
+                                    ));
+                                }
+                            };
+                            results.push(match result {
+                                Ok(result) => StrategyOutcome::Value(result),
+                                Err(error) => StrategyOutcome::Error {
+                                    strategy: id.clone(),
+                                    error: StrategyFailure {
+                                        code: error.code(),
+                                        message: error.message().to_owned(),
+                                    },
+                                },
+                            });
+                        }
+                        snapshot.check_cancelled()?;
+                        let evaluated_at = jiff::Timestamp::now();
+                        let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
+                        let report = TargetValuationReport {
+                            target: context.target.clone(),
+                            currency_id: input.currency_id.clone(),
+                            evaluated_at,
+                            stale,
+                            results,
+                        };
+                        crate::service::Output::Query(Arc::new(report))
+                    }
                 };
+                let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
                 Ok(Arc::new(Mark::evaluated(
                     strategy,
-                    Prepared::new(report, snapshot.revision()?).with_stale(stale),
+                    Prepared::new(output, snapshot.revision()?).with_stale(stale),
                 )))
             });
             tokio::select! {biased;

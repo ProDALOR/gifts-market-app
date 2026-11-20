@@ -148,7 +148,9 @@ pub(super) async fn frame(socket: &mut Socket, id: &str, kind: &str) -> serde_js
             {
                 let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
                 if frame["id"] == id {
-                    assert_ne!(frame["type"], "error", "{frame}");
+                    if kind != "error" {
+                        assert_ne!(frame["type"], "error", "{frame}");
+                    }
                     if frame["type"] == kind {
                         break frame;
                     }

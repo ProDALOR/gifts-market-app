@@ -13,6 +13,7 @@ import {
 } from "../previews/preview-environment";
 import { SearchIcon } from "../ui/icons";
 import type { Collection } from "../orderbook";
+import { CollectionFloor, useMarketValues } from "../valuation/market-values";
 export const CollectionRail = memo(function CollectionRail({
   collections,
   selected,
@@ -22,6 +23,7 @@ export const CollectionRail = memo(function CollectionRail({
   selected: string;
   select: (id: string) => void;
 }) {
+  const { visible } = useMarketValues();
   const [searching, setSearching] = useState(false),
     [query, setQuery] = useState("");
   const { reducedMotion } = usePreviewEnvironment();
@@ -134,6 +136,30 @@ export const CollectionRail = memo(function CollectionRail({
     setSearching(false);
     setQuery("");
   }
+  const visibleSignature = JSON.stringify(matches.map((item) => item.id));
+  useEffect(() => {
+    const element = rail.current;
+    if (!element) return;
+    const shown = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.collectionId!;
+          if (entry.isIntersecting) shown.add(id);
+          else shown.delete(id);
+        }
+        visible([...shown]);
+      },
+      { root: element, rootMargin: "80px" },
+    );
+    element
+      .querySelectorAll("[data-collection-id]")
+      .forEach((node) => observer.observe(node));
+    return () => {
+      observer.disconnect();
+      visible([]);
+    };
+  }, [visibleSignature, searching, visible]);
   return (
     <nav
       ref={host}
@@ -208,6 +234,7 @@ export const CollectionRail = memo(function CollectionRail({
               ref={item.id === selected ? selectedButton : undefined}
               className={`collection-tile tile-color-${Array.from(item.id).reduce((hash, char) => hash + char.charCodeAt(0), 0) % 6}`}
               key={item.id}
+              data-collection-id={item.id}
               aria-label={item.name}
               aria-pressed={item.id === selected}
               title={item.name}
@@ -227,6 +254,9 @@ export const CollectionRail = memo(function CollectionRail({
                 ) : (
                   <span>{item.name[0]}</span>
                 )}
+                <span className="collection-floor">
+                  <CollectionFloor id={item.id} />
+                </span>
               </span>
               <b>{item.name}</b>
             </button>
