@@ -145,24 +145,25 @@ function result(query, executed = query.source === "history") {
   rows = rows.filter(
     (order) =>
       (!filters.venue_id || filters.venue_id === order.book.venue_id) &&
-      ["models", "backdrops", "patterns"].every(
-        (key) =>
-          !filters[key]?.length ||
-          (order.target.kind === "criteria"
-            ? !order.target[key].length ||
-              (query.bid_match === "all"
-                ? filters[key].every((id) => order.target[key].includes(id))
-                : filters[key].some((id) => order.target[key].includes(id)))
-            : order.target.kind === "gift" &&
-              filters[key].includes(
-                order.target.traits[
-                  {
-                    models: "model",
-                    backdrops: "backdrop",
-                    patterns: "pattern",
-                  }[key]
-                ],
-              )),
+      ["models", "backdrops", "patterns"].every((key) =>
+        mode === "bid" && query.bid_match === "all"
+          ? order.target.kind === "criteria" &&
+            order.target[key].length === (filters[key]?.length || 0) &&
+            order.target[key].every((id) => filters[key]?.includes(id))
+          : !filters[key]?.length ||
+            (order.target.kind === "criteria"
+              ? !order.target[key].length ||
+                filters[key].some((id) => order.target[key].includes(id))
+              : order.target.kind === "gift" &&
+                filters[key].includes(
+                  order.target.traits[
+                    {
+                      models: "model",
+                      backdrops: "backdrop",
+                      patterns: "pattern",
+                    }[key]
+                  ],
+                )),
       ) &&
       (!filters.price?.max || Number(order.price) <= Number(filters.price.max)),
   );
@@ -1029,18 +1030,18 @@ try {
     .click();
   await cards(3);
   await matching.getByRole("button", { name: "All", exact: true }).click();
-  await cards(2);
+  await cards(1);
   assert.equal(new URL(page.url()).searchParams.get("bid_match"), "all");
   assert.equal([...connections].at(-1).query.bid_match, "all");
   const beforeBidReconnect = socketCount;
   [...openSockets][0].close();
   for (let i = 0; i < 100 && socketCount === beforeBidReconnect; i++)
     await new Promise((resolve) => setTimeout(resolve, 25));
-  await cards(2);
+  await cards(1);
   assert.ok(socketCount > beforeBidReconnect);
   assert.equal([...connections].at(-1).query.bid_match, "all");
   await page.reload();
-  await cards(2);
+  await cards(1);
   assert.equal(
     await matching
       .getByRole("button", { name: "All", exact: true })
@@ -1048,7 +1049,7 @@ try {
     "true",
   );
   await button("Reset traits").click();
-  await cards(4);
+  await cards(1);
   await matching.getByRole("button", { name: "Any", exact: true }).click();
   await cards(4);
   assert.equal(new URL(page.url()).searchParams.has("bid_match"), false);

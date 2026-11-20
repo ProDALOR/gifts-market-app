@@ -26,7 +26,16 @@ pub(super) fn matches(
     accepted: &w::AttributePredicate,
     mode: crate::AttributeMatch,
 ) -> bool {
-    let covers = mode == crate::AttributeMatch::Covers;
+    relation(requested, accepted, mode == crate::AttributeMatch::Exact)
+        && (mode != crate::AttributeMatch::Exact || relation(accepted, requested, true))
+}
+
+/// Exact constraints contain one another; overlap only needs one shared value.
+fn relation(
+    requested: &w::AttributePredicate,
+    accepted: &w::AttributePredicate,
+    covers: bool,
+) -> bool {
     match requested.predicate.as_ref() {
         Some(P::Eq(v)) => super::matches(accepted, v),
         Some(P::OneOf(values)) => {
@@ -125,26 +134,28 @@ mod tests {
         }
     }
     #[test]
-    fn any_overlaps_while_all_requires_every_selected_value() {
+    fn any_overlaps_while_all_requires_exactly_the_selected_values() {
         let wanted = set(&[1, 2]);
         for (accepted, any, all) in [
             (point(1), true, false),
-            (set(&[1, 2, 3]), true, true),
+            (set(&[1, 2]), true, true),
+            (set(&[1, 2, 3]), true, false),
             (point(3), false, false),
-            (range(Some(0), Some(2)), true, true),
+            (range(Some(0), Some(2)), true, false),
+            (range(Some(1), Some(2)), true, true),
         ] {
             assert_eq!(
                 matches(&wanted, &accepted, crate::AttributeMatch::Overlap),
                 any
             );
             assert_eq!(
-                matches(&wanted, &accepted, crate::AttributeMatch::Covers),
+                matches(&wanted, &accepted, crate::AttributeMatch::Exact),
                 all
             );
         }
     }
     #[test]
-    fn empty_bid_selections_share_one_canonical_read_regardless_of_matching_mode() {
+    fn empty_exact_selections_keep_their_matching_policy_and_read_identity() {
         let request = w::ReadRequest {
             selection: Some(w::Selection {
                 source: Some(w::selection::Source::Scope(w::Scope {
@@ -165,11 +176,11 @@ mod tests {
             .unwrap()
         };
         let any = compile(crate::AttributeMatch::Overlap);
-        let all = compile(crate::AttributeMatch::Covers);
-        assert_eq!(any.fingerprint, all.fingerprint);
+        let all = compile(crate::AttributeMatch::Exact);
+        assert_ne!(any.fingerprint, all.fingerprint);
         assert_eq!(
             all.scope.unwrap().attribute_match,
-            crate::AttributeMatch::Value
+            crate::AttributeMatch::Exact
         );
     }
     #[test]
@@ -220,7 +231,7 @@ mod tests {
             .unwrap()
         };
         let any = compile(crate::AttributeMatch::Overlap);
-        let all = compile(crate::AttributeMatch::Covers);
+        let all = compile(crate::AttributeMatch::Exact);
         assert_ne!(any.fingerprint, all.fingerprint);
         assert_eq!(
             any.scope.unwrap().attribute_match,
@@ -228,17 +239,18 @@ mod tests {
         );
         assert_eq!(
             all.scope.unwrap().attribute_match,
-            crate::AttributeMatch::Covers
+            crate::AttributeMatch::Exact
         );
     }
     #[test]
-    fn inclusive_ranges_handle_touching_bounds_open_ends_and_cover_direction() {
+    fn inclusive_ranges_require_equal_bounds_for_exact_matching() {
         let wanted = range(Some(10), Some(20));
         for (accepted, any, all) in [
             (range(Some(20), Some(30)), true, false),
             (range(Some(21), None), false, false),
-            (range(Some(5), Some(25)), true, true),
-            (range(None, Some(20)), true, true),
+            (range(Some(5), Some(25)), true, false),
+            (range(None, Some(20)), true, false),
+            (range(Some(10), Some(20)), true, true),
             (point(15), true, false),
         ] {
             assert_eq!(
@@ -246,43 +258,58 @@ mod tests {
                 any
             );
             assert_eq!(
-                matches(&wanted, &accepted, crate::AttributeMatch::Covers),
+                matches(&wanted, &accepted, crate::AttributeMatch::Exact),
                 all
             );
         }
         assert!(!matches(
             &range(None, Some(20)),
             &range(Some(0), Some(20)),
-            crate::AttributeMatch::Covers
+            crate::AttributeMatch::Exact
         ));
-        assert!(matches(
+        assert!(!matches(
             &range(Some(10), None),
             &range(Some(5), None),
-            crate::AttributeMatch::Covers
+            crate::AttributeMatch::Exact
         ));
         assert!(matches(
             &range(Some(10), Some(10)),
             &point(10),
-            crate::AttributeMatch::Covers
+            crate::AttributeMatch::Exact
         ));
     }
     #[test]
-    fn finite_sets_cover_integer_ranges_only_without_gaps_and_never_expand_large_ranges() {
+    fn exact_finite_sets_equal_integer_ranges_without_gaps_or_extra_values() {
         let wanted = range(Some(1), Some(3));
         assert!(matches(
             &wanted,
             &set(&[3, 2, 1, 1]),
-            crate::AttributeMatch::Covers
+            crate::AttributeMatch::Exact
+        ));
+        assert!(!matches(
+            &wanted,
+            &set(&[0, 1, 2, 3]),
+            crate::AttributeMatch::Exact
+        ));
+        assert!(matches(
+            &point(1),
+            &set(&[1, 1]),
+            crate::AttributeMatch::Exact
+        ));
+        assert!(matches(
+            &range(None, Some(3)),
+            &range(None, Some(3)),
+            crate::AttributeMatch::Exact
         ));
         assert!(!matches(
             &wanted,
             &set(&[1, 3, 3]),
-            crate::AttributeMatch::Covers
+            crate::AttributeMatch::Exact
         ));
         assert!(!matches(
             &range(Some(i64::MIN), Some(i64::MAX)),
             &set(&[1, 2]),
-            crate::AttributeMatch::Covers
+            crate::AttributeMatch::Exact
         ));
         assert!(!supported(&w::AttributePredicate {
             predicate: Some(P::AllOf(w::AttributePredicates {

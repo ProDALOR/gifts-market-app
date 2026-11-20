@@ -53,7 +53,7 @@ pub(crate) fn compile(
                 market_replica::AttributeMatch::Overlap
             }
             (market_gifts::OrderSource::Bids, market_gifts::BidMatch::All) => {
-                market_replica::AttributeMatch::Covers
+                market_replica::AttributeMatch::Exact
             }
             _ => market_replica::AttributeMatch::Value,
         },
@@ -101,14 +101,19 @@ mod tests {
         let (all_request, all_read) = compile(query.clone()).unwrap();
         assert_eq!(any_request, all_request);
         assert_eq!(any_read.options.attribute_match, AttributeMatch::Overlap);
-        assert_eq!(all_read.options.attribute_match, AttributeMatch::Covers);
+        assert_eq!(all_read.options.attribute_match, AttributeMatch::Exact);
         query.filters.models.clear();
-        for mode in [BidMatch::Any, BidMatch::All] {
+        for (mode, options) in [
+            (BidMatch::Any, ReadOptions::default()),
+            (
+                BidMatch::All,
+                ReadOptions {
+                    attribute_match: AttributeMatch::Exact,
+                },
+            ),
+        ] {
             query.bid_match = mode;
-            assert_eq!(
-                compile(query.clone()).unwrap().1.options,
-                ReadOptions::default()
-            );
+            assert_eq!(compile(query.clone()).unwrap().1.options, options);
         }
     }
 }

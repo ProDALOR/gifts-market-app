@@ -285,12 +285,20 @@ impl Filter {
             }
         }
         if scope.attribute_match != AttributeMatch::Value {
+            if scope.attribute_match == AttributeMatch::Exact
+                && scope.attributes.len() != order.attributes.len()
+            {
+                return Ok(false);
+            }
             // Unknown complex restrictions must never be treated as unrestricted bids.
             return Ok(order.attributes.values().all(constraints::supported)
                 && scope.attributes.iter().all(|(id, requested)| {
-                    order.attributes.get(id).is_none_or(|accepted| {
-                        constraints::matches(requested, accepted, scope.attribute_match)
-                    })
+                    order
+                        .attributes
+                        .get(id)
+                        .map_or(scope.attribute_match != AttributeMatch::Exact, |accepted| {
+                            constraints::matches(requested, accepted, scope.attribute_match)
+                        })
                 }));
         }
         for (id, predicate) in &scope.attributes {

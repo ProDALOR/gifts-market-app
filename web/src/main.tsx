@@ -382,9 +382,8 @@ function App({ context }: { context: TelegramContext }) {
               </div>
               <p>
                 {choice.bid_match === "any"
-                  ? "Accepts any selected value in each trait."
-                  : "Accepts every selected value in each trait."}{" "}
-                No selections shows all bids.
+                  ? "Accepts any selected value in each trait. No selections shows all bids."
+                  : "Exact bid conditions. Unselected traits must be unrestricted."}
               </p>
             </div>
           )}

@@ -128,7 +128,7 @@ fn data() -> w::Page {
     data
 }
 fn bid_query(mode: &str) -> serde_json::Value {
-    serde_json::json!({"source":"bids","bid_match":mode,"limit":100,"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM","models":["gold","silver"],"backdrops":["blue"]}})
+    serde_json::json!({"source":"bids","bid_match":mode,"limit":100,"filters":{"collection_id":"tg.gift.123","currency_id":"GRAM","models":["gold","silver"]}})
 }
 fn row_ids(result: &serde_json::Value) -> Vec<String> {
     result["data"]
@@ -198,8 +198,8 @@ async fn bid_matching_is_shared_by_rest_websocket_pagination_and_live_updates() 
         .await
         .unwrap();
     for (mode, expected) in [
-        ("any", vec!["any", "gold", "both", "silver", "range"]),
-        ("all", vec!["any", "both", "range"]),
+        ("any", vec!["any", "gold", "both", "silver", "range", "red"]),
+        ("all", vec!["both"]),
     ] {
         let q = bid_query(mode);
         let rest: serde_json::Value = test::call_and_read_body_json(
@@ -285,9 +285,9 @@ async fn bid_matching_is_shared_by_rest_websocket_pagination_and_live_updates() 
         assert_eq!(
             row_ids(&page),
             if mode == "any" {
-                vec!["any", "gold", "both", "silver", "range"]
+                vec!["any", "gold", "both", "silver", "range", "red"]
             } else {
-                vec!["any", "both"]
+                vec![]
             }
         );
         let expected_numbers: std::collections::BTreeSet<_> = row_ids(&page).into_iter().collect();
@@ -320,13 +320,73 @@ async fn bid_matching_is_shared_by_rest_websocket_pagination_and_live_updates() 
                 .to_request(),
         )
         .await;
-        assert_eq!(page["data"].as_array().unwrap().len(), 7);
-        assert!(
-            page["data"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|row| row["id"] == "complex" && row["target"]["kind"] == "unsupported")
+        if mode == "any" {
+            assert_eq!(page["data"].as_array().unwrap().len(), 7);
+            assert!(
+                page["data"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["id"] == "complex" && row["target"]["kind"] == "unsupported")
+            );
+        } else {
+            assert_eq!(row_ids(&page), ["any"]);
+        }
+    }
+    // Empty selections mean absent restrictions in All, not wildcards.
+    // Both trait values and number bounds must match, regardless of predicate encoding.
+    for (filters, expected) in [
+        (serde_json::json!({"models":["gold"]}), vec!["gold"]),
+        (
+            serde_json::json!({"models":["silver","gold","gold"],"backdrops":[],"patterns":[]}),
+            vec!["both"],
+        ),
+        (
+            serde_json::json!({"models":["gold","silver"],"backdrops":["red"]}),
+            vec!["red"],
+        ),
+        (
+            serde_json::json!({"models":["gold","silver"],"backdrops":["blue"]}),
+            vec![],
+        ),
+        (
+            serde_json::json!({"models":["gold","silver"],"backdrops":["blue"],"number":{"min":10,"max":20}}),
+            vec!["range"],
+        ),
+        (
+            serde_json::json!({"models":["gold","silver"],"backdrops":["blue"],"number":{"min":11,"max":20}}),
+            vec![],
+        ),
+        (
+            serde_json::json!({"models":[],"backdrops":["blue"]}),
+            vec![],
+        ),
+        (
+            serde_json::json!({"models":["gold","silver"],"patterns":["star"]}),
+            vec![],
+        ),
+    ] {
+        let mut q = bid_query("all");
+        q["filters"] = filters;
+        q["filters"]["collection_id"] = "tg.gift.123".into();
+        q["filters"]["currency_id"] = "GRAM".into();
+        let rest: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/orders/query")
+                .set_json(&q)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(row_ids(&rest), expected, "{q}");
+        send(
+            &mut socket,
+            serde_json::json!({"type":"request","id":"exact","method":"orders.query","params":q}),
+        )
+        .await;
+        assert_eq!(
+            row_ids(&frame(&mut socket, "exact", "result").await),
+            expected
         );
     }
     for (source, mode) in [("asks", "all"), ("history", "all"), ("bids", "invalid")] {
@@ -342,6 +402,25 @@ async fn bid_matching_is_shared_by_rest_websocket_pagination_and_live_updates() 
         .await;
         assert_eq!(response.status(), actix_web::http::StatusCode::BAD_REQUEST);
     }
+    // Empty Any and All selections must not share a feed: one browses all bids,
+    // the other matches only completely unrestricted conditions.
+    for (mode, id, expected) in [("any", "empty-any", 7), ("all", "empty-all", 1)] {
+        let mut q = bid_query(mode);
+        q["filters"] = serde_json::json!({"collection_id":"tg.gift.123","currency_id":"GRAM"});
+        send(
+            &mut socket,
+            serde_json::json!({"type":"orders.watch","id":id,"params":q}),
+        )
+        .await;
+        let initial = frame(&mut socket, id, "orders.snapshot").await;
+        assert_eq!(row_ids(&initial).len(), expected);
+        if mode == "all" {
+            assert_eq!(row_ids(&initial), ["any"]);
+        }
+    }
+    for id in ["empty-any", "empty-all"] {
+        send(&mut socket, serde_json::json!({"type":"cancel","id":id})).await;
+    }
     send(
         &mut socket,
         serde_json::json!({"type":"orders.watch","id":"any-live","params":bid_query("any")}),
@@ -349,7 +428,7 @@ async fn bid_matching_is_shared_by_rest_websocket_pagination_and_live_updates() 
     .await;
     assert_eq!(
         row_ids(&frame(&mut socket, "any-live", "orders.snapshot").await),
-        ["any", "gold", "both", "silver", "range"]
+        ["any", "gold", "both", "silver", "range", "red"]
     );
     send(
         &mut socket,
@@ -358,7 +437,7 @@ async fn bid_matching_is_shared_by_rest_websocket_pagination_and_live_updates() 
     .await;
     assert_eq!(
         row_ids(&frame(&mut socket, "live", "orders.snapshot").await),
-        ["any", "both", "range"]
+        ["both"]
     );
     // The identical scope/range has different local options and must not join Any's producer.
     send(
@@ -368,7 +447,7 @@ async fn bid_matching_is_shared_by_rest_websocket_pagination_and_live_updates() 
     .await;
     assert_eq!(
         row_ids(&frame(&mut socket, "all-join", "orders.snapshot").await),
-        ["any", "both", "range"]
+        ["both"]
     );
     send(
         &mut socket,

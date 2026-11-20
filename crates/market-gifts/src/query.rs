@@ -133,7 +133,7 @@ pub enum BidMatch {
     /// A bid accepts at least one selected value in every selected trait group.
     #[default]
     Any,
-    /// A bid accepts every selected value and the entire selected gift-number range.
+    /// A bid has exactly the selected traits and gift-number bounds, including absent restrictions.
     All,
 }
 
