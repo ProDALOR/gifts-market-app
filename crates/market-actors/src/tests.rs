@@ -377,6 +377,7 @@ async fn catalog_and_orderbooks_serve_distinct_typed_projections() {
         .send(crate::orderbooks::messages::ReadRange {
             complete: false,
             read: market_replica::RangeRequest {
+                options: Default::default(),
                 range: market_replica::KeyRange {
                     start: None,
                     end: None,
@@ -969,6 +970,7 @@ impl Seed {
             view: market_gifts::ReadView::Latest {},
             limit: self.before + self.after + 1,
             period: None,
+            bid_match: Default::default(),
         }
     }
 }

@@ -112,6 +112,7 @@ pub(super) fn start_orders(
     feed: &QueryFeed,
     orders: OrderbooksHandle,
     request: w::ReadRequest,
+    options: market_replica::ReadOptions,
     reader: market_replica::ReplicaReader,
     permit: OwnedSemaphorePermit,
 ) {
@@ -120,6 +121,7 @@ pub(super) fn start_orders(
         _ => unreachable!("orders require an initial state"),
     };
     let read = market_replica::RangeRequest {
+        options,
         range,
         limit: market_gifts::ORDER_LIMIT,
         snapshot: None,

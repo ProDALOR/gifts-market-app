@@ -47,9 +47,22 @@ pub(crate) fn compile(
             id.as_ref().map(|id| id.as_str().parse()).transpose()?
         }
     };
+    let options = market_replica::ReadOptions {
+        attribute_match: match (query.source, query.bid_match) {
+            (market_gifts::OrderSource::Bids, market_gifts::BidMatch::Any) => {
+                market_replica::AttributeMatch::Overlap
+            }
+            (market_gifts::OrderSource::Bids, market_gifts::BidMatch::All) => {
+                market_replica::AttributeMatch::Covers
+            }
+            _ => market_replica::AttributeMatch::Value,
+        },
+    }
+    .normalized_for(&request);
     Ok((
         request,
         market_replica::RangeRequest {
+            options,
             range: range(&query.range)?,
             limit: query.limit,
             snapshot,
@@ -71,4 +84,31 @@ fn range(range: &market_gifts::OrderRange) -> Result<market_replica::KeyRange> {
         return Err(DataError::invalid("inverted order range"));
     }
     Ok(range)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use market_gifts::{BidMatch, OrderSource};
+    use market_replica::{AttributeMatch, ReadOptions};
+    #[test]
+    fn bid_matching_changes_local_options_without_changing_wire_requests() {
+        let mut query = GiftOrderQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
+        query.source = OrderSource::Bids;
+        query.filters.models = vec!["gold".into(), "silver".into()];
+        let (any_request, any_read) = compile(query.clone()).unwrap();
+        query.bid_match = BidMatch::All;
+        let (all_request, all_read) = compile(query.clone()).unwrap();
+        assert_eq!(any_request, all_request);
+        assert_eq!(any_read.options.attribute_match, AttributeMatch::Overlap);
+        assert_eq!(all_read.options.attribute_match, AttributeMatch::Covers);
+        query.filters.models.clear();
+        for mode in [BidMatch::Any, BidMatch::All] {
+            query.bid_match = mode;
+            assert_eq!(
+                compile(query.clone()).unwrap().1.options,
+                ReadOptions::default()
+            );
+        }
+    }
 }

@@ -17,6 +17,7 @@ type ArtworkProps = {
   media?: GiftMedia;
   palette?: BackdropPalette;
   patternUrls?: readonly string[];
+  patternLayout?: "gift" | "card";
   label?: string;
   fallback: string;
   size?: "small" | "large";
@@ -44,6 +45,7 @@ function Artwork({
   media,
   palette,
   patternUrls,
+  patternLayout = "gift",
   label = "Gift preview",
   fallback,
   size = "small",
@@ -135,6 +137,7 @@ function Artwork({
         <GiftBackdrop
           palette={palette}
           patternUrls={patternUrls}
+          layout={patternLayout}
           visible={visible && pageVisible}
         />
       )}

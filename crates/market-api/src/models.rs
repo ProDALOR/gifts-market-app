@@ -12,7 +12,7 @@ pub use crate::orders::{
 };
 pub use crate::status::MarketStatus;
 pub use market_gifts::{
-    Amount, BackdropId, BackdropPalette, CatalogVersions, CollectibleGift, CollectionId,
+    Amount, BackdropId, BackdropPalette, BidMatch, CatalogVersions, CollectibleGift, CollectionId,
     CollectionSlug, Currency, CurrencyId, GiftBackdrop, GiftBook, GiftCriteria, GiftFilters,
     GiftNumber, GiftNumberRange, GiftOrderKind, GiftOrderQuery, GiftSide, GiftSlug, GiftSort,
     GiftTraits, ModelId, OrderId, PatternId, Period, PriceRange, UnsupportedGiftReason, Venue,

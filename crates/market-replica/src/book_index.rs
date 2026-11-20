@@ -9,6 +9,7 @@ use market_hub_protocol::wire as w;
 use rust_decimal::Decimal;
 use std::{cmp::Reverse, collections::BinaryHeap, ops::Bound, sync::Arc};
 use tonic::Status;
+mod attributes;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Book {
@@ -61,6 +62,7 @@ type RankedIterator<'a> = Box<dyn Iterator<Item = RankedOrder<'a>> + 'a>;
 /// The three indexes of one venue/collection/currency/side share immutable payloads.
 #[derive(Clone, Default)]
 struct PartitionState {
+    attributes: attributes::AttributeIndex,
     orders: OrdMap<String, Arc<w::Entity>>,
     prices: RankedOrders,
     times: RankedOrders,
@@ -84,6 +86,8 @@ impl PartitionState {
         next: [Decimal; 3],
         entity: &Arc<w::Entity>,
     ) {
+        self.attributes
+            .replace(self.orders.get(&key.id).map(AsRef::as_ref), entity);
         for (i, (index, rank)) in self.indexes_mut().into_iter().zip(next).enumerate() {
             if let Some(previous) = previous
                 && previous[i] != rank
@@ -96,6 +100,9 @@ impl PartitionState {
         self.orders.insert(key.id.clone(), Arc::clone(entity));
     }
     fn remove(&mut self, key: &Key, ranks: [Decimal; 3]) {
+        if let Some(entity) = self.orders.get(&key.id) {
+            self.attributes.remove(entity);
+        }
         for (index, rank) in self.indexes_mut().into_iter().zip(ranks) {
             index.remove(&RankKey::new(rank, key.clone()));
         }
@@ -362,7 +369,8 @@ impl BookIndex {
             item_type_id: scope.item_type_id.clone().unwrap_or_default(),
             currency_id: scope.currency_id.clone().unwrap_or_default(),
         };
-        let mut iterators = Vec::new();
+        let mut iterators: Vec<RankedIterator<'a>> = Vec::new();
+        let mut candidate_budget = crate::READ_LIMITS.max_scan_candidates;
         for b in self.groups.get(&pair).into_iter().flatten() {
             if scope
                 .venue_id
@@ -384,7 +392,9 @@ impl BookIndex {
                             scope.price.as_ref().and_then(|p| p.min),
                             scope.price.as_ref().and_then(|p| p.max),
                         )
-                    } else if matches!(sort, Sort::NumberAsc | Sort::NumberDesc) {
+                    } else if scope.attribute_match == crate::AttributeMatch::Value
+                        && matches!(sort, Sort::NumberAsc | Sort::NumberDesc)
+                    {
                         number_bounds(scope.attributes.get("tg.number"))
                     } else {
                         (None, None)
@@ -412,6 +422,47 @@ impl BookIndex {
                     if let (Included(a) | Excluded(a), Included(b) | Excluded(b)) = (&low, &high)
                         && a >= b
                     {
+                        continue;
+                    }
+                    if mode == ActiveMode::Ask
+                        && let Some((count, sets)) =
+                            partition.attributes.candidates(scope, candidate_budget)
+                    {
+                        candidate_budget -= count;
+                        let mut rows: Vec<RankedOrder<'a>> = Vec::with_capacity(count);
+                        for id in sets.into_iter().flatten() {
+                            let entity = &partition.orders[id];
+                            let rank = sort
+                                .rank(order(entity).expect("indexed order"), false)
+                                .expect("validated order rank");
+                            let lookup =
+                                RankKey::new(rank, Key::order(b.venue_id.clone(), id.clone()));
+                            let (key, entity) = partition
+                                .index(sort)
+                                .get_key_value(&lookup)
+                                .expect("covering rank index");
+                            let after_low = match &low {
+                                Included(v) => key >= v,
+                                Excluded(v) => key > v,
+                                Unbounded => true,
+                            };
+                            let before_high = match &high {
+                                Included(v) => key <= v,
+                                Excluded(v) => key < v,
+                                Unbounded => true,
+                            };
+                            if after_low && before_high {
+                                rows.push((key, entity));
+                            }
+                        }
+                        rows.sort_unstable_by(|a, b| {
+                            if descending {
+                                b.0.cmp(a.0)
+                            } else {
+                                a.0.cmp(b.0)
+                            }
+                        });
+                        iterators.push(Box::new(rows.into_iter()));
                         continue;
                     }
                     let range = partition.index(sort).range((low, high));

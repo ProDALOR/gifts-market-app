@@ -64,7 +64,7 @@ impl Handler<WatchOrders> for MarketSubscriptionsActor {
             return Box::pin(async { Err(Status::cancelled("Watch cancelled")) });
         }
         // An up-to-date feed covering the exact requested bounds already is a valid seed.
-        let key = range_key(&message.request, &message.read.range);
+        let key = range_key(&message.request, &message.read.range, message.read.options);
         if let Some(feed) = self
             .feeds
             .get(&key)
@@ -91,6 +91,7 @@ impl Handler<WatchOrders> for MarketSubscriptionsActor {
         let orders = self.orders.clone();
         let address = ctx.address();
         let stop = self.environment.stop.clone();
+        let options = message.read.options;
         let job = self.environment.jobs.spawn_on(async move {
             let _permit = permit;
             // Each caller initializes against current data. Only resolved coverage can share a feed.
@@ -105,6 +106,7 @@ impl Handler<WatchOrders> for MarketSubscriptionsActor {
                 result = address.send(messages::RegisterOrders {
                     feed: types::OrdersFeed {
                         request: message.request,
+                        options,
                         initial: Arc::new(initial.read.result),
                         version: initial.version,
                         observed: initial.observed,
@@ -146,7 +148,11 @@ impl MarketSubscriptionsActor {
         }
         let key = match &spec {
             FeedSpec::Catalog(ids) => QueryKey::Catalog(ids.clone()),
-            FeedSpec::Orders(selection) => range_key(&selection.request, &selection.initial.range),
+            FeedSpec::Orders(selection) => range_key(
+                &selection.request,
+                &selection.initial.range,
+                selection.options,
+            ),
         };
         let initial = match &spec {
             FeedSpec::Orders(seed) => DataUpdate::Orders {
@@ -191,6 +197,7 @@ impl MarketSubscriptionsActor {
                 &feed,
                 self.orders.clone(),
                 selection.request,
+                selection.options,
                 self.reader.clone(),
                 permit,
             ),
@@ -211,8 +218,10 @@ impl MarketSubscriptionsActor {
 fn range_key(
     request: &market_hub_protocol::wire::ReadRequest,
     range: &market_replica::KeyRange,
+    options: market_replica::ReadOptions,
 ) -> QueryKey {
     QueryKey::Range {
+        options: options.normalized_for(request),
         selection: request
             .selection
             .as_ref()

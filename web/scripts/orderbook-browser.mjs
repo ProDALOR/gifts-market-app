@@ -110,7 +110,12 @@ function result(query, executed = query.source === "history") {
           : mode === "bid"
             ? {
                 kind: "criteria",
-                models: [],
+                models:
+                  index === 1
+                    ? [models[0].id]
+                    : index === 2
+                      ? [models[0].id, models[1].id]
+                      : [],
                 backdrops: [],
                 patterns: [],
                 number: null,
@@ -143,14 +148,21 @@ function result(query, executed = query.source === "history") {
       ["models", "backdrops", "patterns"].every(
         (key) =>
           !filters[key]?.length ||
-          (order.target.kind === "gift" &&
-            filters[key].includes(
-              order.target.traits[
-                { models: "model", backdrops: "backdrop", patterns: "pattern" }[
-                  key
-                ]
-              ],
-            )),
+          (order.target.kind === "criteria"
+            ? !order.target[key].length ||
+              (query.bid_match === "all"
+                ? filters[key].every((id) => order.target[key].includes(id))
+                : filters[key].some((id) => order.target[key].includes(id)))
+            : order.target.kind === "gift" &&
+              filters[key].includes(
+                order.target.traits[
+                  {
+                    models: "model",
+                    backdrops: "backdrop",
+                    patterns: "pattern",
+                  }[key]
+                ],
+              )),
       ) &&
       (!filters.price?.max || Number(order.price) <= Number(filters.price.max)),
   );
@@ -959,7 +971,7 @@ try {
     true,
     "Short books keep the footer at the viewport bottom",
   );
-  assert.equal(await button("Model").isDisabled(), true);
+  assert.equal(await button("Model").isDisabled(), false);
   assert.equal(
     await page
       .locator(".gift-card")
@@ -994,6 +1006,52 @@ try {
     1,
   );
   await page.keyboard.press("Escape");
+  const matching = page.getByRole("group", {
+    name: "Bid matching",
+    exact: true,
+  });
+  assert.equal(
+    await matching
+      .getByRole("button", { name: "Any", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  await button("Model").click();
+  const modelChoices = page.getByRole("group", {
+    name: "Model options",
+    exact: true,
+  });
+  await modelChoices
+    .getByRole("button", { name: "Barbie", exact: true })
+    .click();
+  await modelChoices
+    .getByRole("button", { name: "Juicy Mint", exact: true })
+    .click();
+  await cards(3);
+  await matching.getByRole("button", { name: "All", exact: true }).click();
+  await cards(2);
+  assert.equal(new URL(page.url()).searchParams.get("bid_match"), "all");
+  assert.equal([...connections].at(-1).query.bid_match, "all");
+  const beforeBidReconnect = socketCount;
+  [...openSockets][0].close();
+  for (let i = 0; i < 100 && socketCount === beforeBidReconnect; i++)
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  await cards(2);
+  assert.ok(socketCount > beforeBidReconnect);
+  assert.equal([...connections].at(-1).query.bid_match, "all");
+  await page.reload();
+  await cards(2);
+  assert.equal(
+    await matching
+      .getByRole("button", { name: "All", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  await button("Reset traits").click();
+  await cards(4);
+  await matching.getByRole("button", { name: "Any", exact: true }).click();
+  await cards(4);
+  assert.equal(new URL(page.url()).searchParams.has("bid_match"), false);
   await button("History").click();
   await cards(75);
   assert.equal(new URL(page.url()).searchParams.get("sort"), "time_desc");

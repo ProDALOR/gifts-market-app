@@ -1,4 +1,5 @@
 use crate::{
+    AttributeMatch, ReadOptions,
     state::{self, Key, State},
     storage,
     types::{EntityKind, IndexKind, IndexTerm, Leaf, OrderMode, Sort},
@@ -8,6 +9,7 @@ use prost::Message;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use tonic::Status;
+mod constraints;
 fn invalid(message: &str) -> Status {
     Status::invalid_argument(message)
 }
@@ -23,6 +25,7 @@ pub struct Scope {
     pub currency_id: Option<String>,
     pub modes: BTreeSet<OrderMode>,
     pub attributes: std::collections::BTreeMap<String, w::AttributePredicate>,
+    pub attribute_match: AttributeMatch,
     pub price: Option<ExactPriceRange>,
 }
 impl TryFrom<w::Scope> for Scope {
@@ -38,6 +41,7 @@ impl TryFrom<w::Scope> for Scope {
                 .map(OrderMode::try_from)
                 .collect::<Result<_, _>>()?,
             attributes: scope.attributes,
+            attribute_match: AttributeMatch::Value,
             price: scope
                 .price
                 .map(|price| {
@@ -61,6 +65,15 @@ pub struct Filter {
 }
 impl Filter {
     pub fn compile(state: &State, request: &w::ReadRequest) -> Result<Self, Status> {
+        Self::compile_with_options(state, request, ReadOptions::default())
+    }
+    pub fn compile_with_options(
+        state: &State,
+        request: &w::ReadRequest,
+        options: ReadOptions,
+    ) -> Result<Self, Status> {
+        let options = options.normalized_for(request);
+        let attribute_match = options.attribute_match;
         let mut selection = request.selection.clone().unwrap_or_default();
         if selection.keys.len() > 500 || selection.kinds.len() > 7 {
             return Err(invalid("too many query keys or kinds"));
@@ -129,8 +142,16 @@ impl Filter {
                 if scope.attributes.len() > 64 {
                     return Err(invalid("too many attribute filters"));
                 }
+                if attribute_match != AttributeMatch::Value
+                    && scope.modes != [w::OrderMode::Bid as i32]
+                {
+                    return Err(invalid("constraint matching requires bids"));
+                }
                 if !scope.attributes.is_empty() {
-                    if scope.modes.is_empty() || scope.modes.contains(&(w::OrderMode::Bid as i32)) {
+                    if attribute_match == AttributeMatch::Value
+                        && (scope.modes.is_empty()
+                            || scope.modes.contains(&(w::OrderMode::Bid as i32)))
+                    {
                         return Err(invalid("attribute filters require asks or executions"));
                     }
                     let item = scope
@@ -147,9 +168,18 @@ impl Filter {
                             .get(id)
                             .ok_or_else(|| invalid("attribute does not apply to item type"))?;
                         validate_predicate(state, id, Some(rule), predicate, 0, &mut nodes)?;
+                        if attribute_match != AttributeMatch::Value
+                            && !constraints::supported(predicate)
+                        {
+                            return Err(invalid(
+                                "constraint matching requires scalar equality, sets or ranges",
+                            ));
+                        }
                     }
                 }
-                Some(Scope::try_from(scope.clone())?)
+                let mut compiled = Scope::try_from(scope.clone())?;
+                compiled.attribute_match = attribute_match;
+                Some(compiled)
             }
             Some(w::selection::Source::FeedId(_)) => {
                 return Err(invalid("public queries use an explicit scope"));
@@ -174,7 +204,12 @@ impl Filter {
                 "sorting requires orders in one item type and currency",
             ));
         }
-        let fingerprint = format!("{:x}", Sha256::digest(selection.encode_to_vec()));
+        let mut digest = Sha256::new();
+        digest.update(selection.encode_to_vec());
+        if attribute_match != AttributeMatch::Value {
+            digest.update([attribute_match as u8]);
+        }
+        let fingerprint = format!("{:x}", digest.finalize());
         Ok(Self {
             scope,
             period: selection.executed_at,
@@ -249,6 +284,15 @@ impl Filter {
                 return Ok(false);
             }
         }
+        if scope.attribute_match != AttributeMatch::Value {
+            // Unknown complex restrictions must never be treated as unrestricted bids.
+            return Ok(order.attributes.values().all(constraints::supported)
+                && scope.attributes.iter().all(|(id, requested)| {
+                    order.attributes.get(id).is_none_or(|accepted| {
+                        constraints::matches(requested, accepted, scope.attribute_match)
+                    })
+                }));
+        }
         for (id, predicate) in &scope.attributes {
             let Some(w::attribute_predicate::Predicate::Eq(value)) =
                 order.attributes.get(id).and_then(|v| v.predicate.as_ref())
@@ -263,7 +307,11 @@ impl Filter {
     }
     pub fn index(&self) -> Result<Option<IndexTerm>, Status> {
         if let Some(scope) = &self.scope {
-            for (id, predicate) in &scope.attributes {
+            for (id, predicate) in scope
+                .attributes
+                .iter()
+                .filter(|_| scope.attribute_match == AttributeMatch::Value)
+            {
                 if let Some(Leaf { path, value }) = necessary(&mut vec![id.clone()], predicate)? {
                     return Ok(Some(IndexTerm {
                         kind: IndexKind::Attribute,

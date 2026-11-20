@@ -17,6 +17,7 @@ pub enum DataUpdate {
 pub(super) enum QueryKey {
     Catalog(Vec<market_gifts::CollectionId>),
     Range {
+        options: market_replica::ReadOptions,
         selection: Vec<u8>,
         sort: i32,
         range: Box<market_replica::KeyRange>,
@@ -24,6 +25,7 @@ pub(super) enum QueryKey {
 }
 pub(super) struct OrdersFeed {
     pub request: market_hub_protocol::wire::ReadRequest,
+    pub options: market_replica::ReadOptions,
     pub initial: Arc<crate::OrderResult>,
     pub version: market_replica::ReadRevision,
     pub observed: u64,

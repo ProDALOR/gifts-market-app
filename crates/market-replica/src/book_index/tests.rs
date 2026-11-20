@@ -15,6 +15,101 @@ fn scope(book: &w::BookKey) -> Scope {
     .unwrap()
 }
 
+#[test]
+fn enum_candidates_preserve_rank_ties_venue_isolation_shared_records_and_updates() {
+    let mut state = State::default();
+    for (id, venue, kind, price) in [
+        ("a", "one", "rare", "1"),
+        ("b", "two", "rare", "1"),
+        ("c", "one", "common", "1"),
+        ("d", "two", "rare", "2"),
+    ] {
+        let mut row = order(id, price, None);
+        row.book.as_mut().unwrap().venue_id = venue.into();
+        row.attributes.insert(
+            "model".into(),
+            w::AttributePredicate {
+                predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                    value: Some(w::attribute_value::Value::OptionId(kind.into())),
+                })),
+            },
+        );
+        state.upsert(entity(E::Order(row))).unwrap();
+    }
+    let mut selected = scope(&order("", "1", None).book.unwrap());
+    selected.attributes.insert(
+        "model".into(),
+        w::AttributePredicate {
+            predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                value: Some(w::attribute_value::Value::OptionId("rare".into())),
+            })),
+        },
+    );
+    for venue in [None, Some("one"), Some("two")] {
+        selected.venue_id = venue.map(str::to_owned);
+        for sort in [
+            Sort::PriceAsc,
+            Sort::PriceDesc,
+            Sort::TimeAsc,
+            Sort::TimeDesc,
+            Sort::NumberAsc,
+            Sort::NumberDesc,
+        ] {
+            let mut full = selected.clone();
+            full.attributes.clear();
+            let expected: Vec<_> = state
+                .books()
+                .ranked(&full, None, sort)
+                .filter(|(_, entity)| {
+                    crate::state::order(entity).unwrap().attributes["model"]
+                        == selected.attributes["model"]
+                })
+                .collect();
+            let actual: Vec<_> = state.books().ranked(&selected, None, sort).collect();
+            assert_eq!(actual, expected);
+            for (i, (rank, record)) in actual.iter().enumerate() {
+                assert!(Arc::ptr_eq(
+                    record,
+                    state.entity(&entity_key(record).unwrap()).unwrap()
+                ));
+                let after: Vec<_> = state
+                    .books()
+                    .ranked(&selected, Some((*rank).clone()), sort)
+                    .collect();
+                assert_eq!(after, actual[i + 1..]);
+            }
+        }
+    }
+    selected.venue_id = None;
+    let pinned = state.clone();
+    let mut changed = order("a", "1", None);
+    changed.book.as_mut().unwrap().venue_id = "one".into();
+    changed.attributes.insert(
+        "model".into(),
+        w::AttributePredicate {
+            predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                value: Some(w::attribute_value::Value::OptionId("common".into())),
+            })),
+        },
+    );
+    state.upsert(entity(E::Order(changed))).unwrap();
+    assert_eq!(
+        state
+            .books()
+            .ranked(&selected, None, Sort::PriceAsc)
+            .count(),
+        2
+    );
+    assert_eq!(
+        pinned
+            .books()
+            .ranked(&selected, None, Sort::PriceAsc)
+            .count(),
+        3
+    );
+    assert_shared_records(&state, 4);
+}
+
 fn assert_shared_records(state: &State, expected: usize) {
     assert_eq!(state.books().locations.len(), expected);
     let mut stored = 0;

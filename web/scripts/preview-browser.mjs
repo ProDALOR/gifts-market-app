@@ -32,7 +32,7 @@ window.mount=(large=false)=>root.render(React.createElement(GiftPreview,{order,o
  React.createElement('span',{className:'venue-icon',style:{position:'relative',zIndex:4}},React.createElement(VenueIcon,{name:'MRKT'}))));
 window.unmount=()=>root.render(null);
 window.mountLayouts=()=>root.render(React.createElement('div',{className:'layout-test'},
- ...['small','large'].map(size=>React.createElement(GiftPreview,{key:size,order,options,size,playback:'static',fallback:'G'}))));
+ ...['small','large','card'].map(layout=>React.createElement(GiftPreview,{key:layout,order,options,size:layout==='large'?'large':'small',patternLayout:layout==='card'?'card':'gift',playback:'static',fallback:'G'}))));
 window.mountSelection=()=>{
  const collections=[{id:'gift',name:'Gift',preview:options.get('model').media,model_ids:['model'],backdrop_ids:[],pattern_ids:[]}];
  root.render(React.createElement(React.Fragment,null,
@@ -1161,7 +1161,7 @@ try {
     () =>
       [...document.querySelectorAll(".layout-test .gift-backdrop")].filter(
         (canvas) => canvas.symbolTiles?.length === 18,
-      ).length === 2,
+      ).length === 3,
   );
   const tiles = await page.evaluate(() =>
     [...document.querySelectorAll(".layout-test .gift-backdrop")].map(
@@ -1171,8 +1171,26 @@ try {
   assert.deepEqual(
     tiles[0],
     tiles[1],
-    "Cards and details share symbol geometry and opacity",
+    "Native previews retain the same symbol geometry and opacity",
   );
+  const offset = await page
+    .locator(".layout-test .gift-backdrop")
+    .nth(2)
+    .evaluate(
+      (canvas) =>
+        30 * Math.max(canvas.clientWidth / 420, canvas.clientHeight / 280),
+    );
+  tiles[2].forEach(([x, y, width, height, opacity], index) => {
+    const native = tiles[0][index];
+    assert.deepEqual(
+      [x, width, height, opacity],
+      [native[0], native[2], native[3], native[4]],
+    );
+    assert.ok(
+      Math.abs(y - native[1] - offset) < 1e-8,
+      "Card symbols shift down around the model at the current rendering scale",
+    );
+  });
   assert.equal(new Set(tiles[0].map((tile) => tile[4])).size > 3, true);
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);

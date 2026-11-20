@@ -137,6 +137,7 @@ export const GiftCard = memo(function GiftCard({
           options={options}
           fallback={collectionName[0] || "◇"}
           className="card-preview"
+          patternLayout="card"
           playback={
             order.kind === "bid" || activity?.state === "removed"
               ? "static"

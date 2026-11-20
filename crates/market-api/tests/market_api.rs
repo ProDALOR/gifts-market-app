@@ -2741,3 +2741,6 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
+
+#[path = "market_api/bid_filters.rs"]
+mod bid_filters;

@@ -217,7 +217,17 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         })?,
         _ => return Ok(vec![]),
     };
-    Ok(vec![json!({"name":name,"payload":value})])
+    let mut examples = vec![json!({"name":name,"payload":value})];
+    if name == "orders.watch" {
+        let bid = Command::WatchOrders {
+            id: "bids.1".into(),
+            params: Box::new(serde_json::from_value(
+                json!({"source":"bids","bid_match":"all","filters":{"collection_id":"tg.gift.123","currency_id":"GRAM","models":["gold","silver"]},"limit":80}),
+            )?),
+        };
+        examples.push(json!({"name":"bids.all","payload":serde_json::to_value(bid)?}));
+    }
+    Ok(examples)
 }
 
 #[cfg(test)]

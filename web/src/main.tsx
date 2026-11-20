@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { Order, TraitFilters, TraitKey, Sort, FeedQuery } from "./market";
+import type {
+  Order,
+  TraitFilters,
+  TraitKey,
+  Sort,
+  FeedQuery,
+  BidMatch,
+} from "./market";
 import { useCatalog } from "./catalog/use-catalog";
 import { useOrderFeed } from "./use-order-feed";
 import { useBackgroundPlaybackSuspension } from "./previews/use-playback";
@@ -23,6 +30,7 @@ type Choice = {
   currency: string;
   venue: string;
   mode: "ask" | "bid" | "executed";
+  bid_match: BidMatch;
   sort: Exclude<Sort, "identity">;
   min: string;
   max: string;
@@ -63,6 +71,7 @@ function saved(context: TelegramContext): Choice {
     currency: p.get("currency") || "",
     venue: p.get("venue") || "",
     mode,
+    bid_match: p.get("bid_match") === "all" ? "all" : "any",
     sort:
       (
         [
@@ -134,6 +143,8 @@ function App({ context }: { context: TelegramContext }) {
       if (key === "filters") {
         if (Object.keys(value as object).length)
           p.set(key, JSON.stringify(value));
+      } else if (key === "bid_match") {
+        if (choice.mode === "bid" && value === "all") p.set(key, value);
       } else if (value) p.set(key, String(value));
     }
     history.replaceState(null, "", `${location.pathname}?${p}`);
@@ -165,6 +176,7 @@ function App({ context }: { context: TelegramContext }) {
       ? null
       : {
           ...base,
+          bid_match: choice.mode === "bid" ? choice.bid_match : undefined,
           source:
             choice.mode === "executed"
               ? "history"
@@ -318,7 +330,6 @@ function App({ context }: { context: TelegramContext }) {
             loading={optionsLoading}
             loadError={optionsError}
             filters={choice.filters}
-            disabled={choice.mode === "bid"}
             change={changeTrait}
             open={openTrait}
             setOpen={setOpenTrait}
@@ -342,7 +353,6 @@ function App({ context }: { context: TelegramContext }) {
                         ...choice,
                         mode,
                         sort: defaultSort[mode],
-                        filters: mode === "bid" ? {} : choice.filters,
                       });
                   }}
                 >
@@ -355,6 +365,29 @@ function App({ context }: { context: TelegramContext }) {
               ))}
             </div>
           </div>
+          {choice.mode === "bid" && (
+            <div className="bid-matching">
+              <span>Match bid conditions</span>
+              <div className="segments" role="group" aria-label="Bid matching">
+                {(["any", "all"] as const).map((match) => (
+                  <button
+                    key={match}
+                    aria-pressed={choice.bid_match === match}
+                    className={choice.bid_match === match ? "active" : ""}
+                    onClick={() => set({ ...choice, bid_match: match })}
+                  >
+                    {match === "any" ? "Any" : "All"}
+                  </button>
+                ))}
+              </div>
+              <p>
+                {choice.bid_match === "any"
+                  ? "Accepts any selected value in each trait."
+                  : "Accepts every selected value in each trait."}{" "}
+                No selections shows all bids.
+              </p>
+            </div>
+          )}
           {(choice.min || choice.max || choice.from || choice.until) && (
             <div className="selection-note">
               <span>

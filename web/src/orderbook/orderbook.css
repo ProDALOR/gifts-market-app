@@ -33,6 +33,22 @@
   flex: 1;
   min-width: 0;
 }
+.bid-matching {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: var(--control-gap);
+  font-size: 12px;
+}
+.bid-matching .segments {
+  width: 104px;
+}
+.bid-matching p {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+}
 .market-heading {
   position: absolute;
   width: 1px;

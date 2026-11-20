@@ -3,6 +3,7 @@ use crate::test_support::{catalog, entity, order, read, upsert};
 use crate::types::{Key, Sort};
 use rust_decimal::Decimal;
 use w::entity::Entity as E;
+mod sparse;
 fn setup() -> (tempfile::TempDir, ReplicaWriter) {
     let dir = tempfile::tempdir().unwrap();
     let mut writer = ReplicaWriter::open(dir.path(), "test").unwrap();
@@ -777,6 +778,7 @@ fn bounded_empty_slices_return_a_progress_key_without_claiming_unscanned_coverag
         .query_range_checked(
             query.clone(),
             RangeRequest {
+                options: Default::default(),
                 range: KeyRange {
                     start: None,
                     end: None,
@@ -799,6 +801,7 @@ fn bounded_empty_slices_return_a_progress_key_without_claiming_unscanned_coverag
         .query_range_checked(
             query.clone(),
             RangeRequest {
+                options: Default::default(),
                 range: KeyRange {
                     start: Some(boundary),
                     end: None,
@@ -1089,6 +1092,7 @@ fn range_queries_page_without_duplicates_and_watches_reject_incomplete_coverage(
                 .query_range_checked(
                     request.clone(),
                     RangeRequest {
+                        options: Default::default(),
                         range: KeyRange {
                             start: start.clone(),
                             end: None,
@@ -1120,6 +1124,7 @@ fn range_queries_page_without_duplicates_and_watches_reject_incomplete_coverage(
             .query_range_checked(
                 request.clone(),
                 RangeRequest {
+                    options: Default::default(),
                     range: bounds.clone(),
                     limit: 20,
                     snapshot: None,
@@ -1136,6 +1141,7 @@ fn range_queries_page_without_duplicates_and_watches_reject_incomplete_coverage(
                 .query_range_checked(
                     request,
                     RangeRequest {
+                        options: Default::default(),
                         range: bounds,
                         limit: 19,
                         snapshot: None
@@ -1178,6 +1184,7 @@ fn half_open_bounded_queries_advance_to_the_original_end_for_every_source_and_so
                 .query_range_checked(
                     request.clone(),
                     RangeRequest {
+                        options: Default::default(),
                         range: KeyRange {
                             start: None,
                             end: None,
@@ -1198,6 +1205,7 @@ fn half_open_bounded_queries_advance_to_the_original_end_for_every_source_and_so
                     .query_range_checked(
                         request.clone(),
                         RangeRequest {
+                            options: Default::default(),
                             range: KeyRange {
                                 start: start.clone(),
                                 end: end.clone(),
@@ -1222,6 +1230,7 @@ fn half_open_bounded_queries_advance_to_the_original_end_for_every_source_and_so
                 .query_range_checked(
                     request.clone(),
                     RangeRequest {
+                        options: Default::default(),
                         range: KeyRange {
                             start: end.clone(),
                             end: end.clone(),
@@ -1255,6 +1264,7 @@ fn read_observation_clocks_belong_to_the_pinned_view_including_retained_snapshot
         .query_range_checked(
             request.clone(),
             RangeRequest {
+                options: Default::default(),
                 range: bounds.clone(),
                 limit: 20,
                 snapshot: None,
@@ -1274,6 +1284,7 @@ fn read_observation_clocks_belong_to_the_pinned_view_including_retained_snapshot
         .query_range_checked(
             read(1, false),
             RangeRequest {
+                options: Default::default(),
                 range: bounds.clone(),
                 limit: 20,
                 snapshot: None,
@@ -1287,6 +1298,7 @@ fn read_observation_clocks_belong_to_the_pinned_view_including_retained_snapshot
         .query_range_checked(
             request,
             RangeRequest {
+                options: Default::default(),
                 range: bounds,
                 limit: 20,
                 snapshot: first.snapshot,

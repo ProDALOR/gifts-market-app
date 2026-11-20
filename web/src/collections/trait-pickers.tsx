@@ -10,7 +10,6 @@ export const TraitPickers = memo(function TraitPickers({
   loadError = "",
   options,
   filters,
-  disabled,
   change,
   open,
   setOpen,
@@ -20,7 +19,6 @@ export const TraitPickers = memo(function TraitPickers({
   loadError?: string;
   options: ReadonlyMap<string, CatalogOption>;
   filters: TraitFilters;
-  disabled: boolean;
   open?: TraitKey;
   setOpen: (id: TraitKey | undefined) => void;
   change: (id: TraitKey, value?: string[]) => void;
@@ -64,7 +62,6 @@ export const TraitPickers = memo(function TraitPickers({
               aria-expanded={open === trait.id}
               aria-controls="trait-panel"
               disabled={
-                disabled ||
                 !collection ||
                 collectionOptions(collection, trait.id, options).length === 0
               }

@@ -16,7 +16,7 @@ export function GiftBackdrop({
   palette: BackdropPalette;
   patternUrls?: readonly string[];
   visible: boolean;
-  layout?: "gift" | "banner";
+  layout?: "gift" | "card" | "banner";
   background?: boolean;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -68,7 +68,11 @@ export function GiftBackdrop({
       } else {
         const symbol = symbols[0];
         if (symbol)
-          for (const tile of giftPatternTiles(width, height)) {
+          for (const tile of giftPatternTiles(
+            width,
+            height,
+            layout === "card",
+          )) {
             context.globalAlpha = tile.opacity;
             context.drawImage(symbol, tile.x, tile.y, tile.size, tile.size);
           }

@@ -12,6 +12,7 @@ test("Telegram links restore market selection without credentials", () => {
     collection: "tg.gift.5167939598143193218",
     currency: "GRAM",
     mode: "bid",
+    bid_match: "all",
     sort: "price_desc",
     filters: JSON.stringify({
       models: ["gold"],
@@ -29,6 +30,7 @@ test("Telegram links restore market selection without credentials", () => {
   );
   assert.equal(selected.get("collection"), params.get("collection"));
   assert.equal(selected.get("currency"), "XTR");
+  assert.equal(selected.get("bid_match"), "all");
   const link = telegramLink(
     {
       bot_id: "42",

@@ -39,6 +39,7 @@ pub struct RangeRequest {
     pub range: KeyRange,
     pub limit: u32,
     pub snapshot: Option<SnapshotId>,
+    pub options: ReadOptions,
 }
 pub struct ReadBatch {
     pub entries: Vec<ReadEntry>,
@@ -84,7 +85,15 @@ impl ReplicaReader {
         validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
         include: impl Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadBatch, Status> {
-        self.read_selection_checked(request, slice, None, false, validate, include)
+        self.read_selection_checked(
+            request,
+            slice,
+            None,
+            false,
+            ReadOptions::default(),
+            validate,
+            include,
+        )
     }
     pub fn read_range_checked(
         &self,
@@ -98,7 +107,15 @@ impl ReplicaReader {
             limit: READ_LIMITS.max_batch_rows,
             snapshot: None,
         };
-        self.read_selection_checked(request, slice, Some(range), true, validate, include)
+        self.read_selection_checked(
+            request,
+            slice,
+            Some(range),
+            true,
+            ReadOptions::default(),
+            validate,
+            include,
+        )
     }
     /// Read one page within half-open bounds; continue at the returned range end.
     pub fn query_range_checked(
@@ -118,6 +135,7 @@ impl ReplicaReader {
             },
             Some(read.range),
             complete,
+            read.options,
             validate,
             include,
         )
@@ -128,6 +146,7 @@ impl ReplicaReader {
         slice: SliceRequest,
         range: Option<KeyRange>,
         complete: bool,
+        options: ReadOptions,
         validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
         include: impl Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadBatch, Status> {
@@ -185,7 +204,7 @@ impl ReplicaReader {
         };
         validate(&reader, &request)?;
         let view = reader.view()?;
-        let filter = Filter::compile(&view.state, &request)?;
+        let filter = Filter::compile_with_options(&view.state, &request, options)?;
         if filter.scope.is_none() {
             return Err(Status::invalid_argument("reads require an order scope"));
         }

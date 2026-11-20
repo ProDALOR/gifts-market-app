@@ -1,4 +1,4 @@
-//! Pure translation of gift queries into generic hub reads. Service limits belong to callers.
+//! Pure translation of gift queries into upstream scopes. Local matching and service policy belong to callers.
 use super::{BACKDROP, MODEL, NUMBER, PATTERN};
 use market_gifts::*;
 use market_hub_protocol::wire as w;
@@ -38,7 +38,10 @@ fn scope(filters: GiftFilters, mode: w::OrderMode) -> Result<w::Scope, InvalidVa
     if !filters.patterns.is_empty() {
         attributes.insert(PATTERN.into(), selection(filters.patterns));
     }
-    if let Some(range) = filters.number {
+    if let Some(range) = filters
+        .number
+        .filter(|r| r.min.is_some() || r.max.is_some())
+    {
         attributes.insert(
             NUMBER.into(),
             w::AttributePredicate {
@@ -75,6 +78,9 @@ fn sort(value: GiftSort) -> i32 {
     }) as i32
 }
 pub fn compile(query: &GiftOrderQuery) -> Result<w::ReadRequest, InvalidValue> {
+    if query.source != OrderSource::Bids && query.bid_match != BidMatch::Any {
+        return Err(InvalidValue("bid_match all is only valid for bids"));
+    }
     if query.source != OrderSource::History && query.period.is_some() {
         return Err(InvalidValue("period is only valid for history"));
     }

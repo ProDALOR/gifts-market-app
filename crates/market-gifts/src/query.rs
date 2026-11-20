@@ -125,6 +125,18 @@ impl Period {
     }
 }
 
+/// How a bid's accepted values relate to selected gift traits and number bounds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum BidMatch {
+    /// A bid accepts at least one selected value in every selected trait group.
+    #[default]
+    Any,
+    /// A bid accepts every selected value and the entire selected gift-number range.
+    All,
+}
+
 /// One range query for latest/frozen asks, bids and history.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,6 +145,9 @@ pub struct GiftOrderQuery {
     pub filters: GiftFilters,
     #[serde(default)]
     pub source: OrderSource,
+    /// Bid-condition matching. Defaults to any; all is only valid for bids.
+    #[serde(default)]
+    pub bid_match: BidMatch,
     #[serde(default)]
     pub sort: Option<GiftSort>,
     pub period: Option<Period>,
@@ -159,6 +174,7 @@ impl GiftOrderQuery {
         Self {
             filters,
             source: OrderSource::Asks,
+            bid_match: BidMatch::Any,
             sort: None,
             period: None,
             range: crate::OrderRange::default(),

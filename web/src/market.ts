@@ -20,8 +20,12 @@ export type MarketStatus = components["schemas"]["MarketStatus"];
 export type Order = components["schemas"]["OrderResponse"];
 export type Sort = components["schemas"]["GiftSort"];
 export type OrderQuery = components["schemas"]["GiftOrderQuery"];
+export type BidMatch = components["schemas"]["BidMatch"];
 /** One source-oriented selection for live and explicitly frozen GUI reads. */
-export type FeedQuery = Pick<OrderQuery, "filters" | "sort" | "period"> & {
+export type FeedQuery = Pick<
+  OrderQuery,
+  "filters" | "sort" | "period" | "bid_match"
+> & {
   source: NonNullable<OrderQuery["source"]>;
 };
 export type GiftMedia = components["schemas"]["GiftMedia"];

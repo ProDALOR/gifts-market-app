@@ -260,6 +260,7 @@ async fn equivalent_catalog_watches_share_a_feed_and_keep_independent_leases() {
 
 fn seed(writer: &market_replica::ReplicaWriter, params: GiftOrderQuery) -> types::OrdersFeed {
     let (request, read) = crate::query::compile(params).unwrap();
+    let options = read.options;
     let batch = writer
         .reader()
         .query_range_checked(
@@ -273,6 +274,7 @@ fn seed(writer: &market_replica::ReplicaWriter, params: GiftOrderQuery) -> types
     let snapshot = crate::protocol::projected_read(batch).unwrap();
     types::OrdersFeed {
         request,
+        options,
         initial: Arc::new(snapshot.read.result),
         version: snapshot.version,
         observed: snapshot.observed,
@@ -659,5 +661,125 @@ async fn live_history_publishes_new_executions_and_late_backfills_within_its_per
     .await
     .unwrap();
     drop(watch);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn sparse_model_watch_remains_complete_across_unrelated_market_updates() {
+    use crate::tests::entity;
+    use market_hub_protocol::wire as w;
+    let (_directory, mut writer) = fixture();
+    let mut changes = vec![
+        entity(w::entity::Entity::Attribute(w::Attribute {
+            id: "tg.model".into(),
+            name: "Model".into(),
+            value_type: 1,
+            ..Default::default()
+        })),
+        entity(w::entity::Entity::ItemType(w::ItemType {
+            id: "gift".into(),
+            name: "Gift".into(),
+            quantity_step: "1".into(),
+            aliases: vec![w::ExternalId {
+                namespace: "tg".into(),
+                id: "99".into(),
+            }],
+            attributes: [("tg.model".into(), Default::default())].into(),
+            ..Default::default()
+        })),
+    ];
+    for id in ["rare", "common"] {
+        changes.push(entity(w::entity::Entity::AttributeOption(
+            w::AttributeOption {
+                id: id.into(),
+                name: id.into(),
+                attribute_id: "tg.model".into(),
+                ..Default::default()
+            },
+        )));
+    }
+    let listing = |id: String, price: usize, model: &str| {
+        let mut change = order(&price.to_string());
+        if let Some(w::change::Change::Upsert(w::Entity {
+            entity: Some(w::entity::Entity::Order(row)),
+        })) = &mut change.change
+        {
+            row.id = id;
+            row.attributes.insert(
+                "tg.model".into(),
+                w::AttributePredicate {
+                    predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                        value: Some(w::attribute_value::Value::OptionId(model.into())),
+                    })),
+                },
+            );
+        }
+        change
+    };
+    for i in 0..market_replica::READ_LIMITS.max_scan_candidates + 2000 {
+        changes.push(listing(format!("common-{i}"), i + 1, "common"));
+    }
+    for i in 0..62 {
+        changes.push(listing(format!("rare-{i}"), (i + 1) * 200, "rare"));
+    }
+    writer
+        .apply(w::Batch {
+            changes,
+            cursor: "sparse".into(),
+        })
+        .unwrap();
+    let h = Harness::new(writer.reader(), 2).await;
+    let mut q = query("gift");
+    q.filters.models = vec!["rare".into()];
+    q.limit = 80;
+    let mut live = h.service.handle.watch_orders(q).await.unwrap();
+    let mut clock = match &live.initial {
+        DataUpdate::Orders {
+            result, observed, ..
+        } => {
+            assert_eq!(result.data.len(), 62);
+            assert!(result.range.end.is_none());
+            *observed
+        }
+        _ => panic!("expected a complete initial model view"),
+    };
+    for i in 0..3 {
+        writer
+            .apply(w::Batch {
+                changes: vec![listing("unrelated".into(), 5000 + i, "common")],
+                cursor: format!("other-{i}"),
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let update = live.updates.borrow_and_update().clone();
+                match update {
+                    DataUpdate::Error(error) => panic!("Sparse refresh failed: {error}"),
+                    DataUpdate::Orders {
+                        result, observed, ..
+                    } if observed > clock => {
+                        assert_eq!(result.data.len(), 62);
+                        clock = observed;
+                        break;
+                    }
+                    _ => {}
+                }
+                live.updates.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    }
+    writer
+        .apply(w::Batch {
+            changes: vec![listing("new-rare".into(), 1, "rare")],
+            cursor: "new-rare".into(),
+        })
+        .unwrap();
+    price(&mut live.updates, "1").await;
+    assert!(
+        matches!(&*live.updates.borrow(),DataUpdate::Orders {result,..} if result.data.len()==63)
+    );
+    drop(live);
     h.shutdown().await;
 }

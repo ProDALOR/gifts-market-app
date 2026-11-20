@@ -110,12 +110,16 @@ const GIFT_PATTERN = [
   [337.2099, 155.8935, 0.2247, 0.152669271],
 ] as const;
 
-/** Center-crop the native composition like a cover image, never stretch it. */
-export function giftPatternTiles(width: number, height: number) {
+/** Keep native symbol spacing; cards center the composition's model anchor at y=110. */
+export function giftPatternTiles(
+  width: number,
+  height: number,
+  centered = false,
+) {
   if (width <= 0 || height <= 0) return [];
   const scale = Math.max(width / 420, height / 280);
   const left = (width - 420 * scale) / 2;
-  const top = (height - 280 * scale) / 2;
+  const top = (height - 280 * scale) / 2 + (centered ? 30 * scale : 0);
   return GIFT_PATTERN.map(([x, y, size, opacity]) => ({
     x: left + x * scale,
     y: top + y * scale,

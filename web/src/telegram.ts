@@ -70,6 +70,7 @@ const keys = [
   "currency",
   "venue",
   "mode",
+  "bid_match",
   "sort",
   "filters",
   "min",
