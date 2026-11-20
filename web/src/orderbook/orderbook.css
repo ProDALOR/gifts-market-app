@@ -34,20 +34,12 @@
   min-width: 0;
 }
 .bid-matching {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 6px 10px;
+  display: flex;
+  justify-content: flex-end;
   margin-bottom: var(--control-gap);
-  font-size: 12px;
 }
 .bid-matching .segments {
   width: 104px;
-}
-.bid-matching p {
-  grid-column: 1 / -1;
-  color: var(--muted);
-  font-size: 11px;
 }
 .market-heading {
   position: absolute;
@@ -221,6 +213,8 @@
 }
 .detail-art {
   position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   height: clamp(320px, 94vw, 400px);
   background: var(--raised);
   color: white;
@@ -237,10 +231,9 @@
   );
 }
 .detail-caption {
-  position: absolute;
-  top: 68%;
-  left: 20px;
-  right: 20px;
+  position: relative;
+  grid-area: 2 / 1;
+  padding: 0 20px 28px;
   z-index: 3;
   text-align: center;
   pointer-events: none;
@@ -274,6 +267,14 @@
   background: var(--accent);
   color: #2a1728;
   font-weight: 650;
+  min-width: 0;
+  padding-inline: 10px;
+}
+.detail-link-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .telegram .api-link {
   display: none;
@@ -329,6 +330,10 @@
   line-height: 36px;
 }
 .detail-art .gift-preview-large {
+  display: grid;
+  grid-area: 1 / 1 / -1 / -1;
+  grid-template-rows: subgrid;
+  grid-template-columns: minmax(0, 1fr);
   width: 100%;
   height: 100%;
   border: 0;
@@ -337,10 +342,15 @@
 }
 .detail-art .gift-preview .gift-loading-placeholder,
 .detail-art .gift-preview .gift-model-image,
-.detail-art .gift-preview .model-animation {
-  inset: 8% 14% auto;
+.detail-art .gift-preview .model-animation,
+.detail-art .gift-preview .gift-preview-fallback {
+  position: relative;
+  grid-area: 1 / 1;
+  inset: auto;
+  align-self: center;
+  justify-self: center;
   width: 72%;
-  height: 60%;
+  height: calc(100% - 32px);
 }
 .card-copy .quote-amount.precise {
   font-size: 11px;
@@ -363,6 +373,11 @@
 }
 .detail-price small {
   font-size: 11px;
+}
+.detail-price-unit {
+  flex: none;
+  font-weight: 500;
+  color: var(--muted);
 }
 .detail-price .quote-amount {
   overflow-wrap: normal;
@@ -643,10 +658,13 @@
   background: var(--tint);
 }
 .detail-art .gift-preview-fallback {
+  display: grid;
+  place-items: center;
   font-size: 64px;
 }
 .detail-actions {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   position: sticky;
   bottom: 0;
@@ -655,6 +673,9 @@
     max(14px, env(safe-area-inset-bottom), var(--tg-safe-bottom, 0px));
   border-top: 1px solid var(--line);
   background: var(--paper);
+}
+.detail-actions > :only-child {
+  grid-column: 1 / -1;
 }
 .detail-telegram {
   background: var(--surface);
@@ -667,6 +688,7 @@
 }
 .detail-link svg,
 .detail-link .venue-logo {
+  flex: none;
   width: 22px;
   height: 22px;
   object-fit: contain;
@@ -722,12 +744,6 @@
 }
 .valuation-popup-body {
   padding: 16px 18px 20px;
-}
-.valuation-context {
-  margin-top: 12px;
-}
-.valuation-context .valuation-metrics {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
 }
 .gift-attributes {
   margin-bottom: 20px;
@@ -908,47 +924,26 @@
 .bid-card .preview-footer {
   padding: 0;
 }
+.detail-bid-art {
+  height: auto;
+}
 .bid-detail-preview {
-  margin-bottom: 18px;
+  grid-area: 1 / 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .bid-detail-preview > .trait-preview {
   margin: 0;
+  flex: 1;
   min-height: 128px;
+  border-radius: 0;
   display: flex;
   flex-direction: column;
 }
-.detail.detail-criteria[open] {
-  display: flex;
-  flex-direction: column;
-  height: fit-content;
-}
-.bid-detail-heading {
+.bid-detail-preview .trait-preview .preview-models {
+  height: auto;
   flex: none;
-  padding: 24px 54px 0 18px;
-}
-.bid-detail-heading p {
-  font-size: 11px;
-  color: var(--muted);
-}
-.bid-detail-heading h2 {
-  margin-top: 4px;
-  font-size: 24px;
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-}
-.detail-criteria .detail-pricing {
-  grid-template-columns: minmax(0, 1fr);
-}
-.detail-criteria .detail-content {
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-@media (min-width: 960px) {
-  .detail.detail-criteria[open] {
-    width: min(640px, calc(100% - 48px));
-  }
-  .bid-detail-heading {
-    padding: 28px 64px 0 24px;
-  }
+  margin-block: auto;
 }

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { FloorsController } from "../src/valuation/floors-controller.ts";
+import {
+  FloorsController,
+  traitFloor,
+} from "../src/valuation/floors-controller.ts";
 import type { LiveFrame, SubscriptionCommand } from "../src/ws-protocol.ts";
 import { catalogFloors } from "../src/valuation/catalog-floors.ts";
 import { parseFrame } from "../src/ws-protocol.ts";
@@ -168,6 +171,7 @@ function fixture() {
     commands,
     emit,
     status: (value: string) => status(value),
+    receive: (frame: LiveFrame) => receive(frame, commands.at(-1)!),
     closed: () => closed,
     retries: () => retries,
   };
@@ -229,9 +233,9 @@ test("visible floors are batched once and scope changes reject old frames before
     await settle();
     f.emit();
     assert.equal(f.commands.length, 2);
-    assert.equal(
+    assert.ok(
       f.controller.getSnapshot().entries.get("a")?.traits,
-      undefined,
+      "An unchanged collection summary preserves its validated trait cache",
     );
     assert.ok(f.controller.getSnapshot().entries.get("b")?.traits);
     f.controller.select("XTR", "b", null);
@@ -336,4 +340,109 @@ test("other collections do not advance selected freshness, including nanosecond 
     ),
     false,
   );
+});
+
+test("attribute valuations use only the matching scope and never invent a symbol or missing value", () => {
+  const floor = (value: string, gifts: number, listings: number) => ({
+    price: { value },
+    evidence: { gifts, listings },
+  });
+  const entry: FloorsEntry = {
+    floor: floor("8", 7, 9),
+    traits: {
+      models: { model: floor("10", 2, 4) },
+      backdrops: { backdrop: floor("9", 1, 2) },
+    },
+    stale: false,
+    evaluatedAt: "2026-11-20T12:00:00Z",
+    used: 1,
+  };
+  assert.equal(traitFloor(entry, "model", "model"), entry.traits!.models.model);
+  assert.equal(
+    traitFloor(entry, "backdrop", "backdrop"),
+    entry.traits!.backdrops.backdrop,
+  );
+  assert.equal(traitFloor(entry, "model", "missing"), undefined);
+  assert.equal(traitFloor(entry, "pattern", "model"), undefined);
+  assert.equal(traitFloor(undefined, "model", "model"), undefined);
+});
+
+test("unchanged visibility sets do not replace watches, and changed summaries invalidate cached traits", async () => {
+  const f = fixture();
+  try {
+    f.controller.select("GRAM", "a", null);
+    f.controller.visibleCollections(["a", "b"]);
+    await settle();
+    f.emit();
+    f.controller.visibleCollections(["b", "a", "b"]);
+    await settle();
+    assert.equal(f.commands.length, 1);
+    f.controller.select("GRAM", "b", null);
+    await settle();
+    f.emit();
+    assert.ok(f.controller.getSnapshot().entries.get("a")?.traits);
+    f.emit(undefined, "3", { a: "2026-11-20T13:00:00Z" });
+    assert.equal(
+      f.controller.getSnapshot().entries.get("a")?.traits,
+      undefined,
+    );
+  } finally {
+    f.controller.close();
+  }
+});
+
+test("switching gifts removes the previous pair immediately and ignores late frames", async () => {
+  const f = fixture();
+  try {
+    f.controller.select("GRAM", "gift", {
+      model_id: "old",
+      backdrop_id: "old",
+    });
+    await settle();
+    f.emit();
+    const old = f.commands.at(-1)!;
+    f.controller.select("GRAM", "gift", {
+      model_id: "new",
+      backdrop_id: "new",
+    });
+    assert.equal(
+      f.controller.getSnapshot().entries.get("gift")?.traits?.pair,
+      undefined,
+    );
+    assert.equal(f.controller.getSnapshot().entries.get("gift")?.stale, true);
+    f.emit(old, "999");
+    await settle();
+    f.emit();
+    assert.equal(
+      f.controller.getSnapshot().entries.get("gift")?.traits?.pair?.model_id,
+      "new",
+    );
+    f.emit(old, "999");
+    assert.equal(
+      f.controller.getSnapshot().entries.get("gift")?.floor.price.value,
+      "3",
+    );
+  } finally {
+    f.controller.close();
+  }
+});
+
+test("a mismatched currency cannot leave retained attribute values looking current", async () => {
+  const f = fixture();
+  try {
+    f.controller.select("GRAM", "gift", null);
+    await settle();
+    const frame = f.emit();
+    frame.data.currency_id = "XTR";
+    f.receive(frame);
+    const state = f.controller.getSnapshot();
+    assert.equal(state.entries.get("gift")?.floor.price.value, "3");
+    assert.equal(state.entries.get("gift")?.stale, true);
+    assert.match(state.error, /currency/);
+    f.emit();
+    assert.equal(f.controller.getSnapshot().entries.get("gift")?.stale, false);
+    assert.equal(f.commands.length, 1);
+  } finally {
+    f.controller.close();
+  }
 });

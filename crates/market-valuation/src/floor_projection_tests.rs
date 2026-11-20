@@ -120,11 +120,11 @@ async fn batch_reuses_gift_statistics_and_status_changes_do_not_rebuild_price_da
         Arc::ptr_eq(before, after),
         "availability changes share the complete catalog result"
     );
-    assert!(Arc::ptr_eq(&first.statistics[0], &stale.statistics[0]));
+    assert!(Arc::ptr_eq(&first.statistics()[0], &stale.statistics()[0]));
     writer.mark(market_replica::SyncState::Live);
     let live = prepare(Some(stale)).await.unwrap().unwrap();
     assert!(!live.report.stale);
-    assert!(Arc::ptr_eq(&first.statistics[0], &live.statistics[0]));
+    assert!(Arc::ptr_eq(&first.statistics()[0], &live.statistics()[0]));
     let missing = source
         .prepare(move |snapshot| {
             let mut query = request();
@@ -331,6 +331,6 @@ async fn a_batch_refresh_keeps_other_collections_calculation_times() {
         catalog(&next.report).collections[1].evaluated_at
             > catalog(&first.report).collections[1].evaluated_at
     );
-    assert!(Arc::ptr_eq(&first.statistics[0], &next.statistics[0]));
+    assert!(Arc::ptr_eq(&first.statistics()[0], &next.statistics()[0]));
     reads.shutdown().await;
 }

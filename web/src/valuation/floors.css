@@ -27,27 +27,49 @@
 }
 .collection-floor {
   position: absolute;
-  inset: auto 0 0;
+  inset: auto 3px 2px;
   display: flex;
   justify-content: center;
-  pointer-events: none;
-  background: #16131bb8;
-  border-radius: 4px;
-  color: white;
-  padding: 1px 2px;
+  min-width: 0;
+  line-height: 12px;
 }
 .collection-floor .floor-badge {
+  min-width: 0;
   font-size: 9px;
-  color: white;
+  line-height: 12px;
+  color: inherit;
 }
 .collection-floor:empty {
-  display: none;
+  visibility: hidden;
 }
-.trait-option .floor-badge {
-  margin-left: auto;
-  flex: none;
+.collection-tile[aria-pressed="true"] .collection-floor {
+  left: 60px;
+  right: 6px;
+  bottom: 5px;
+  justify-content: flex-start;
 }
-.shared-market-values {
+.searching .collection-tile .collection-floor {
+  left: 3px;
+  right: 3px;
+  bottom: 2px;
+  justify-content: center;
+}
+.trait-option-value .floor-badge {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+@media (min-width: 960px) {
+  .market-sidebar .collection-tile .collection-floor {
+    position: static;
+    min-width: 0;
+    width: 88px;
+    justify-content: flex-end;
+  }
+  .market-sidebar .collection-floor .floor-badge {
+    font-size: 10px;
+  }
+}
+.shared-floors {
   display: grid;
   gap: 8px;
   margin: 12px 0 18px;
@@ -55,11 +77,7 @@
   border: 1px solid var(--line);
   border-radius: 10px;
 }
-.shared-market-values h3 {
-  font-size: 11px;
-  color: var(--muted);
-}
-.shared-market-values > div {
+.shared-floors > div {
   display: flex;
   justify-content: space-between;
   gap: 8px;
@@ -70,7 +88,7 @@
   padding-left: 4px;
   border-left: 1px solid var(--line);
 }
-.detail-attributes dd > .floor-badge {
+.detail-attributes .floor-summary .floor-badge {
   display: flex;
   justify-content: flex-start;
   margin-top: 6px;
@@ -84,4 +102,22 @@
 .floors-error button {
   color: var(--accent);
   text-decoration: underline;
+}
+
+.floor-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.floor-summary > .floor-badge {
+  justify-content: flex-start;
+}
+.floor-evidence {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+.floor-summary.stale .floor-evidence {
+  opacity: 0.6;
 }

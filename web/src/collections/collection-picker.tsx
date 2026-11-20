@@ -254,11 +254,11 @@ export const CollectionRail = memo(function CollectionRail({
                 ) : (
                   <span>{item.name[0]}</span>
                 )}
-                <span className="collection-floor">
-                  <CollectionFloor id={item.id} />
-                </span>
               </span>
               <b>{item.name}</b>
+              <span className="collection-floor">
+                <CollectionFloor id={item.id} />
+              </span>
             </button>
           );
         })}

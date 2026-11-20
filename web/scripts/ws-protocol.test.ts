@@ -329,6 +329,20 @@ test("target valuations validate scope identity, independent outcomes and unique
     data: value.data,
   };
   assert.deepEqual(parseFrame(JSON.stringify(snapshot)), snapshot);
+  for (const field of [
+    null,
+    { ...display.fields[0], value: null },
+    { ...display.fields[0], value: [] },
+  ]) {
+    const data = {
+      ...value.data,
+      results: [
+        { ...value.data.results[0], display: { ...display, fields: [field] } },
+      ],
+    };
+    assert.throws(() => parseFrame(JSON.stringify({ ...value, data })));
+    assert.throws(() => parseFrame(JSON.stringify({ ...snapshot, data })));
+  }
   for (const invalid of [
     {
       ...value,

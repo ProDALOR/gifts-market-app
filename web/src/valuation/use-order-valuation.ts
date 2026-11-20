@@ -142,11 +142,8 @@ export function useOrderValuation(order: Order) {
   const result = current?.report?.results.find(
     (row) => row.strategy === strategy?.id,
   );
-  const fields = useMemo(
-    () => ({
-      primary: result?.display.fields.filter((field) => field.primary) ?? [],
-      secondary: result?.display.fields.filter((field) => !field.primary) ?? [],
-    }),
+  const primaryFields = useMemo(
+    () => result?.display.fields.filter((field) => field.primary) ?? [],
     [result],
   );
   return {
@@ -165,7 +162,7 @@ export function useOrderValuation(order: Order) {
           (giftBasisChanged(current.report, shared, result?.strategy) ??
             evaluatedAfter(shared.evaluatedAt, current.report.evaluated_at)))
       ),
-    fields,
+    primaryFields,
     error: current?.error,
     available,
     loading: available && (!current || current.pending),

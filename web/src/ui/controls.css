@@ -403,6 +403,12 @@ body:has(.detail[open]) {
 /* Keep preview dismissal outside its scrolling content and artwork pane.
    These dialogs fade without transforms, preserving the viewport containing block. */
 .modal-viewport-close > .modal-close {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 12px #0005;
   position: fixed;
   top: max(12px, env(safe-area-inset-top), var(--tg-safe-top, 0px));
   right: max(12px, env(safe-area-inset-right), var(--tg-safe-right, 0px));

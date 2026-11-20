@@ -1,5 +1,8 @@
 // Full UI workflow with an isolated local catalog/feed; no Telegram or hub login.
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { orderResult, RangeWatch } from "./range-fixture.mjs";
 import {
   criteriaReport,
@@ -9,7 +12,9 @@ import {
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
+const cacheDir = await mkdtemp(join(tmpdir(), "orderbook-"));
 const server = await createServer({
+  cacheDir,
   root: fileURLToPath(new URL("..", import.meta.url)),
   // This fixture explicitly exercises Mini App behavior, even with API-only schemas.
   define: { "import.meta.env.VITE_MARKET_MINIAPP": JSON.stringify("true") },
@@ -283,6 +288,7 @@ try {
   const openSockets = new Set();
   const valuePeers = new Set();
   let valueSubscriptions = 0;
+  const catalogCommands = [];
   let socketCount = 0,
     orderSubscriptions = 0;
   const sendCatalog = (peer) =>
@@ -363,7 +369,6 @@ try {
           },
           {
             id: "collection_floor",
-            basis: true,
             label: "Collection floor",
             primary: false,
             value: {
@@ -374,8 +379,6 @@ try {
           },
           {
             id: "model_floor",
-            basis: true,
-            attribute: "model",
             label: "Model floor",
             primary: false,
             value: {
@@ -386,8 +389,6 @@ try {
           },
           {
             id: "backdrop_floor",
-            basis: true,
-            attribute: "backdrop",
             label: "Backdrop floor",
             primary: false,
             value: {
@@ -398,7 +399,6 @@ try {
           },
           {
             id: "model_backdrop_floor",
-            basis: true,
             label: "Model × backdrop floor",
             primary: false,
             value: {
@@ -409,14 +409,12 @@ try {
           },
           {
             id: "model_multiplier",
-            attribute: "model",
             label: "Model multiplier",
             primary: false,
             value: { kind: "number", amount: "1.25", suffix: "×" },
           },
           {
             id: "backdrop_multiplier",
-            attribute: "backdrop",
             label: "Backdrop multiplier",
             primary: false,
             value: { kind: "number", amount: "1.13", suffix: "×" },
@@ -511,6 +509,7 @@ try {
         );
       }
       if (frame.type === "catalog.watch") {
+        catalogCommands.push(frame.collection_ids);
         catalogPeers.delete(catalogPeer);
         catalogPeer = { socket, id: frame.id, ids: frame.collection_ids };
         catalogPeers.add(catalogPeer);
@@ -539,6 +538,12 @@ try {
   });
   const base = `http://127.0.0.1:${server.httpServer.address().port}`;
   await page.goto(`${base}/?collection=bunny&currency=GRAM`);
+  await page.waitForSelector('.collection-tile[data-collection-id="bunny"]');
+  assert.deepEqual(
+    catalogCommands,
+    [["bunny"]],
+    "Known initial scope starts one catalog watch",
+  );
   const button = (name) => page.getByRole("button", { name, exact: true });
   const cards = (n) =>
     page
@@ -1074,6 +1079,11 @@ try {
     exact: true,
   });
   assert.equal(
+    await page.locator(".bid-matching > span,.bid-matching > p").count(),
+    0,
+  );
+
+  assert.equal(
     await matching
       .getByRole("button", { name: "Any", exact: true })
       .getAttribute("aria-pressed"),
@@ -1235,13 +1245,20 @@ try {
       models.map((row) => row.id),
       backdrops.map((row) => row.id),
     );
-    for (const row of data.results[0].data.collections)
+    for (const row of data.results[0].data.collections) {
       row.floor.price.value = "7";
+      row.floor.evidence = { gifts: 8, listings: 10 };
+    }
     peer.socket.send(
       JSON.stringify({ type: "valuation.snapshot", id: peer.id, data }),
     );
   }
   await page.getByLabel("Collection floor: 7 GRAM", { exact: true }).waitFor();
+  assert.equal(
+    await page.locator(".shared-floors .floor-evidence").first().textContent(),
+    "8 gifts · 10 listings",
+  );
+
   assert.equal(
     valueSubscriptions,
     beforeFloorUpdate,
@@ -1264,12 +1281,23 @@ try {
     ),
     true,
   );
-  assert.equal(await page.locator(".valuation-metrics > li").count(), 3);
+  assert.equal(await page.locator(".valuation-metrics > li").count(), 1);
+  assert.equal(await page.locator(".gift-attributes [data-metric]").count(), 0);
   assert.equal(
     await page
-      .locator('[data-metric="model_multiplier"] .valuation-value')
+      .locator('[data-attribute="model"] .floor-evidence')
       .textContent(),
-    "1.25×",
+    "2 gifts · 4 listings",
+  );
+  assert.equal(
+    await page
+      .locator('[data-attribute="backdrop"] .floor-evidence')
+      .textContent(),
+    "1 gift · 2 listings",
+  );
+  assert.equal(
+    await page.locator('[data-attribute="pattern"] .floor-summary').count(),
+    0,
   );
   assert.equal(
     await page
@@ -1468,4 +1496,5 @@ try {
 } finally {
   await browser?.close();
   await server.close();
+  await rm(cacheDir, { recursive: true, force: true });
 }

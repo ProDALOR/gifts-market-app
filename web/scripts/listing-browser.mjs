@@ -26,7 +26,7 @@ const options=new Map([
 ]);
 const names=new Map([['gift','Gift'],['gold','Gold'],['blue','Sapphire'],['symbol','Star'],['venue','MRKT']]);
 function App(){const feed=useOrderFeed(query,false,0);const [selected,select]=useState();
-window.selectListing=select;window.feedView=()=>feed;
+window.selectListing=select;window.feedView=()=>feed;window.renameCollection=name=>names.set("gift",name);
 useEffect(()=>{select(old=>old ? feed.displayOrders.find(row=>orderKey(row)===orderKey(old))||old:undefined)},[feed.displayOrders]);
 return React.createElement('main',{className:'workspace'},React.createElement('div',{className:'orderbook'},
 React.createElement('h2',{style:{margin:'14px 0'}},'Live gift market'),
@@ -140,7 +140,6 @@ function report(body) {
         },
         {
           id: "model_floor",
-          attribute: "model",
           label: "Fixture price",
           primary: false,
           value: {
@@ -151,14 +150,13 @@ function report(body) {
         },
         {
           id: "model_multiplier",
-          attribute: "pattern",
           label: "Fixture score",
           primary: false,
           value: { kind: "number", amount: "1.2500", suffix: " points" },
         },
       ],
       summary: "5 fixture observations",
-      note: "A note owned by the fixture strategy.",
+      note: `A note owned by the fixture strategy. Gift #${number}.`,
     },
     evidence: {
       collection: { listings: 5, gifts: 5 },
@@ -183,9 +181,7 @@ try {
     );
   const waitReport = async () => {
     await settled();
-    await page
-      .locator('[data-metric="model_floor"] .valuation-value')
-      .waitFor();
+    await page.locator('.valuation-summary [data-metric="decision"]').waitFor();
   };
   const toggleGuide = async () => {
     const popup = page.locator(".valuation-popup");
@@ -499,8 +495,8 @@ try {
   assert.equal(await page.locator(".price-comparison").count(), 0);
   assert.equal(await page.locator(".valuation-breakdown").count(), 0);
   assert.equal(
-    await page.locator('[data-metric="model_floor"]').isVisible(),
-    true,
+    await page.locator(".detail-attributes [data-metric]").count(),
+    0,
   );
   const art = await page.locator(".detail-art").boundingBox();
   const giftArt = await page
@@ -580,6 +576,17 @@ try {
           pane.left >= art.right - 1 &&
           Math.abs(pane.top - art.top) < 1 &&
           Math.abs(pane.height - art.height) < 1,
+        closeVisible: (() => {
+          const button = dialog.querySelector(".modal-close");
+          const r = button.getBoundingClientRect();
+          return (
+            r.top >= 0 &&
+            r.right <= innerWidth &&
+            button.contains(
+              document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2),
+            )
+          );
+        })(),
         contained:
           bounds.left >= 0 &&
           bounds.right <= innerWidth &&
@@ -589,6 +596,10 @@ try {
       };
     });
     assert.ok(geometry.contained, `Details fit the viewport at ${width}px`);
+    assert.ok(
+      geometry.closeVisible,
+      `The close action is reachable at ${width}px`,
+    );
     assert.ok(
       width < 960 ? geometry.mobile : geometry.desktop,
       `Responsive detail layout at ${width}px`,
@@ -655,42 +666,22 @@ try {
     gift: { collection_id: "gift", number: 1 },
     currency_id: "GRAM",
   });
-  assert.equal(await page.locator(".valuation-metrics > li").count(), 4);
-  await page
-    .locator('[data-attribute="model"] [data-metric="model_floor"]')
-    .waitFor();
-  await page
-    .locator('[data-attribute="pattern"] [data-metric="model_multiplier"]')
-    .waitFor();
-  await page.locator('.valuation-context [data-metric="confidence"]').waitFor();
-  assert.deepEqual(
-    await page.locator(".valuation-metrics > li h4").allTextContents(),
-    [
-      "Fixture decision",
-      "Fixture price",
-      "Fixture score",
-      "Fixture confidence",
-    ],
+  assert.equal(await page.locator(".valuation-metrics > li").count(), 1);
+  assert.equal(
+    await page.locator(".gift-attributes [data-metric]").count(),
+    0,
+    "Attribute previews never fall back to gift-strategy fields when catalog values are absent",
   );
+  assert.equal(
+    await page.getByText("5 fixture observations", { exact: true }).count(),
+    0,
+  );
+  assert.equal(await page.locator(".valuation-summary time").count(), 0);
   assert.equal(
     await page
-      .locator('[data-metric="confidence"] .valuation-value')
-      .textContent(),
-    "87.500%",
-  );
-  assert.equal(
-    await page.locator('[data-metric="decision"]').getAttribute("class"),
-    "valuation-primary",
-  );
-  await page.getByText("5 fixture observations", { exact: false }).waitFor();
-  await page
-    .getByText("A note owned by the fixture strategy.", { exact: true })
-    .waitFor();
-  assert.equal(
-    await page
-      .locator('[data-metric="model_multiplier"] .valuation-value')
-      .textContent(),
-    "1.2500 points",
+      .getByText("A note owned by the fixture strategy.", { exact: false })
+      .count(),
+    0,
   );
   await page
     .locator(".valuation-summary")
@@ -758,12 +749,6 @@ try {
   await waitReport();
   release();
   assert.ok((await page.locator("#detail-title").textContent()).includes("#2"));
-  assert.equal(
-    await page
-      .locator('[data-metric="model_floor"] .quote-amount')
-      .textContent(),
-    "20",
-  );
   mode = "error";
   await page
     .getByRole("button", { name: "Refresh valuation", exact: true })
@@ -800,6 +785,15 @@ try {
     metadataBeforePopup,
     "The popup uses the request's discovered metadata",
   );
+  assert.ok(
+    (await guide.textContent()).includes("Gift #2."),
+    "A delayed estimate cannot replace the next gift's result",
+  );
+  assert.equal(
+    await guide.locator("time").count(),
+    1,
+    "Calculation timestamps stay in the info popup",
+  );
   await guide.getByRole("button", { name: "Retry guide" }).waitFor();
   guideFails = false;
   await guide.getByRole("button", { name: "Retry guide" }).click();
@@ -810,6 +804,30 @@ try {
     .getByRole("heading", { name: "Gift floor valuation", exact: true })
     .waitFor();
   assert.equal(guideRequests, 2, "Guide retries after an error");
+  assert.deepEqual(
+    await guide.locator(".valuation-metrics > li h4").allTextContents(),
+    [
+      "Fixture confidence",
+      "Fixture decision",
+      "Fixture price",
+      "Fixture score",
+    ],
+  );
+  assert.equal(
+    await guide
+      .locator('[data-metric="confidence"] .valuation-value')
+      .textContent(),
+    "87.500%",
+  );
+  assert.equal(
+    await guide
+      .locator('[data-metric="model_multiplier"] .valuation-value')
+      .textContent(),
+    "1.2500 points",
+  );
+  await guide.getByText("5 fixture observations", { exact: true }).waitFor();
+  assert.equal(await page.locator(".gift-attributes [data-metric]").count(), 0);
+
   assert.ok(
     guideModuleRequests > 0,
     "The renderer loads only after discovery and expansion",
@@ -931,9 +949,7 @@ try {
   await page.evaluate(() =>
     document.querySelector('button[aria-label="Refresh valuation"]').click(),
   );
-  await guide
-    .getByText("Estimate may be outdated ·", { exact: true })
-    .waitFor();
+  await guide.getByText("Estimate may be outdated", { exact: true }).waitFor();
   reportKind = "partial";
   await page.evaluate(() =>
     document.querySelector('button[aria-label="Refresh valuation"]').click(),
@@ -1079,7 +1095,7 @@ try {
   assert.ok(release);
   const pendingRequests = requests.length;
   socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
-  await page.getByText("Estimate may be outdated ·", { exact: true }).waitFor();
+  await page.getByText("Estimate may be outdated", { exact: true }).waitFor();
   socket.send(JSON.stringify({ type: "market.status", status: "available" }));
   mode = "success";
   release();
@@ -1090,7 +1106,7 @@ try {
     pendingRequests,
     "recovery must not duplicate in-flight requests",
   );
-  await page.getByText("Estimate may be outdated ·", { exact: true }).waitFor();
+  await page.getByText("Estimate may be outdated", { exact: true }).waitFor();
   await page
     .getByRole("button", { name: "Refresh valuation", exact: true })
     .click();
@@ -1098,7 +1114,7 @@ try {
   assert.equal(await page.locator(".valuation-breakdown").count(), 0);
   const requestsBeforeDelay = requests.length;
   socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
-  await page.getByText("Estimate may be outdated ·", { exact: true }).waitFor();
+  await page.getByText("Estimate may be outdated", { exact: true }).waitFor();
   assert.equal(await page.locator(".price-comparison").count(), 0);
   socket.send(JSON.stringify({ type: "market.status", status: "available" }));
   await page.waitForTimeout(50);
@@ -1136,7 +1152,7 @@ try {
       .waitFor();
     if (variant === "stale")
       await page
-        .getByText("Estimate may be outdated ·", { exact: true })
+        .getByText("Estimate may be outdated", { exact: true })
         .waitFor();
     else
       await page.locator(".valuation-summary .currency-symbol.star").waitFor();
@@ -1227,6 +1243,93 @@ try {
     "criteria details retain the availability subscription until closed",
   );
   assert.equal(requests.length, countBeforeCriteria);
+  // Every order kind shares the same bounded layout, including long collection names.
+  await page.evaluate(() =>
+    window.renameCollection(
+      "An exceptionally long collectible collection name",
+    ),
+  );
+  for (const kind of ["ask", "bid", "executed"]) {
+    await page.evaluate((order) => window.renderDetails(order), { ...b, kind });
+    for (const [width, height] of [
+      [320, 568],
+      [390, 844],
+      [960, 600],
+      [1200, 900],
+      [1024, 400],
+    ]) {
+      await page.setViewportSize({ width, height });
+      const layout = await page.locator(".detail").evaluate((dialog) => {
+        dialog.scrollTop = 0;
+        dialog.querySelector(".detail-content").scrollTop = 0;
+        const bounds = dialog.getBoundingClientRect();
+        const art = dialog.querySelector(".detail-art").getBoundingClientRect();
+        const caption = dialog
+          .querySelector(".detail-caption")
+          .getBoundingClientRect();
+        const media = dialog
+          .querySelector(".detail-art .gift-model-image")
+          .getBoundingClientRect();
+        const close = dialog.querySelector(".modal-close");
+        const button = close.getBoundingClientRect();
+        const links = [...dialog.querySelectorAll(".detail-actions a")].map(
+          (a) => a.getBoundingClientRect(),
+        );
+        return {
+          contained:
+            bounds.left >= 0 &&
+            bounds.right <= innerWidth &&
+            bounds.top >= 0 &&
+            bounds.bottom <= innerHeight &&
+            dialog.scrollWidth <= dialog.clientWidth,
+          caption:
+            caption.top >= media.bottom - 1 && caption.bottom <= art.bottom + 1,
+          close: close.contains(
+            document.elementFromPoint(
+              button.x + button.width / 2,
+              button.y + button.height / 2,
+            ),
+          ),
+          oneActionRow:
+            links.length === 2 && Math.abs(links[0].top - links[1].top) < 1,
+          height: bounds.height,
+        };
+      });
+      assert.ok(
+        layout.contained &&
+          layout.caption &&
+          layout.close &&
+          layout.oneActionRow,
+        `${kind} at ${width}×${height}: ${JSON.stringify(layout)}`,
+      );
+      if (width === 1200)
+        assert.ok(
+          layout.height < 680,
+          "Short content does not retain a fixed-height desktop gap",
+        );
+      if (width === 390 || width === 1200)
+        await page.screenshot({
+          path: `/tmp/gifts-market-ui/review-${kind}-${width}.png`,
+        });
+    }
+  }
+  await page.evaluate(
+    (order) =>
+      window.renderDetails({ ...order, market_url: "https://t.me/nft/Gift-2" }),
+    b,
+  );
+  assert.equal(
+    await page.locator(".detail-actions a").count(),
+    1,
+    "Identical venue and Telegram destinations share one action",
+  );
+  assert.equal(
+    await page
+      .getByRole("link", { name: "Open in Telegram", exact: true })
+      .count(),
+    1,
+  );
+  await page.evaluate(() => window.renameCollection("Gift"));
   // Retained activity timestamps prevent entry replay after virtualized remounts.
   await page.evaluate(
     (order) =>

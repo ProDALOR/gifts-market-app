@@ -1,7 +1,13 @@
 import type { OrderValuationState } from "../valuation/use-order-valuation";
 
 /** The popup and compact estimate describe the same report and refresh attempt. */
-export function ValuationStatus({ state }: { state: OrderValuationState }) {
+export function ValuationStatus({
+  state,
+  detailed = false,
+}: {
+  state: OrderValuationState;
+  detailed?: boolean;
+}) {
   const { report, loading, error } = state;
   if (!report) return null;
   return (
@@ -17,20 +23,26 @@ export function ValuationStatus({ state }: { state: OrderValuationState }) {
           <p>Previous estimate shown.</p>
         </div>
       )}
-      <p className="valuation-note">
-        {state.stale && (
-          <span className="valuation-stale">Estimate may be outdated · </span>
-        )}
-        Calculated{" "}
-        <time dateTime={report.evaluated_at}>
-          {new Date(report.evaluated_at).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
-        </time>
-      </p>
-      {state.result!.display.note && (
-        <p className="valuation-note">{state.result!.display.note}</p>
+      {state.stale && (
+        <p className="valuation-note valuation-stale">
+          Estimate may be outdated
+        </p>
+      )}
+      {detailed && (
+        <>
+          <p className="valuation-note">
+            Calculated{" "}
+            <time dateTime={report.evaluated_at}>
+              {new Date(report.evaluated_at).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </time>
+          </p>
+          {state.result?.display.note && (
+            <p className="valuation-note">{state.result.display.note}</p>
+          )}
+        </>
       )}
     </>
   );

@@ -123,12 +123,18 @@ export const TraitPickers = memo(function TraitPickers({
                   }
                 >
                   <OptionArt option={option} />
-                  {option.name}
-                  <TraitFloor
-                    collection={collection?.id}
-                    id={option.id}
-                    kind={option.kind}
-                  />
+                  <span className="trait-option-copy">
+                    <span className="trait-option-name">{option.name}</span>
+                    {option.kind !== "pattern" && (
+                      <span className="trait-option-value">
+                        <TraitFloor
+                          collection={collection?.id}
+                          id={option.id}
+                          kind={option.kind}
+                        />
+                      </span>
+                    )}
+                  </span>
                 </button>
               ))}
             {loading && !available.length && (

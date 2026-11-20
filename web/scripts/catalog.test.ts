@@ -35,6 +35,7 @@ function fixture(t: TestContext) {
   let callback: ((frame: any) => void) | undefined;
   let status: ((state: string) => void) | undefined;
   let command: any;
+  const watchCommands: any[] = [];
   let retries = 0;
   const emit = () =>
     callback?.({
@@ -57,6 +58,7 @@ function fixture(t: TestContext) {
       changed?: (status: string) => void,
     ) {
       command = cmd;
+      watchCommands.push(cmd);
       callback = frame;
       status = changed;
       queueMicrotask(emit);
@@ -66,6 +68,7 @@ function fixture(t: TestContext) {
     },
     update(cmd: any) {
       command = cmd;
+      watchCommands.push(cmd);
       queueMicrotask(emit);
     },
     retry() {
@@ -138,6 +141,7 @@ function fixture(t: TestContext) {
     start,
     definitions,
     requests,
+    watchCommands,
     emit,
     directory: (version: string) => {
       directoryVersion = version;
@@ -167,6 +171,8 @@ const choiceCalls = (f: ReturnType<typeof fixture>, id = "a") =>
 test("initial manifest avoids duplicate reads and cached switching preserves options", async (t) => {
   const f = fixture(t);
   await f.start();
+  assert.equal(f.watchCommands.length, 1);
+  assert.deepEqual(f.watchCommands[0].collection_ids, ["a"]);
   const a = f.controller.getSnapshot().options;
   assert.equal(f.requests.length, 2);
   f.controller.select("b");

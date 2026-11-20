@@ -15,7 +15,7 @@ use tokio::time::Instant;
 const STAT_LIMIT: usize = 20_000;
 const GIFT_MEMBERSHIP_LIMIT: usize = 200_000;
 const CACHE_LIMIT: usize = 8;
-const MAX_AGE: Duration = Duration::from_secs(300);
+pub(crate) const MAX_AGE: Duration = Duration::from_secs(300);
 
 #[derive(Default, Clone)]
 pub(crate) struct Floor {
@@ -54,6 +54,7 @@ impl Floor {
     }
 }
 pub(crate) struct Statistics {
+    pub(crate) scope: BookScope,
     pub evaluated_at: jiff::Timestamp,
     pub known_models: BTreeSet<ModelId>,
     pub known_backdrops: BTreeSet<BackdropId>,
@@ -66,6 +67,9 @@ pub(crate) struct Statistics {
     expires_at_ms: i64,
 }
 impl Statistics {
+    pub(crate) fn metadata_keys(&self) -> usize {
+        self.dependencies.key_count()
+    }
     pub(crate) fn deadline(&self) -> tokio::time::Instant {
         let age = MAX_AGE.saturating_sub(self.created.elapsed());
         let expiry = std::time::Duration::from_millis(
@@ -100,6 +104,7 @@ impl Statistics {
     pub fn read(snapshot: &ValuationSnapshot, scope: &BookScope) -> Result<Self, ValuationError> {
         snapshot.require_currency(&scope.currency)?;
         let mut stats = Self {
+            scope: scope.clone(),
             evaluated_at: jiff::Timestamp::now(),
             known_models: snapshot.model_ids(&scope.collection)?,
             known_backdrops: snapshot.backdrop_ids(&scope.collection)?,

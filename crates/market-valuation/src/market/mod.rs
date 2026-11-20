@@ -4,6 +4,8 @@ mod context;
 mod execution;
 mod inputs;
 mod read;
+mod read_cache;
+mod read_set;
 pub(crate) use read::ValuationRead;
 mod strategies;
 mod target;
@@ -100,6 +102,17 @@ pub(crate) struct PreparedQuery {
     period: Option<ExecutionPeriod>,
 }
 impl PreparedQuery {
+    fn same_query(&self, other: &Self) -> bool {
+        self.target == other.target
+            && self.currency_id == other.currency_id
+            && self.period == other.period
+            && self.strategies.len() == other.strategies.len()
+            && self
+                .strategies
+                .iter()
+                .zip(&other.strategies)
+                .all(|(left, right)| std::ptr::eq(*left, *right))
+    }
     pub(crate) fn currency(&self) -> &CurrencyId {
         &self.currency_id
     }
@@ -244,8 +257,6 @@ impl StrategyOutcome {
                         id: "price",
                         label: "Value",
                         primary: true,
-                        basis: false,
-                        attribute: None,
                         value: DisplayValue::Unavailable {
                             label: "Unavailable",
                             message: &error.message,

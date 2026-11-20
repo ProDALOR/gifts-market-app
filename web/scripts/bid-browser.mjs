@@ -244,6 +244,11 @@ try {
   const detailPreview = details.locator(".bid-detail-preview");
   await detailPreview.locator("img.loaded").first().waitFor();
   assert.equal(await detailPreview.locator(".preview-model").count(), 8);
+  assert.equal(
+    await detailPreview.locator(".preview-model > span[title]").count(),
+    0,
+    "The cover does not repeat names from the complete conditions",
+  );
   assert.equal(await detailPreview.locator(".preview-band").count(), 3);
   assert.equal(
     await detailPreview.locator(".preview-symbols canvas").count(),
@@ -258,15 +263,17 @@ try {
     el.scrollTop = 0;
     el.querySelector(".detail-content").scrollTop = 0;
   });
-  assert.equal(await details.locator(".bid-detail-heading").isVisible(), true);
+  assert.equal(
+    await details.locator(".detail-art #detail-title").isVisible(),
+    true,
+  );
   assert.equal(await details.locator(".model-animation").count(), 0);
   assert.equal(await details.locator(".condition-chip").count(), 15);
   assert.equal(await details.locator(".condition-overflow").count(), 0);
-  assert.equal(
-    await details.locator(".detail-art,.valuation-summary").count(),
-    0,
-  );
-  await details.getByText("Price per gift", { exact: true }).waitFor();
+  assert.equal(await details.locator(".detail-art").count(), 1);
+  await details.getByText("/ gift", { exact: true }).waitFor();
+  assert.equal(await details.locator(".detail-pricing > section").count(), 2);
+  assert.equal(await details.locator(".matching-floor time").count(), 0);
   await details.locator(".matching-floor .valuation-value").waitFor();
   assert.equal(
     await details.locator('[data-condition="quantity"] dd').textContent(),
@@ -310,7 +317,28 @@ try {
   await checkLayout();
   await card.locator(".card-open").click();
   await details.waitFor();
-  assert.ok((await details.boundingBox()).width <= 640);
+  assert.ok((await details.boundingBox()).width <= 1040);
+  assert.ok(
+    await details.evaluate((dialog) => {
+      const art = dialog.querySelector(".detail-art").getBoundingClientRect();
+      const content = dialog
+        .querySelector(".detail-content")
+        .getBoundingClientRect();
+      const close = dialog.querySelector(".modal-close");
+      const button = close.getBoundingClientRect();
+      return (
+        content.left >= art.right - 1 &&
+        Math.abs(art.top - content.top) < 1 &&
+        close.contains(
+          document.elementFromPoint(
+            button.x + button.width / 2,
+            button.y + button.height / 2,
+          ),
+        )
+      );
+    }),
+    "Bids share the ask layout and a reachable viewport close action",
+  );
   assert.equal(await detailPreview.locator(".preview-model").count(), 8);
   await details.evaluate(async (el) => {
     await Promise.all(
@@ -321,9 +349,52 @@ try {
   const actionsBox = await details.locator(".detail-actions").boundingBox();
   assert.ok(
     dialogBox.y + dialogBox.height - actionsBox.y - actionsBox.height < 4,
-    "Criteria details fit their content instead of keeping an empty artwork-sized pane",
+    "Actions stay at the bottom of the shared detail layout",
   );
   await page.screenshot({ path: join(output, "bid-details-desktop.png") });
+  for (const [width, height] of [
+    [320, 568],
+    [390, 844],
+    [1024, 400],
+    [1200, 900],
+  ]) {
+    await page.setViewportSize({ width, height });
+    const layout = await details.evaluate((dialog) => {
+      dialog.scrollTop = 0;
+      dialog.querySelector(".detail-content").scrollTop = 0;
+      const bounds = dialog.getBoundingClientRect();
+      const art = dialog.querySelector(".detail-art").getBoundingClientRect();
+      const caption = dialog
+        .querySelector(".detail-caption")
+        .getBoundingClientRect();
+      const close = dialog.querySelector(".modal-close");
+      const button = close.getBoundingClientRect();
+      return {
+        contained:
+          bounds.top >= 0 &&
+          bounds.bottom <= innerHeight &&
+          dialog.scrollWidth <= dialog.clientWidth,
+        caption: caption.bottom <= art.bottom + 1,
+        close: close.contains(
+          document.elementFromPoint(
+            button.x + button.width / 2,
+            button.y + button.height / 2,
+          ),
+        ),
+        artHeight: art.height,
+      };
+    });
+    assert.ok(
+      layout.contained && layout.caption && layout.close,
+      `Bid at ${width}×${height}: ${JSON.stringify(layout)}`,
+    );
+    if (width === 390)
+      assert.ok(
+        layout.artHeight < 320,
+        "A small bid preview does not reserve a full gift-sized cover",
+      );
+  }
+  await page.setViewportSize({ width: 1200, height: 850 });
   await details.locator('[data-condition="quantity"]').scrollIntoViewIfNeeded();
   await details.locator(".detail-actions").scrollIntoViewIfNeeded();
   const visibleDialog = await details.boundingBox();

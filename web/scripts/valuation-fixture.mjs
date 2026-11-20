@@ -36,9 +36,9 @@ export function criteriaReport(params) {
 }
 const calculatedAt = new Map();
 export function floorReport(params, models = [], backdrops = []) {
-  const floor = (value) => ({
+  const floor = (value, gifts = 3, listings = gifts) => ({
     price: { value },
-    evidence: { listings: 3, gifts: 3 },
+    evidence: { listings, gifts },
   });
   return {
     target: params.target,
@@ -58,18 +58,23 @@ export function floorReport(params, models = [], backdrops = []) {
             return {
               collection_id,
               evaluated_at: calculatedAt.get(key),
-              floor: floor("8"),
+              floor: floor("8", 7, 9),
               ...(details?.collection_id === collection_id
                 ? {
                     traits: {
                       models: Object.fromEntries(
-                        models.map((id) => [id, floor("10.000000001")]),
+                        models.map((id) => [id, floor("10.000000001", 2, 4)]),
                       ),
                       backdrops: Object.fromEntries(
-                        backdrops.map((id) => [id, floor("9")]),
+                        backdrops.map((id) => [id, floor("9", 1, 2)]),
                       ),
                       ...(details.pair
-                        ? { pair: { ...details.pair, floor: floor("12.5") } }
+                        ? {
+                            pair: {
+                              ...details.pair,
+                              floor: floor("12.5", 1, 1),
+                            },
+                          }
                         : {}),
                     },
                   }

@@ -1,6 +1,6 @@
 //! gift_floor selects its fields and presentation from checked, typed calculation output.
 use super::GiftFloorValuation;
-use crate::{DisplayAttribute, DisplayField, ValuationDisplay};
+use crate::{DisplayField, ValuationDisplay};
 impl GiftFloorValuation {
     pub fn display<'a>(&'a self, currency: &'a market_gifts::CurrencyId) -> ValuationDisplay<'a> {
         ValuationDisplay {
@@ -19,50 +19,42 @@ impl GiftFloorValuation {
                     &self.collection_floor,
                     currency,
                     None,
-                )
-                .basis(),
+                ),
                 DisplayField::currency(
                     "model_floor",
                     "Model floor",
                     &self.model_floor,
                     currency,
                     None,
-                )
-                .basis()
-                .attribute(DisplayAttribute::Model),
+                ),
                 DisplayField::currency(
                     "backdrop_floor",
                     "Backdrop floor",
                     &self.backdrop_floor,
                     currency,
                     None,
-                )
-                .basis()
-                .attribute(DisplayAttribute::Backdrop),
+                ),
                 DisplayField::currency(
                     "model_backdrop_floor",
                     "Model × backdrop floor",
                     &self.model_backdrop_floor,
                     currency,
                     None,
-                )
-                .basis(),
+                ),
                 DisplayField::number(
                     "model_multiplier",
                     "Model multiplier",
                     &self.model_multiplier,
                     "×",
                     Some(2),
-                )
-                .attribute(DisplayAttribute::Model),
+                ),
                 DisplayField::number(
                     "backdrop_multiplier",
                     "Backdrop multiplier",
                     &self.backdrop_multiplier,
                     "×",
                     Some(2),
-                )
-                .attribute(DisplayAttribute::Backdrop),
+                ),
             ],
             summary: Some(format!(
                 "{} distinct gifts · {} collection listings",

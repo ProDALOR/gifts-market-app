@@ -7,7 +7,7 @@ import { ValuationStatus } from "./valuation-status";
 import { playbackBudget } from "../previews/playback-budget";
 const ValuationMethodology = lazy(() => import("./valuation-methodology"));
 
-/** Discover and load the guide on intent; closing aborts pending work. */
+/** Open the report’s guide on intent; closing aborts pending work. */
 export function ValuationInfo({ state }: { state: OrderValuationState }) {
   const [open, setOpen] = useState(false);
   return (
@@ -30,7 +30,7 @@ export function ValuationInfo({ state }: { state: OrderValuationState }) {
   );
 }
 
-/** Metadata, pending guide work and playback suspension share the popup lifetime. */
+/** Pending guide work and playback suspension share the popup lifetime. */
 function CalculationPopup({
   state,
   close,
@@ -50,8 +50,11 @@ function CalculationPopup({
     >
       <div className="valuation-popup-body">
         <section aria-label="Valuation result" aria-busy={state.loading}>
-          <ValuationFields fields={state.fields.primary} />
-          <ValuationStatus state={state} />
+          <ValuationFields fields={state.result?.display.fields ?? []} />
+          {state.result?.display.summary && (
+            <p className="valuation-note">{state.result.display.summary}</p>
+          )}
+          <ValuationStatus state={state} detailed />
         </section>
         {strategy ? (
           <>

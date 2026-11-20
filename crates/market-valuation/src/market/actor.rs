@@ -5,6 +5,7 @@ use std::{sync::Arc, time::Duration};
 pub(crate) struct MarketValuationActor {
     source: ValuationSource,
     books: Arc<BookCache>,
+    reads: Arc<super::read_cache::ReadCache>,
     life: Lifecycle,
 }
 impl MarketValuationActor {
@@ -12,6 +13,7 @@ impl MarketValuationActor {
         Self {
             source,
             books,
+            reads: Arc::new(super::read_cache::ReadCache::default()),
             life,
         }
     }
@@ -34,18 +36,17 @@ impl Handler<Evaluate<crate::service::Work, Arc<ValuationRead>, ValuationError>>
         let (input, request) = message.into_parts();
         let source = self.source.clone();
         let books = self.books.clone();
+        let reads = self.reads.clone();
         let stop = self.life.stop_token();
         let strategy = self.life.strategy();
         Box::pin(async move {
             let cancelled = request.cancelled.clone();
             let _request = request;
             let work = source.prepare(move |snapshot| -> Result<_, ValuationError> {
-                let output = ValuationRead::read(
-                    &snapshot,
-                    &input.request,
-                    &books,
-                    input.previous.as_ref(),
-                )?;
+                let previous = reads.get(&input.request)?.or(input.previous);
+                let output =
+                    ValuationRead::read(&snapshot, &input.request, &books, previous.as_ref())?;
+                reads.insert(input.request, &output)?;
                 let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
                 Ok(Arc::new(Mark::evaluated(
                     strategy,

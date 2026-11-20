@@ -40,7 +40,14 @@ export function OrderDetails({
     /^[A-Za-z0-9]{1,128}$/.test(collectionSlug)
       ? `https://t.me/nft/${collectionSlug}-${selectedSerial}`
       : undefined;
-  const { primary } = state.fields;
+  const showMarketLink = marketLink && !removed && marketLink !== telegramLink;
+  const priceLabel =
+    selected.kind === "executed"
+      ? "Execution price"
+      : selected.kind === "bid"
+        ? "Bid price"
+        : "Asking price";
+  const primary = state.primaryFields;
   const estimate = primary.length === 1 ? primary[0].value : undefined;
   const comparison =
     !removed &&
@@ -61,15 +68,17 @@ export function OrderDetails({
       viewportClose
       describedBy="detail-title"
     >
-      {criteria ? (
-        <header className="bid-detail-heading">
-          <p>Bid conditions</p>
-          <h2 id="detail-title">
-            {names.get(selected.book.collection_id) || collectionName}
-          </h2>
-        </header>
-      ) : (
-        <div className="detail-art">
+      <div className={`detail-art${criteria ? " detail-bid-art" : ""}`}>
+        {selected.target.kind === "criteria" ? (
+          <div className="bid-detail-preview">
+            <BidPreview
+              criteria={selected.target}
+              options={options}
+              names={names}
+              compact={false}
+            />
+          </div>
+        ) : (
           <GiftPreview
             order={selected}
             options={options}
@@ -77,50 +86,36 @@ export function OrderDetails({
             size="large"
             playback={selected.kind === "bid" ? "static" : "detail"}
           />
-          <div className="detail-caption">
-            <h2 id="detail-title">
-              {names.get(selected.book.collection_id) || collectionName}
-              {selectedSerial && (
-                <>
-                  {" "}
-                  <span>
-                    #{selectedSerial.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0")}
-                  </span>
-                </>
-              )}
-            </h2>
-            {model && <p>{model}</p>}
-          </div>
+        )}
+        <div className="detail-caption">
+          <h2 id="detail-title">
+            {names.get(selected.book.collection_id) || collectionName}
+            {selectedSerial && (
+              <>
+                {" "}
+                <span>
+                  #{selectedSerial.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0")}
+                </span>
+              </>
+            )}
+          </h2>
+          {model && <p>{model}</p>}
         </div>
-      )}
+      </div>
       <div className="detail-content">
         <div className="detail-body">
-          {selected.target.kind === "criteria" && (
-            <div className="bid-detail-preview">
-              <BidPreview
-                criteria={selected.target}
-                options={options}
-                names={names}
-                compact={false}
-              />
-            </div>
-          )}
           <div className="detail-pricing">
-            <section className="listing-price" aria-label="Listing price">
-              <h3>
-                {selected.kind === "executed"
-                  ? "Execution price"
-                  : selected.kind === "bid"
-                    ? "Bid price"
-                    : "Asking price"}
-              </h3>
+            <section className="listing-price" aria-label={priceLabel}>
+              <h3>{priceLabel}</h3>
               <div className="detail-price">
                 <Quote
                   price={selected.price}
                   currency={selected.book.currency_id}
                 />
+                {criteria && (
+                  <small className="detail-price-unit">/ gift</small>
+                )}
               </div>
-              {criteria && <p className="valuation-note">Price per gift</p>}
               {comparison && <p className="price-comparison">{comparison}</p>}
             </section>
             <OrderValuationSummary
@@ -129,31 +124,27 @@ export function OrderDetails({
               history={selected.kind === "executed"}
             />
           </div>
-          <OrderAttributes
-            order={selected}
-            options={options}
-            names={names}
-            fields={state.fields.secondary}
-            summary={state.result?.display.summary}
-          />
+          <OrderAttributes order={selected} options={options} names={names} />
           {removed && (
             <p className="listing-gone" role="status">
-              This listing left the refreshed results. A disappearance does not
-              confirm a sale.
+              No longer in these results.
             </p>
           )}
         </div>
-        {((marketLink && !removed) || telegramLink) && (
+        {(showMarketLink || telegramLink) && (
           <div className="detail-actions">
-            {marketLink && !removed && (
+            {showMarketLink && (
               <a
                 className="detail-link detail-market"
                 href={marketLink}
                 target="_blank"
                 rel="noreferrer"
+                aria-label={`Open on ${venue}`}
+                title={`Open on ${venue}`}
               >
                 <VenueIcon name={venue} />
-                Open on {venue} <span aria-hidden="true">↗</span>
+                <span className="detail-link-label">{venue}</span>
+                <span aria-hidden="true">↗</span>
               </a>
             )}
             {telegramLink && (
@@ -162,9 +153,11 @@ export function OrderDetails({
                 href={telegramLink}
                 target="_blank"
                 rel="noreferrer"
+                aria-label="Open in Telegram"
               >
                 <VenueIcon name="Telegram" />
-                Open in Telegram <span aria-hidden="true">↗</span>
+                <span className="detail-link-label">Telegram</span>
+                <span aria-hidden="true">↗</span>
               </a>
             )}
           </div>

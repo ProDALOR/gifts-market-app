@@ -24,6 +24,86 @@ fn query(strategies: &[&str]) -> ValuationQuery {
     }
 }
 #[tokio::test]
+async fn identical_consumers_share_reads_without_sharing_their_lifecycle() {
+    let (_dir, mut writer) = book();
+    let data = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let request = query(&["execution_mean", "execution_median"]);
+    let mut first = handle.watch(request.clone()).await.unwrap();
+    let mut second = handle.watch(request.clone()).await.unwrap();
+    assert!(Arc::ptr_eq(&first.current(), &second.current()));
+    assert!(Arc::ptr_eq(
+        &first.current(),
+        &handle.query(request.clone()).await.unwrap()
+    ));
+
+    // Strategy order is part of the response contract; periods and targets scope observations.
+    let mut different = request.clone();
+    different.strategies.reverse();
+    let reordered = handle.watch(different).await.unwrap();
+    assert!(!Arc::ptr_eq(&first.current(), &reordered.current()));
+    let mut different = request.clone();
+    different.period.as_mut().unwrap().from = Some("2026-01-15T00:00:00Z".parse().unwrap());
+    let later = handle.watch(different).await.unwrap();
+    assert!(!Arc::ptr_eq(&first.current(), &later.current()));
+    let mut different = request;
+    different.target = ValuationTarget::Model {
+        collection_id: "gift".into(),
+        model_id: "otherm".into(),
+    };
+    let model = handle.watch(different).await.unwrap();
+    assert!(!Arc::ptr_eq(&first.current(), &model.current()));
+
+    writer
+        .apply(w::Batch {
+            cursor: "shared-history".into(),
+            changes: (0..3)
+                .map(|i| super::tests::execution(i, "10", "2026-01-10T00:00:00Z"))
+                .collect(),
+        })
+        .unwrap();
+    let (a, b) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(first.changed(), second.changed())
+    })
+    .await
+    .unwrap();
+    assert!(Arc::ptr_eq(&a.unwrap(), &b.unwrap()));
+    assert_eq!(
+        first.current().results[0]
+            .display(&"GRAM".into())
+            .fields
+            .len(),
+        1
+    );
+    writer.mark(market_replica::SyncState::Stale);
+    let (a, b) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(first.changed(), second.changed())
+    })
+    .await
+    .unwrap();
+    let stale = a.unwrap();
+    assert!(stale.stale);
+    assert!(Arc::ptr_eq(&stale, &b.unwrap()));
+    drop(first);
+    writer.mark(market_replica::SyncState::Live);
+    assert!(
+        !tokio::time::timeout(Duration::from_secs(2), second.changed())
+            .await
+            .unwrap()
+            .unwrap()
+            .stale
+    );
+    drop((second, reordered, later, model));
+    task.shutdown().await.unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
+}
+#[tokio::test]
 async fn history_watches_follow_backfills_ignore_asks_and_share_one_scan_per_report() {
     let (_dir, mut writer) = book();
     let data = MarketDataService::start(writer.reader(), 4, 1)
@@ -146,8 +226,8 @@ async fn mixed_strategy_reads_skip_unrelated_changes_and_observe_gift_listing_ex
         .unwrap();
     let same = read(Some(first.clone())).await.unwrap().unwrap();
     assert!(Arc::ptr_eq(&first, &same));
-    assert!(first.deadline < tokio::time::Instant::now() + Duration::from_secs(2));
-    tokio::time::sleep_until(first.deadline + Duration::from_millis(20)).await;
+    assert!(first.deadline() < tokio::time::Instant::now() + Duration::from_secs(2));
+    tokio::time::sleep_until(first.deadline() + Duration::from_millis(20)).await;
     let changed = read(Some(first.clone())).await.unwrap().unwrap();
     assert!(!Arc::ptr_eq(&first, &changed));
     assert!(

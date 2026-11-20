@@ -75,10 +75,11 @@ export function BidPreview({
       backdrops={backdrops.shown}
       patterns={patterns.shown}
       compact={compact}
+      showModelNames={compact}
       playback="static"
       label={`Bid alternatives. ${label}`}
       header={
-        !backdrops.entries.length ? (
+        compact && !backdrops.entries.length ? (
           <span className="bid-preview-backdrop">Any backdrop</span>
         ) : undefined
       }

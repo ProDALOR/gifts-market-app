@@ -41,6 +41,28 @@ export function VenueIcon({ name }: { name: string }) {
     return (
       <img className="venue-logo" src={mrktLogo} alt="" aria-hidden="true" />
     );
+  // Fragment's header glyph: https://fragment.com/css/auction.css
+  if (venue.includes("fragment"))
+    return (
+      <svg viewBox="112 110 292 292" aria-hidden="true">
+        <path
+          fill="currentColor"
+          fillRule="evenodd"
+          d="M126.3 153.6 252 209.2c3.2 1.5 7.2 1.3 12.2-1l123.8-54.7c6.6-2.4 2.9-9.8-2.3-9l-256.6-1.1c-7.2.3-9.2 7.5-2.8 10.2Zm-10.1 28.5 118.4 184c3.7 6 13.1 2.6 12.8-2.8l-.2-126.2c-.1-7.1-1.9-8.7-6.4-10.6l-118.4-52.7c-4.3-2.4-10.1 1.6-6.2 8.3Zm151.3 52.7.3 127c.1 8.5 8.6 10.1 13.5 2.9l103-159.4 2.2-3.4 1.9-2.9v-.1l10.8-16.6c3.3-5.5-1.9-11.8-9.7-8.1L272 227.1l-.6.3c-1.5.9-2.5 1.8-3 2.9-.7 1.2-.9 2.7-.9 4.5Z"
+        />
+      </svg>
+    );
+  // Symbol from https://ddejfvww7sqtk.cloudfront.net/faq-assets/imgs/full_logo_white.svg
+  if (venue.includes("getgems"))
+    return (
+      <svg viewBox="0 0 28.036 28.036" aria-hidden="true">
+        <path
+          fill="currentColor"
+          fillRule="evenodd"
+          d="M14.018 0c0 7.742-6.276 14.018-14.018 14.018C0 6.276 6.276 0 14.018 0zm0 28.036C6.276 28.036 0 21.76 0 14.018c7.742 0 14.018 6.276 14.018 14.018zm14.018-14.018c0 7.742-6.276 14.018-14.018 14.018 0-7.742 6.276-14.018 14.018-14.018zm-1.169-12.85c0 6.452-5.23 11.682-11.681 11.682 0-6.452 5.23-11.682 11.681-11.682z"
+        />
+      </svg>
+    );
   // Vector redraws of the glyphs used by https://t.me/portals and
   // https://t.me/Tonnel_Network_bot; inherit the surrounding theme color.
   if (venue.includes("portal"))

@@ -16,6 +16,7 @@ export function TraitComposition({
   backdrops,
   patterns,
   compact = false,
+  showModelNames = true,
   playback = compact ? "static" : "selected",
   label = "Virtual gift preview",
   children,
@@ -26,6 +27,7 @@ export function TraitComposition({
   backdrops: CatalogOption[];
   patterns: CatalogOption[];
   compact?: boolean;
+  showModelNames?: boolean;
   playback?: PlaybackPolicy;
   label?: string;
   children?: ReactNode;
@@ -139,7 +141,7 @@ export function TraitComposition({
                 fallback={model.name[0] || "◇"}
                 playback={playback}
               />
-              <span title={model.name}>{model.name}</span>
+              {showModelNames && <span title={model.name}>{model.name}</span>}
             </div>
           ))}
         </div>

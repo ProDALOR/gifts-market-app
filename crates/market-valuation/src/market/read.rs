@@ -1,19 +1,22 @@
 //! Reusable evaluated reads: dependencies and deadlines stay internal to the service.
+use super::read_set::ReadSet;
 use super::*;
-use crate::{
-    floors::{BookCache, Statistics},
-    source::{BookScope, OrderDependency, ReadDependencies, ValuationSnapshot},
-};
+use crate::{floors::BookCache, source::ValuationSnapshot};
 use std::sync::Arc;
 
 pub(crate) struct ValuationRead {
     pub report: Arc<ValuationReport>,
-    dependencies: ReadDependencies,
-    pub(crate) statistics: Vec<Arc<Statistics>>,
-    observations: Vec<OrderDependency>,
-    pub deadline: tokio::time::Instant,
+    pub(super) reads: ReadSet,
 }
 impl ValuationRead {
+    #[cfg(test)]
+    pub(crate) fn statistics(&self) -> &[Arc<crate::floors::Statistics>] {
+        &self.reads.statistics
+    }
+
+    pub fn deadline(&self) -> tokio::time::Instant {
+        self.reads.deadline
+    }
     pub fn read(
         snapshot: &ValuationSnapshot,
         input: &PreparedQuery,
@@ -22,21 +25,7 @@ impl ValuationRead {
     ) -> Result<Arc<Self>, ValuationError> {
         let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
         if let Some(previous) = previous {
-            let mut current = tokio::time::Instant::now() < previous.deadline
-                && snapshot.dependencies_data_current(&previous.dependencies)?;
-            for stats in &previous.statistics {
-                if !current {
-                    break;
-                }
-                current = stats.current(snapshot)?;
-            }
-            for observation in &previous.observations {
-                if !current {
-                    break;
-                }
-                current = observation.current(snapshot)?;
-            }
-            if current {
+            if previous.reads.current(snapshot)? {
                 if previous.report.stale == stale {
                     return Ok(previous.clone());
                 }
@@ -44,10 +33,7 @@ impl ValuationRead {
                 report.stale = stale;
                 return Ok(Arc::new(Self {
                     report: Arc::new(report),
-                    dependencies: previous.dependencies.clone(),
-                    statistics: previous.statistics.clone(),
-                    observations: previous.observations.clone(),
-                    deadline: previous.deadline,
+                    reads: previous.reads.clone(),
                 }));
             }
         }
@@ -57,17 +43,6 @@ impl ValuationRead {
             ResolvedTarget::Catalog(selection) => selection.collection_ids.clone(),
             target => vec![target.collection().expect("single selection").clone()],
         };
-        let dependencies = snapshot.target_dependencies(
-            collections.into_iter().map(|collection| BookScope {
-                collection,
-                currency: input.currency_id.clone(),
-            }),
-            &input.currency_id,
-            match &input.target {
-                ValuationTarget::Gift { gift } => Some(gift),
-                _ => None,
-            },
-        )?;
         let context = ValuationContext::new(snapshot, &input.currency_id, books);
         let mut results = Vec::with_capacity(input.strategies.len());
         for entry in &input.strategies {
@@ -87,14 +62,22 @@ impl ValuationRead {
             );
         }
         snapshot.check_cancelled()?;
-        let deadline = context.deadline.get();
+        let mut reads = context.reads.into_inner();
+        reads.finish(
+            snapshot,
+            collections,
+            &input.currency_id,
+            match &input.target {
+                ValuationTarget::Gift { gift } => Some(gift),
+                _ => None,
+            },
+        )?;
+        let deadline = reads.deadline;
         if deadline <= tokio::time::Instant::now() {
             return Err(ValuationError::unavailable(
                 "Asks expired during the read; retry",
             ));
         }
-        let statistics = context.statistics.into_inner();
-        let observations = context.observations.into_inner();
         let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
         Ok(Arc::new(Self {
             report: Arc::new(ValuationReport {
@@ -104,10 +87,7 @@ impl ValuationRead {
                 stale,
                 results,
             }),
-            dependencies,
-            statistics,
-            observations,
-            deadline,
+            reads,
         }))
     }
 }

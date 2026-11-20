@@ -2,35 +2,29 @@ import type { Order, CatalogOption } from "../market";
 import { BidConditions } from "./bid-conditions";
 import { giftDetails } from "../orderbook";
 import { GiftArtwork } from "../previews/gift-artwork";
-import { ValuationFields } from "../valuation/display";
 import { backdropPalette } from "../previews/gift-appearance";
-import { useCollectionFloors, FloorBadge } from "../valuation/floors";
+import { useCollectionFloors, FloorSummary } from "../valuation/floors";
+import { traitFloor } from "../valuation/floors-controller";
 
 export function OrderAttributes({
   order,
   options,
   names,
-  fields = [],
-  summary,
 }: {
   order: Order;
   options: ReadonlyMap<string, CatalogOption>;
   names: ReadonlyMap<string, string>;
-  fields?: NonNullable<
-    import("../valuation/use-order-valuation").OrderValuationState["result"]
-  >["display"]["fields"];
-  summary?: string | null;
 }) {
   const shared = useCollectionFloors(
     order.book.collection_id,
     order.book.currency_id,
   );
   const pair = shared?.traits?.pair;
+  const traits = order.target.kind === "gift" ? order.target.traits : undefined;
   const market = shared && (
     <section className="shared-floors" aria-label="Current market ask values">
-      <h3>Current market asks</h3>
       <div>
-        <FloorBadge
+        <FloorSummary
           floor={shared.floor}
           currency={order.book.currency_id}
           stale={shared.stale}
@@ -40,7 +34,7 @@ export function OrderAttributes({
           pair &&
           pair.model_id === order.target.traits.model &&
           pair.backdrop_id === order.target.traits.backdrop && (
-            <FloorBadge
+            <FloorSummary
               floor={pair.floor}
               currency={order.book.currency_id}
               stale={shared.stale}
@@ -48,16 +42,8 @@ export function OrderAttributes({
             />
           )}
       </div>
-      {order.kind === "executed" && (
-        <p className="valuation-note">
-          These are current asks, not prices at the time of execution.
-        </p>
-      )}
     </section>
   );
-  const displayFields = shared?.traits
-    ? fields.filter((field) => !field.basis)
-    : fields;
   if (order.target.kind === "criteria")
     return (
       <>
@@ -73,10 +59,6 @@ export function OrderAttributes({
       </>
     );
   const rows = giftDetails(order, names, options);
-  const attributes = new Set(rows.map((row) => row.attribute));
-  const general = displayFields.filter(
-    (field) => !field.attribute || !attributes.has(field.attribute),
-  );
   return (
     <section
       className="gift-attributes"
@@ -118,46 +100,20 @@ export function OrderAttributes({
                 <dd>
                   <strong className="attribute-name">{value}</strong>
                   {attribute && (
-                    <FloorBadge
+                    <FloorSummary
+                      compact
                       currency={order.book.currency_id}
                       stale={shared?.stale}
                       label="Current floor"
-                      floor={
-                        attribute === "model"
-                          ? shared?.traits?.models[
-                              order.target.kind === "gift"
-                                ? order.target.traits.model || ""
-                                : ""
-                            ]
-                          : attribute === "backdrop"
-                            ? shared?.traits?.backdrops[
-                                order.target.kind === "gift"
-                                  ? order.target.traits.backdrop || ""
-                                  : ""
-                              ]
-                            : undefined
-                      }
+                      floor={traitFloor(shared, attribute, traits?.[attribute])}
                     />
                   )}
-                  <ValuationFields
-                    fields={
-                      attribute
-                        ? displayFields.filter(
-                            (field) => field.attribute === attribute,
-                          )
-                        : []
-                    }
-                  />
                 </dd>
               </div>
             );
           })}
         </dl>
       )}
-      <div className="valuation-context">
-        <ValuationFields fields={general} />
-      </div>
-      {summary && <p className="valuation-note">{summary}</p>}
     </section>
   );
 }

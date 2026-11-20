@@ -1,4 +1,9 @@
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useSyncExternalStore,
+} from "react";
 import { CatalogController } from "./controller";
 import type { CatalogOption } from "../market";
 const empty: ReadonlyMap<string, CatalogOption> = new Map();
@@ -13,7 +18,10 @@ export function useCatalog(refresh: number, selectedId: string) {
     controller.start();
     return () => controller.close();
   }, [controller]);
-  useEffect(() => controller.select(selectedId), [controller, selectedId]);
+  useLayoutEffect(
+    () => controller.select(selectedId),
+    [controller, selectedId],
+  );
   const view =
     state.selectedId === selectedId
       ? state

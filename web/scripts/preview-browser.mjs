@@ -1,5 +1,8 @@
 // Isolated browser regression: real React/Lottie, synthetic public media, no hub or Telegram.
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -27,7 +30,7 @@ import {useBackgroundPlaybackSuspension} from '/src/previews/use-playback.ts';
 import {ValuationInfo} from '/src/orderbook/valuation-info.tsx';
 const previewStrategy={id:'preview',name:'Preview strategy',description:'Fixture strategy',input:'resolved_gift',targets:['gift'],requires_period:false,documentation_url:'/__preview_guide.md',documentation_revision:'one'};
 const previewResult={strategy:'preview',data:{},display:{fields:[],note:'Fixture estimate'}};
-const valuationState={key:'preview',strategy:previewStrategy,result:previewResult,strategies:[previewStrategy],fields:{primary:[],secondary:[]},loading:false,
+const valuationState={key:'preview',strategy:previewStrategy,result:previewResult,strategies:[previewStrategy],primaryFields:[],loading:false,
  report:{target:{kind:'gift',gift:{id:'gift',collection_id:'gift',traits:{}}},currency_id:'GRAM',stale:false,evaluated_at:'2026-11-18T12:00:00Z',results:[previewResult]}};
 const root=createRoot(document.getElementById('fixture'));
 window.mount=(large=false)=>root.render(React.createElement(GiftPreview,{order,options,fallback:'G',size:large?'large':'small',playback:large?'detail':'interaction'},
@@ -78,7 +81,9 @@ window.mountLarge=(playback='static',preview='/media/large-preview.svg')=>root.r
 window.mountLoading=(name='slow')=>root.render(React.createElement('div',{className:name==='offscreen'?'loading-offscreen':''},React.createElement(GiftArtwork,{media:{thumbnail_url:'/media/models/loading-'+name+'/thumbnail'},fallback:'P',playback:'static',className:'loading-test'})));
 window.mount();
 </script></body></html>`;
+const cacheDir = await mkdtemp(join(tmpdir(), "preview-"));
 const server = await createServer({
+  cacheDir,
   root,
   server: { host: "127.0.0.1", port: 0 },
   plugins: [
@@ -1202,4 +1207,5 @@ try {
 } finally {
   await browser?.close();
   await server.close();
+  await rm(cacheDir, { recursive: true, force: true });
 }

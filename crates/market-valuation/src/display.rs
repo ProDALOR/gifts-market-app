@@ -6,7 +6,7 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ValuationDisplay<'a> {
-    /// Strategy order is preserved within each presentation group.
+    /// Strategy-defined field order is preserved.
     pub fields: Vec<DisplayField<'a>>,
     pub summary: Option<String>,
     pub note: &'static str,
@@ -17,21 +17,7 @@ pub struct DisplayField<'a> {
     pub id: &'static str,
     pub label: &'static str,
     pub primary: bool,
-    /// Snapshot input evidence; clients with a live market projection can show that separately.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub basis: bool,
-    /// Optional semantic placement beside the gift's matching attribute preview.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attribute: Option<DisplayAttribute>,
     pub value: DisplayValue<'a>,
-}
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub enum DisplayAttribute {
-    Model,
-    Backdrop,
-    Pattern,
 }
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -105,8 +91,6 @@ impl<'a> DisplayField<'a> {
             id,
             label,
             primary: false,
-            basis: false,
-            attribute: None,
             value,
         }
     }
@@ -114,17 +98,6 @@ impl<'a> DisplayField<'a> {
         self.primary = true;
         self
     }
-    pub fn basis(mut self) -> Self {
-        self.basis = true;
-        self
-    }
-    pub fn attribute(mut self, attribute: DisplayAttribute) -> Self {
-        self.attribute = Some(attribute);
-        self
-    }
-}
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 fn formatted(amount: rust_decimal::Decimal, decimals: Option<u8>) -> String {
     match decimals {

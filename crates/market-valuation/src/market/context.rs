@@ -16,9 +16,7 @@ pub struct ValuationContext<'a> {
     currency: &'a CurrencyId,
     books: &'a BookCache,
     executions: RefCell<ExecutionCache>,
-    pub(super) statistics: RefCell<Vec<Arc<Statistics>>>,
-    pub(super) observations: RefCell<Vec<crate::source::OrderDependency>>,
-    pub(super) deadline: std::cell::Cell<tokio::time::Instant>,
+    pub(super) reads: RefCell<super::read_set::ReadSet>,
 }
 impl<'a> ValuationContext<'a> {
     pub(crate) fn new(
@@ -31,11 +29,7 @@ impl<'a> ValuationContext<'a> {
             currency,
             books,
             executions: RefCell::new(None),
-            statistics: RefCell::new(vec![]),
-            observations: RefCell::new(vec![]),
-            deadline: std::cell::Cell::new(
-                tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-            ),
+            reads: RefCell::new(super::read_set::ReadSet::new()),
         }
     }
     pub fn snapshot(&self) -> &ValuationSnapshot {
@@ -48,25 +42,28 @@ impl<'a> ValuationContext<'a> {
         &self,
         collection: &CollectionId,
     ) -> Result<Arc<Statistics>, ValuationError> {
-        let query = GiftOrderQuery::new(market_gifts::GiftFilters::new(
-            collection.clone(),
-            self.currency.clone(),
-        ));
-        self.observe(&query)?;
-        let stats = self.books.get(
+        let result = self.books.get(
             self.snapshot,
             &BookScope {
                 collection: collection.clone(),
                 currency: self.currency.clone(),
             },
-        )?;
-        self.deadline.set(self.deadline.get().min(stats.deadline()));
-        let mut used = self.statistics.borrow_mut();
-        if !used.iter().any(|previous| Arc::ptr_eq(previous, &stats)) {
-            used.push(stats.clone());
+        );
+        match result {
+            Ok(stats) => {
+                self.reads.borrow_mut().statistics(stats.clone())?;
+                Ok(stats)
+            }
+            Err(error) => {
+                self.observe(&GiftOrderQuery::new(market_gifts::GiftFilters::new(
+                    collection.clone(),
+                    self.currency.clone(),
+                )))?;
+                Err(error)
+            }
         }
-        Ok(stats)
     }
+
     /// Strategies read observations here so watches follow their actual sources and expiry.
     pub fn orders(
         &self,
@@ -89,31 +86,15 @@ impl<'a> ValuationContext<'a> {
                         .saturating_sub(now.as_millisecond())
                         .max(0) as u64,
                 );
-                self.deadline.set(
-                    self.deadline
-                        .get()
-                        .min(tokio::time::Instant::now() + remaining),
-                );
+                let mut reads = self.reads.borrow_mut();
+                reads.deadline = reads.deadline.min(tokio::time::Instant::now() + remaining);
             }
         }
         Ok(page)
     }
 
     fn observe(&self, query: &GiftOrderQuery) -> Result<(), ValuationError> {
-        let dependency = self.snapshot.order_dependency(query)?;
-        let mut observations = self.observations.borrow_mut();
-        if !observations
-            .iter()
-            .any(|previous| previous.same_query(&dependency))
-        {
-            if observations.len() >= 128 {
-                return Err(ValuationError::capacity(
-                    "valuation observation dependency budget exceeded",
-                ));
-            }
-            observations.push(dependency);
-        }
-        Ok(())
+        self.reads.borrow_mut().observe(self.snapshot, query)
     }
 
     pub(super) fn executions(

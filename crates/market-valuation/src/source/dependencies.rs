@@ -8,6 +8,7 @@ const KINDS: &[w::EntityKind] = &[
     w::EntityKind::AttributeOption,
     w::EntityKind::Currency,
 ];
+pub(crate) const METADATA_KEY_LIMIT: usize = 50_000;
 #[derive(Clone)]
 pub struct ReadDependencies(Arc<Dependencies>);
 struct Dependencies {
@@ -16,6 +17,12 @@ struct Dependencies {
     collections: Option<MetadataRevision>,
     checked: Mutex<MetadataRevision>,
     sync: SyncStatus,
+    key_count: usize,
+}
+impl ReadDependencies {
+    pub(crate) fn key_count(&self) -> usize {
+        self.0.key_count
+    }
 }
 impl ValuationSnapshot {
     /// Validate cached projections against this pinned view on a read worker.
@@ -156,7 +163,7 @@ impl ValuationSnapshot {
                     }
                 }
             }
-            if keys.len() > 50_000 {
+            if keys.len() > METADATA_KEY_LIMIT {
                 return Err(Status::resource_exhausted(
                     "read dependency budget exceeded",
                 ));
@@ -164,6 +171,7 @@ impl ValuationSnapshot {
         }
         Ok(ReadDependencies(Arc::new(Dependencies {
             books,
+            key_count: keys.len(),
             metadata: self.reader.metadata_dependencies(keys, attributes)?,
             collections: lookups
                 .iter()

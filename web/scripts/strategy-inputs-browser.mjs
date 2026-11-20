@@ -131,28 +131,26 @@ try {
         currency_id: params.currency_id,
         evaluated_at: new Date().toISOString(),
         stale: false,
-        results: [...params.strategies]
-          .reverse()
-          .map((strategy) => ({
-            strategy,
-            data: {},
-            display: {
-              fields: [
-                {
-                  id: "mark",
-                  label: "Value",
-                  primary: true,
-                  value: {
-                    kind: "currency",
-                    amount:
-                      strategy === "future_selection" ? "10" : String(n * 20),
-                    currency_id: params.currency_id,
-                  },
+        results: [...params.strategies].reverse().map((strategy) => ({
+          strategy,
+          data: {},
+          display: {
+            fields: [
+              {
+                id: "mark",
+                label: "Value",
+                primary: true,
+                value: {
+                  kind: "currency",
+                  amount:
+                    strategy === "future_selection" ? "10" : String(n * 20),
+                  currency_id: params.currency_id,
                 },
-              ],
-              note: strategy + " note",
-            },
-          })),
+              },
+            ],
+            note: strategy + " note",
+          },
+        })),
       };
       const send = () =>
         ws.send(
@@ -190,6 +188,33 @@ try {
     .waitFor();
   assert.equal(metadataRequests, 1);
   assert.equal(guideRequests, 1);
+  await page.evaluate(() => window.choose("criteria"));
+  await page.waitForFunction(
+    () => document.querySelector("output")?.textContent === "criteria",
+  );
+  assert.equal(
+    await page.locator(".valuation-popup").count(),
+    0,
+    "A scope change closes the previous gift's popup",
+  );
+  await page.evaluate(() => window.choose(1));
+  await picker.waitFor();
+  const beforePopup = queries.length;
+  await page.getByRole("button", { name: "How is this calculated?" }).click();
+  await page
+    .getByRole("article", { name: "future_selection calculation guide" })
+    .waitFor();
+  assert.equal(
+    queries.length,
+    beforePopup,
+    "Opening a popup does not recalculate",
+  );
+  assert.equal(metadataRequests, 1);
+  assert.equal(
+    guideRequests,
+    1,
+    "Guides survive gift changes in the shared cache",
+  );
   await page.getByRole("button", { name: "Close calculation guide" }).click();
   rows[1] = { ...rows[1], id: "future_gift_v2", name: "New gift strategy" };
   rejectRemoved = true;

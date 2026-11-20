@@ -199,11 +199,6 @@ function display(value: unknown) {
       !text(field.id) ||
       !text(field.label) ||
       typeof field.primary !== "boolean" ||
-      (field.basis != null && typeof field.basis !== "boolean") ||
-      !(
-        field.attribute == null ||
-        oneOf(field.attribute, ["model", "backdrop", "pattern"])
-      ) ||
       !record(field.value)
     )
       return false;

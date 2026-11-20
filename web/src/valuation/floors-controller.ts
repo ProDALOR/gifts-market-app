@@ -18,6 +18,19 @@ export type FloorsEntry = {
   evaluatedAt: string;
   used: number;
 };
+/** Only model and backdrop scopes have their own current-ask valuation. */
+export function traitFloor(
+  entry: FloorsEntry | undefined,
+  kind: "model" | "backdrop" | "pattern",
+  id: string | null | undefined,
+) {
+  if (!id) return undefined;
+  return kind === "model"
+    ? entry?.traits?.models[id]
+    : kind === "backdrop"
+      ? entry?.traits?.backdrops[id]
+      : undefined;
+}
 export type FloorsState = {
   currency: string;
   selected: string;
@@ -81,6 +94,18 @@ export class FloorsController {
     this.currency = currency;
     this.selected = collection;
     this.pair = pair;
+    const key = `${currency}:${collection}`;
+    const entry = this.cache.get(key);
+    const cachedPair = entry?.traits?.pair;
+    if (
+      entry?.traits &&
+      cachedPair &&
+      (cachedPair.model_id !== pair?.model_id ||
+        cachedPair.backdrop_id !== pair?.backdrop_id)
+    ) {
+      const { pair: _pair, ...traits } = entry.traits;
+      this.cache.set(key, { ...entry, traits });
+    }
     this.signature = "";
     this.markStale();
     this.schedule();
@@ -88,7 +113,13 @@ export class FloorsController {
   }
   visibleCollections = (ids: string[]) => {
     if (this.closed) return;
-    this.visible = [...new Set(ids)];
+    const visible = [...new Set(ids)];
+    if (
+      visible.length === this.visible.length &&
+      visible.every((id) => this.visible.includes(id))
+    )
+      return;
+    this.visible = visible;
     this.schedule();
   };
   private schedule() {
@@ -118,8 +149,7 @@ export class FloorsController {
     const signature = JSON.stringify(params);
     if (signature === this.signature) return;
     this.signature = signature;
-    this.markStale();
-    this.publish("");
+    this.publishStale("");
     const command = {
       type: "valuation.watch" as const,
       id: "floors",
@@ -139,21 +169,21 @@ export class FloorsController {
         )
           return;
         if (frame.type === "error") {
-          this.markStale();
-          this.publish(frame.error.message);
+          this.publishStale(frame.error.message);
           return;
         }
-        if (
-          frame.type !== "valuation.snapshot" ||
-          frame.data.currency_id !== this.currency
-        )
+        if (frame.type !== "valuation.snapshot") return;
+        if (frame.data.currency_id !== this.currency) {
+          this.publishStale(
+            "Floor results did not match the requested currency",
+          );
           return;
+        }
         const result = frame.data.results.find(
           (row) => row.strategy === "catalog_floor",
         );
         if (!result || "error" in result || !catalogFloors(result.data)) {
-          this.markStale();
-          this.publish(
+          this.publishStale(
             result && "error" in result
               ? result.error.message
               : "Invalid catalog floor results",
@@ -166,8 +196,7 @@ export class FloorsController {
           scope.kind !== "catalog" ||
           !sameCatalogTarget(frame.data.target, scope)
         ) {
-          this.markStale();
-          this.publish("Floor results did not match the requested scope");
+          this.publishStale("Floor results did not match the requested scope");
           return;
         }
         if (
@@ -187,16 +216,21 @@ export class FloorsController {
             );
           })
         ) {
-          this.markStale();
-          this.publish("Floor results did not match the requested scope");
+          this.publishStale("Floor results did not match the requested scope");
           return;
         }
         for (const row of data.collections) {
           const key = `${frame.data.currency_id}:${row.collection_id}`;
+          const previous = this.cache.get(key);
           this.cache.delete(key);
           this.cache.set(key, {
             floor: row.floor,
-            traits: row.traits ?? undefined,
+            // A summary can revalidate cached choices only for the exact same calculation.
+            traits:
+              row.traits ??
+              (previous?.evaluatedAt === row.evaluated_at
+                ? previous.traits
+                : undefined),
             stale: frame.data.stale,
             evaluatedAt: row.evaluated_at,
             used: ++this.used,
@@ -208,8 +242,7 @@ export class FloorsController {
       (status) => {
         if (this.closed) return;
         if (status !== "Live") {
-          this.markStale();
-          this.publish();
+          this.publishStale();
         }
       },
     );
@@ -227,6 +260,10 @@ export class FloorsController {
       if (i >= 8 || bytes > 8 * 1024 * 1024)
         this.cache.set(key, { ...entry, traits: undefined });
     }
+  }
+  private publishStale(error = this.state.error) {
+    this.markStale();
+    this.publish(error);
   }
   private markStale() {
     for (const [key, entry] of this.cache)

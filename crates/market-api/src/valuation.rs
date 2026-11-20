@@ -156,6 +156,18 @@ pub(crate) async fn documentation(
 mod tests {
     use actix_web::{App, http::header, test};
     #[actix_web::test]
+    async fn display_schema_only_exposes_consumed_fields() {
+        use utoipa::OpenApi;
+        let schema = serde_json::to_value(crate::ApiDoc::openapi()).unwrap();
+        let schemas = &schema["components"]["schemas"];
+        let fields = schemas["DisplayField"]["properties"].as_object().unwrap();
+        assert_eq!(fields.len(), 4);
+        for name in ["id", "label", "primary", "value"] {
+            assert!(fields.contains_key(name));
+        }
+        assert!(schemas.get("DisplayAttribute").is_none());
+    }
+    #[actix_web::test]
     async fn catalog_revalidation_tracks_documentation_changes_and_each_guide_has_its_own_revision()
     {
         use super::*;

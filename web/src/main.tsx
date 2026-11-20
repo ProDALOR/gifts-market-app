@@ -16,7 +16,6 @@ import { TraitPickers } from "./collections/trait-pickers";
 import { TraitPreview } from "./previews/trait-preview";
 import { VenueIcon } from "./ui/icons";
 import { OrderDetails } from "./orderbook/order-details";
-import { TargetValuations } from "./valuation/target-valuations";
 import { FloorsProvider, FloorsStatus } from "./valuation/floors";
 import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
@@ -348,15 +347,6 @@ function App({ context }: { context: TelegramContext }) {
               filters={choice.filters}
               reset={resetTraits}
             />
-            {item && (
-              <TargetValuations
-                key={`${item.id}:${choice.currency}`}
-                collection={item}
-                currency={choice.currency}
-                options={options}
-                filters={choice.filters}
-              />
-            )}
             <div className="market-controls">
               <div className="segments" role="group" aria-label="Market view">
                 {(["ask", "bid", "executed"] as const).map((mode) => (
@@ -384,7 +374,6 @@ function App({ context }: { context: TelegramContext }) {
             </div>
             {choice.mode === "bid" && (
               <div className="bid-matching">
-                <span>Match bid conditions</span>
                 <div
                   className="segments"
                   role="group"
@@ -396,16 +385,16 @@ function App({ context }: { context: TelegramContext }) {
                       aria-pressed={choice.bid_match === match}
                       className={choice.bid_match === match ? "active" : ""}
                       onClick={() => set({ ...choice, bid_match: match })}
+                      title={
+                        match === "any"
+                          ? "Accepts any selected value in each trait; no selection shows all bids"
+                          : "Exact bid conditions; unselected traits must be unrestricted"
+                      }
                     >
                       {match === "any" ? "Any" : "All"}
                     </button>
                   ))}
                 </div>
-                <p>
-                  {choice.bid_match === "any"
-                    ? "Accepts any selected value in each trait. No selections shows all bids."
-                    : "Exact bid conditions. Unselected traits must be unrestricted."}
-                </p>
               </div>
             )}
             {(choice.min || choice.max || choice.from || choice.until) && (

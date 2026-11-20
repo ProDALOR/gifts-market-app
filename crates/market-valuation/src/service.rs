@@ -111,7 +111,7 @@ impl ValuationWatch {
             if !self.dirty {
                 tokio::select! {
                     _ = self.handle.native.closed() => return Err(ValuationError::unavailable("Valuation service stopped")),
-                    _ = tokio::time::sleep_until(self.current.deadline) => {},
+                    _ = tokio::time::sleep_until(self.current.deadline()) => {},
                     changed = self.changes.changed() => changed.map_err(|_|ValuationError::unavailable("Valuation source closed"))?,
                 }
                 // Retain this across cancellation of changed(), including its debounce/read.

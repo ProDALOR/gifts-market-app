@@ -21,11 +21,7 @@ export function OrderValuationSummary({
     >
       <div className="valuation-heading">
         <h3>
-          {criteria
-            ? "Matching current ask floor"
-            : history
-              ? "Current estimate"
-              : "Estimate"}
+          {criteria ? "Ask floor" : history ? "Current estimate" : "Estimate"}
         </h3>
         <div className="valuation-controls">
           <ValuationInfo key={state.key} state={state} />
@@ -57,9 +53,7 @@ export function OrderValuationSummary({
         </label>
       )}
       {!available ? (
-        <p className="valuation-note">
-          Choose a numbered collectible to see an estimate.
-        </p>
+        <p className="valuation-note">Estimate unavailable</p>
       ) : loading && !report ? (
         <p className="valuation-note" role="status">
           Calculating estimate…
@@ -71,11 +65,9 @@ export function OrderValuationSummary({
       ) : (
         report && (
           <>
-            <ValuationFields fields={state.fields.primary} compact />
-            {!state.fields.primary.length && (
-              <p className="valuation-note">
-                See attribute values below for results.
-              </p>
+            <ValuationFields fields={state.primaryFields} compact />
+            {!state.primaryFields.length && (
+              <p className="valuation-note">See calculation details</p>
             )}
             <ValuationStatus state={state} />
           </>

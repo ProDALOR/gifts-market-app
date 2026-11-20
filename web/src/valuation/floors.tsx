@@ -2,11 +2,12 @@ import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useSyncExternalStore,
 } from "react";
-import type { ReactNode } from "react";
-import { FloorsController } from "./floors-controller";
+import type { ComponentProps, ReactNode } from "react";
+import { FloorsController, traitFloor } from "./floors-controller";
 import type {
   FloorsEntry,
   FloorsState,
@@ -50,7 +51,7 @@ export function FloorsProvider({
       : undefined;
   const model = traits?.model,
     backdrop = traits?.backdrop;
-  useEffect(() => {
+  useLayoutEffect(() => {
     controller.select(
       currency,
       collection,
@@ -108,15 +109,41 @@ export function FloorBadge({
   const price = "value" in floor.price ? floor.price.value : undefined;
   const message =
     "error" in floor.price ? floor.price.error.message : undefined;
+  const value = price ? `${price} ${currency}` : "unavailable";
   return (
     <span
       className={`floor-badge${stale ? " stale" : ""}`}
-      title={`${label}${stale ? " · updates pending" : ""}${message ? `: ${message}` : ""}`}
-      aria-label={`${label}: ${price ? `${price} ${currency}` : "unavailable"}${stale ? "; updates pending" : ""}`}
+      title={`${label}: ${value} · ${evidenceText(floor)}${stale ? " · updates pending" : ""}${message ? `: ${message}` : ""}`}
+      aria-label={`${label}: ${value}${stale ? "; updates pending" : ""}`}
     >
       {!compact && <span>{label}</span>}
       {price ? <Quote price={price} currency={currency} /> : <span>—</span>}
     </span>
+  );
+}
+const counts = new Intl.NumberFormat();
+function evidenceText(floor: SharedFloor) {
+  const { gifts, listings } = floor.evidence;
+  return `${counts.format(gifts)} ${gifts === 1 ? "gift" : "gifts"} · ${counts.format(listings)} ${listings === 1 ? "listing" : "listings"}`;
+}
+/** Each scope shows its own live valuation evidence, independently of gift estimates. */
+export function FloorSummary(props: ComponentProps<typeof FloorBadge>) {
+  if (!props.floor) return null;
+  return (
+    <div className={`floor-summary${props.stale ? " stale" : ""}`}>
+      <FloorBadge {...props} />
+      <small
+        className="floor-evidence"
+        title="Identifiable gifts and listings with eligible current asks"
+      >
+        {evidenceText(props.floor)}
+      </small>
+      {"error" in props.floor.price && (
+        <small className="floor-evidence">
+          {props.floor.price.error.message}
+        </small>
+      )}
+    </div>
   );
 }
 export function CollectionFloor({ id }: { id: string }) {
@@ -145,12 +172,7 @@ export function TraitFloor({
   const { state } = useFloorReport();
   if (currency && currency !== state.currency) return null;
   const entry = state.entries.get(collection || state.selected);
-  const floor =
-    kind === "model"
-      ? entry?.traits?.models[id]
-      : kind === "backdrop"
-        ? entry?.traits?.backdrops[id]
-        : undefined;
+  const floor = traitFloor(entry, kind, id);
   return (
     <FloorBadge
       floor={floor}
