@@ -15,6 +15,7 @@ export function OrderDetails({
   options,
   names,
   collectionName,
+  collectionSlug,
   removed = false,
   close,
 }: {
@@ -22,6 +23,7 @@ export function OrderDetails({
   options: ReadonlyMap<string, CatalogOption>;
   names: Map<string, string>;
   collectionName: string;
+  collectionSlug?: string | null;
   removed?: boolean;
   close: () => void;
 }) {
@@ -32,6 +34,12 @@ export function OrderDetails({
       selected.target.kind === "gift" ? modelName(selected, options, "") : "",
     marketLink = listingLink(selected),
     venue = names.get(selected.book.venue_id) || selected.book.venue_id;
+  const telegramLink =
+    selectedSerial &&
+    collectionSlug &&
+    /^[A-Za-z0-9]{1,128}$/.test(collectionSlug)
+      ? `https://t.me/nft/${collectionSlug}-${selectedSerial}`
+      : undefined;
   const { primary } = state.fields;
   const estimate = primary.length === 1 ? primary[0].value : undefined;
   const comparison =
@@ -50,6 +58,7 @@ export function OrderDetails({
       className={`detail${criteria ? " detail-criteria" : ""}`}
       label="Order details"
       closeLabel="Close details"
+      viewportClose
       describedBy="detail-title"
     >
       {criteria ? (
@@ -130,17 +139,30 @@ export function OrderDetails({
             </p>
           )}
         </div>
-        {marketLink && !removed && (
+        {((marketLink && !removed) || telegramLink) && (
           <div className="detail-actions">
-            <a
-              className="detail-market"
-              href={marketLink}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <VenueIcon name={venue} />
-              Open on {venue} <span aria-hidden="true">↗</span>
-            </a>
+            {marketLink && !removed && (
+              <a
+                className="detail-link detail-market"
+                href={marketLink}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <VenueIcon name={venue} />
+                Open on {venue} <span aria-hidden="true">↗</span>
+              </a>
+            )}
+            {telegramLink && (
+              <a
+                className="detail-link detail-telegram"
+                href={telegramLink}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <VenueIcon name="Telegram" />
+                Open in Telegram <span aria-hidden="true">↗</span>
+              </a>
+            )}
           </div>
         )}
       </div>

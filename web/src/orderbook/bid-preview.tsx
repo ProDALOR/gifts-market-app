@@ -77,6 +77,11 @@ export function BidPreview({
       compact={compact}
       playback="static"
       label={`Bid alternatives. ${label}`}
+      header={
+        !backdrops.entries.length ? (
+          <span className="bid-preview-backdrop">Any backdrop</span>
+        ) : undefined
+      }
       footer={
         badges.length ? (
           <div className="bid-preview-summary">

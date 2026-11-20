@@ -264,7 +264,7 @@
   line-height: 1.3;
   color: #ffffffc7;
 }
-.detail-market {
+.detail-link {
   display: flex;
   justify-content: center;
   align-items: center;
@@ -636,6 +636,8 @@
   font-size: 64px;
 }
 .detail-actions {
+  display: grid;
+  gap: 8px;
   position: sticky;
   bottom: 0;
   z-index: 4;
@@ -644,8 +646,17 @@
   border-top: 1px solid var(--line);
   background: var(--paper);
 }
-.detail-market svg,
-.detail-market .venue-logo {
+.detail-telegram {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.telegram[data-telegram-theme="light"] .detail-telegram {
+  background: var(--surface);
+  color: var(--ink);
+}
+.detail-link svg,
+.detail-link .venue-logo {
   width: 22px;
   height: 22px;
   object-fit: contain;
@@ -655,7 +666,7 @@
     outline: 1px solid var(--accent);
     outline-offset: 2px;
   }
-  .detail-market:hover {
+  .detail-link:hover {
     filter: brightness(1.08);
   }
 }
@@ -845,6 +856,20 @@
   font-weight: 650;
   text-shadow: 0 1px 3px #251a27;
 }
+.bid-preview-backdrop {
+  flex: none;
+  padding: 4px 6px 0;
+  text-align: center;
+  font-size: 11px;
+  line-height: 14px;
+  color: #ffffffc7;
+  text-shadow: 0 1px 3px #251a27;
+}
+.bid-card .bid-preview-backdrop {
+  padding: 0;
+  font-size: 9px;
+  line-height: 12px;
+}
 .bid-preview-summary {
   display: flex;
   justify-content: center;
@@ -912,10 +937,6 @@
 @media (min-width: 960px) {
   .detail.detail-criteria[open] {
     width: min(640px, calc(100% - 48px));
-  }
-  .detail.detail-criteria > .modal-close {
-    left: auto;
-    right: 12px;
   }
   .bid-detail-heading {
     padding: 28px 64px 0 24px;

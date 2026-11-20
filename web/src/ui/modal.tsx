@@ -10,6 +10,7 @@ export function Modal({
   className,
   heading,
   closeLabel,
+  viewportClose = false,
 }: {
   close: () => void;
   children: ReactNode;
@@ -18,6 +19,7 @@ export function Modal({
   className: string;
   heading?: string;
   closeLabel: string;
+  viewportClose?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const closeAction = useRef(close);
@@ -42,8 +44,8 @@ export function Modal({
     element.dataset.closing = "true";
     const exit = element.animate(
       [
-        { opacity: 1, transform: "translateY(0)" },
-        { opacity: 0, transform: "translateY(8px)" },
+        { opacity: 1, transform: viewportClose ? "none" : "translateY(0)" },
+        { opacity: 0, transform: viewportClose ? "none" : "translateY(8px)" },
       ],
       { duration: 140, easing: "ease-in", fill: "forwards" },
     );
@@ -59,8 +61,11 @@ export function Modal({
     if (element?.animate && motion) {
       const enter = element.animate(
         [
-          { opacity: 0, transform: "translateY(12px)" },
-          { opacity: 1, transform: "translateY(0)" },
+          {
+            opacity: 0,
+            transform: viewportClose ? "none" : "translateY(12px)",
+          },
+          { opacity: 1, transform: viewportClose ? "none" : "translateY(0)" },
         ],
         { duration: 180, easing: "cubic-bezier(.2,.7,.2,1)" },
       );
@@ -94,7 +99,7 @@ export function Modal({
   return (
     <dialog
       ref={dialog}
-      className={`modal ${className}`}
+      className={`modal ${className}${viewportClose ? " modal-viewport-close" : ""}`}
       aria-label={label}
       aria-describedby={describedBy}
       onCancel={(event) => {

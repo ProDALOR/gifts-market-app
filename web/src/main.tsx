@@ -545,6 +545,11 @@ function App({ context }: { context: TelegramContext }) {
           options={options}
           names={names}
           collectionName={item?.name || ""}
+          collectionSlug={
+            types.find(
+              (collection) => collection.id === selected.book.collection_id,
+            )?.slug
+          }
           removed={activity.get(orderKey(selected))?.state === "removed"}
           close={() => setSelected(undefined)}
         />

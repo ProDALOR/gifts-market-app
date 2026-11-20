@@ -241,10 +241,6 @@
     flex: 1;
     padding: 28px 24px 0;
   }
-  .detail > .modal-close {
-    right: auto;
-    left: calc(47.5% - 50px);
-  }
   .detail-actions {
     padding-inline: 24px;
   }

@@ -19,6 +19,7 @@ export function TraitComposition({
   playback = compact ? "static" : "selected",
   label = "Virtual gift preview",
   children,
+  header,
   footer,
 }: {
   models: CatalogOption[];
@@ -28,6 +29,7 @@ export function TraitComposition({
   playback?: PlaybackPolicy;
   label?: string;
   children?: ReactNode;
+  header?: ReactNode;
   footer?: ReactNode;
 }) {
   const host = useRef<HTMLElement>(null),
@@ -113,6 +115,7 @@ export function TraitComposition({
           />
         </div>
       )}
+      {header}
       {models.length > 0 && (
         <div
           className="preview-models"

@@ -30,10 +30,10 @@ useEffect(()=>{select(old=>old ? feed.displayOrders.find(row=>orderKey(row)===or
 return React.createElement('main',{className:'workspace'},React.createElement('div',{className:'orderbook'},
 React.createElement('h2',{style:{margin:'14px 0'}},'Live gift market'),
 React.createElement(GiftGrid,{orders:feed.displayOrders,busy:feed.loadingMore,visible:feed.setVisibleRange,card:order=>({options,collectionName:'Gift',venueName:'MRKT',selected:selected?.id===order.id,open:select,activity:feed.activity.get(orderKey(order))})})),
-selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Gift',removed:feed.activity.get(orderKey(selected))?.state==='removed',close:()=>select(undefined)}));}
+selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Gift',collectionSlug:'Gift',removed:feed.activity.get(orderKey(selected))?.state==='removed',close:()=>select(undefined)}));}
 const app=createRoot(document.getElementById('fixture'));app.render(React.createElement(App));window.unmount=()=>app.unmount();
 window.renderListing=(order,activity)=>app.render(React.createElement('ul',{className:'gift-grid'},React.createElement(GiftCard,{order,activity,options,collectionName:'Gift',venueName:'MRKT',selected:false,open:()=>{}})));
-window.renderDetails=order=>app.render(React.createElement(OrderDetails,{selected:order,options,names,collectionName:'Gift',close:()=>app.render(null)}));
+window.renderDetails=order=>app.render(React.createElement(OrderDetails,{selected:order,options,names,collectionName:'Gift',collectionSlug:'Gift',close:()=>app.render(null)}));
 window.renderMotionModal=()=>app.render(React.createElement(Modal,{label:'Motion test',heading:'Motion test',className:'valuation-popup',closeLabel:'Close motion test',close:()=>{window.modalCloseCalls=(window.modalCloseCalls||0)+1;app.render(null);}},React.createElement('p',null,'Motion fixture')));
 
 </script></body></html>`;
