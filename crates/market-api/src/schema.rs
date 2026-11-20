@@ -7,6 +7,7 @@ use utoipa::OpenApi;
         crate::routes::catalog,
         crate::routes::collection,
         crate::routes::gift_valuation,
+        crate::routes::target_valuation,
         crate::valuation::documentation,
         crate::valuation::strategies,
         crate::routes::read_orders,
@@ -17,7 +18,7 @@ use utoipa::OpenApi;
     tags(
         (name="Catalog",description="Discover gift collections and their traits."),
         (name="Orders",description="Asks, bids and confirmed executions with exact prices and stable pagination."),
-        (name="Valuations",description="One coherent floor valuation for a gift URL, slug or catalog identity, with typed evidence and per-metric errors."),
+        (name="Valuations",description="Collection, trait and gift targets with explicitly selected typed strategies, coherent reports and independent evidence/errors."),
         (name="Media",description="Cached gift thumbnails, first-frame SVGs, original TGS animations and transparent loading silhouettes."),
         (name="WebSocket",description="See /docs/ws for live-message documentation and a test console.")
     ),

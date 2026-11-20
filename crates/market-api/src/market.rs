@@ -11,6 +11,12 @@ pub struct MarketApi {
     encoder: Arc<crate::encoding::OrderEncoder>,
 }
 impl MarketApi {
+    pub async fn target_valuation(
+        &self,
+        query: market_valuation::TargetValuationRequest,
+    ) -> Result<Arc<market_valuation::TargetValuationReport>> {
+        Ok(self.valuation.query(query).await?)
+    }
     pub(crate) fn status_updates(&self) -> watch::Receiver<SyncStatus> {
         self.data.status_updates()
     }

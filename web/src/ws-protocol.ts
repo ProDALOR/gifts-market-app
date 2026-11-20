@@ -43,6 +43,39 @@ const giftFacts = (value: unknown) =>
   traits(value.traits);
 const gift = (value: unknown) =>
   giftFacts(value) && record(value) && text(value.collection_id);
+const valuationTarget = (value: unknown) => {
+  if (!record(value) || !text(value.collection_id)) return false;
+  switch (value.kind) {
+    case "collection":
+      return (
+        value.model_id == null &&
+        value.backdrop_id == null &&
+        value.gift == null
+      );
+    case "model":
+      return (
+        text(value.model_id) && value.backdrop_id == null && value.gift == null
+      );
+    case "backdrop":
+      return (
+        text(value.backdrop_id) && value.model_id == null && value.gift == null
+      );
+    case "model_backdrop":
+      return (
+        text(value.model_id) && text(value.backdrop_id) && value.gift == null
+      );
+    case "gift":
+      return (
+        gift(value.gift) &&
+        record(value.gift) &&
+        value.gift.collection_id === value.collection_id &&
+        value.model_id == null &&
+        value.backdrop_id == null
+      );
+    default:
+      return false;
+  }
+};
 const range = (value: unknown) =>
   value == null ||
   (record(value) &&
@@ -250,15 +283,38 @@ export function parseFrame(raw: unknown): LiveFrame {
       valid =
         value.method === "orders.query"
           ? readResult(value)
-          : value.method === "valuation.evaluate" &&
-            record(d) &&
-            hasNoLegacyFields(d) &&
-            text(d.strategy) &&
-            text(d.evaluated_at) &&
-            text(d.currency_id) &&
-            gift(d.gift) &&
-            typeof d.stale === "boolean" &&
-            display(d.display);
+          : value.method === "valuation.query"
+            ? record(d) &&
+              hasNoLegacyFields(d) &&
+              valuationTarget(d.target) &&
+              text(d.currency_id) &&
+              text(d.evaluated_at) &&
+              typeof d.stale === "boolean" &&
+              Array.isArray(d.results) &&
+              d.results.length > 0 &&
+              d.results.length <= 8 &&
+              d.results.every(
+                (row) =>
+                  record(row) &&
+                  text(row.strategy) &&
+                  display(row.display) &&
+                  ((record(row.data) && !Object.hasOwn(row, "error")) ||
+                    (record(row.error) &&
+                      text(row.error.code) &&
+                      text(row.error.message) &&
+                      !Object.hasOwn(row, "data"))),
+              ) &&
+              new Set(d.results.map((row) => record(row) && row.strategy))
+                .size === d.results.length
+            : value.method === "valuation.evaluate" &&
+              record(d) &&
+              hasNoLegacyFields(d) &&
+              text(d.strategy) &&
+              text(d.evaluated_at) &&
+              text(d.currency_id) &&
+              gift(d.gift) &&
+              typeof d.stale === "boolean" &&
+              display(d.display);
       break;
     }
   }

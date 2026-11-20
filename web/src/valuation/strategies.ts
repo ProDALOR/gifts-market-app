@@ -21,6 +21,9 @@ export class StrategyClient {
   invalidate() {
     this.catalog.invalidate("catalog");
   }
+  list(signal: AbortSignal): Promise<ValuationStrategy[]> {
+    return this.catalog.get("catalog", signal);
+  }
   async get(id: string, signal: AbortSignal): Promise<ValuationStrategy> {
     const cached = this.catalog.hasFresh("catalog");
     let rows = await this.catalog.get("catalog", signal);

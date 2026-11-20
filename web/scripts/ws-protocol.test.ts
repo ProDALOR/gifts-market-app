@@ -285,3 +285,55 @@ test("flat targets accept sparse description and reject retired nested payloads"
     );
   }
 });
+
+test("target valuations validate scope identity, independent outcomes and unique strategies", () => {
+  const value = {
+    type: "result",
+    id: "targets.1",
+    method: "valuation.query",
+    data: {
+      target: { kind: "model", collection_id: "gift", model_id: "gold" },
+      currency_id: "GRAM",
+      evaluated_at: "2026-11-20T00:00:00Z",
+      stale: false,
+      results: [
+        {
+          strategy: "ask_floor",
+          data: { price: { value: "1.25" } },
+          display: result.data.display,
+        },
+        {
+          strategy: "execution_mean",
+          error: { code: "capacity_exceeded", message: "Shorten the period" },
+          display: result.data.display,
+        },
+      ],
+    },
+  };
+  assert.deepEqual(parseFrame(JSON.stringify(value)), value);
+  for (const invalid of [
+    {
+      ...value,
+      data: { ...value.data, target: { kind: "model", collection_id: "gift" } },
+    },
+    {
+      ...value,
+      data: {
+        ...value.data,
+        results: [value.data.results[0], value.data.results[0]],
+      },
+    },
+    { ...value, data: { ...value.data, results: [] } },
+    {
+      ...value,
+      data: {
+        ...value.data,
+        results: [
+          { ...value.data.results[0], error: { code: "bad", message: "bad" } },
+        ],
+      },
+    },
+    { ...value, data: { ...value.data, revision: "private" } },
+  ])
+    assert.throws(() => parseFrame(JSON.stringify(invalid)));
+});

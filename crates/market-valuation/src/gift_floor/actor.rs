@@ -21,6 +21,17 @@ impl GiftFloorActor {
             books: Arc::new(BookCache::default()),
         }
     }
+    pub(crate) fn with_cache(
+        source: ValuationSource,
+        life: Lifecycle,
+        books: Arc<BookCache>,
+    ) -> Self {
+        Self {
+            source,
+            life,
+            books,
+        }
+    }
 }
 impl Actor for GiftFloorActor {
     type Context = Context<Self>;

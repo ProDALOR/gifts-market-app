@@ -302,6 +302,21 @@ Multiplier factors divide the selected trait's eligible ask floor by the collect
 
 Catalog responses (`GET /catalog` and `GET /collections/{id}`) contain catalog data without `cursor` or `sync`. The frontend consumes the shared connection-level `market.status` stream while browsing. Frozen and history reads do not open a socket solely for availability.
 
+Collection and trait valuations use `POST /valuations/query` or WebSocket method `valuation.query`. Targets select what to value: `collection`, `model`, `backdrop`, `model_backdrop` or `gift`. Strategies select the calculation: `ask_floor`, `execution_mean`, `execution_median` or the existing `gift_floor` composite. `/valuations/strategies` advertises supported target kinds and `requires_period`. Strategies are explicitly selected; there is no server default. `gift_floor` supports individual gifts and keeps its existing `/valuations/gift` interface.
+
+```json
+{
+  "target": {"kind": "model", "collection_id": "tg.gift.123", "model_id": "model-from-catalog"},
+  "currency_id": "GRAM",
+  "strategies": ["ask_floor", "execution_mean", "execution_median"],
+  "period": {"from": "2026-01-01T00:00:00Z", "until": "2026-02-01T00:00:00Z"}
+}
+```
+
+Execution periods require inclusive `from` and exclusive `until` bounds and cannot end in the future. Mean weights each execution record equally, independently of quantity; median averages the two central prices for even counts. Collection/trait estimates require three records across three distinct gifts. Individual-gift execution estimates require three records for that gift. Evidence reports observed counts, distinct gifts, venues and first/last execution times. Available history is not asserted complete or seller-independent. Both execution methods share one traversal, capped at 50,000 matching observations. Missing evidence appears in price metrics; read failures and unsupported targets are independent strategy errors, preserving successful ask results.
+
+One report coordinator validates target membership with direct catalog keys and evaluates all requested estimators on one admitted pinned snapshot. It shares the gift actor's floor cache, read budget, cancellation and supervised lifecycle. `Estimator::Output` stays typed. REST and WebSocket add strategy-owned display projections without exposing replica checkpoints. The GUI's **Collection & trait values** panel discovers strategies on opening, then calculates on request with period controls, stale-status handling and cancellation. It adds no valuation polling or per-card requests. The bot's `/value` command retains the individual-gift composite estimate.
+
 Collection IDs, model IDs, backdrop IDs, pattern IDs, order IDs, venue IDs and currency IDs are distinct Rust types and serialize as strings. Telegram collection and document IDs are separate types and retain all 64 bits through string serialization. Backdrop colors are validated `#RRGGBB` values. Model/pattern media references contain explicit thumbnail and optional animation URLs. Collections include an optional preview reference, so the collection picker needs no additional catalog request. The API does not expose Telegram access hashes or file references.
 
 Sort is `price_asc`, `price_desc`, `time_asc`, `time_desc`, `number_asc`, `number_desc` or `identity`. Sorting applies to the full query before pagination. Active orders use observed time; history uses execution time. Missing gift numbers follow concrete numbers in ascending order and precede them in descending order. Ties use venue/order identity, with execution time also disambiguating history; descending reverses the complete key. History defaults to chronological identity order and accepts `period: {from, until}` with an inclusive start and exclusive end.

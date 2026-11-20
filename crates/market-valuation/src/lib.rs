@@ -9,6 +9,10 @@ pub use gift_floor::{
 mod strategy;
 pub use strategy::{StrategyMetadata, strategies, strategy};
 mod client;
+mod market;
+pub use market::*;
+mod task;
+pub use task::ValuationTask;
 #[cfg(feature = "portfolio")]
 mod portfolio;
 mod runtime;

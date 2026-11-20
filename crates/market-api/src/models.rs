@@ -45,6 +45,11 @@ pub enum Command {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "method", deny_unknown_fields)]
 pub enum ApiRequest {
+    #[serde(rename = "valuation.query")]
+    TargetValuation {
+        id: String,
+        params: Box<market_valuation::TargetValuationRequest>,
+    },
     #[serde(rename = "orders.query")]
     Orders {
         id: String,
@@ -60,7 +65,9 @@ pub enum ApiRequest {
 impl ApiRequest {
     pub(crate) fn id(&self) -> &str {
         match self {
-            Self::Valuation { id, .. } | Self::Orders { id, .. } => id,
+            Self::Valuation { id, .. }
+            | Self::Orders { id, .. }
+            | Self::TargetValuation { id, .. } => id,
         }
     }
 }
@@ -106,6 +113,11 @@ pub enum ServerFrame<'a> {
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "method")]
 pub enum ApiResult<'a> {
+    #[serde(rename = "valuation.query")]
+    TargetValuation {
+        id: String,
+        data: crate::valuation::TargetValuationResponse<'a>,
+    },
     #[serde(rename = "orders.query")]
     Orders {
         id: String,

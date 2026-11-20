@@ -54,7 +54,7 @@ fn catalog_response<T, U: serde::Serialize>(
         response.json(present(snapshot.data))
     }
 }
-#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with one coherent floor report",description="Accepts a Telegram gift URL, slug, or gift object with collection_id and number, plus currency_id. Resolves gift facts and all metrics from one consistent market view. Returns collection, model, backdrop and matching model+backdrop floors; two-decimal dimensionless model/backdrop multipliers; and final_mark = round2(min(matching floor, collection floor * unrounded multipliers)). Rounding uses midpoint-to-even. Floor prices retain exact precision. Multipliers require at least three eligible listing rows for the collection and selected trait. Each metric has value or a structured error; a resolved gift returns 200 even when some metrics are unavailable. A strategy-owned display projection supplies ordered fields, labels, formatted values, emphasis, summary and note for generic clients. Typed calculation fields remain in the response. One strategy, calculation time and stale flag apply to the whole report. The response slug is null for catalog references. Unknown/unlisted gifts return 404. No Telegram account or external lookup is used.",request_body=market_valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with one coherent floor report",description="Accepts a Telegram gift URL, slug, or gift object with collection_id and number, plus currency_id. Resolves gift facts and all metrics from one consistent market view. Returns collection, model, backdrop and matching model+backdrop floors; two-decimal dimensionless model/backdrop multipliers; and final_mark = round2(min(matching floor, collection floor * unrounded multipliers)). Rounding uses midpoint-to-even. Floor prices retain exact precision. Multipliers require at least three distinct identifiable gifts for the collection and selected trait. Each metric has value or a structured error; a resolved gift returns 200 even when some metrics are unavailable. A strategy-owned display projection supplies ordered fields, labels, formatted values, emphasis, summary and note for generic clients. Typed calculation fields remain in the response. One strategy, calculation time and stale flag apply to the whole report. The response slug is null for catalog references. Unknown/unlisted gifts return 404. No Telegram account or external lookup is used.",request_body=market_valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn gift_valuation(
     state: web::Data<MarketApi>,
     query: web::Json<market_valuation::GiftValuationRequest>,
@@ -63,6 +63,19 @@ pub(crate) async fn gift_valuation(
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
         .json(GiftValuationResponse::from(result.as_ref())))
+}
+
+#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Value a collection, trait selection or gift with explicit strategies",description="Strategies are selected explicitly from /valuations/strategies. Targets are collection, model, backdrop, model_backdrop or gift. Execution estimators require explicit inclusive from and exclusive until bounds; at least three observations across three distinct gifts are required for collection/trait targets; an individual-gift target uses its own history. Mean weights execution records equally, independently of quantity. One report uses one pinned view; unavailable evidence or an unsupported target is reported per strategy. Available history is not guaranteed complete. Every typed result includes its strategy-owned display projection. Read budgets and cancellation are shared with the gift endpoint.",request_body=market_valuation::TargetValuationRequest,responses((status=200,body=crate::valuation::TargetValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+pub(crate) async fn target_valuation(
+    state: web::Data<MarketApi>,
+    query: web::Json<market_valuation::TargetValuationRequest>,
+) -> Result<HttpResponse> {
+    let report = state.target_valuation(query.into_inner()).await?;
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CACHE_CONTROL, "no-store"))
+        .json(crate::valuation::TargetValuationResponse::from(
+            report.as_ref(),
+        )))
 }
 
 #[utoipa::path(post,path="/orders/query",tag="Orders",summary="Read a latest or frozen ordered slice",description="Latest is the default and retains no view. Set view.kind to snapshot to open or reuse a snapshot lease. Ordering keys are portable across latest, frozen and WebSocket reads. The server enforces read budgets. Expired leases return restart_read.",request_body=GiftOrderQuery,responses((status=200,body=crate::orders::OrderReadResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
@@ -111,6 +124,7 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
             .route(web::delete().to(release_read)),
     )
     .route("/valuations/gift", web::post().to(gift_valuation))
+    .route("/valuations/query", web::post().to(target_valuation))
     .service(
         web::resource("/media/{kind}/{id}/{variant:preview}")
             .wrap(actix_web::middleware::Compress::default())

@@ -5,7 +5,7 @@ use crate::types::*;
 use market_gifts::*;
 use rust_decimal::Decimal;
 impl Floor {
-    fn metric(&self, present: bool) -> ValuationMetric {
+    pub(crate) fn metric(&self, present: bool) -> ValuationMetric {
         if !present {
             return issue(
                 ValuationIssueCode::MissingTrait,

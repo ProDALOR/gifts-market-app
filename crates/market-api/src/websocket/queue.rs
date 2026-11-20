@@ -5,6 +5,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(super) enum Payload {
+    TargetValuation(Arc<market_valuation::TargetValuationReport>),
     Result(Arc<market_valuation::GiftFloorMark>),
     Orders(Arc<str>),
     MarketStatus(crate::models::MarketStatus),
@@ -19,6 +20,13 @@ impl Payload {
     }
     pub fn text(&self, id: &str) -> String {
         match self {
+            Self::TargetValuation(report) => serde_json::to_string(&ServerFrame::Result(
+                crate::models::ApiResult::TargetValuation {
+                    id: id.into(),
+                    data: crate::valuation::TargetValuationResponse::from(&**report),
+                },
+            ))
+            .expect("target valuation serializes"),
             Self::Result(mark) => {
                 serde_json::to_string(&ServerFrame::Result(crate::models::ApiResult::Valuation {
                     id: id.into(),

@@ -101,6 +101,7 @@ impl From<market_valuation::ValuationError> for ApiError {
             V::NotEnoughData => ErrorCode::NotEnoughData,
             V::InvalidBaseline => ErrorCode::InvalidBaseline,
             V::UnsupportedStrategy => ErrorCode::UnsupportedStrategy,
+            V::UnsupportedTarget => ErrorCode::InvalidQuery,
         };
         let message = if matches!(code, ErrorCode::Unavailable) {
             "Market data service is unavailable".into()

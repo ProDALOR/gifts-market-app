@@ -16,6 +16,40 @@ impl CatalogTrait {
     }
 }
 impl ValuationSnapshot {
+    pub fn require_collection(&self, collection: &CollectionId) -> Result<()> {
+        let item = self.entity(w::EntityKind::ItemType, collection)?;
+        if matches!(item, Some(w::entity::Entity::ItemType(ref item)) if market_gifts_hub::is_gift(item))
+        {
+            Ok(())
+        } else {
+            Err(Status::invalid_argument("unknown gift collection"))
+        }
+    }
+    /// Validate one selected trait with direct catalog keys, without loading the trait directory.
+    pub fn require_trait(
+        &self,
+        collection: &CollectionId,
+        kind: CatalogTrait,
+        id: &str,
+    ) -> Result<()> {
+        let Some(w::entity::Entity::ItemType(item)) =
+            self.entity(w::EntityKind::ItemType, collection)?
+        else {
+            return Err(Status::invalid_argument("unknown gift collection"));
+        };
+        let rules = market_gifts_hub::CollectionChoices::new(&item)
+            .map_err(|e| Status::unavailable(e.to_string()))?;
+        if let Some(w::entity::Entity::AttributeOption(option)) =
+            self.entity(w::EntityKind::AttributeOption, id)?
+            && option.attribute_id == kind.attribute()
+            && rules.accepts(&option)
+        {
+            return Ok(());
+        }
+        Err(Status::invalid_argument(
+            "trait does not belong to the selected collection or kind",
+        ))
+    }
     #[cfg(feature = "portfolio")]
     pub fn resolve_models(&self, lookups: Vec<ModelLookup>) -> Result<Vec<ResolvedModel>> {
         self.check_cancelled()?;

@@ -1,4 +1,6 @@
 use actix_web::{App, test, web};
+#[path = "market_api/target_valuations.rs"]
+mod target_valuations;
 use futures_util::{SinkExt, StreamExt};
 use market_actors::{MarketDataHandle, MarketDataService};
 #[cfg(feature = "miniapp")]
@@ -1650,7 +1652,7 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
     socket.close(None).await.unwrap();
     api_stop.cancel();
     job.await.unwrap().unwrap();
-    for route in ["/portfolio/value", "/valuations/query"] {
+    for route in ["/portfolio/value"] {
         assert_eq!(
             test::call_service(
                 &app,
@@ -1750,7 +1752,7 @@ async fn gift_valuation_validates_links_reports_unknown_and_conflicting_gifts_an
     let schema: serde_json::Value =
         serde_json::from_str(&market_api::schema_json().unwrap()).unwrap();
     assert!(schema["paths"].get("/portfolio/value").is_none());
-    assert!(schema["paths"].get("/valuations/query").is_none());
+    assert!(schema["paths"].get("/valuations/query").is_some());
     assert!(
         schema["paths"]["/valuations/gift"]["post"]["responses"]
             .get("404")

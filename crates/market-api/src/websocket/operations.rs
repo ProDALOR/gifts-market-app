@@ -37,6 +37,10 @@ pub(super) async fn run(
     if let Operation::Request(request) = query {
         let work = async {
             match request {
+                crate::models::ApiRequest::TargetValuation { params, .. } => market
+                    .target_valuation(*params)
+                    .await
+                    .map(Payload::TargetValuation),
                 crate::models::ApiRequest::Orders { id, params } => {
                     let read = market.query_orders(*params).await?;
                     market

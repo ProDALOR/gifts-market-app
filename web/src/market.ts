@@ -11,6 +11,15 @@ export type GiftValuationRequest =
   components["schemas"]["GiftValuationRequest"];
 export type GiftValuationResponse =
   components["schemas"]["GiftValuationResponse"];
+export type TargetValuationRequest =
+  components["schemas"]["TargetValuationRequest"];
+export type TargetValuationResponse =
+  components["schemas"]["TargetValuationResponse"];
+export const targetValuation = (
+  query: TargetValuationRequest,
+  signal?: AbortSignal,
+): Promise<TargetValuationResponse> =>
+  liveSocket.request({ method: "valuation.query", params: query }, signal);
 /** Common GUI envelope; strategy-specific calculation fields stay in the typed API result. */
 export type ValuationView = Pick<
   GiftValuationResponse,

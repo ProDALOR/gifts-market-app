@@ -8,7 +8,7 @@ use market_hub_protocol::wire as w;
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-fn ask(
+pub(crate) fn ask(
     id: &str,
     model: &str,
     backdrop: &str,
@@ -58,7 +58,7 @@ fn ask(
         ..Default::default()
     }))
 }
-fn book() -> (tempfile::TempDir, market_replica::ReplicaWriter) {
+pub(crate) fn book() -> (tempfile::TempDir, market_replica::ReplicaWriter) {
     let (dir, mut writer) = fixture();
     let mut changes = vec![w::Change {
         change: Some(w::change::Change::Remove(w::Removal {
@@ -166,7 +166,7 @@ fn request() -> GiftValuationRequest {
         currency_id: "GRAM".into(),
     }
 }
-async fn stop(data: MarketDataService, task: Task) {
+async fn stop(data: MarketDataService, task: ValuationTask) {
     task.shutdown().await.unwrap();
     let stop = CancellationToken::new();
     stop.cancel();
@@ -184,7 +184,7 @@ async fn unified_report_uses_combination_floor_and_full_precision_then_reacts_to
         .unwrap();
     let first = handle.gift(request()).await.unwrap();
     assert_eq!(first.revision, "initial");
-    assert_eq!(handle.metadata().id, first.strategy);
+    assert_eq!(handle.gift_metadata().id, first.strategy);
     assert_eq!(first.collection_floor.value().unwrap().as_str(), "3");
     assert_eq!(first.model_floor.value().unwrap().as_str(), "10");
     assert_eq!(first.backdrop_floor.value().unwrap().as_str(), "11");

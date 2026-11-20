@@ -1,0 +1,91 @@
+.target-values-trigger {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  margin-top: var(--control-gap);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-weight: 600;
+  font-size: 12px;
+}
+.target-values[open] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.target-values > .modal-heading {
+  position: relative;
+  flex: none;
+}
+.target-values > .valuation-popup-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.target-values label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 12px;
+  min-width: 0;
+}
+.target-values select,
+.target-values input {
+  width: 100%;
+  max-width: 100%;
+}
+.target-values fieldset {
+  min-width: 0;
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.target-values legend {
+  padding: 0 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.target-values .target-strategy {
+  display: flex;
+  align-items: start;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.target-strategy input {
+  width: 16px;
+  flex: none;
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+.target-strategy strong,
+.target-strategy small {
+  display: block;
+}
+.target-strategy strong {
+  color: var(--ink);
+}
+.target-strategy small {
+  margin-top: 3px;
+  font-size: 11px;
+}
+.target-results {
+  scroll-margin-top: 12px;
+  margin-top: 18px;
+  display: grid;
+  gap: 12px;
+}
+.target-results article {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.target-results h3 {
+  font-size: 14px;
+  margin-bottom: 10px;
+}

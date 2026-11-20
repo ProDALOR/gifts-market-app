@@ -18,7 +18,7 @@ const CACHE_LIMIT: usize = 8;
 const MAX_AGE: Duration = Duration::from_secs(300);
 
 #[derive(Default, Clone)]
-pub(super) struct Floor {
+pub(crate) struct Floor {
     pub price: Option<Amount>,
     evidence: FloorEvidence,
     identities: BTreeSet<Arc<GiftId>>,
@@ -53,7 +53,7 @@ impl Floor {
         }
     }
 }
-pub(super) struct Statistics {
+pub(crate) struct Statistics {
     pub known_models: BTreeSet<ModelId>,
     pub known_backdrops: BTreeSet<BackdropId>,
     pub collection: Floor,
@@ -65,6 +65,21 @@ pub(super) struct Statistics {
     expires_at_ms: i64,
 }
 impl Statistics {
+    pub(crate) fn selection(
+        &self,
+        model: Option<&ModelId>,
+        backdrop: Option<&BackdropId>,
+    ) -> (crate::ValuationMetric, FloorEvidence) {
+        let floor = match (model, backdrop) {
+            (None, None) => Some(&self.collection),
+            (Some(model), None) => self.models.get(model),
+            (None, Some(backdrop)) => self.backdrops.get(backdrop),
+            (Some(model), Some(backdrop)) => self.pairs.get(&(model.clone(), backdrop.clone())),
+        };
+        let empty = Floor::default();
+        let floor = floor.unwrap_or(&empty);
+        (floor.metric(true), floor.evidence())
+    }
     pub fn current(&self, snapshot: &ValuationSnapshot) -> Result<bool, ValuationError> {
         Ok(self.created.elapsed() < MAX_AGE
             && snapshot.dependencies_current(&self.dependencies)?
@@ -171,7 +186,7 @@ struct CachedBook {
     used: Instant,
 }
 #[derive(Default)]
-pub(super) struct BookCache(Mutex<HashMap<BookScope, CachedBook>>);
+pub(crate) struct BookCache(Mutex<HashMap<BookScope, CachedBook>>);
 impl BookCache {
     fn lock(
         &self,

@@ -140,7 +140,7 @@ fn row_ids(result: &serde_json::Value) -> Vec<String> {
 }
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-async fn frame(socket: &mut Socket, id: &str, kind: &str) -> serde_json::Value {
+pub(super) async fn frame(socket: &mut Socket, id: &str, kind: &str) -> serde_json::Value {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if let tokio_tungstenite::tungstenite::Message::Text(text) =
@@ -159,7 +159,7 @@ async fn frame(socket: &mut Socket, id: &str, kind: &str) -> serde_json::Value {
     .await
     .unwrap()
 }
-async fn send(socket: &mut Socket, body: serde_json::Value) {
+pub(super) async fn send(socket: &mut Socket, body: serde_json::Value) {
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
             body.to_string().into(),

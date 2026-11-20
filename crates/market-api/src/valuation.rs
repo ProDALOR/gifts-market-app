@@ -2,6 +2,39 @@
 use serde::Serialize;
 use utoipa::ToSchema;
 #[derive(Debug, Serialize, ToSchema)]
+pub struct TargetValuationResponse<'a> {
+    pub target: &'a market_valuation::ResolvedTarget,
+    pub currency_id: &'a market_gifts::CurrencyId,
+    #[schema(value_type=String,format=DateTime)]
+    pub evaluated_at: jiff::Timestamp,
+    pub stale: bool,
+    pub results: Vec<StrategyOutcomeResponse<'a>>,
+}
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StrategyOutcomeResponse<'a> {
+    #[serde(flatten)]
+    pub result: &'a market_valuation::StrategyOutcome,
+    pub display: market_valuation::ValuationDisplay<'a>,
+}
+impl<'a> From<&'a market_valuation::TargetValuationReport> for TargetValuationResponse<'a> {
+    fn from(report: &'a market_valuation::TargetValuationReport) -> Self {
+        Self {
+            target: &report.target,
+            currency_id: &report.currency_id,
+            evaluated_at: report.evaluated_at,
+            stale: report.stale,
+            results: report
+                .results
+                .iter()
+                .map(|result| StrategyOutcomeResponse {
+                    result,
+                    display: result.display(&report.currency_id),
+                })
+                .collect(),
+        }
+    }
+}
+#[derive(Debug, Serialize, ToSchema)]
 pub struct GiftValuationResponse<'a> {
     pub strategy: &'a str,
     /// True when market updates were delayed during evaluation.
@@ -32,6 +65,8 @@ pub struct StrategyResponse {
     pub description: &'static str,
     pub documentation_url: String,
     pub documentation_revision: String,
+    pub targets: &'static [market_valuation::ValuationTargetKind],
+    pub requires_period: bool,
 }
 impl From<&market_valuation::StrategyMetadata> for StrategyResponse {
     fn from(metadata: &market_valuation::StrategyMetadata) -> Self {
@@ -39,6 +74,8 @@ impl From<&market_valuation::StrategyMetadata> for StrategyResponse {
             id: metadata.id,
             name: metadata.name,
             description: metadata.description,
+            targets: metadata.targets,
+            requires_period: metadata.requires_period,
             documentation_revision: content_revision(metadata.documentation.as_bytes()),
             documentation_url: format!("/valuations/strategies/{}/documentation", metadata.id),
         }
@@ -117,7 +154,7 @@ fn catalog() -> &'static StrategyCatalog {
     static CATALOG: std::sync::OnceLock<StrategyCatalog> = std::sync::OnceLock::new();
     CATALOG.get_or_init(|| StrategyCatalog::new(market_valuation::strategies()))
 }
-#[utoipa::path(get,path="/valuations/strategies",tag="Valuations",summary="Discover available gift-valuation strategies",description="IDs match the strategy field in gift-valuation responses. Each strategy owns its display name, description and Markdown documentation with LaTeX math. Follow documentation_url to fetch the guide. documentation_revision changes with guide content. Both discovery and documentation support ETag revalidation.",responses((status=200,body=Vec<StrategyResponse>,headers(("ETag"=String,description="Strategy catalog content revision"))),(status=304,description="Strategy catalog is unchanged")))]
+#[utoipa::path(get,path="/valuations/strategies",tag="Valuations",summary="Discover valuation strategies and supported targets",description="IDs match strategy fields in valuation responses. Each entry advertises supported target kinds and whether an explicit execution period is required. Each strategy owns its display name, description and Markdown documentation with LaTeX math. Follow documentation_url to fetch the guide. documentation_revision changes with guide content. Both discovery and documentation support ETag revalidation.",responses((status=200,body=Vec<StrategyResponse>,headers(("ETag"=String,description="Strategy catalog content revision"))),(status=304,description="Strategy catalog is unchanged")))]
 pub(crate) async fn strategies(req: actix_web::HttpRequest) -> actix_web::HttpResponse {
     catalog().index.response(&req)
 }
@@ -153,12 +190,16 @@ mod tests {
                     name: "One",
                     description: "first",
                     documentation,
+                    targets: &[],
+                    requires_period: false,
                 },
                 market_valuation::StrategyMetadata {
                     id: "two",
                     name: "Two",
                     description: "second",
                     documentation: "other guide",
+                    targets: &[],
+                    requires_period: false,
                 },
             ]
         }

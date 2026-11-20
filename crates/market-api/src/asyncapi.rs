@@ -218,6 +218,15 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         _ => return Ok(vec![]),
     };
     let mut examples = vec![json!({"name":name,"payload":value})];
+    if name == "request" {
+        let request = Command::Request(ApiRequest::TargetValuation {
+            id: "target.1".into(),
+            params: Box::new(serde_json::from_value(
+                json!({"target":{"kind":"collection","collection_id":"tg.gift.123"},"currency_id":"GRAM","strategies":["ask_floor","execution_mean","execution_median"],"period":{"from":"2026-01-01T00:00:00Z","until":"2026-02-01T00:00:00Z"}}),
+            )?),
+        });
+        examples.push(json!({"name":"target-valuations","payload":serde_json::to_value(request)?}));
+    }
     if name == "orders.watch" {
         let bid = Command::WatchOrders {
             id: "bids.1".into(),

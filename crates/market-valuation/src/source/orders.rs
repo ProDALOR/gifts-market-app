@@ -24,6 +24,49 @@ pub(super) fn request(scope: &BookScope) -> w::ReadRequest {
     }
 }
 impl ValuationSnapshot {
+    /// Bounded, domain-projected observations for target estimators. The snapshot stays pinned.
+    pub fn valuation_orders(
+        &self,
+        query: &GiftOrderQuery,
+        continuation: String,
+    ) -> Result<Page<GiftOrder>> {
+        self.check_cancelled()?;
+        let mut request = market_gifts_hub::query::compile(query)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        request.page_token = continuation;
+        let page = self
+            .reader
+            .read_checked(
+                request,
+                |_, _| Ok(()),
+                |entity| {
+                    self.check_cancelled()?;
+                    if let Some(w::entity::Entity::Order(order)) = &entity.entity {
+                        if query.source == OrderSource::Asks {
+                            return market_gifts_hub::is_exhausted(order)
+                                .map(|v| !v)
+                                .map_err(|e| Status::data_loss(e.to_string()));
+                        }
+                    }
+                    Ok(true)
+                },
+            )?
+            .page;
+        let data = page
+            .entities
+            .into_iter()
+            .map(|entity| match entity.entity {
+                Some(w::entity::Entity::Order(order)) => {
+                    market_gifts_hub::order(order).map_err(|e| Status::data_loss(e.to_string()))
+                }
+                _ => Err(Status::data_loss("expected a gift observation")),
+            })
+            .collect::<Result<_>>()?;
+        Ok(Page {
+            data,
+            next_page_token: page.next_page_token,
+        })
+    }
     pub(super) fn gifts(
         &self,
         query: GiftOrderQuery,

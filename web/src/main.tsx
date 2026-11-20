@@ -16,6 +16,7 @@ import { TraitPickers } from "./collections/trait-pickers";
 import { TraitPreview } from "./previews/trait-preview";
 import { VenueIcon } from "./ui/icons";
 import { OrderDetails } from "./orderbook/order-details";
+import { TargetValuations } from "./valuation/target-valuations";
 import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
 import { CurrencyPicker, SortPicker } from "./ui/pickers";
@@ -340,6 +341,15 @@ function App({ context }: { context: TelegramContext }) {
             filters={choice.filters}
             reset={resetTraits}
           />
+          {item && (
+            <TargetValuations
+              key={`${item.id}:${choice.currency}`}
+              collection={item}
+              currency={choice.currency}
+              options={options}
+              filters={choice.filters}
+            />
+          )}
           <div className="market-controls">
             <div className="segments" role="group" aria-label="Market view">
               {(["ask", "bid", "executed"] as const).map((mode) => (

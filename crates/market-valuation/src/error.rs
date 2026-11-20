@@ -3,7 +3,9 @@ use crate::{StrategyId, ValuationErrorDetails};
 use market_gifts::CurrencyId;
 use std::sync::Arc;
 use tonic::{Code, Status};
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ValuationErrorCode {
     InvalidQuery,
     RestartRead,
@@ -13,6 +15,7 @@ pub enum ValuationErrorCode {
     NotEnoughData,
     InvalidBaseline,
     UnsupportedStrategy,
+    UnsupportedTarget,
     TimedOut,
 }
 #[derive(Debug, Clone)]
