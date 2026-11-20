@@ -39,7 +39,7 @@ impl ExecutionStatistics {
         let mut budget = market_replica::catalog_read::ScanBudget::default();
         loop {
             budget.page()?;
-            let page = context.snapshot().valuation_orders(&query, token)?;
+            let page = context.orders(&query, token)?;
             scanned += page.data.len();
             if scanned > MAX_OBSERVATIONS {
                 return Err(ValuationError::capacity(

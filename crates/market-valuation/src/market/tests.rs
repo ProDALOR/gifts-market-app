@@ -390,7 +390,7 @@ async fn every_registered_strategy_runs_through_its_typed_input_for_the_same_gif
     let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
         .await
         .unwrap();
-    let ids = crate::strategies()
+    let ids = crate::strategies_for(ValuationTargetKind::Gift, true)
         .map(|metadata| StrategyId::new(metadata.id).unwrap())
         .collect::<Vec<_>>();
     let mut query = request(ValuationTarget::Gift {

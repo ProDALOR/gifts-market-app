@@ -8,11 +8,11 @@ async fn floor_reads_and_watches_share_collection_scoped_snapshots() {
             .configure(configure),
     )
     .await;
-    let query = serde_json::json!({"currency_id":"GRAM","collection_ids":["tg.gift.123"],"details":{"collection_id":"tg.gift.123","pair":null}});
+    let query = serde_json::json!({"currency_id":"GRAM","strategies":["catalog_floor"],"target":{"kind":"catalog","collection_ids":["tg.gift.123"],"details":{"collection_id":"tg.gift.123","pair":null}}});
     let response = test::call_service(
         &app,
         test::TestRequest::post()
-            .uri("/floors/query")
+            .uri("/valuations/query")
             .set_json(&query)
             .to_request(),
     )
@@ -21,7 +21,7 @@ async fn floor_reads_and_watches_share_collection_scoped_snapshots() {
     assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
     let rest: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(
-        rest["collections"][0]["floor"]["price"]["value"],
+        rest["results"][0]["data"]["collections"][0]["floor"]["price"]["value"],
         "1.000000001"
     );
     for field in ["revision", "sync", "cursor"] {
@@ -39,17 +39,18 @@ async fn floor_reads_and_watches_share_collection_scoped_snapshots() {
         .unwrap();
     bid_filters::send(
         &mut socket,
-        serde_json::json!({"type":"floors.watch","id":"prices","params":query}),
+        serde_json::json!({"type":"valuation.watch","id":"prices","params":query}),
     )
     .await;
-    let ws = bid_filters::frame(&mut socket, "prices", "floors.snapshot").await["data"].clone();
-    assert!(rest.get("evaluated_at").is_none());
-    assert!(rest["collections"][0]["evaluated_at"].is_string());
-    assert_eq!(rest, ws);
+    let ws = bid_filters::frame(&mut socket, "prices", "valuation.snapshot").await["data"].clone();
+    assert!(rest.get("evaluated_at").unwrap().is_string());
+    assert!(rest["results"][0]["data"]["collections"][0]["evaluated_at"].is_string());
+    assert_eq!(rest["target"], ws["target"]);
+    assert_eq!(rest["results"], ws["results"]);
     peer.page.send_replace(page("2"));
-    let changed = bid_filters::frame(&mut socket, "prices", "floors.snapshot").await;
+    let changed = bid_filters::frame(&mut socket, "prices", "valuation.snapshot").await;
     assert_eq!(
-        changed["data"]["collections"][0]["floor"]["price"]["value"],
+        changed["data"]["results"][0]["data"]["collections"][0]["floor"]["price"]["value"],
         "2"
     );
     bid_filters::send(
@@ -58,12 +59,12 @@ async fn floor_reads_and_watches_share_collection_scoped_snapshots() {
     )
     .await;
     let mut invalid = query.clone();
-    invalid["collection_ids"] = serde_json::json!(["tg.gift.123", "tg.gift.123"]);
+    invalid["target"]["collection_ids"] = serde_json::json!(["tg.gift.123", "tg.gift.123"]);
     assert_eq!(
         test::call_service(
             &app,
             test::TestRequest::post()
-                .uri("/floors/query")
+                .uri("/valuations/query")
                 .set_json(&invalid)
                 .to_request()
         )
@@ -73,7 +74,7 @@ async fn floor_reads_and_watches_share_collection_scoped_snapshots() {
     );
     bid_filters::send(
         &mut socket,
-        serde_json::json!({"type":"floors.watch","id":"prices","params":invalid}),
+        serde_json::json!({"type":"valuation.watch","id":"prices","params":invalid}),
     )
     .await;
     assert_eq!(
@@ -169,6 +170,50 @@ async fn target_strategies_share_rest_and_websocket_results_and_keep_partial_fai
     rest.as_object_mut().unwrap().remove("evaluated_at");
     ws.as_object_mut().unwrap().remove("evaluated_at");
     assert_eq!(rest, ws);
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"valuation.watch","id":"target-live","params":q}),
+    )
+    .await;
+    let mut initial =
+        bid_filters::frame(&mut socket, "target-live", "valuation.snapshot").await["data"].clone();
+    initial.as_object_mut().unwrap().remove("evaluated_at");
+    assert_eq!(rest, initial);
+    let mut changed = peer.page.borrow().clone();
+    changed.cursor = "history-backfill".into();
+    let mut execution = base;
+    execution.id = "execution-3".into();
+    execution.item_id = Some("executed-gift-3".into());
+    execution.mode = 3;
+    execution.price = "100".into();
+    execution.executed_at_ms = Some(
+        "2026-01-15T00:00:00Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_millisecond(),
+    );
+    changed.entities.push(w::Entity {
+        entity: Some(w::entity::Entity::Order(execution)),
+    });
+    peer.page.send_replace(changed);
+    let updated = bid_filters::frame(&mut socket, "target-live", "valuation.snapshot").await;
+    assert_eq!(
+        updated["data"]["results"][1]["data"]["price"]["value"],
+        "40"
+    );
+    assert_eq!(
+        updated["data"]["results"][2]["data"]["price"]["value"],
+        "25"
+    );
+    assert_eq!(
+        updated["data"]["results"][3]["error"]["code"],
+        "unsupported_target"
+    );
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"cancel","id":"target-live"}),
+    )
+    .await;
     let mut invalid = q.clone();
     invalid.as_object_mut().unwrap().remove("period");
     assert_eq!(

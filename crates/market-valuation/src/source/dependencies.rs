@@ -77,6 +77,42 @@ impl ValuationSnapshot {
         kinds: &[CatalogTrait],
         lookups: &[ModelLookup],
     ) -> Result<ReadDependencies> {
+        self.dependencies_with_books(scopes, currency, kinds, lookups, true)
+    }
+    pub(crate) fn target_dependencies(
+        &self,
+        scopes: impl IntoIterator<Item = BookScope>,
+        currency: &CurrencyId,
+        lookup: Option<&GiftLookup>,
+    ) -> Result<ReadDependencies> {
+        self.dependencies_with_books(
+            scopes,
+            currency,
+            &[
+                CatalogTrait::Model,
+                CatalogTrait::Backdrop,
+                CatalogTrait::Pattern,
+            ],
+            &[],
+            lookup.is_some(),
+        )
+        .and_then(|mut dependencies| {
+            if matches!(lookup, Some(GiftLookup::Slug(_))) {
+                Arc::get_mut(&mut dependencies.0)
+                    .expect("new dependencies")
+                    .collections = Some(self.reader.metadata_revision(&[w::EntityKind::ItemType])?);
+            }
+            Ok(dependencies)
+        })
+    }
+    fn dependencies_with_books(
+        &self,
+        scopes: impl IntoIterator<Item = BookScope>,
+        currency: &CurrencyId,
+        kinds: &[CatalogTrait],
+        lookups: &[ModelLookup],
+        include_books: bool,
+    ) -> Result<ReadDependencies> {
         self.check_cancelled()?;
         let scopes = scopes.into_iter().collect::<BTreeSet<_>>();
         let mut keys = vec![w::Key {
@@ -88,10 +124,12 @@ impl ValuationSnapshot {
         let mut books = Vec::new();
         for scope in scopes {
             self.check_cancelled()?;
-            books.push((
-                scope.clone(),
-                self.reader.read_revision(&super::orders::request(&scope))?,
-            ));
+            if include_books {
+                books.push((
+                    scope.clone(),
+                    self.reader.read_revision(&super::orders::request(&scope))?,
+                ));
+            }
             keys.push(w::Key {
                 kind: w::EntityKind::ItemType as i32,
                 id: scope.collection.to_string(),
@@ -179,5 +217,31 @@ impl ValuationSource {
         }
         *deps.checked.lock().unwrap() = stamp;
         Ok(true)
+    }
+}
+
+/// Opaque internal observation dependency; it never appears in public reports.
+#[derive(Clone)]
+pub(crate) struct OrderDependency {
+    request: w::ReadRequest,
+    revision: ReadRevision,
+}
+impl OrderDependency {
+    pub(crate) fn same_query(&self, other: &Self) -> bool {
+        self.request == other.request
+    }
+    pub(crate) fn current(&self, snapshot: &ValuationSnapshot) -> Result<bool> {
+        snapshot.check_cancelled()?;
+        Ok(self
+            .revision
+            .same_data(&snapshot.reader.read_revision(&self.request)?))
+    }
+}
+impl ValuationSnapshot {
+    pub(crate) fn order_dependency(&self, query: &GiftOrderQuery) -> Result<OrderDependency> {
+        let request = market_gifts_hub::query::compile(query)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let revision = self.reader.read_revision(&request)?;
+        Ok(OrderDependency { request, revision })
     }
 }

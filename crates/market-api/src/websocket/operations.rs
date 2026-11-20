@@ -7,7 +7,7 @@ use crate::{MarketApi, config::WebSocketLimits, error::ApiError};
 use market_actors::DataUpdate;
 use tokio_util::sync::CancellationToken;
 pub(super) enum Operation {
-    Floors(Box<market_valuation::FloorQuery>),
+    Valuation(Box<market_valuation::ValuationQuery>),
     Request(crate::models::ApiRequest),
     Orders(Box<market_gifts::GiftOrderQuery>),
     Catalog(Vec<market_gifts::CollectionId>),
@@ -35,8 +35,8 @@ pub(super) async fn run(
     limits: WebSocketLimits,
 ) -> End {
     let _cancel_on_exit = cancel.clone().drop_guard();
-    if let Operation::Floors(request) = query {
-        let setup = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=tokio::time::timeout(limits.setup_timeout,market.watch_floors(*request))=>result.unwrap_or_else(|_|Err(ApiError::timed_out("Market values setup timed out")))};
+    if let Operation::Valuation(request) = query {
+        let setup = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=tokio::time::timeout(limits.setup_timeout,market.watch_valuation(*request))=>result.unwrap_or_else(|_|Err(ApiError::timed_out("Valuation watch setup timed out")))};
         let mut watch = match setup {
             Ok(watch) => watch,
             Err(error) => {
@@ -50,7 +50,7 @@ pub(super) async fn run(
             if let Err(error) = tx
                 .send(
                     Scope::Operation(key.clone()),
-                    Payload::Floors(value),
+                    Payload::ValuationSnapshot(value),
                     false,
                     &cancel,
                 )
@@ -101,7 +101,7 @@ pub(super) async fn run(
     }
     let setup = async {
         match query {
-            Operation::Floors(_) => unreachable!("values handled above"),
+            Operation::Valuation(_) => unreachable!("values handled above"),
             Operation::Request(_) => unreachable!("requests handled above"),
             Operation::Orders(query) => market.watch_orders(*query).await,
             Operation::Catalog(ids) => market.subscribe_catalog(ids).await,

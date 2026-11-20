@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FloorsController } from "../src/valuation/floors-controller.ts";
 import type { LiveFrame, SubscriptionCommand } from "../src/ws-protocol.ts";
+import { catalogFloors } from "../src/valuation/catalog-floors.ts";
 import { parseFrame } from "../src/ws-protocol.ts";
 import {
   giftBasisChanged,
@@ -112,34 +113,51 @@ function fixture() {
     price = "3",
     times: Record<string, string> = {},
   ) => {
-    assert.equal(command.type, "floors.watch");
-    if (command.type !== "floors.watch") throw Error();
+    assert.equal(command.type, "valuation.watch");
+    if (command.type !== "valuation.watch") throw Error();
     const floor = {
       price: { value: price },
       evidence: { listings: 3, gifts: 3 },
     };
-    const details = command.params.details;
+    const scope = command.params.target;
+    if (scope.kind !== "catalog") throw Error();
+    const details = scope.details;
+    const resolved = structuredClone(scope);
+    if (resolved.details && resolved.details.pair == null)
+      delete resolved.details.pair;
     const frame = {
-      type: "floors.snapshot" as const,
+      type: "valuation.snapshot" as const,
       id: command.id,
       data: {
         currency_id: command.params.currency_id,
         stale: false,
-        collections: command.params.collection_ids.map((collection_id) => ({
-          collection_id,
-          evaluated_at:
-            times[collection_id] ?? "2026-11-20T12:00:00.000000001Z",
-          floor,
-          ...(details?.collection_id === collection_id
-            ? {
-                traits: {
-                  models: { model: floor },
-                  backdrops: { backdrop: floor },
-                  ...(details.pair ? { pair: { ...details.pair, floor } } : {}),
-                },
-              }
-            : {}),
-        })),
+        target: resolved,
+        evaluated_at: "2026-11-20T12:00:00Z",
+        results: [
+          {
+            strategy: "catalog_floor" as const,
+            display: { fields: [], note: "Current asks" },
+            data: {
+              collections: scope.collection_ids.map((collection_id) => ({
+                collection_id,
+                evaluated_at:
+                  times[collection_id] ?? "2026-11-20T12:00:00.000000001Z",
+                floor,
+                ...(details?.collection_id === collection_id
+                  ? {
+                      traits: {
+                        models: { model: floor },
+                        backdrops: { backdrop: floor },
+                        ...(details.pair
+                          ? { pair: { ...details.pair, floor } }
+                          : {}),
+                      },
+                    }
+                  : {}),
+              })),
+            },
+          },
+        ],
       },
     };
     receive(frame, command);
@@ -172,9 +190,17 @@ test("visible floors are batched once and scope changes reject old frames before
     await settle();
     assert.equal(f.commands.length, 1);
     const first = f.commands[0];
-    assert.equal(first.type, "floors.watch");
-    if (first.type !== "floors.watch") return;
-    assert.equal(first.params.collection_ids.length, 8);
+    assert.equal(first.type, "valuation.watch");
+    if (first.type !== "valuation.watch") return;
+    assert.equal(
+      (
+        first.params.target as Extract<
+          typeof first.params.target,
+          { kind: "catalog" }
+        >
+      ).collection_ids.length,
+      8,
+    );
     f.emit();
     assert.equal(
       f.controller.getSnapshot().entries.get("a")?.floor.price.value,
@@ -258,20 +284,22 @@ test("market floor frames reject duplicate scopes, impossible evidence and mixed
     const frame = f.emit();
     assert.ok(parseFrame(JSON.stringify(frame)));
     const invalid = structuredClone(frame);
-    invalid.data.collections.push(invalid.data.collections[0]);
-    assert.throws(() => parseFrame(JSON.stringify(invalid)));
+    invalid.data.results[0].data.collections.push(
+      invalid.data.results[0].data.collections[0],
+    );
+    assert.equal(catalogFloors(invalid.data.results[0].data), false);
     for (const metric of [
       { value: "NaN" },
       { value: "-1" },
       { value: "1", error: { code: "not_enough_data", message: "empty" } },
     ]) {
       const copy: any = structuredClone(frame);
-      copy.data.collections[0].floor.price = metric;
-      assert.throws(() => parseFrame(JSON.stringify(copy)));
+      copy.data.results[0].data.collections[0].floor.price = metric;
+      assert.equal(catalogFloors(copy.data.results[0].data), false);
     }
     const impossible = structuredClone(frame);
-    impossible.data.collections[0].floor.evidence.gifts = 4;
-    assert.throws(() => parseFrame(JSON.stringify(impossible)));
+    impossible.data.results[0].data.collections[0].floor.evidence.gifts = 4;
+    assert.equal(catalogFloors(impossible.data.results[0].data), false);
   } finally {
     f.controller.close();
   }

@@ -54,7 +54,7 @@ fn catalog_response<T, U: serde::Serialize>(
         response.json(present(snapshot.data))
     }
 }
-#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Value a collection, trait selection or gift with explicit strategies",description="Choose explicit strategy IDs from /valuations/strategies using their input contracts, supported targets and period requirements. Send target/lookup values; the service resolves domain facts once in one pinned read. Unknown or repeated IDs and invalid request options fail the request. Unsupported targets and calculation failures are reported independently per strategy; missing evidence remains a typed metric issue. Every result includes its strategy-owned display projection. Follow discovery documentation links for formulas and sample requirements. HTTP and WebSocket use the same handler, read budgets and cancellation.",request_body=market_valuation::ValuationQuery,responses((status=200,body=crate::valuation::ValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Evaluate explicit valuation strategies",description="Choose explicit strategy IDs from /valuations/strategies using their input contracts, supported targets and period requirements. Send a catalog selection, collection/trait selection or gift lookup; the service resolves domain facts once in one pinned read. The same query can be subscribed with valuation.watch. Unknown or repeated IDs and invalid request options fail the request. Unsupported targets and calculation failures are reported independently per strategy; missing evidence remains a typed metric issue. Every result includes its strategy-owned display projection. Follow discovery documentation links for formulas and sample requirements. HTTP and WebSocket use the same handler, read budgets and cancellation.",request_body=market_valuation::ValuationQuery,responses((status=200,body=crate::valuation::ValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn valuation(
     state: web::Data<MarketApi>,
     query: web::Json<market_valuation::ValuationQuery>,
@@ -64,16 +64,6 @@ pub(crate) async fn valuation(
         .insert_header((header::CACHE_CONTROL, "no-store"))
         .json(crate::valuation::ValuationResponse::from(report.as_ref())))
 }
-#[utoipa::path(post,path="/floors/query",tag="Valuations",summary="Read batched current collection and trait ask floors",description="Batches up to eight collection/currency scopes into one pinned read. details includes all model/backdrop floors and an optional requested pair for one selected collection. These are current asks across venues, regardless of the orders tab or its filters. WebSocket floors.watch keeps the same projection current with scoped updates and listing expiry.",request_body=market_valuation::FloorQuery,responses((status=200,body=market_valuation::FloorReport),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub(crate) async fn floors(
-    state: web::Data<MarketApi>,
-    query: web::Json<market_valuation::FloorQuery>,
-) -> Result<HttpResponse> {
-    Ok(HttpResponse::Ok()
-        .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(state.floors(query.into_inner()).await?.as_ref()))
-}
-
 #[utoipa::path(post,path="/orders/query",tag="Orders",summary="Read a latest or frozen ordered slice",description="Latest is the default and retains no view. Set view.kind to snapshot to open or reuse a snapshot lease. Ordering keys are portable across latest, frozen and WebSocket reads. The server enforces read budgets. Expired leases return restart_read.",request_body=GiftOrderQuery,responses((status=200,body=crate::orders::OrderReadResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn read_orders(
     state: web::Data<MarketApi>,
@@ -120,7 +110,6 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
             .route(web::delete().to(release_read)),
     )
     .route("/valuations/query", web::post().to(valuation))
-    .route("/floors/query", web::post().to(floors))
     .service(
         web::resource("/media/{kind}/{id}/{variant:preview}")
             .wrap(actix_web::middleware::Compress::default())

@@ -367,8 +367,8 @@ export class LiveSocket {
       }
       if (
         value.type === "result" ||
-        (value.type === "floors.snapshot" &&
-          operation.command.type !== "floors.watch") ||
+        (value.type === "valuation.snapshot" &&
+          operation.command.type !== "valuation.watch") ||
         (value.type === "catalog.versions" &&
           operation.command.type !== "catalog.watch") ||
         ((value.type === "orders.snapshot" ||

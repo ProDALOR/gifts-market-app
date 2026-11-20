@@ -1,20 +1,13 @@
-use crate::{floor_projection::FloorRead, source::ValuationSource, *};
+use crate::{source::ValuationSource, *};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
-pub(crate) enum Work {
-    Query(crate::market::PreparedQuery),
-    Floors {
-        request: FloorQuery,
-        previous: Option<Arc<FloorRead>>,
-    },
-}
-pub(crate) enum Output {
-    Query(Arc<ValuationReport>),
-    Floors(Arc<FloorRead>),
+pub(crate) struct Work {
+    pub request: crate::market::PreparedQuery,
+    pub previous: Option<Arc<crate::market::ValuationRead>>,
 }
 #[derive(Clone)]
 pub struct ValuationHandle {
-    native: Handle<Work, Output, ValuationError>,
+    native: Handle<Work, Arc<crate::market::ValuationRead>, ValuationError>,
     changes: watch::Receiver<u64>,
     watch_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -23,7 +16,7 @@ impl ValuationHandle {
         &self,
         work: Work,
         currency: market_gifts::CurrencyId,
-    ) -> Result<Arc<Mark<Output>>, ValuationError> {
+    ) -> Result<Arc<Mark<Arc<crate::market::ValuationRead>>>, ValuationError> {
         crate::client::invoke(
             &self.native,
             work,
@@ -36,43 +29,31 @@ impl ValuationHandle {
         &self,
         request: ValuationQuery,
     ) -> Result<Arc<ValuationReport>, ValuationError> {
-        let request = request.prepare()?;
-        let currency = request.currency().clone();
-        let result = self.invoke(Work::Query(request), currency).await?;
-        match &result.data {
-            Output::Query(report) => Ok(report.clone()),
-            _ => Err(ValuationError::unavailable("Unexpected valuation output")),
-        }
+        Ok(self.read(request.prepare()?, None).await?.report.clone())
     }
-    async fn floor_read(
+    async fn read(
         &self,
-        request: FloorQuery,
-        previous: Option<Arc<FloorRead>>,
-    ) -> Result<Arc<FloorRead>, ValuationError> {
-        request.validate()?;
-        let currency = request.currency_id.clone();
-        let result = self
-            .invoke(Work::Floors { request, previous }, currency)
-            .await?;
-        match &result.data {
-            Output::Floors(values) => Ok(values.clone()),
-            _ => Err(ValuationError::unavailable(
-                "Unexpected market values output",
-            )),
-        }
+        request: crate::market::PreparedQuery,
+        previous: Option<Arc<crate::market::ValuationRead>>,
+    ) -> Result<Arc<crate::market::ValuationRead>, ValuationError> {
+        let currency = request.currency().clone();
+        Ok(self
+            .invoke(Work { request, previous }, currency)
+            .await?
+            .data
+            .clone())
     }
-    pub async fn floors(&self, request: FloorQuery) -> Result<Arc<FloorReport>, ValuationError> {
-        Ok(self.floor_read(request, None).await?.values.clone())
-    }
-    pub async fn watch_floors(&self, request: FloorQuery) -> Result<FloorWatch, ValuationError> {
+    pub async fn watch(&self, request: ValuationQuery) -> Result<ValuationWatch, ValuationError> {
+        let request = request.prepare()?;
         let permit = self
             .watch_slots
             .clone()
             .try_acquire_owned()
-            .map_err(|_| ValuationError::capacity("Market values watch capacity reached"))?;
+            .map_err(|_| ValuationError::capacity("Valuation watch capacity reached"))?;
+        // Listen before the initial admitted read, retaining changes during initialization.
         let changes = self.changes.clone();
-        let current = self.floor_read(request.clone(), None).await?;
-        Ok(FloorWatch {
+        let current = self.read(request.clone(), None).await?;
+        Ok(ValuationWatch {
             handle: self.clone(),
             request,
             current,
@@ -113,36 +94,36 @@ impl ValuationHandle {
     }
 }
 /// Pull-based watch: dropping it or its pending next() releases all work through normal cancellation.
-pub struct FloorWatch {
+pub struct ValuationWatch {
     handle: ValuationHandle,
-    request: FloorQuery,
-    current: Arc<FloorRead>,
+    request: crate::market::PreparedQuery,
+    current: Arc<crate::market::ValuationRead>,
     changes: watch::Receiver<u64>,
     dirty: bool,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
-impl FloorWatch {
-    pub fn current(&self) -> Arc<FloorReport> {
-        self.current.values.clone()
+impl ValuationWatch {
+    pub fn current(&self) -> Arc<ValuationReport> {
+        self.current.report.clone()
     }
-    pub async fn changed(&mut self) -> Result<Arc<FloorReport>, ValuationError> {
+    pub async fn changed(&mut self) -> Result<Arc<ValuationReport>, ValuationError> {
         loop {
             if !self.dirty {
                 tokio::select! {
-                    _ = self.handle.native.closed() => return Err(ValuationError::unavailable("Market values service stopped")),
+                    _ = self.handle.native.closed() => return Err(ValuationError::unavailable("Valuation service stopped")),
                     _ = tokio::time::sleep_until(self.current.deadline) => {},
-                    changed = self.changes.changed() => changed.map_err(|_|ValuationError::unavailable("Market values source closed"))?,
+                    changed = self.changes.changed() => changed.map_err(|_|ValuationError::unavailable("Valuation source closed"))?,
                 }
                 // Retain this across cancellation of changed(), including its debounce/read.
                 self.dirty = true;
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_millis(200)) => {},
-                    _ = self.handle.native.closed() => return Err(ValuationError::unavailable("Market values service stopped")),
+                    _ = self.handle.native.closed() => return Err(ValuationError::unavailable("Valuation service stopped")),
                 }
             }
             let next = self
                 .handle
-                .floor_read(self.request.clone(), Some(self.current.clone()))
+                .read(self.request.clone(), Some(self.current.clone()))
                 .await?;
             self.dirty = false;
             if Arc::ptr_eq(&next, &self.current) {

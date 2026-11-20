@@ -15,6 +15,7 @@ import type {
 } from "../market";
 import { useCollectionFloors } from "./floors";
 import { compatibleStrategies, strategyClient } from "./strategies";
+import { sameCriteria } from "./targets.ts";
 
 /** One request/response model for concrete gifts and complete bid conditions. */
 export function useOrderValuation(order: Order) {
@@ -92,15 +93,14 @@ export function useOrderValuation(order: Order) {
       stop.signal.throwIfAborted();
       const resolved = report.target;
       const matches =
+        resolved.kind !== "catalog" &&
         (resolved.kind === "gift"
           ? resolved.gift.collection_id
           : resolved.collection_id) === order.book.collection_id &&
         (criteria
           ? resolved.kind === "criteria" &&
-            JSON.stringify(resolved.criteria) ===
-              JSON.stringify(
-                target.kind === "criteria" ? target.criteria : undefined,
-              )
+            target.kind === "criteria" &&
+            sameCriteria(resolved.criteria, target.criteria)
           : resolved.kind === "gift" &&
             resolved.gift.id === gift?.id &&
             resolved.gift.number === gift?.number);

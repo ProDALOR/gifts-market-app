@@ -4,7 +4,7 @@ export type RequestCall = components["schemas"]["ApiRequest"];
 export type RequestResult = components["schemas"]["ApiResult"];
 export type SubscriptionCommand = Extract<
   components["schemas"]["Command"],
-  { type: "orders.watch" | "catalog.watch" | "floors.watch" }
+  { type: "orders.watch" | "catalog.watch" | "valuation.watch" }
 >;
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -44,10 +44,30 @@ const giftFacts = (value: unknown) =>
 const gift = (value: unknown) =>
   giftFacts(value) && record(value) && text(value.collection_id);
 const valuationTarget = (value: unknown) => {
-  if (!record(value) || (value.kind !== "gift" && !text(value.collection_id)))
+  if (
+    !record(value) ||
+    (value.kind !== "gift" &&
+      value.kind !== "catalog" &&
+      !text(value.collection_id))
+  )
     return false;
   if (value.kind !== "criteria" && value.criteria != null) return false;
   switch (value.kind) {
+    case "catalog":
+      return (
+        strings(value.collection_ids) &&
+        value.collection_ids.length > 0 &&
+        value.collection_ids.length <= 8 &&
+        new Set(value.collection_ids).size === value.collection_ids.length &&
+        (value.details == null ||
+          (record(value.details) &&
+            text(value.details.collection_id) &&
+            value.collection_ids.includes(value.details.collection_id) &&
+            (value.details.pair == null ||
+              (record(value.details.pair) &&
+                text(value.details.pair.model_id) &&
+                text(value.details.pair.backdrop_id)))))
+      );
     case "collection":
       return (
         value.model_id == null &&
@@ -98,28 +118,33 @@ function criteria(value: unknown) {
     range(value.number)
   );
 }
-function floor(value: unknown) {
-  if (
-    !record(value) ||
-    !record(value.price) ||
-    !record(value.evidence) ||
-    !sequence(value.evidence.listings) ||
-    !sequence(value.evidence.gifts) ||
-    value.evidence.gifts > value.evidence.listings
-  )
-    return false;
-  const price = value.price;
+function valuationReport(d: unknown) {
   return (
-    (text(price.value) &&
-      price.value.length <= 128 &&
-      /^\d+(?:\.\d+)?$/.test(price.value) &&
-      !Object.hasOwn(price, "error")) ||
-    (record(price.error) &&
-      text(price.error.code) &&
-      text(price.error.message) &&
-      !Object.hasOwn(price, "value"))
+    record(d) &&
+    hasNoLegacyFields(d) &&
+    valuationTarget(d.target) &&
+    text(d.currency_id) &&
+    text(d.evaluated_at) &&
+    typeof d.stale === "boolean" &&
+    Array.isArray(d.results) &&
+    d.results.length > 0 &&
+    d.results.length <= 8 &&
+    d.results.every(
+      (row) =>
+        record(row) &&
+        text(row.strategy) &&
+        display(row.display) &&
+        ((record(row.data) && !Object.hasOwn(row, "error")) ||
+          (record(row.error) &&
+            text(row.error.code) &&
+            text(row.error.message) &&
+            !Object.hasOwn(row, "data"))),
+    ) &&
+    new Set(d.results.map((row) => record(row) && row.strategy)).size ===
+      d.results.length
   );
 }
+
 function order(value: unknown) {
   if (
     !record(value) ||
@@ -314,70 +339,16 @@ export function parseFrame(raw: unknown): LiveFrame {
         record(value.versions.collections) &&
         Object.values(value.versions.collections).every(nullableText);
       break;
-    case "floors.snapshot": {
-      const d = value.data;
-      const traits = (value: unknown) =>
-        record(value) &&
-        value.collection_id === undefined &&
-        record(value.models) &&
-        Object.values(value.models).every(floor) &&
-        record(value.backdrops) &&
-        Object.values(value.backdrops).every(floor) &&
-        (value.pair == null ||
-          (record(value.pair) &&
-            text(value.pair.model_id) &&
-            text(value.pair.backdrop_id) &&
-            floor(value.pair.floor)));
-      valid =
-        record(d) &&
-        hasNoLegacyFields(d) &&
-        d.evaluated_at === undefined &&
-        d.traits === undefined &&
-        text(d.currency_id) &&
-        typeof d.stale === "boolean" &&
-        Array.isArray(d.collections) &&
-        d.collections.length > 0 &&
-        d.collections.length <= 8 &&
-        d.collections.every(
-          (row) =>
-            record(row) &&
-            text(row.collection_id) &&
-            text(row.evaluated_at) &&
-            floor(row.floor) &&
-            (row.traits == null || traits(row.traits)),
-        ) &&
-        new Set(d.collections.map((row) => record(row) && row.collection_id))
-          .size === d.collections.length;
+    case "valuation.snapshot":
+      valid = valuationReport(value.data);
       break;
-    }
     case "result": {
       const d = value.data;
       valid =
         value.method === "orders.query"
           ? readResult(value)
           : value.method === "valuation.query"
-            ? record(d) &&
-              hasNoLegacyFields(d) &&
-              valuationTarget(d.target) &&
-              text(d.currency_id) &&
-              text(d.evaluated_at) &&
-              typeof d.stale === "boolean" &&
-              Array.isArray(d.results) &&
-              d.results.length > 0 &&
-              d.results.length <= 8 &&
-              d.results.every(
-                (row) =>
-                  record(row) &&
-                  text(row.strategy) &&
-                  display(row.display) &&
-                  ((record(row.data) && !Object.hasOwn(row, "error")) ||
-                    (record(row.error) &&
-                      text(row.error.code) &&
-                      text(row.error.message) &&
-                      !Object.hasOwn(row, "data"))),
-              ) &&
-              new Set(d.results.map((row) => record(row) && row.strategy))
-                .size === d.results.length
+            ? valuationReport(d)
             : false;
       break;
     }

@@ -11,17 +11,11 @@ pub struct MarketApi {
     encoder: Arc<crate::encoding::OrderEncoder>,
 }
 impl MarketApi {
-    pub async fn floors(
+    pub(crate) async fn watch_valuation(
         &self,
-        query: market_valuation::FloorQuery,
-    ) -> Result<Arc<market_valuation::FloorReport>> {
-        Ok(self.valuation.floors(query).await?)
-    }
-    pub(crate) async fn watch_floors(
-        &self,
-        query: market_valuation::FloorQuery,
-    ) -> Result<market_valuation::FloorWatch> {
-        Ok(self.valuation.watch_floors(query).await?)
+        query: market_valuation::ValuationQuery,
+    ) -> Result<market_valuation::ValuationWatch> {
+        Ok(self.valuation.watch(query).await?)
     }
     pub async fn valuation(
         &self,

@@ -11,6 +11,7 @@ use std::sync::Arc;
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum InputContract {
+    Catalog,
     Selection,
     SelectionWithExecutionPeriod,
     ResolvedGift,
@@ -26,6 +27,7 @@ const SELECTION_TARGETS: &[ValuationTargetKind] = &[
 impl InputContract {
     pub const fn targets(self) -> &'static [ValuationTargetKind] {
         match self {
+            Self::Catalog => &[ValuationTargetKind::Catalog],
             Self::ResolvedGift => &[ValuationTargetKind::Gift],
             Self::Selection | Self::SelectionWithExecutionPeriod => SELECTION_TARGETS,
         }
@@ -62,6 +64,11 @@ impl StrategyInput for SelectionInput {
         target: Arc<ResolvedTarget>,
         _period: Option<ExecutionPeriod>,
     ) -> Result<Self, ValuationError> {
+        if !Self::CONTRACT.targets().contains(&target.kind()) {
+            return Err(ValuationError::unsupported_target(
+                "this strategy requires one market selection",
+            ));
+        }
         Ok(Self { target })
     }
 }
@@ -126,7 +133,7 @@ impl StrategyInput for ExecutionInput {
         period: Option<ExecutionPeriod>,
     ) -> Result<Self, ValuationError> {
         Ok(Self {
-            selection: SelectionInput { target },
+            selection: SelectionInput::resolve(target, period)?,
             period: period.ok_or_else(|| {
                 ValuationError::invalid("execution strategies require an execution period")
             })?,
@@ -159,3 +166,29 @@ impl StrategyInput for ResolvedGiftInput {
 #[cfg(test)]
 #[path = "inputs_tests.rs"]
 mod tests;
+
+#[derive(Debug, Clone)]
+pub struct CatalogInput {
+    selection: crate::CatalogSelection,
+}
+impl CatalogInput {
+    pub fn selection(&self) -> &crate::CatalogSelection {
+        &self.selection
+    }
+}
+impl StrategyInput for CatalogInput {
+    const CONTRACT: InputContract = InputContract::Catalog;
+    fn resolve(
+        target: Arc<ResolvedTarget>,
+        _: Option<ExecutionPeriod>,
+    ) -> Result<Self, ValuationError> {
+        let ResolvedTarget::Catalog(selection) = target.as_ref() else {
+            return Err(ValuationError::unsupported_target(
+                "this strategy requires a catalog selection",
+            ));
+        };
+        Ok(Self {
+            selection: selection.clone(),
+        })
+    }
+}

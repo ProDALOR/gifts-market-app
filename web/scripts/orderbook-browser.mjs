@@ -314,7 +314,16 @@ try {
           documentation_url: "/valuations/strategies/gift_floor/documentation",
           documentation_revision: "r1",
         },
-        {id:"ask_floor", input:"selection", targets:["criteria"], requires_period:false, name:"Matching asks", description:"Matching selection", documentation_url:"/guide/ask_floor", documentation_revision:"r1"},
+        {
+          id: "ask_floor",
+          input: "selection",
+          targets: ["criteria"],
+          requires_period: false,
+          name: "Matching asks",
+          description: "Matching selection",
+          documentation_url: "/guide/ask_floor",
+          documentation_revision: "r1",
+        },
       ],
     }),
   );
@@ -484,14 +493,14 @@ try {
           }),
         );
       }
-      if (frame.type === "floors.watch") {
+      if (frame.type === "valuation.watch") {
         valueSubscriptions++;
         valuePeers.delete(valuePeer);
         valuePeer = { socket, id: frame.id, params: frame.params };
         valuePeers.add(valuePeer);
         socket.send(
           JSON.stringify({
-            type: "floors.snapshot",
+            type: "valuation.snapshot",
             id: frame.id,
             data: floorReport(
               frame.params,
@@ -1226,9 +1235,10 @@ try {
       models.map((row) => row.id),
       backdrops.map((row) => row.id),
     );
-    for (const row of data.collections) row.floor.price.value = "7";
+    for (const row of data.results[0].data.collections)
+      row.floor.price.value = "7";
     peer.socket.send(
-      JSON.stringify({ type: "floors.snapshot", id: peer.id, data }),
+      JSON.stringify({ type: "valuation.snapshot", id: peer.id, data }),
     );
   }
   await page.getByLabel("Collection floor: 7 GRAM", { exact: true }).waitFor();

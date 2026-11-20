@@ -243,7 +243,9 @@ fn schedule(
     start: &Start,
 ) -> Result<(), queue::QueueError> {
     let (id, query) = match command {
-        Command::WatchFloors { id, params } => (id, Some(operations::Operation::Floors(params))),
+        Command::WatchValuation { id, params } => {
+            (id, Some(operations::Operation::Valuation(params)))
+        }
         Command::WatchOrders { id, params } => (id, Some(operations::Operation::Orders(params))),
         Command::WatchCatalog { id, collection_ids } => {
             (id, Some(operations::Operation::Catalog(collection_ids)))

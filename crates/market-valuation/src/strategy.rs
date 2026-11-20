@@ -1,7 +1,8 @@
 //! One typed registration table drives invocation, input validation and discovery.
 use crate::{
-    AskFloor, ExecutionMean, ExecutionMedian, ExecutionPeriod, GiftFloor, InputContract,
-    ResolvedTarget, StrategyInput, StrategyValuation, ValuationContext, ValuationError,
+    AskFloor, CatalogFloor, ExecutionMean, ExecutionMedian, ExecutionPeriod, GiftFloor,
+    InputContract, ResolvedTarget, StrategyInput, StrategyValuation, ValuationContext,
+    ValuationError,
 };
 use std::sync::Arc;
 
@@ -68,6 +69,7 @@ macro_rules! register {
     };
 }
 static REGISTRY: &[Registration] = &[
+    register!(CatalogFloor=>CatalogFloor),
     register!(AskFloor=>AskFloor),
     register!(ExecutionMean=>ExecutionMean),
     register!(ExecutionMedian=>ExecutionMedian),

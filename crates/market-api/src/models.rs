@@ -23,11 +23,11 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
-    #[serde(rename = "floors.watch")]
-    WatchFloors {
+    #[serde(rename = "valuation.watch")]
+    WatchValuation {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
-        params: Box<market_valuation::FloorQuery>,
+        params: Box<market_valuation::ValuationQuery>,
     },
     Request(ApiRequest),
     #[serde(rename = "orders.watch")]
@@ -73,11 +73,11 @@ impl ApiRequest {
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame<'a> {
-    #[serde(rename = "floors.snapshot")]
-    Floors {
+    #[serde(rename = "valuation.snapshot")]
+    ValuationSnapshot {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
-        data: &'a market_valuation::FloorReport,
+        data: crate::valuation::ValuationResponse<'a>,
     },
     Result(ApiResult<'a>),
     /// Rejected command; active operations continue unchanged. Empty ID if no valid ID was parsed.
@@ -149,6 +149,7 @@ mod tests {
         let command: Command = serde_json::from_value(catalog.clone()).unwrap();
         assert_eq!(serde_json::to_value(command).unwrap(), catalog);
         for invalid in [
+            serde_json::json!({"type":"floors.watch","id":"old","params":{"currency_id":"GRAM","collection_ids":["gift"]}}),
             serde_json::json!({"type":"watch_catalog","id":"old","collection_ids":[]}),
             serde_json::json!({"type":"subscribe","id":"old","query":{"filters":{"collection_id":"gift","currency_id":"GRAM"}}}),
             serde_json::json!({"type":"unsubscribe","id":"old"}),

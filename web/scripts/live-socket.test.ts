@@ -779,3 +779,45 @@ test("frames carry the actual resumed command, including updates while connectin
   assert.equal(received.length, 1);
   assert.deepEqual(received[0].params.range, { start: "K2000000", end: null });
 });
+
+test("generic valuation watches reuse query params, ignore old generations and reconnect with a baseline", (t) => {
+  const { Socket, live } = setup(t);
+  let updates = 0;
+  const command = {
+    type: "valuation.watch" as const,
+    id: "valuation",
+    params: call.params,
+  };
+  const stop = live.subscribe(command, (frame) => {
+    assert.equal(frame.type, "valuation.snapshot");
+    updates++;
+  });
+  t.after(stop);
+  const first = Socket.all[0];
+  first.open();
+  const old = first.commands("valuation.watch")[0];
+  assert.deepEqual(old.params, call.params);
+  first.receive({ type: "valuation.snapshot", id: old.id, data: report });
+  assert.equal(updates, 1);
+  live.update({ ...command, params: { ...call.params, currency_id: "XTR" } });
+  const updated = first.commands("valuation.watch").at(-1);
+  first.receive({ type: "valuation.snapshot", id: old.id, data: report });
+  assert.equal(updates, 1);
+  first.close();
+  t.mock.timers.tick(1000);
+  const second = Socket.all[1];
+  second.open();
+  const baseline = second.commands("valuation.watch")[0];
+  assert.notEqual(baseline.id, updated.id);
+  assert.equal(baseline.params.currency_id, "XTR");
+  first.receive({ type: "valuation.snapshot", id: baseline.id, data: report });
+  assert.equal(updates, 1);
+  second.receive({
+    type: "valuation.snapshot",
+    id: baseline.id,
+    data: { ...report, currency_id: "XTR" },
+  });
+  assert.equal(updates, 2);
+  stop();
+  assert.equal(second.closed, true);
+});

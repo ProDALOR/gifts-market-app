@@ -22,7 +22,7 @@ impl Strategy for AskFloor {
     ) -> Result<Self::Output, ValuationError> {
         let target = input.target();
         if target.gift().is_none() && target.criteria().is_none() {
-            let stats = context.floor_statistics(target.collection())?;
+            let stats = context.floor_statistics(target.collection().expect("single selection"))?;
             let (price, evidence) = stats.selection(target.model(), target.backdrop());
             return Ok(AskFloorValuation { price, evidence });
         }
@@ -34,7 +34,7 @@ impl Strategy for AskFloor {
         let mut budget = market_replica::catalog_read::ScanBudget::default();
         loop {
             budget.page()?;
-            let page = context.snapshot().valuation_orders(&query, token)?;
+            let page = context.orders(&query, token)?;
             for order in page.data {
                 context.snapshot().check_cancelled()?;
                 if order

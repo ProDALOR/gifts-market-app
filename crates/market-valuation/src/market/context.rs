@@ -5,7 +5,7 @@ use crate::{
     floors::{BookCache, Statistics},
     source::{BookScope, ValuationSnapshot},
 };
-use market_gifts::{CollectionId, CurrencyId};
+use market_gifts::{CollectionId, CurrencyId, GiftOrder, GiftOrderQuery, OrderSource};
 use std::{cell::RefCell, sync::Arc};
 type ExecutionCache = Option<(
     ExecutionInput,
@@ -16,6 +16,9 @@ pub struct ValuationContext<'a> {
     currency: &'a CurrencyId,
     books: &'a BookCache,
     executions: RefCell<ExecutionCache>,
+    pub(super) statistics: RefCell<Vec<Arc<Statistics>>>,
+    pub(super) observations: RefCell<Vec<crate::source::OrderDependency>>,
+    pub(super) deadline: std::cell::Cell<tokio::time::Instant>,
 }
 impl<'a> ValuationContext<'a> {
     pub(crate) fn new(
@@ -28,6 +31,11 @@ impl<'a> ValuationContext<'a> {
             currency,
             books,
             executions: RefCell::new(None),
+            statistics: RefCell::new(vec![]),
+            observations: RefCell::new(vec![]),
+            deadline: std::cell::Cell::new(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+            ),
         }
     }
     pub fn snapshot(&self) -> &ValuationSnapshot {
@@ -40,14 +48,74 @@ impl<'a> ValuationContext<'a> {
         &self,
         collection: &CollectionId,
     ) -> Result<Arc<Statistics>, ValuationError> {
-        self.books.get(
+        let query = GiftOrderQuery::new(market_gifts::GiftFilters::new(
+            collection.clone(),
+            self.currency.clone(),
+        ));
+        self.observe(&query)?;
+        let stats = self.books.get(
             self.snapshot,
             &BookScope {
                 collection: collection.clone(),
                 currency: self.currency.clone(),
             },
-        )
+        )?;
+        self.deadline.set(self.deadline.get().min(stats.deadline()));
+        let mut used = self.statistics.borrow_mut();
+        if !used.iter().any(|previous| Arc::ptr_eq(previous, &stats)) {
+            used.push(stats.clone());
+        }
+        Ok(stats)
     }
+    /// Strategies read observations here so watches follow their actual sources and expiry.
+    pub fn orders(
+        &self,
+        query: &GiftOrderQuery,
+        continuation: String,
+    ) -> Result<crate::source::Page<GiftOrder>, ValuationError> {
+        self.observe(query)?;
+        let page = self.snapshot.valuation_orders(query, continuation)?;
+        if query.source == OrderSource::Asks {
+            let now = jiff::Timestamp::now();
+            for expiry in page
+                .data
+                .iter()
+                .filter_map(|order| order.expires_at)
+                .filter(|expiry| *expiry > now)
+            {
+                let remaining = std::time::Duration::from_millis(
+                    expiry
+                        .as_millisecond()
+                        .saturating_sub(now.as_millisecond())
+                        .max(0) as u64,
+                );
+                self.deadline.set(
+                    self.deadline
+                        .get()
+                        .min(tokio::time::Instant::now() + remaining),
+                );
+            }
+        }
+        Ok(page)
+    }
+
+    fn observe(&self, query: &GiftOrderQuery) -> Result<(), ValuationError> {
+        let dependency = self.snapshot.order_dependency(query)?;
+        let mut observations = self.observations.borrow_mut();
+        if !observations
+            .iter()
+            .any(|previous| previous.same_query(&dependency))
+        {
+            if observations.len() >= 128 {
+                return Err(ValuationError::capacity(
+                    "valuation observation dependency budget exceeded",
+                ));
+            }
+            observations.push(dependency);
+        }
+        Ok(())
+    }
+
     pub(super) fn executions(
         &self,
         input: &ExecutionInput,

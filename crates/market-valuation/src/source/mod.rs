@@ -6,6 +6,7 @@ mod orders;
 #[cfg(feature = "portfolio")]
 mod resolve;
 pub use catalog::CatalogTrait;
+pub(crate) use dependencies::OrderDependency;
 pub use dependencies::ReadDependencies;
 use market_replica::{ReadExecutor, ReplicaReader};
 pub use orders::BookScope;

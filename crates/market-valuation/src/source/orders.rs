@@ -25,7 +25,7 @@ pub(super) fn request(scope: &BookScope) -> w::ReadRequest {
 }
 impl ValuationSnapshot {
     /// Bounded, domain-projected observations for target estimators. The snapshot stays pinned.
-    pub fn valuation_orders(
+    pub(crate) fn valuation_orders(
         &self,
         query: &GiftOrderQuery,
         continuation: String,

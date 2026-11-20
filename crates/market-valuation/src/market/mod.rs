@@ -3,19 +3,24 @@ mod actor;
 mod context;
 mod execution;
 mod inputs;
+mod read;
+pub(crate) use read::ValuationRead;
 mod strategies;
 mod target;
 use crate::*;
 pub(crate) use actor::MarketValuationActor;
 pub use context::ValuationContext;
 pub use inputs::{
-    ExecutionInput, ExecutionPeriod, InputContract, ResolvedGiftInput, SelectionInput,
-    StrategyInput,
+    CatalogInput, ExecutionInput, ExecutionPeriod, InputContract, ResolvedGiftInput,
+    SelectionInput, StrategyInput,
 };
 use market_gifts::{Amount, CurrencyId, Period};
 use serde::{Deserialize, Serialize};
 pub use strategies::{AskFloor, ExecutionMean, ExecutionMedian};
-pub use target::{ResolvedTarget, ValuationTarget, ValuationTargetKind};
+pub use target::{
+    CatalogDetails, CatalogSelection, PairSelection, ResolvedTarget, ValuationTarget,
+    ValuationTargetKind,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +59,9 @@ impl ValuationQuery {
         ),
         ValuationError,
     > {
+        if let ValuationTarget::Catalog(selection) = &self.target {
+            selection.validate()?;
+        }
         if self.strategies.is_empty() || self.strategies.len() > 8 {
             return Err(ValuationError::invalid("select 1..=8 valuation strategies"));
         }
@@ -84,6 +92,7 @@ impl ValuationQuery {
     }
 }
 /// Immutable request options checked before admission; target facts still resolve in the pinned view.
+#[derive(Clone)]
 pub(crate) struct PreparedQuery {
     target: ValuationTarget,
     currency_id: CurrencyId,
@@ -151,6 +160,7 @@ impl ExecutionEvidence {
 #[serde(tag = "strategy", content = "data", rename_all = "snake_case")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum StrategyValuation {
+    CatalogFloor(std::sync::Arc<crate::CatalogFloorValuation>),
     AskFloor(AskFloorValuation),
     ExecutionMean(ExecutionPriceValuation),
     ExecutionMedian(ExecutionPriceValuation),
@@ -159,6 +169,7 @@ pub enum StrategyValuation {
 impl StrategyValuation {
     pub fn strategy(&self) -> &'static str {
         match self {
+            Self::CatalogFloor(_) => CatalogFloor::ID,
             Self::AskFloor(_) => AskFloor::ID,
             Self::ExecutionMean(_) => ExecutionMean::ID,
             Self::ExecutionMedian(_) => ExecutionMedian::ID,
@@ -201,6 +212,13 @@ impl StrategyOutcome {
     }
     pub fn display<'a>(&'a self, currency: &'a CurrencyId) -> ValuationDisplay<'a> {
         let (price, summary, note) = match self {
+            Self::Value(StrategyValuation::CatalogFloor(data)) => {
+                return ValuationDisplay {
+                    fields: vec![],
+                    summary: Some(format!("{} collections", data.collections.len())),
+                    note: "Current eligible asks, before fees.",
+                };
+            }
             Self::Value(StrategyValuation::GiftFloor(data)) => return data.display(currency),
             Self::Value(StrategyValuation::AskFloor(data)) => (
                 &data.price,
@@ -274,3 +292,6 @@ pub(crate) fn unavailable(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod watch_tests;

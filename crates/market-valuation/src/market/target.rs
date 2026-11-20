@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ValuationTargetKind {
+    Catalog,
     Collection,
     Model,
     Backdrop,
@@ -21,6 +22,7 @@ pub enum ValuationTargetKind {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ValuationTarget {
+    Catalog(crate::CatalogSelection),
     Collection {
         collection_id: CollectionId,
     },
@@ -45,11 +47,64 @@ pub enum ValuationTarget {
         gift: GiftLookup,
     },
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct CatalogSelection {
+    /// One to eight distinct collections in this currency.
+    #[cfg_attr(feature = "schema", schema(min_items = 1, max_items = 8))]
+    pub collection_ids: Vec<CollectionId>,
+    /// Include all known models/backdrops and an optional pair for one collection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<CatalogDetails>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct CatalogDetails {
+    pub collection_id: CollectionId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pair: Option<PairSelection>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct PairSelection {
+    pub model_id: ModelId,
+    pub backdrop_id: BackdropId,
+}
+impl CatalogSelection {
+    pub fn validate(&self) -> Result<(), ValuationError> {
+        if self.collection_ids.is_empty()
+            || self.collection_ids.len() > 8
+            || self
+                .collection_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.collection_ids.len()
+        {
+            return Err(ValuationError::invalid("select 1..=8 distinct collections"));
+        }
+        if self
+            .details
+            .as_ref()
+            .is_some_and(|details| !self.collection_ids.contains(&details.collection_id))
+        {
+            return Err(ValuationError::invalid(
+                "details.collection_id must be in collection_ids",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A resolved target has exactly the fields required by its kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ResolvedTarget {
+    Catalog(crate::CatalogSelection),
     Collection {
         collection_id: CollectionId,
     },
@@ -81,6 +136,12 @@ impl ValuationTarget {
         &self,
         snapshot: &ValuationSnapshot,
     ) -> Result<ResolvedTarget, ValuationError> {
+        if let Self::Catalog(selection) = self {
+            for collection in &selection.collection_ids {
+                snapshot.require_collection(collection)?;
+            }
+            return Ok(ResolvedTarget::Catalog(selection.clone()));
+        }
         if let Self::Gift { gift: lookup } = self {
             return Ok(ResolvedTarget::Gift {
                 gift: snapshot.gift(lookup)?,
@@ -124,9 +185,9 @@ impl ValuationTarget {
                 collection_id: collection_id.clone(),
                 criteria: criteria.clone(),
             },
-            Self::Gift { .. } => unreachable!(),
+            Self::Gift { .. } | Self::Catalog(_) => unreachable!(),
         };
-        let collection = resolved.collection();
+        let collection = resolved.collection().expect("single target");
         snapshot.require_collection(collection)?;
         if let Some(id) = resolved.model() {
             snapshot.require_trait(collection, CatalogTrait::Model, id)?;
@@ -161,6 +222,7 @@ impl ValuationTarget {
 impl ResolvedTarget {
     pub fn kind(&self) -> ValuationTargetKind {
         match self {
+            Self::Catalog(_) => ValuationTargetKind::Catalog,
             Self::Collection { .. } => ValuationTargetKind::Collection,
             Self::Model { .. } => ValuationTargetKind::Model,
             Self::Backdrop { .. } => ValuationTargetKind::Backdrop,
@@ -169,14 +231,15 @@ impl ResolvedTarget {
             Self::Gift { .. } => ValuationTargetKind::Gift,
         }
     }
-    pub fn collection(&self) -> &CollectionId {
+    pub fn collection(&self) -> Option<&CollectionId> {
         match self {
             Self::Collection { collection_id }
             | Self::Model { collection_id, .. }
             | Self::Backdrop { collection_id, .. }
             | Self::ModelBackdrop { collection_id, .. }
-            | Self::Criteria { collection_id, .. } => collection_id,
-            Self::Gift { gift, .. } => &gift.collection_id,
+            | Self::Criteria { collection_id, .. } => Some(collection_id),
+            Self::Gift { gift, .. } => Some(&gift.collection_id),
+            Self::Catalog(_) => None,
         }
     }
     pub fn model(&self) -> Option<&ModelId> {
@@ -217,7 +280,10 @@ impl ResolvedTarget {
         source: OrderSource,
         period: Option<Period>,
     ) -> GiftOrderQuery {
-        let mut filters = GiftFilters::new(self.collection().clone(), currency);
+        let mut filters = GiftFilters::new(
+            self.collection().expect("single selection").clone(),
+            currency,
+        );
         if let Some(criteria) = self.criteria() {
             filters.models = criteria.models.clone();
             filters.backdrops = criteria.backdrops.clone();

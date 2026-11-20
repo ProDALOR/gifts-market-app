@@ -9,12 +9,12 @@ mod client;
 mod market;
 pub use market::*;
 mod service;
-pub use service::{FloorWatch, ValuationHandle};
+pub use service::{ValuationHandle, ValuationWatch};
 pub type ValuationTask = Task;
 mod floor_projection;
 mod floors;
 pub use floor_projection::{
-    CollectionFloors, FloorDetails, FloorQuery, FloorReport, PairFloor, PairSelection, TraitFloors,
+    CatalogFloor, CatalogFloorValuation, CollectionFloors, PairFloor, TraitFloors,
 };
 #[cfg(feature = "portfolio")]
 mod portfolio;

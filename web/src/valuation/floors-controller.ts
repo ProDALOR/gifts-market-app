@@ -1,9 +1,15 @@
+import { catalogFloors } from "./catalog-floors.ts";
+import { sameCatalogTarget } from "./targets.ts";
 import { liveSocket } from "../live-socket.ts";
 import type { LiveSocket } from "../live-socket.ts";
 import type { components } from "../gen/api.ts";
-type Values = components["schemas"]["FloorReport"];
-type Pair = NonNullable<Request["details"]>["pair"];
-type Request = components["schemas"]["FloorQuery"];
+type Values = components["schemas"]["CatalogFloorValuation"];
+type CatalogTarget = Extract<
+  components["schemas"]["ValuationTarget"],
+  { kind: "catalog" }
+>;
+type Pair = NonNullable<CatalogTarget["details"]>["pair"];
+type Request = components["schemas"]["ValuationQuery"];
 export type SharedFloor = components["schemas"]["AskFloorValuation"];
 export type FloorsEntry = {
   floor: SharedFloor;
@@ -102,8 +108,12 @@ export class FloorsController {
       .sort();
     const params: Request = {
       currency_id: this.currency,
-      collection_ids: ids,
-      details: { collection_id: this.selected, pair: this.pair },
+      target: {
+        kind: "catalog",
+        collection_ids: ids,
+        details: { collection_id: this.selected, pair: this.pair },
+      },
+      strategies: ["catalog_floor"],
     };
     const signature = JSON.stringify(params);
     if (signature === this.signature) return;
@@ -111,7 +121,7 @@ export class FloorsController {
     this.markStale();
     this.publish("");
     const command = {
-      type: "floors.watch" as const,
+      type: "valuation.watch" as const,
       id: "floors",
       params,
     };
@@ -124,7 +134,7 @@ export class FloorsController {
       (frame, sent) => {
         if (
           this.closed ||
-          sent.type !== "floors.watch" ||
+          sent.type !== "valuation.watch" ||
           JSON.stringify(sent.params) !== this.signature
         )
           return;
@@ -134,18 +144,39 @@ export class FloorsController {
           return;
         }
         if (
-          frame.type !== "floors.snapshot" ||
+          frame.type !== "valuation.snapshot" ||
           frame.data.currency_id !== this.currency
         )
           return;
-        const data = frame.data;
+        const result = frame.data.results.find(
+          (row) => row.strategy === "catalog_floor",
+        );
+        if (!result || "error" in result || !catalogFloors(result.data)) {
+          this.markStale();
+          this.publish(
+            result && "error" in result
+              ? result.error.message
+              : "Invalid catalog floor results",
+          );
+          return;
+        }
+        const data = result.data;
+        const scope = sent.params.target;
         if (
-          data.collections.length !== sent.params.collection_ids.length ||
+          scope.kind !== "catalog" ||
+          !sameCatalogTarget(frame.data.target, scope)
+        ) {
+          this.markStale();
+          this.publish("Floor results did not match the requested scope");
+          return;
+        }
+        if (
+          data.collections.length !== scope.collection_ids.length ||
           data.collections.some(
-            (row) => !sent.params.collection_ids.includes(row.collection_id),
+            (row) => !scope.collection_ids.includes(row.collection_id),
           ) ||
           data.collections.some((row) => {
-            const details = sent.params.details;
+            const details = scope.details;
             if (row.collection_id !== details?.collection_id)
               return !!row.traits;
             if (!row.traits) return true;
@@ -161,12 +192,12 @@ export class FloorsController {
           return;
         }
         for (const row of data.collections) {
-          const key = `${data.currency_id}:${row.collection_id}`;
+          const key = `${frame.data.currency_id}:${row.collection_id}`;
           this.cache.delete(key);
           this.cache.set(key, {
             floor: row.floor,
             traits: row.traits ?? undefined,
-            stale: data.stale,
+            stale: frame.data.stale,
             evaluatedAt: row.evaluated_at,
             used: ++this.used,
           });
