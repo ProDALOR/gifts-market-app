@@ -46,7 +46,7 @@ pub enum ValuationTarget {
     },
 }
 /// A resolved target has exactly the fields required by its kind.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ResolvedTarget {

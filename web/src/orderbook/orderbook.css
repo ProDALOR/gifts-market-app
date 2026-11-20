@@ -452,6 +452,11 @@
   color: var(--muted);
   font-weight: 650;
 }
+.valuation-strategy-picker select {
+  width: 100%;
+  min-width: 0;
+  margin-block: 8px;
+}
 .valuation-controls {
   display: flex;
   align-items: center;

@@ -40,6 +40,22 @@ export function OrderValuationSummary({
           )}
         </div>
       </div>
+      {state.strategies.length > 1 && (
+        <label className="valuation-strategy-picker">
+          <span className="sr">Valuation strategy</span>
+          <select
+            aria-label="Valuation strategy"
+            value={state.strategy?.id}
+            onChange={(event) => state.selectStrategy(event.target.value)}
+          >
+            {state.strategies.map((row) => (
+              <option key={row.id} value={row.id}>
+                {row.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {!available ? (
         <p className="valuation-note">
           Choose a numbered collectible to see an estimate.

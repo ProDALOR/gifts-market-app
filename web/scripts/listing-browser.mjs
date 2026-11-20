@@ -269,6 +269,9 @@ try {
     releaseMetadata;
   const strategyMetadata = {
     id: "fixture_floor",
+    input: "resolved_gift",
+    targets: ["gift"],
+    requires_period: false,
     name: "Fixture floor",
     description: "Discovered strategy description.",
     documentation_url: "/__fixture_strategy.md",
@@ -283,7 +286,17 @@ try {
     return route.fulfill(
       metadataFails
         ? { status: 503, json: { error: { message: "Unavailable" } } }
-        : { json: [strategyMetadata] },
+        : {
+            json: [
+              strategyMetadata,
+              {
+                ...strategyMetadata,
+                id: "ask_floor",
+                input: "selection",
+                targets: ["criteria"],
+              },
+            ],
+          },
     );
   });
   let guideRequests = 0;
@@ -461,6 +474,19 @@ try {
   await mkdir("/tmp/gifts-market-ui", { recursive: true });
   await page.screenshot({ path: "/tmp/gifts-market-ui/fresh-listings.png" });
   await page.locator('[data-order-id="a"]').click();
+  await page
+    .locator('.valuation-summary [role="alert"]')
+    .getByText("Unavailable", { exact: true })
+    .waitFor();
+  assert.equal(
+    requests.length,
+    0,
+    "Discovery failures do not dispatch guessed strategies",
+  );
+  metadataFails = false;
+  await page
+    .getByRole("button", { name: "Refresh valuation", exact: true })
+    .click();
   await page.locator('.valuation-summary [data-metric="decision"]').waitFor();
   assert.ok(
     await page.evaluate(() =>
@@ -761,31 +787,19 @@ try {
     name: "How is this calculated?",
     exact: true,
   });
-  assert.equal(
-    metadataRequests,
-    0,
-    "Strategy discovery waits for the info popup",
-  );
+  const metadataBeforePopup = metadataRequests;
+  assert.equal(guideRequests, 0, "Guides remain intent-only");
   await info.focus();
   await page.keyboard.press("Enter");
-  await guide
-    .getByRole("button", { name: "Retry strategy information" })
-    .waitFor();
-  assert.equal(
-    guideRequests,
-    0,
-    "No hardcoded documentation fallback while discovery fails",
-  );
-  const previousMetadataRequests = metadataRequests;
-  metadataFails = false;
-  await guide
-    .getByRole("button", { name: "Retry strategy information" })
-    .click();
   await page
     .locator(".valuation-popup .modal-heading")
     .getByRole("heading", { name: strategyMetadata.name, exact: true })
     .waitFor();
-  assert.equal(metadataRequests, previousMetadataRequests + 1);
+  assert.equal(
+    metadataRequests,
+    metadataBeforePopup,
+    "The popup uses the request's discovered metadata",
+  );
   await guide.getByRole("button", { name: "Retry guide" }).waitFor();
   guideFails = false;
   await guide.getByRole("button", { name: "Retry guide" }).click();
@@ -964,30 +978,21 @@ try {
   strategyMetadata.documentation_revision = "r2";
   strategyMetadata.name = "Updated fixture floor";
   await page.clock.runFor(60_001);
-  await page.evaluate((order) => window.selectListing(order), b);
-  await waitReport();
   const abortedGuidesBefore = abortedGuides;
   const abortedMetadataBefore = abortedMetadata;
   holdGuide = true;
   holdMetadata = true;
-  await toggleGuide();
+  releaseMetadata = undefined;
+  await page.evaluate((order) => window.selectListing(order), b);
   for (let tries = 0; !releaseMetadata && tries < 100; tries++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(releaseMetadata);
-  await guide
-    .getByText("Loading strategy information…", { exact: true })
-    .waitFor();
-  assert.equal(
-    await guide.locator("article").count(),
-    0,
-    "No guide from an older popup appears during revalidation",
-  );
   assert.equal(
     guideRequests,
     cachedGuideRequests,
-    "Guide reads wait for current metadata",
+    "Guide reads wait for intent and current metadata",
   );
-  await toggleGuide();
+  await closeDetails();
   for (
     let tries = 0;
     abortedMetadata === abortedMetadataBefore && tries < 100;
@@ -997,10 +1002,12 @@ try {
   assert.equal(
     abortedMetadata,
     abortedMetadataBefore + 1,
-    "Closing the popup cancels its pending metadata read",
+    "Closing details cancels pending discovery",
   );
   holdMetadata = false;
   releaseMetadata();
+  await page.evaluate((order) => window.selectListing(order), b);
+  await waitReport();
   await toggleGuide();
   await page
     .locator(".valuation-popup .modal-heading")
@@ -1034,7 +1041,7 @@ try {
   assert.equal(
     metadataRequests,
     cachedMetadataRequests + 2,
-    "Expired metadata retries only after the cancelled popup is reopened",
+    "Expired metadata retries when cancelled details reopen",
   );
   assert.equal(
     guideRequests,

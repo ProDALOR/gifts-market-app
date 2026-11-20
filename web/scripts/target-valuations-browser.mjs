@@ -20,12 +20,24 @@ const strategies = [
   id,
   name,
   requires_period,
+  input: requires_period ? "selection_with_execution_period" : "selection",
   description: `Calculation for ${name}`,
   targets: ["collection", "model", "backdrop", "model_backdrop", "gift"],
   documentation_url: "/guide/" + id,
   documentation_revision: "1",
 }));
-let metadataRequests = 0;
+strategies.push({
+  id: "backdrop_only",
+  name: "Backdrop specialist",
+  description: "Target-specific fixture",
+  input: "selection",
+  targets: ["backdrop"],
+  requires_period: false,
+  documentation_url: "/guide/backdrop_only",
+  documentation_revision: "one",
+});
+let metadataRequests = 0,
+  releaseMetadata;
 const server = await createServer({
   root,
   cacheDir,
@@ -42,6 +54,10 @@ const server = await createServer({
           }
           if (req.url === "/valuations/strategies") {
             metadataRequests++;
+            if (metadataRequests === 1)
+              await new Promise((resolve) => {
+                releaseMetadata = resolve;
+              });
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify(strategies));
             return;
@@ -142,6 +158,20 @@ try {
   const dialog = page.getByRole("dialog", {
     name: "Collection and trait values",
   });
+  await dialog.getByLabel("Value", { exact: true }).selectOption("backdrop");
+  for (let i = 0; !releaseMetadata && i < 100; i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(releaseMetadata);
+  releaseMetadata();
+  await dialog.getByText("Backdrop specialist", { exact: true }).waitFor();
+  assert.equal(
+    await dialog
+      .getByRole("checkbox", { name: "Backdrop specialist", exact: false })
+      .isChecked(),
+    true,
+    "Late discovery selects capabilities for the current target",
+  );
+  await dialog.getByLabel("Value", { exact: true }).selectOption("model");
   await dialog.getByText("Execution median", { exact: true }).waitFor();
   assert.equal(metadataRequests, 1);
   assert.equal(requests.length, 0);
@@ -194,6 +224,10 @@ try {
   for (let i = 0; i < 30 && !cancelled.length; i++)
     await page.waitForTimeout(10);
   assert.equal(requests.length, 2);
+  assert.ok(
+    requests[1].params.strategies.includes("backdrop_only"),
+    "A newly compatible strategy is selected after a target change",
+  );
   assert.ok(
     cancelled.includes(requests[1].id),
     "Closing aborts the in-flight target report",

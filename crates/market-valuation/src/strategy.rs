@@ -1,68 +1,142 @@
-//! Descriptions of gift strategies exposed by this service. No transport URLs or result erasure.
+//! One typed registration table drives invocation, input validation and discovery.
+use crate::{
+    AskFloor, ExecutionMean, ExecutionMedian, ExecutionPeriod, GiftFloor, InputContract,
+    ResolvedTarget, StrategyInput, StrategyValuation, ValuationContext, ValuationError,
+};
+use std::sync::Arc;
+
+/// An algorithm declares the argument contract it consumes and owns its result type.
+/// ```compile_fail
+/// use market_valuation::{AskFloor, ResolvedGiftInput, Strategy, ValuationContext};
+/// fn wrong_input(input: &ResolvedGiftInput, context: &ValuationContext<'_>) {
+///     let _ = AskFloor.evaluate(input, context);
+/// }
+/// ```
+pub trait Strategy {
+    type Input: StrategyInput;
+    type Output;
+    const ID: &'static str;
+    const NAME: &'static str;
+    const DESCRIPTION: &'static str;
+    const DOCUMENTATION: &'static str;
+    fn evaluate(
+        &self,
+        input: &Self::Input,
+        context: &ValuationContext<'_>,
+    ) -> Result<Self::Output, ValuationError>;
+}
+#[derive(Debug, Clone, Copy)]
 pub struct StrategyMetadata {
     pub id: &'static str,
     pub name: &'static str,
     pub description: &'static str,
     /// Markdown with inline ($...$) and display ($$...$$) LaTeX formulas.
     pub documentation: &'static str,
-    pub targets: &'static [crate::ValuationTargetKind],
-    pub requires_period: bool,
+    pub input: InputContract,
 }
-
-const TARGETS: &[crate::ValuationTargetKind] = &[
-    crate::ValuationTargetKind::Collection,
-    crate::ValuationTargetKind::Model,
-    crate::ValuationTargetKind::Backdrop,
-    crate::ValuationTargetKind::ModelBackdrop,
-    crate::ValuationTargetKind::Gift,
-    crate::ValuationTargetKind::Criteria,
+impl StrategyMetadata {
+    const fn of<S: Strategy>() -> Self {
+        Self {
+            id: S::ID,
+            name: S::NAME,
+            description: S::DESCRIPTION,
+            documentation: S::DOCUMENTATION,
+            input: S::Input::CONTRACT,
+        }
+    }
+}
+type Evaluate = fn(
+    Arc<ResolvedTarget>,
+    Option<ExecutionPeriod>,
+    &ValuationContext<'_>,
+) -> Result<StrategyValuation, ValuationError>;
+pub(crate) struct Registration {
+    metadata: StrategyMetadata,
+    evaluate: Evaluate,
+}
+macro_rules! register {
+    ($strategy:ident => $output:ident) => {
+        Registration {
+            metadata: StrategyMetadata::of::<$strategy>(),
+            evaluate: |target, period, context| {
+                let input = <$strategy as Strategy>::Input::resolve(target, period)?;
+                $strategy
+                    .evaluate(&input, context)
+                    .map(StrategyValuation::$output)
+            },
+        }
+    };
+}
+static REGISTRY: &[Registration] = &[
+    register!(AskFloor=>AskFloor),
+    register!(ExecutionMean=>ExecutionMean),
+    register!(ExecutionMedian=>ExecutionMedian),
+    register!(GiftFloor=>GiftFloor),
 ];
-pub const ASK_FLOOR: StrategyMetadata = StrategyMetadata {
-    id: "ask_floor",
-    name: "Ask floor",
-    description: "Lowest eligible ask for a collection, trait selection or individual gift.",
-    documentation: include_str!("market/ask_floor.md"),
-    targets: TARGETS,
-    requires_period: false,
-};
-pub const EXECUTION_MEAN: StrategyMetadata = StrategyMetadata {
-    id: "execution_mean",
-    name: "Execution mean",
-    description: "Unweighted arithmetic mean of observed per-gift execution prices in an explicit period.",
-    documentation: include_str!("market/executions.md"),
-    targets: TARGETS,
-    requires_period: true,
-};
-pub const EXECUTION_MEDIAN: StrategyMetadata = StrategyMetadata {
-    id: "execution_median",
-    name: "Execution median",
-    description: "Median observed per-gift execution price in an explicit period.",
-    documentation: include_str!("market/executions.md"),
-    targets: TARGETS,
-    requires_period: true,
-};
-
-/// Public gift-valuation strategies; portfolio-only library actors are not API services.
-pub fn strategies() -> &'static [StrategyMetadata] {
-    &[
-        ASK_FLOOR,
-        EXECUTION_MEAN,
-        EXECUTION_MEDIAN,
-        crate::gift_floor::METADATA,
-    ]
+/// Portfolio-only library actors are not advertised as available query strategies.
+pub fn strategies() -> impl ExactSizeIterator<Item = &'static StrategyMetadata> + Clone {
+    REGISTRY.iter().map(|entry| &entry.metadata)
 }
 pub fn strategy(id: &str) -> Option<&'static StrategyMetadata> {
-    strategies().iter().find(|metadata| metadata.id == id)
+    registration(id).map(Registration::metadata)
 }
-
+/// Discover compatible strategies without choosing an implicit service default.
+/// Execution strategies are included only when the caller supplies a period.
+pub fn strategies_for(
+    target: crate::ValuationTargetKind,
+    has_period: bool,
+) -> impl Iterator<Item = &'static StrategyMetadata> {
+    strategies().filter(move |entry| entry.input.accepts(target, has_period))
+}
+pub(crate) fn registration(id: &str) -> Option<&'static Registration> {
+    REGISTRY.iter().find(|entry| entry.metadata.id == id)
+}
+impl Registration {
+    pub(crate) fn metadata(&self) -> &StrategyMetadata {
+        &self.metadata
+    }
+    pub(crate) fn evaluate(
+        &self,
+        target: Arc<ResolvedTarget>,
+        period: Option<ExecutionPeriod>,
+        context: &ValuationContext<'_>,
+    ) -> Result<StrategyValuation, ValuationError> {
+        (self.evaluate)(target, period, context)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn discoverable_strategies_have_unique_valid_ids_and_own_their_documentation() {
-        assert!(!strategies().is_empty());
+    fn capability_selection_includes_all_compatible_inputs_and_requires_opt_in_to_periods() {
+        use crate::ValuationTargetKind;
+        for target in InputContract::Selection.targets() {
+            for has_period in [false, true] {
+                let selected = strategies_for(*target, has_period).collect::<Vec<_>>();
+                for metadata in strategies() {
+                    assert_eq!(
+                        selected.iter().any(|entry| entry.id == metadata.id),
+                        metadata.input.targets().contains(target)
+                            && (has_period || !metadata.input.requires_period()),
+                    );
+                }
+            }
+        }
+        assert!(
+            strategies_for(ValuationTargetKind::Gift, false)
+                .any(|metadata| metadata.input == InputContract::ResolvedGift)
+        );
+        assert!(
+            strategies_for(ValuationTargetKind::Criteria, true)
+                .all(|metadata| metadata.input != InputContract::ResolvedGift)
+        );
+    }
+    #[test]
+    fn discovery_and_execution_share_unique_typed_registrations() {
+        assert!(strategies().len() > 0);
         let mut ids = std::collections::BTreeSet::new();
-        for metadata in strategies() {
+        for entry in REGISTRY {
+            let metadata = &entry.metadata;
             assert!(crate::StrategyId::new(metadata.id).is_ok());
             assert!(ids.insert(metadata.id));
             assert!(!metadata.name.trim().is_empty());
@@ -71,5 +145,19 @@ mod tests {
             assert!(std::ptr::eq(strategy(metadata.id).unwrap(), metadata));
         }
         assert!(strategy("unregistered").is_none());
+        for (id, contract) in [
+            (AskFloor::ID, <AskFloor as Strategy>::Input::CONTRACT),
+            (
+                ExecutionMean::ID,
+                <ExecutionMean as Strategy>::Input::CONTRACT,
+            ),
+            (
+                ExecutionMedian::ID,
+                <ExecutionMedian as Strategy>::Input::CONTRACT,
+            ),
+            (GiftFloor::ID, <GiftFloor as Strategy>::Input::CONTRACT),
+        ] {
+            assert_eq!(strategy(id).unwrap().input, contract);
+        }
     }
 }

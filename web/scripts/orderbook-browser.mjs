@@ -306,11 +306,15 @@ try {
       json: [
         {
           id: "gift_floor",
+          input: "resolved_gift",
+          targets: ["gift"],
+          requires_period: false,
           name: "Gift floor",
           description: "Gift floor estimate",
           documentation_url: "/valuations/strategies/gift_floor/documentation",
           documentation_revision: "r1",
         },
+        {id:"ask_floor", input:"selection", targets:["criteria"], requires_period:false, name:"Matching asks", description:"Matching selection", documentation_url:"/guide/ask_floor", documentation_revision:"r1"},
       ],
     }),
   );

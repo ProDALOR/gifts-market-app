@@ -1,5 +1,4 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { useStrategy } from "../valuation/use-strategy";
 import { guideKey } from "../valuation/strategies";
 import type { OrderValuationState } from "../valuation/use-order-valuation";
 import { Modal } from "../ui/modal";
@@ -40,11 +39,7 @@ function CalculationPopup({
   close: () => void;
 }) {
   useEffect(() => playbackBudget.suspendAll(), []);
-  const {
-    metadata: strategy,
-    error,
-    retry,
-  } = useStrategy(state.result?.strategy);
+  const strategy = state.strategy;
   return (
     <Modal
       className="valuation-popup"
@@ -74,14 +69,9 @@ function CalculationPopup({
               />
             </Suspense>
           </>
-        ) : error ? (
-          <div className="valuation-guide-error" role="alert">
-            <p>{error}</p>
-            <button onClick={retry}>Retry strategy information</button>
-          </div>
         ) : (
           <p className="valuation-note" role="status">
-            Loading strategy information…
+            Strategy information is unavailable.
           </p>
         )}
       </div>

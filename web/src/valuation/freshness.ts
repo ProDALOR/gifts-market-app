@@ -18,11 +18,12 @@ export function estimateIsStale(
 export function giftBasisChanged(
   report: ValuationResponse,
   shared: Pick<FloorsEntry, "floor" | "traits">,
+  strategy = "gift_floor",
 ) {
-  if (report.target.kind !== "gift") return false;
-  const result = report.results.find((row) => row.strategy === "gift_floor");
+  if (report.target.kind !== "gift") return undefined;
+  const result = report.results.find((row) => row.strategy === strategy);
   if (!result || "error" in result || result.strategy !== "gift_floor")
-    return false;
+    return undefined;
   const data = result.data;
 
   const equal = (

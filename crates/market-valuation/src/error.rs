@@ -36,6 +36,9 @@ impl ValuationError {
             source: None,
         }
     }
+    pub fn unsupported_target(message: impl Into<String>) -> Self {
+        Self::new(ValuationErrorCode::UnsupportedTarget, message)
+    }
     pub fn invalid(message: impl Into<String>) -> Self {
         Self::new(ValuationErrorCode::InvalidQuery, message)
     }
@@ -117,7 +120,7 @@ mod tests {
     fn data_failures_keep_their_source_and_valuation_context() {
         let error = ValuationError::from(Status::resource_exhausted("read budget full"))
             .with_context(
-                StrategyId::new(crate::gift_floor::METADATA.id).unwrap(),
+                StrategyId::new(<crate::GiftFloor as crate::Strategy>::ID).unwrap(),
                 "GRAM".into(),
             );
         assert_eq!(error.code(), ValuationErrorCode::CapacityExceeded);
@@ -132,7 +135,7 @@ mod tests {
         );
         assert_eq!(
             error.details().unwrap().strategy,
-            StrategyId::new(crate::gift_floor::METADATA.id).unwrap()
+            StrategyId::new(<crate::GiftFloor as crate::Strategy>::ID).unwrap()
         );
         assert_eq!(
             error

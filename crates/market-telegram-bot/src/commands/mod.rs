@@ -80,7 +80,15 @@ impl MessageHandler for MarketCommands {
                             gift: query.gift.into(),
                         },
                         currency_id: query.currency_id,
-                        strategies: vec![market_valuation::StrategyId::new("gift_floor").unwrap()],
+                        strategies: market_valuation::strategies_for(
+                            market_valuation::ValuationTargetKind::Gift,
+                            false,
+                        )
+                        .map(|metadata| {
+                            market_valuation::StrategyId::new(metadata.id)
+                                .expect("registered strategy ID")
+                        })
+                        .collect(),
                         period: None,
                     })
                     .await

@@ -8,6 +8,9 @@ const row = (id: string, revision = "r1"): ValuationStrategy => ({
   id,
   name: id,
   description: "description",
+  input: "selection",
+  targets: ["collection"],
+  requires_period: false,
   documentation_url: `/guides/${id}`,
   documentation_revision: revision,
 });
@@ -30,50 +33,33 @@ test("strategy metadata shares requests, survives one cancelled consumer and exp
     () => now,
   );
   const stop = new AbortController();
-  const first = client.get("one", stop.signal),
-    second = client.get("one", signal());
+  const first = client.list(stop.signal),
+    second = client.list(signal());
   stop.abort();
   await assert.rejects(first);
   assert.equal(aborted, false);
   release([row("one")]);
-  assert.equal((await second).id, "one");
-  assert.equal((await client.get("one", signal())).id, "one");
+  assert.equal((await second)[0].id, "one");
+  assert.equal((await client.list(signal()))[0].id, "one");
   assert.equal(calls, 1);
   now = 60_000;
-  const refreshed = client.get("one", signal());
+  const refreshed = client.list(signal());
   release([row("one", "r2")]);
-  assert.equal((await refreshed).documentation_revision, "r2");
+  assert.equal((await refreshed)[0].documentation_revision, "r2");
   assert.equal(calls, 2);
 });
 
-test("new result IDs revalidate cached metadata once and unknown IDs do not create retry storms", async () => {
-  let calls = 0;
-  const client = new StrategyClient(async () =>
-    ++calls === 1 ? [row("old")] : [row("old"), row("new")],
-  );
-  await client.get("old", signal());
-  assert.equal((await client.get("new", signal())).id, "new");
-  assert.equal(calls, 2);
-  await assert.rejects(client.get("unknown", signal()));
-  assert.equal(calls, 3);
-  await assert.rejects(client.get("unknown", signal()));
-  assert.equal(calls, 3);
-  client.invalidate();
-  await assert.rejects(client.get("unknown", signal()));
-  assert.equal(calls, 4);
-});
-
-test("fresh unknown IDs do not immediately repeat a network read and failures remain retryable", async () => {
+test("failed discovery stays retryable and explicit invalidation reloads the catalog", async () => {
   let calls = 0;
   const client = new StrategyClient(async () => {
     if (++calls === 1) throw Error("offline");
     return [row("one")];
   });
-  await assert.rejects(client.get("one", signal()));
-  assert.equal((await client.get("one", signal())).id, "one");
+  await assert.rejects(client.list(signal()));
+  assert.equal((await client.list(signal()))[0].id, "one");
   assert.equal(calls, 2);
   client.invalidate();
-  await assert.rejects(client.get("unknown", signal()));
+  await client.list(signal());
   assert.equal(calls, 3);
 });
 
@@ -96,4 +82,32 @@ test("resource TTL and invalidation share retention, and guide keys change with 
   cache.invalidate("key");
   assert.equal(await cache.get("key", signal()), 3);
   assert.notEqual(guideKey(row("one", "r1")), guideKey(row("one", "r2")));
+});
+
+test("strategy compatibility uses discovered capabilities rather than strategy IDs", async () => {
+  const { compatibleStrategies } =
+    await import("../src/valuation/strategies.ts");
+  const rows: ValuationStrategy[] = [
+    { ...row("renamed_floor"), targets: ["gift", "criteria"] },
+    { ...row("renamed_composite"), input: "resolved_gift", targets: ["gift"] },
+    {
+      ...row("renamed_history"),
+      input: "selection_with_execution_period",
+      targets: ["gift", "criteria"],
+      requires_period: true,
+    },
+  ];
+  assert.deepEqual(
+    compatibleStrategies(rows, "gift").map((row) => row.id),
+    ["renamed_floor", "renamed_composite"],
+  );
+  assert.deepEqual(
+    compatibleStrategies(rows, "criteria").map((row) => row.id),
+    ["renamed_floor"],
+  );
+  assert.deepEqual(
+    compatibleStrategies(rows, "criteria", true).map((row) => row.id),
+    ["renamed_floor", "renamed_history"],
+  );
+  assert.deepEqual(compatibleStrategies(rows, "backdrop", true), []);
 });

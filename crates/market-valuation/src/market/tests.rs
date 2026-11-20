@@ -6,6 +6,7 @@ use crate::{
 };
 use market_gifts::*;
 use market_hub_protocol::wire as w;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 fn request(target: ValuationTarget) -> ValuationQuery {
@@ -21,7 +22,7 @@ fn request(target: ValuationTarget) -> ValuationQuery {
         }),
     }
 }
-fn execution(i: usize, price: &str, time: &str) -> w::Change {
+pub(super) fn execution(i: usize, price: &str, time: &str) -> w::Change {
     let mut row = ask(
         &format!("execution{i}"),
         "m",
@@ -245,6 +246,46 @@ fn strategies_and_execution_periods_are_explicit_and_validated() {
     assert!(q.validate().is_err());
 }
 
+#[test]
+fn preparation_preserves_strategy_order_and_shares_one_checked_period() {
+    let mut query = request(ValuationTarget::Collection {
+        collection_id: "gift".into(),
+    });
+    query.strategies.reverse();
+    let ids = query.strategies.clone();
+    let expected_period = query.period.clone().unwrap();
+    let prepared = query.prepare().unwrap();
+    assert_eq!(prepared.strategies.len(), ids.len());
+    assert_eq!(prepared.period.unwrap().as_period(), expected_period);
+    let target = Arc::new(ResolvedTarget::Collection {
+        collection_id: "gift".into(),
+    });
+    for (entry, id) in prepared.strategies.iter().zip(&ids) {
+        assert_eq!(entry.metadata().id, id.as_str());
+        assert!(std::ptr::eq(
+            *entry,
+            crate::strategy::registration(id.as_str()).unwrap(),
+        ));
+        if entry.metadata().input.requires_period() {
+            let input = ExecutionInput::resolve(target.clone(), prepared.period).unwrap();
+            assert_eq!(input.period().as_period(), expected_period);
+        }
+    }
+}
+
+#[test]
+fn preparation_checks_unused_periods_without_requiring_execution_bounds() {
+    let mut query = request(ValuationTarget::Collection {
+        collection_id: "gift".into(),
+    });
+    query.strategies = vec![StrategyId::new("ask_floor").unwrap()];
+    query.period.as_mut().unwrap().until = None;
+    assert!(query.clone().prepare().unwrap().period.is_none());
+    let from = query.period.as_ref().unwrap().from.unwrap();
+    query.period.as_mut().unwrap().until = Some(from - jiff::SignedDuration::from_secs(1));
+    assert!(query.prepare().is_err());
+}
+
 #[tokio::test]
 async fn bid_criteria_value_the_joint_selection_including_symbols_and_numbers() {
     let (_dir, mut writer) = book();
@@ -334,6 +375,51 @@ async fn bid_criteria_value_the_joint_selection_including_symbols_and_numbers() 
         };
         assert_eq!(value.price.value().map(Amount::as_str), expected);
     }
+    task.shutdown().await.unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn every_registered_strategy_runs_through_its_typed_input_for_the_same_gift() {
+    let (_dir, writer) = book();
+    let data = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let ids = crate::strategies()
+        .map(|metadata| StrategyId::new(metadata.id).unwrap())
+        .collect::<Vec<_>>();
+    let mut query = request(ValuationTarget::Gift {
+        gift: GiftLookup::Catalog {
+            collection_id: "gift".into(),
+            number: GiftNumber::new(123).unwrap(),
+        },
+    });
+    query.strategies = ids.clone();
+    let report = handle.query(query).await.unwrap();
+    assert_eq!(report.results.len(), ids.len());
+    for (result, id) in report.results.iter().zip(ids) {
+        assert_eq!(result.strategy(), id.as_str());
+        assert_eq!(
+            serde_json::to_value(result).unwrap()["strategy"],
+            id.as_str()
+        );
+        assert!(matches!(result, StrategyOutcome::Value(_)));
+    }
+    let StrategyOutcome::Value(StrategyValuation::AskFloor(ask)) = &report.results[0] else {
+        panic!()
+    };
+    assert_eq!(ask.price.value().unwrap().as_str(), "100");
+    let StrategyOutcome::Value(StrategyValuation::GiftFloor(gift)) = &report.results[3] else {
+        panic!()
+    };
+    assert_eq!(gift.final_mark.value().unwrap().as_str(), "36.67");
+    // The fixture's gift has no symbol; the floor formula does not require one.
+    assert!(report.target.gift().unwrap().traits.pattern.is_none());
     task.shutdown().await.unwrap();
     let stop = CancellationToken::new();
     stop.cancel();

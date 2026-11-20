@@ -42,6 +42,7 @@ pub struct StrategyResponse {
     pub description: &'static str,
     pub documentation_url: String,
     pub documentation_revision: String,
+    pub input: market_valuation::InputContract,
     pub targets: &'static [market_valuation::ValuationTargetKind],
     pub requires_period: bool,
 }
@@ -51,8 +52,9 @@ impl From<&market_valuation::StrategyMetadata> for StrategyResponse {
             id: metadata.id,
             name: metadata.name,
             description: metadata.description,
-            targets: metadata.targets,
-            requires_period: metadata.requires_period,
+            input: metadata.input,
+            targets: metadata.input.targets(),
+            requires_period: metadata.input.requires_period(),
             documentation_revision: content_revision(metadata.documentation.as_bytes()),
             documentation_url: format!("/valuations/strategies/{}/documentation", metadata.id),
         }
@@ -100,30 +102,27 @@ struct StrategyCatalog {
     guides: std::collections::BTreeMap<&'static str, Content>,
 }
 impl StrategyCatalog {
-    fn new(metadata: &[market_valuation::StrategyMetadata]) -> Self {
-        let rows = metadata
-            .iter()
-            .map(StrategyResponse::from)
-            .collect::<Vec<_>>();
+    fn new<'a>(metadata: impl IntoIterator<Item = &'a market_valuation::StrategyMetadata>) -> Self {
+        let mut rows = Vec::new();
+        let mut guides = std::collections::BTreeMap::new();
+        for metadata in metadata {
+            rows.push(StrategyResponse::from(metadata));
+            guides.insert(
+                metadata.id,
+                Content::new(
+                    actix_web::web::Bytes::from_static(metadata.documentation.as_bytes()),
+                    "text/markdown; charset=utf-8",
+                ),
+            );
+        }
         Self {
             index: Content::new(
                 serde_json::to_vec(&rows)
-                    .expect("strategy metadata contains only strings")
+                    .expect("strategy metadata serializes")
                     .into(),
                 "application/json",
             ),
-            guides: metadata
-                .iter()
-                .map(|metadata| {
-                    (
-                        metadata.id,
-                        Content::new(
-                            actix_web::web::Bytes::from_static(metadata.documentation.as_bytes()),
-                            "text/markdown; charset=utf-8",
-                        ),
-                    )
-                })
-                .collect(),
+            guides,
         }
     }
 }
@@ -131,7 +130,7 @@ fn catalog() -> &'static StrategyCatalog {
     static CATALOG: std::sync::OnceLock<StrategyCatalog> = std::sync::OnceLock::new();
     CATALOG.get_or_init(|| StrategyCatalog::new(market_valuation::strategies()))
 }
-#[utoipa::path(get,path="/valuations/strategies",tag="Valuations",summary="Discover valuation strategies and supported targets",description="IDs match strategy fields in valuation responses. Each entry advertises supported target kinds and whether an explicit execution period is required. Each strategy owns its display name, description and Markdown documentation with LaTeX math. Follow documentation_url to fetch the guide. documentation_revision changes with guide content. Both discovery and documentation support ETag revalidation.",responses((status=200,body=Vec<StrategyResponse>,headers(("ETag"=String,description="Strategy catalog content revision"))),(status=304,description="Strategy catalog is unchanged")))]
+#[utoipa::path(get,path="/valuations/strategies",tag="Valuations",summary="Discover valuation strategies and supported targets",description="IDs match strategy fields in valuation responses. Each entry advertises its typed input contract. Supported targets and execution-period requirements are derived from that contract. Each strategy owns its display name, description and Markdown documentation with LaTeX math. Follow documentation_url to fetch the guide. documentation_revision changes with guide content. Both discovery and documentation support ETag revalidation.",responses((status=200,body=Vec<StrategyResponse>,headers(("ETag"=String,description="Strategy catalog content revision"))),(status=304,description="Strategy catalog is unchanged")))]
 pub(crate) async fn strategies(req: actix_web::HttpRequest) -> actix_web::HttpResponse {
     catalog().index.response(&req)
 }
@@ -167,16 +166,14 @@ mod tests {
                     name: "One",
                     description: "first",
                     documentation,
-                    targets: &[],
-                    requires_period: false,
+                    input: market_valuation::InputContract::Selection,
                 },
                 market_valuation::StrategyMetadata {
                     id: "two",
                     name: "Two",
                     description: "second",
                     documentation: "other guide",
-                    targets: &[],
-                    requires_period: false,
+                    input: market_valuation::InputContract::Selection,
                 },
             ]
         }
@@ -229,6 +226,12 @@ mod tests {
             let metadata = market_valuation::strategy(row["id"].as_str().unwrap()).unwrap();
             assert_eq!(row["name"], metadata.name);
             assert_eq!(row["description"], metadata.description);
+            assert_eq!(row["input"], serde_json::to_value(metadata.input).unwrap());
+            assert_eq!(
+                row["targets"],
+                serde_json::to_value(metadata.input.targets()).unwrap()
+            );
+            assert_eq!(row["requires_period"], metadata.input.requires_period());
             let response = test::call_service(
                 &app,
                 test::TestRequest::get()
@@ -264,7 +267,8 @@ mod tests {
         let body = test::read_body(response).await;
         assert_eq!(
             body.as_ref(),
-            market_valuation::gift_floor::METADATA
+            market_valuation::strategy("gift_floor")
+                .unwrap()
                 .documentation
                 .as_bytes()
         );

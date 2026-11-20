@@ -100,3 +100,8 @@ Display fields marked `basis:true` describe the calculation's snapshot input. A 
 
 
 Valuation reports use one tagged resolved target and one `{currency_id,evaluated_at,stale}` context. A resolved gift is `{kind:"gift",gift:{id,collection_id,number?,traits},slug?}`; its strategy data contains only metrics and evidence. There is no gift-specific response format. WebSocket frames are encoded once before queue admission; the retained byte buffer is used for both byte accounting and fragmented writes.
+
+
+Strategy discovery includes `input`: `selection`, `selection_with_execution_period` or `resolved_gift`. The accompanying `targets` and `requires_period` are derived from that contract. Query parameters are unchanged: callers submit a target/lookup, currency, explicit strategies and, for execution strategies, a nonempty historical period with both bounds. Target resolution happens once; typed input preparation and per-strategy failures use the same path for every strategy, including `gift_floor`. Missing optional gift attributes retain typed partial metric issues.
+
+Clients may filter discovery by `targets` and `requires_period` to build an explicit selection. The bot and GUI order details select compatible strategies without periods; the GUI target panel lets users choose period-dependent strategies. These projections come from each typed input contract. Domain facts are resolved by the service, and callers do not submit `SelectionInput`, `ExecutionInput` or resolved gift facts directly. Strategy names, display fields and notes belong to the registry/results, not transport handlers.

@@ -2,9 +2,9 @@
 mod display;
 pub use display::{DisplayAttribute, DisplayField, DisplayValue, ValuationDisplay};
 pub mod gift_floor;
-pub use gift_floor::{GiftFloorEvidence, GiftFloorValuation, MINIMUM_MULTIPLIER_GIFTS};
+pub use gift_floor::{GiftFloor, GiftFloorEvidence, GiftFloorValuation, MINIMUM_MULTIPLIER_GIFTS};
 mod strategy;
-pub use strategy::{StrategyMetadata, strategies, strategy};
+pub use strategy::{Strategy, StrategyMetadata, strategies, strategies_for, strategy};
 mod client;
 mod market;
 pub use market::*;

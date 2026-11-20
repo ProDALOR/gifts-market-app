@@ -25,8 +25,10 @@ const options=new Map([
 import {loadAnimationData} from '/src/previews/animation-data.ts';
 import {useBackgroundPlaybackSuspension} from '/src/previews/use-playback.ts';
 import {ValuationInfo} from '/src/orderbook/valuation-info.tsx';
-const valuationState={key:'preview',fields:{primary:[],secondary:[]},loading:false,
- report:{strategy:'preview',sync:{state:'live'},evaluated_at:'2026-11-18T12:00:00Z',display:{note:'Fixture estimate'}}};
+const previewStrategy={id:'preview',name:'Preview strategy',description:'Fixture strategy',input:'resolved_gift',targets:['gift'],requires_period:false,documentation_url:'/__preview_guide.md',documentation_revision:'one'};
+const previewResult={strategy:'preview',data:{},display:{fields:[],note:'Fixture estimate'}};
+const valuationState={key:'preview',strategy:previewStrategy,result:previewResult,strategies:[previewStrategy],fields:{primary:[],secondary:[]},loading:false,
+ report:{target:{kind:'gift',gift:{id:'gift',collection_id:'gift',traits:{}}},currency_id:'GRAM',stale:false,evaluated_at:'2026-11-18T12:00:00Z',results:[previewResult]}};
 const root=createRoot(document.getElementById('fixture'));
 window.mount=(large=false)=>root.render(React.createElement(GiftPreview,{order,options,fallback:'G',size:large?'large':'small',playback:large?'detail':'interaction'},
  React.createElement('span',{className:'venue-icon',style:{position:'relative',zIndex:4}},React.createElement(VenueIcon,{name:'MRKT'}))));
@@ -604,8 +606,8 @@ try {
     .waitFor();
   assert.equal(
     metadataRequests,
-    1,
-    "Reopening the actual popup reuses discovery",
+    0,
+    "The popup reuses the supplied request metadata",
   );
   assert.equal(
     guideRequests,

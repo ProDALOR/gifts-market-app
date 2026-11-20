@@ -15,7 +15,11 @@ pub(super) fn valuation(value: &ValuationReport) -> Reply {
         .unwrap_or_else(|| "Gift valuation".into());
     let mut text = format!("{label}\nCurrency: {}", value.currency_id);
     for result in &value.results {
-        for field in result.display(&value.currency_id).fields {
+        let name = market_valuation::strategy(result.strategy())
+            .map_or(result.strategy(), |metadata| metadata.name);
+        text.push_str(&format!("\n\n{name}"));
+        let display = result.display(&value.currency_id);
+        for field in display.fields {
             text.push_str(&format!("\n\n{}: ", field.label));
             match field.value {
                 DisplayValue::Currency {
@@ -30,14 +34,17 @@ pub(super) fn valuation(value: &ValuationReport) -> Reply {
                 }
             }
         }
+        if let Some(summary) = display.summary {
+            text.push_str(&format!("\n{summary}"));
+        }
+        if !display.note.is_empty() {
+            text.push_str(&format!("\n{}", display.note));
+        }
     }
     text.push_str(&format!(
         "\n\nEvaluated: {}",
         value.evaluated_at.strftime("%Y-%m-%d %H:%M:%S UTC")
     ));
-    text.push_str(
-        "\nBased on eligible asks, before fees. The final mark uses unrounded multipliers.",
-    );
     if value.stale {
         text.push_str("\nMarket updates are delayed; this estimate may be outdated.");
     }
@@ -130,11 +137,35 @@ mod tests {
             stale: false,
             results: vec![StrategyOutcome::Value(StrategyValuation::GiftFloor(report))],
         };
+        let mut mark = mark;
+        mark.results.insert(
+            0,
+            StrategyOutcome::Value(StrategyValuation::AskFloor(AskFloorValuation {
+                price: metric("100"),
+                evidence: FloorEvidence {
+                    listings: 2,
+                    gifts: 1,
+                },
+            })),
+        );
+        mark.results.push(StrategyOutcome::Error {
+            strategy: StrategyId::new("external_strategy").unwrap(),
+            error: StrategyFailure {
+                code: ValuationErrorCode::NotEnoughData,
+                message: "History unavailable".into(),
+            },
+        });
         let text = valuation(&mark).text;
         assert!(text.contains("Collection floor: 3.123456789 GRAM"));
         assert!(text.contains("Model multiplier: 1.20×"));
         assert!(text.contains("Backdrop multiplier: 3.67×"));
         assert!(text.contains("Final mark: 36.67 GRAM"));
         assert!(text.contains("Model × backdrop floor: 100 GRAM"));
+        assert!(text.contains("Ask floor"));
+        assert!(text.contains("Gift floor"));
+        assert!(text.contains("external_strategy"));
+        assert!(text.contains("History unavailable"));
+        assert!(text.contains("Lowest eligible ask, before fees."));
+        assert!(!text.contains("uses unrounded multipliers"));
     }
 }

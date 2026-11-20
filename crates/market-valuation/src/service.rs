@@ -2,7 +2,7 @@ use crate::{floor_projection::FloorRead, source::ValuationSource, *};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 pub(crate) enum Work {
-    Query(ValuationQuery),
+    Query(crate::market::PreparedQuery),
     Floors {
         request: FloorQuery,
         previous: Option<Arc<FloorRead>>,
@@ -36,8 +36,8 @@ impl ValuationHandle {
         &self,
         request: ValuationQuery,
     ) -> Result<Arc<ValuationReport>, ValuationError> {
-        request.validate()?;
-        let currency = request.currency_id.clone();
+        let request = request.prepare()?;
+        let currency = request.currency().clone();
         let result = self.invoke(Work::Query(request), currency).await?;
         match &result.data {
             Output::Query(report) => Ok(report.clone()),

@@ -50,41 +50,18 @@ impl Handler<Evaluate<crate::service::Work, crate::service::Output, ValuationErr
                         )?)
                     }
                     crate::service::Work::Query(input) => {
-                        input.validate()?;
-                        let context = ValuationContext::new(&snapshot, &input, &books)?;
+                        snapshot.require_currency(&input.currency_id)?;
+                        let target = Arc::new(input.target.resolve(&snapshot)?);
+                        let context = ValuationContext::new(&snapshot, &input.currency_id, &books);
                         let mut results = Vec::with_capacity(input.strategies.len());
-                        for id in &input.strategies {
+                        for entry in &input.strategies {
                             snapshot.check_cancelled()?;
-                            let result = match id.as_str() {
-                                "ask_floor" => {
-                                    AskFloor.evaluate(&context).map(StrategyValuation::AskFloor)
-                                }
-                                "execution_mean" => ExecutionMean
-                                    .evaluate(&context)
-                                    .map(StrategyValuation::ExecutionMean),
-                                "execution_median" => ExecutionMedian
-                                    .evaluate(&context)
-                                    .map(StrategyValuation::ExecutionMedian),
-                                "gift_floor" => match &input.target {
-                                    ValuationTarget::Gift { .. } => {
-                                        context.gift_floor().map(StrategyValuation::GiftFloor)
-                                    }
-                                    _ => Err(ValuationError::with_details(
-                                        ValuationErrorCode::UnsupportedTarget,
-                                        "gift_floor requires an individual gift",
-                                        ValuationErrorDetails::strategy(id.clone()),
-                                    )),
-                                },
-                                _ => {
-                                    return Err(ValuationError::invalid(
-                                        "unknown valuation strategy",
-                                    ));
-                                }
-                            };
+                            let result = entry.evaluate(target.clone(), input.period, &context);
                             results.push(match result {
                                 Ok(result) => StrategyOutcome::Value(result),
                                 Err(error) => StrategyOutcome::Error {
-                                    strategy: id.clone(),
+                                    strategy: StrategyId::new(entry.metadata().id)
+                                        .expect("registered strategy ID"),
                                     error: StrategyFailure {
                                         code: error.code(),
                                         message: error.message().to_owned(),
@@ -96,7 +73,7 @@ impl Handler<Evaluate<crate::service::Work, crate::service::Output, ValuationErr
                         let evaluated_at = jiff::Timestamp::now();
                         let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
                         let report = ValuationReport {
-                            target: context.target.clone(),
+                            target: target.as_ref().clone(),
                             currency_id: input.currency_id.clone(),
                             evaluated_at,
                             stale,

@@ -10,7 +10,7 @@ import type {
 import { valuation } from "../market";
 import { Modal } from "../ui/modal";
 import { ValuationFields } from "./display";
-import { strategyClient } from "./strategies";
+import { compatibleStrategies, strategyClient } from "./strategies";
 import { playbackBudget } from "../previews/playback-budget";
 import { useMarketStatus } from "../use-market-status";
 import { liveSocket } from "../live-socket";
@@ -73,7 +73,8 @@ function ValuationPanel({
   );
   const [until, setUntil] = useState(() => localTime(new Date()));
   const [strategies, setStrategies] = useState<ValuationStrategy[]>();
-  const [selected, setSelected] = useState<string[]>([]);
+  // Undefined means all compatible strategies; explicit choices survive target changes.
+  const [selected, setSelected] = useState<string[]>();
   const [metadataAttempt, setMetadataAttempt] = useState(0);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -101,9 +102,6 @@ function ValuationPanel({
       .then((rows) => {
         if (stop.signal.aborted) return;
         setStrategies(rows);
-        setSelected(
-          rows.filter((row) => row.targets.includes(kind)).map((row) => row.id),
-        );
         setError("");
       })
       .catch((cause) => {
@@ -116,10 +114,12 @@ function ValuationPanel({
       });
     return () => stop.abort();
   }, [metadataAttempt]);
-  const available =
-    strategies?.filter((row) => row.targets.includes(kind)) || [];
+  const available = compatibleStrategies(strategies ?? [], kind, true);
+  const selectedIds = available
+    .filter((row) => selected === undefined || selected.includes(row.id))
+    .map((row) => row.id);
   const needsPeriod = available.some(
-    (row) => selected.includes(row.id) && row.requires_period,
+    (row) => selectedIds.includes(row.id) && row.requires_period,
   );
   const needsModel = kind === "model" || kind === "model_backdrop";
   const needsBackdrop = kind === "backdrop" || kind === "model_backdrop";
@@ -169,9 +169,7 @@ function ValuationPanel({
         {
           target,
           currency_id: currency,
-          strategies: selected.filter((id) =>
-            available.some((row) => row.id === id),
-          ),
+          strategies: selectedIds,
           period,
         },
         stop.signal,
@@ -264,13 +262,13 @@ function ValuationPanel({
             <label className="target-strategy" key={row.id}>
               <input
                 type="checkbox"
-                checked={selected.includes(row.id)}
+                checked={selectedIds.includes(row.id)}
                 onChange={(e) => {
                   clear();
-                  setSelected((previous) =>
+                  setSelected(
                     e.target.checked
-                      ? [...previous, row.id]
-                      : previous.filter((id) => id !== row.id),
+                      ? [...selectedIds, row.id]
+                      : selectedIds.filter((id) => id !== row.id),
                   );
                 }}
               />
@@ -282,6 +280,11 @@ function ValuationPanel({
           ))}
         </fieldset>
         {!strategies && !error && <p role="status">Loading strategies…</p>}
+        {strategies && !available.length && (
+          <p className="valuation-note">
+            No compatible strategies for this target.
+          </p>
+        )}
         {needsPeriod && (
           <fieldset>
             <legend>Observed execution period</legend>
@@ -327,7 +330,7 @@ function ValuationPanel({
           onClick={() => void calculate()}
           disabled={
             pending ||
-            !available.some((row) => selected.includes(row.id)) ||
+            !selectedIds.length ||
             (needsModel && !model) ||
             (needsBackdrop && !backdrop)
           }

@@ -9,7 +9,11 @@ pub(super) struct ExecutionStatistics {
     pub evidence: ExecutionEvidence,
 }
 impl ExecutionStatistics {
-    pub fn read(context: &ValuationContext<'_>) -> Result<Self, ValuationError> {
+    pub fn read(
+        context: &ValuationContext<'_>,
+        input: &ExecutionInput,
+    ) -> Result<Self, ValuationError> {
+        let target = input.selection().target();
         let mut result = Self {
             prices: Vec::new(),
             evidence: ExecutionEvidence {
@@ -17,21 +21,17 @@ impl ExecutionStatistics {
                 gifts: 0,
                 venues: 0,
                 minimum_executions: MINIMUM,
-                minimum_gifts: if context.target.gift().is_some() {
-                    1
-                } else {
-                    MINIMUM
-                },
+                minimum_gifts: if target.gift().is_some() { 1 } else { MINIMUM },
                 first_execution: None,
                 last_execution: None,
             },
         };
         let mut gifts = BTreeSet::new();
         let mut venues = BTreeSet::new();
-        let mut query = context.target.query(
-            context.currency.clone(),
+        let mut query = target.query(
+            context.currency().clone(),
             OrderSource::History,
-            context.period.cloned(),
+            Some(input.period().as_period()),
         );
         query.sort = Some(GiftSort::TimeDesc);
         let mut token = String::new();
@@ -39,7 +39,7 @@ impl ExecutionStatistics {
         let mut budget = market_replica::catalog_read::ScanBudget::default();
         loop {
             budget.page()?;
-            let page = context.snapshot.valuation_orders(&query, token)?;
+            let page = context.snapshot().valuation_orders(&query, token)?;
             scanned += page.data.len();
             if scanned > MAX_OBSERVATIONS {
                 return Err(ValuationError::capacity(
@@ -47,8 +47,8 @@ impl ExecutionStatistics {
                 ));
             }
             for order in page.data {
-                context.snapshot.check_cancelled()?;
-                if !eligible(&order, &context.target) {
+                context.snapshot().check_cancelled()?;
+                if !eligible(&order, target) {
                     continue;
                 }
                 result.prices.push(order.price.clone());

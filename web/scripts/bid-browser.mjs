@@ -51,6 +51,24 @@ const server = await createServer({
             res.end(await server.transformIndexHtml(req.url, html));
             return;
           }
+          if (req.url === "/valuations/strategies") {
+            res.setHeader("Content-Type", "application/json");
+            res.end(
+              JSON.stringify([
+                {
+                  id: "ask_floor",
+                  name: "Matching asks",
+                  description: "Fixture",
+                  input: "selection",
+                  targets: ["criteria"],
+                  requires_period: false,
+                  documentation_url: "/guide",
+                  documentation_revision: "1",
+                },
+              ]),
+            );
+            return;
+          }
           if (!req.url.startsWith("/media/")) return next();
           requests.push(req.url);
           assert.ok(
@@ -493,8 +511,8 @@ try {
   );
   assert.deepEqual(
     unexpected,
-    [],
-    "Criteria bid previews need no HTTP API requests",
+    ["/valuations/strategies"],
+    "All bid details share one strategy discovery request",
   );
   assert.deepEqual(errors, []);
   console.log(

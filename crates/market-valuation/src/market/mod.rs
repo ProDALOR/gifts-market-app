@@ -1,13 +1,20 @@
-//! Independently queryable targets and typed estimators, evaluated in one admitted snapshot.
+//! Independently queryable targets and typed strategies, evaluated in one admitted snapshot.
 mod actor;
-mod estimators;
+mod context;
 mod execution;
+mod inputs;
+mod strategies;
 mod target;
 use crate::*;
 pub(crate) use actor::MarketValuationActor;
-pub use estimators::{AskFloor, Estimator, ExecutionMean, ExecutionMedian, ValuationContext};
+pub use context::ValuationContext;
+pub use inputs::{
+    ExecutionInput, ExecutionPeriod, InputContract, ResolvedGiftInput, SelectionInput,
+    StrategyInput,
+};
 use market_gifts::{Amount, CurrencyId, Period};
 use serde::{Deserialize, Serialize};
+pub use strategies::{AskFloor, ExecutionMean, ExecutionMedian};
 pub use target::{ResolvedTarget, ValuationTarget, ValuationTargetKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,49 +26,73 @@ pub struct ValuationQuery {
     /// Explicit, nonempty selection from the strategy catalog. Input order is preserved.
     #[cfg_attr(feature = "schema", schema(min_items = 1, max_items = 8))]
     pub strategies: Vec<StrategyId>,
-    /// Both bounds are required when selecting an execution strategy; until is exclusive.
+    /// Execution strategies require a nonempty historical period with both bounds; until is exclusive.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub period: Option<Period>,
 }
 impl ValuationQuery {
+    /// Checks request options without reading the market. Target and currency facts
+    /// are checked against the admitted snapshot by `ValuationHandle::query`.
     pub fn validate(&self) -> Result<(), ValuationError> {
+        self.resolve_options().map(|_| ())
+    }
+    pub(crate) fn prepare(self) -> Result<PreparedQuery, ValuationError> {
+        let (strategies, period) = self.resolve_options()?;
+        Ok(PreparedQuery {
+            target: self.target,
+            currency_id: self.currency_id,
+            strategies,
+            period,
+        })
+    }
+    fn resolve_options(
+        &self,
+    ) -> Result<
+        (
+            Vec<&'static crate::strategy::Registration>,
+            Option<ExecutionPeriod>,
+        ),
+        ValuationError,
+    > {
         if self.strategies.is_empty() || self.strategies.len() > 8 {
             return Err(ValuationError::invalid("select 1..=8 valuation strategies"));
         }
         let mut seen = std::collections::BTreeSet::new();
+        let mut strategies = Vec::with_capacity(self.strategies.len());
         for id in &self.strategies {
-            if crate::strategy(id.as_str()).is_none() || !seen.insert(id) {
-                return Err(ValuationError::invalid(
-                    "unknown or repeated valuation strategy",
-                ));
+            let registration = crate::strategy::registration(id.as_str())
+                .ok_or_else(|| ValuationError::invalid("unknown valuation strategy"))?;
+            if !seen.insert(id) {
+                return Err(ValuationError::invalid("repeated valuation strategy"));
             }
+            strategies.push(registration);
         }
-        if let Some(period) = &self.period {
-            period
-                .validate()
-                .map_err(|e| ValuationError::invalid(e.to_string()))?;
-        }
-        if self
-            .strategies
+        let period = if strategies
             .iter()
-            .any(|id| crate::strategy(id.as_str()).is_some_and(|metadata| metadata.requires_period))
+            .any(|entry| entry.metadata().input.requires_period())
         {
-            if !self
-                .period
-                .as_ref()
-                .is_some_and(|p| p.from.is_some() && p.until.is_some())
-            {
-                return Err(ValuationError::invalid(
-                    "execution strategies require explicit from and until bounds",
-                ));
+            Some(ExecutionPeriod::resolve(self.period.as_ref())?)
+        } else {
+            if let Some(period) = &self.period {
+                period
+                    .validate()
+                    .map_err(|error| ValuationError::invalid(error.to_string()))?;
             }
-            if self.period.as_ref().unwrap().until.unwrap() > jiff::Timestamp::now() {
-                return Err(ValuationError::invalid(
-                    "execution period cannot end in the future",
-                ));
-            }
-        }
-        Ok(())
+            None
+        };
+        Ok((strategies, period))
+    }
+}
+/// Immutable request options checked before admission; target facts still resolve in the pinned view.
+pub(crate) struct PreparedQuery {
+    target: ValuationTarget,
+    currency_id: CurrencyId,
+    strategies: Vec<&'static crate::strategy::Registration>,
+    period: Option<ExecutionPeriod>,
+}
+impl PreparedQuery {
+    pub(crate) fn currency(&self) -> &CurrencyId {
+        &self.currency_id
     }
 }
 
@@ -125,6 +156,16 @@ pub enum StrategyValuation {
     ExecutionMedian(ExecutionPriceValuation),
     GiftFloor(GiftFloorValuation),
 }
+impl StrategyValuation {
+    pub fn strategy(&self) -> &'static str {
+        match self {
+            Self::AskFloor(_) => AskFloor::ID,
+            Self::ExecutionMean(_) => ExecutionMean::ID,
+            Self::ExecutionMedian(_) => ExecutionMedian::ID,
+            Self::GiftFloor(_) => GiftFloor::ID,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct StrategyFailure {
@@ -152,6 +193,12 @@ pub struct ValuationReport {
     pub results: Vec<StrategyOutcome>,
 }
 impl StrategyOutcome {
+    pub fn strategy(&self) -> &str {
+        match self {
+            Self::Value(value) => value.strategy(),
+            Self::Error { strategy, .. } => strategy.as_str(),
+        }
+    }
     pub fn display<'a>(&'a self, currency: &'a CurrencyId) -> ValuationDisplay<'a> {
         let (price, summary, note) = match self {
             Self::Value(StrategyValuation::GiftFloor(data)) => return data.display(currency),
