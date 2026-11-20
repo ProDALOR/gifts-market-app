@@ -1,7 +1,7 @@
 //! Order targets and exact market quotes.
 use crate::{
-    Amount, BackdropId, CollectibleGift, CollectionId, CurrencyId, GiftNumberRange, InvalidValue,
-    ModelId, OrderId, PatternId, VenueId,
+    Amount, BackdropId, CollectibleGift, CollectionId, CurrencyId, GiftId, GiftNumberRange,
+    InvalidValue, ModelId, OrderId, PatternId, VenueId,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 /// Eligible ask with concrete trait hints, suitable for read-only market calculations.
 #[derive(Debug, Clone)]
 pub struct AskQuote {
+    /// Stable collectible identity across venues; broad criteria have no concrete gift.
+    pub gift_id: Option<GiftId>,
     pub venue_id: VenueId,
     pub price: Amount,
     pub model_id: Option<ModelId>,

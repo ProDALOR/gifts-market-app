@@ -25,9 +25,9 @@ $$
 
 They are dimensionless: a model multiplier of 1.50× means its floor is 1.5 times the collection floor.
 
-Each multiplier requires at least **3 eligible listing rows** in the collection and at least **3** matching its selected trait. The collection floor must be positive. The matching model-and-backdrop floor needs at least one eligible matching listing.
+Each multiplier requires at least **3 distinct identifiable gifts** in the collection and at least **3** matching its selected trait. The collection floor must be positive. The matching model-and-backdrop floor needs at least one eligible matching listing.
 
-These counts describe listings, not independent gifts, sellers or completed sales. The same gift listed on multiple venues can contribute multiple rows.
+Evidence reports both eligible listing rows and distinct gifts for the collection, model, backdrop and pair. The same gift listed on multiple venues counts once toward the distinct-gift requirement. All its eligible asks still contribute to the floor price. Broad criteria without a concrete identity can supply price evidence, but do not count as identifiable gifts. Distinct gifts do not imply independent sellers or completed sales.
 
 ## Final mark
 
@@ -47,6 +47,8 @@ E = \frac{F_M \cdot F_B}{F_C}
 $$
 
 The lower of the matching floor and the estimate wins. Both multipliers and the matching floor must be available; a missing input does not produce a fallback mark.
+
+This is a **floor-based heuristic**. Holding the model and backdrop floors fixed, lowering the collection floor increases the multiplier estimate. For example, changing the collection floor from 3 to 1 changes an estimate based on model 10 and backdrop 11 from 36.67 to 110, before applying the matching-floor cap. A cheap baseline listing can therefore materially affect the result. This formula has not been calibrated against historical executions; no statistical confidence or expected sale price is implied. Alternative estimators should be compared against executions as separately named strategies before replacing this formula.
 
 ## Rounding
 
@@ -77,15 +79,17 @@ Using the displayed multipliers would give a different result. If the matching f
 
 A metric shows an explanation rather than treating missing data as zero:
 
-- **Not enough data:** no matching asks or too few samples. The final mark also uses this when required inputs are unavailable.
+- **Not enough data:** no matching asks or too few distinct identifiable gifts.
 - **Missing trait:** the gift's model or backdrop is absent or cannot resolve to a catalog choice.
 - **Invalid baseline:** the collection floor cannot serve as a positive denominator.
 - **Calculation overflow:** a required value cannot be represented safely.
+
+The final mark preserves the original issue, evidence and a typed `dependency` identifying the failed component, such as `backdrop_multiplier` or `model_backdrop_floor`.
 
 Gift identity must be present in available market listings. Gifts missing from that data cannot be resolved for valuation. Malformed source data can make the request fail rather than supply a price.
 
 ## Reading the result
 
-The calculation time shows when the estimate was computed. Related market changes refresh cached statistics, and periodic checks account for expiring asks. A stale indicator means updates were delayed during evaluation. If updates are interrupted while a gift is open, the app keeps its estimate flagged as potentially outdated until you refresh it after updates resume. Calculation time does not indicate when every underlying listing changed.
+The calculation time shows when the estimate was computed. Each request checks cached statistics against its pinned market view, the earliest eligible ask expiry and a five-minute safety age. Related market changes and expired asks cause an on-demand rebuild; unchanged data can be reused without a periodic scan. A stale indicator means updates were delayed during evaluation. If updates are interrupted while a gift is open, the app keeps its estimate flagged as potentially outdated until you refresh it after updates resume. Calculation time does not indicate when every underlying listing changed.
 
 This is an estimate based on asks, **before fees**. It is not a completed-sale price, an offer to buy, or a guarantee that a gift will sell for the final mark. Pattern, gift number and other premiums are not modeled separately by this strategy.

@@ -402,11 +402,11 @@ try {
         note: "Current asks, before fees.",
       },
       evidence: {
-        collection_samples: 5,
-        model_samples: 3,
-        backdrop_samples: 3,
-        model_backdrop_samples: 1,
-        minimum_multiplier_samples: 3,
+        collection: { listings: 5, gifts: 5 },
+        model: { listings: 3, gifts: 3 },
+        backdrop: { listings: 3, gifts: 3 },
+        model_backdrop: { listings: 1, gifts: 1 },
+        minimum_multiplier_gifts: 3,
       },
     };
   };

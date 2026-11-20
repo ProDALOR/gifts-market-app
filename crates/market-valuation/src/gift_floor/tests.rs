@@ -1,8 +1,11 @@
+use super::statistics::BookCache;
 use super::*;
 use crate::integration_tests::{entity, fixture, hold};
+use crate::source::BookScope;
 use crate::test_support::MarketDataService;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
+use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 fn ask(
@@ -189,7 +192,7 @@ async fn unified_report_uses_combination_floor_and_full_precision_then_reacts_to
     assert_eq!(first.model_multiplier.value().unwrap().as_str(), "3.33");
     assert_eq!(first.backdrop_multiplier.value().unwrap().as_str(), "3.67");
     assert_eq!(first.final_mark.value().unwrap().as_str(), "36.67");
-    assert_eq!(first.evidence.collection_samples, 12);
+    assert_eq!(first.evidence.collection.listings, 12);
     writer
         .apply(w::Batch {
             cursor: "replaced".into(),
@@ -213,7 +216,7 @@ async fn statistics_cache_ignores_unrelated_metadata_and_tracks_backdrop_depende
     let data = MarketDataService::start(writer.reader(), 4, 1)
         .await
         .unwrap();
-    let mut books = Books::default();
+    let books = BookCache::default();
     let scope = BookScope {
         collection: "gift".into(),
         currency: "GRAM".into(),
@@ -253,6 +256,136 @@ async fn statistics_cache_ignores_unrelated_metadata_and_tracks_backdrop_depende
     let stop = CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn unchanged_statistics_survive_thirty_seconds_and_rebuild_at_the_safety_age() {
+    let (_dir, writer) = book();
+    let data = MarketDataService::start(writer.reader(), 2, 1)
+        .await
+        .unwrap();
+    tokio::time::pause();
+    let books = BookCache::default();
+    let scope = BookScope {
+        collection: "gift".into(),
+        currency: "GRAM".into(),
+    };
+    let first = books.get(&data.reader.snapshot().unwrap(), &scope).unwrap();
+    tokio::time::advance(Duration::from_secs(31)).await;
+    assert!(Arc::ptr_eq(
+        &first,
+        &books.get(&data.reader.snapshot().unwrap(), &scope).unwrap()
+    ));
+    tokio::time::advance(Duration::from_secs(270)).await;
+    assert!(!Arc::ptr_eq(
+        &first,
+        &books.get(&data.reader.snapshot().unwrap(), &scope).unwrap()
+    ));
+    tokio::time::resume();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn cross_venue_listings_and_broad_criteria_cannot_satisfy_distinct_gift_requirements() {
+    let (_dir, mut writer) = book();
+    // All pair listings identify the same collectible, despite different venues and prices.
+    let mut changes = vec![entity(w::entity::Entity::Venue(w::Venue {
+        id: "second".into(),
+        name: "Second venue".into(),
+    }))];
+    for i in 0..3 {
+        let mut listing = ask(&format!("pair{i}"), "m", "b", "100", 123, None);
+        let Some(w::change::Change::Upsert(row)) = &mut listing.change else {
+            unreachable!()
+        };
+        let Some(w::entity::Entity::Order(order)) = &mut row.entity else {
+            unreachable!()
+        };
+        order.item_id = Some("same-gift".into());
+        changes.push(listing);
+    }
+    let mut second = ask("cross-listed", "m", "b", "95", 123, None);
+    let Some(w::change::Change::Upsert(row)) = &mut second.change else {
+        unreachable!()
+    };
+    let Some(w::entity::Entity::Order(order)) = &mut row.entity else {
+        unreachable!()
+    };
+    order.item_id = Some("same-gift".into());
+    order.book.as_mut().unwrap().venue_id = "second".into();
+    changes.push(second);
+    // The model-only/baseline/backdrop groups become unidentified broad asks.
+    for group in ["model", "backdrop", "base"] {
+        for i in 0..3 {
+            let (model, backdrop) = match group {
+                "model" => ("m", "otherb"),
+                "backdrop" => ("otherm", "b"),
+                _ => ("otherm", "otherb"),
+            };
+            let mut broad = ask(
+                &format!("{group}{i}"),
+                model,
+                backdrop,
+                "10",
+                1000 + i,
+                None,
+            );
+            let Some(w::change::Change::Upsert(row)) = &mut broad.change else {
+                unreachable!()
+            };
+            let Some(w::entity::Entity::Order(order)) = &mut row.entity else {
+                unreachable!()
+            };
+            order.item_id = None;
+            order.attributes.remove("tg.number");
+            changes.push(broad);
+        }
+    }
+    writer
+        .apply(w::Batch {
+            changes,
+            cursor: "duplicates".into(),
+        })
+        .unwrap();
+    let data = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let mark = handle.gift(request()).await.unwrap();
+    assert_eq!(
+        mark.evidence.collection,
+        FloorEvidence {
+            listings: 13,
+            gifts: 1
+        }
+    );
+    assert_eq!(
+        mark.evidence.model,
+        FloorEvidence {
+            listings: 7,
+            gifts: 1
+        }
+    );
+    assert_eq!(
+        mark.evidence.model_backdrop,
+        FloorEvidence {
+            listings: 4,
+            gifts: 1
+        }
+    );
+    assert_eq!(mark.model_backdrop_floor.value().unwrap().as_str(), "95");
+    let ValuationMetric::Unavailable { error } = &mark.final_mark else {
+        panic!("duplicate listings cannot produce a mark")
+    };
+    assert_eq!(error.code, ValuationIssueCode::NotEnoughData);
+    assert_eq!(error.available_samples, Some(1));
+    assert_eq!(error.required_samples, Some(3));
+    assert_eq!(error.dependency, Some(ValuationDependency::ModelMultiplier));
+    stop(data, task).await;
 }
 
 #[tokio::test]
@@ -314,39 +447,6 @@ async fn gift_actor_shutdown_cancels_a_request_waiting_for_the_shared_reader() {
 }
 
 #[tokio::test]
-async fn refresh_deadline_cancels_queued_work_without_retaining_capacity() {
-    let (_dir, writer) = book();
-    let data = MarketDataService::start(writer.reader(), 1, 1)
-        .await
-        .unwrap();
-    let held = hold(&data.reader).await;
-    let error = refresh(
-        data.reader.clone(),
-        Arc::new(Mutex::new(Books::default())),
-        BookScope {
-            collection: "gift".into(),
-            currency: "GRAM".into(),
-        },
-        Duration::from_millis(20),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code(), crate::ValuationErrorCode::TimedOut);
-    drop(held);
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        data.reader.prepare(|snapshot| snapshot.revision()),
-    )
-    .await
-    .unwrap()
-    .unwrap()
-    .unwrap();
-    let stop = CancellationToken::new();
-    stop.cancel();
-    data.task.run(stop).await.unwrap();
-}
-
-#[tokio::test]
 async fn strategy_display_preserves_typed_values_precision_and_structured_unavailability() {
     let (_dir, mut writer) = book();
     writer
@@ -372,6 +472,7 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
             message: "More observations are needed".into(),
             required_samples: Some(3),
             available_samples: Some(1),
+            dependency: None,
         },
     };
     let display = output.display();

@@ -1703,7 +1703,11 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
         report["backdrop_multiplier"]["error"]["code"],
         "missing_trait"
     );
-    assert_eq!(report["final_mark"]["error"]["code"], "not_enough_data");
+    assert_eq!(report["final_mark"]["error"]["code"], "missing_trait");
+    assert_eq!(
+        report["final_mark"]["error"]["dependency"],
+        "backdrop_multiplier"
+    );
     let primary = report["display"]["fields"]
         .as_array()
         .unwrap()
@@ -1711,7 +1715,7 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
         .find(|field| field["primary"] == true)
         .unwrap();
     assert_eq!(primary["value"]["kind"], "unavailable");
-    assert_eq!(primary["value"]["label"], "Not enough data");
+    assert_eq!(primary["value"]["label"], "Missing trait");
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }

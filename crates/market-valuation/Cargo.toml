@@ -21,6 +21,7 @@ tokio-util.workspace = true
 jiff.workspace = true
 tracing.workspace = true
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 market-actors.workspace = true
 serde_json.workspace = true
 tempfile = "3"

@@ -61,10 +61,10 @@ impl GiftFloorValuation {
                 .attribute(DisplayAttribute::Backdrop),
             ],
             summary: Some(format!(
-                "{} collection listings",
-                self.evidence.collection_samples
+                "{} distinct gifts · {} collection listings",
+                self.evidence.collection.gifts, self.evidence.collection.listings
             )),
-            note: "Current asks, before fees.",
+            note: "Floor-based heuristic from current asks, before fees.",
         }
     }
 }

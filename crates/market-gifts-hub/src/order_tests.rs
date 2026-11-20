@@ -127,6 +127,7 @@ fn floors_and_order_projection_agree_on_singleton_and_duplicate_model_predicates
         let GiftTarget::Gift { gift } = projected.into_data().target else {
             panic!("expected concrete gift")
         };
+        assert_eq!(quote.gift_id.as_ref(), Some(&gift.id));
         assert_eq!(quote.model_id, gift.traits.model);
     }
 }

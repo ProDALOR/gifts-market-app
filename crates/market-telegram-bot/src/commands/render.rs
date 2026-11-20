@@ -1,7 +1,7 @@
 use super::{CommandKind, Reply};
 use market_gifts::SyncState;
+use market_valuation::DisplayValue;
 use market_valuation::GiftFloorMark;
-use market_valuation::ValuationMetric;
 pub(super) fn error_reply(error: impl std::fmt::Display) -> Reply {
     Reply {
         text: error.to_string().chars().take(300).collect(),
@@ -14,41 +14,16 @@ pub(super) fn valuation(value: &GiftFloorMark) -> Reply {
         .map(ToString::to_string)
         .unwrap_or_else(|| "Gift valuation".into());
     let mut text = format!("{label}\nCurrency: {}", value.currency_id);
-    for (label, metric, ratio, rounded) in [
-        ("Collection floor", &value.collection_floor, false, false),
-        ("Model floor", &value.model_floor, false, false),
-        ("Backdrop floor", &value.backdrop_floor, false, false),
-        (
-            "Model × backdrop floor",
-            &value.model_backdrop_floor,
-            false,
-            false,
-        ),
-        ("Model multiplier", &value.model_multiplier, true, true),
-        (
-            "Backdrop multiplier",
-            &value.backdrop_multiplier,
-            true,
-            true,
-        ),
-        ("Final mark", &value.final_mark, false, true),
-    ] {
-        text.push_str(&format!("\n\n{label}: "));
-        match metric {
-            ValuationMetric::Value { value: amount } => {
-                let amount = if rounded {
-                    format!("{:.2}", amount.decimal())
-                } else {
-                    amount.to_string()
-                };
-                if ratio {
-                    text.push_str(&format!("{amount}×"));
-                } else {
-                    text.push_str(&format!("{amount} {}", value.currency_id));
-                }
-            }
-            ValuationMetric::Unavailable { error } => {
-                text.push_str(&error.message.chars().take(300).collect::<String>())
+    for field in value.data.display().fields {
+        text.push_str(&format!("\n\n{}: ", field.label));
+        match field.value {
+            DisplayValue::Currency {
+                amount,
+                currency_id,
+            } => text.push_str(&format!("{amount} {currency_id}")),
+            DisplayValue::Number { amount, suffix } => text.push_str(&format!("{amount}{suffix}")),
+            DisplayValue::Unavailable { message, .. } => {
+                text.push_str(&message.chars().take(300).collect::<String>())
             }
         }
     }
@@ -117,15 +92,31 @@ mod tests {
             model_floor: metric("10"),
             backdrop_floor: metric("11"),
             model_backdrop_floor: metric("100"),
-            model_multiplier: metric("1.2"),
-            backdrop_multiplier: metric("3.67"),
+            model_multiplier: ValuationMetric::Value {
+                value: Multiplier::new("1.2").unwrap(),
+            },
+            backdrop_multiplier: ValuationMetric::Value {
+                value: Multiplier::new("3.67").unwrap(),
+            },
             final_mark: metric("36.67"),
             evidence: GiftFloorEvidence {
-                collection_samples: 12,
-                model_samples: 6,
-                backdrop_samples: 6,
-                model_backdrop_samples: 3,
-                minimum_multiplier_samples: 3,
+                collection: FloorEvidence {
+                    listings: 12,
+                    gifts: 12,
+                },
+                model: FloorEvidence {
+                    listings: 6,
+                    gifts: 6,
+                },
+                backdrop: FloorEvidence {
+                    listings: 6,
+                    gifts: 6,
+                },
+                model_backdrop: FloorEvidence {
+                    listings: 3,
+                    gifts: 3,
+                },
+                minimum_multiplier_gifts: 3,
             },
         };
         let mark = market_valuation::Mark {

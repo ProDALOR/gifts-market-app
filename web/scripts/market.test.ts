@@ -86,11 +86,11 @@ test("gift valuation preserves every strategy outcome and uses typed requests an
     backdrop_multiplier: metric,
     final_mark: metric,
     evidence: {
-      collection_samples: 3,
-      model_samples: 3,
-      backdrop_samples: 3,
-      model_backdrop_samples: 1,
-      minimum_multiplier_samples: 3,
+      collection: { listings: 3, gifts: 3 },
+      model: { listings: 3, gifts: 3 },
+      backdrop: { listings: 3, gifts: 3 },
+      model_backdrop: { listings: 1, gifts: 1 },
+      minimum_multiplier_gifts: 3,
     },
     display: {
       fields: [

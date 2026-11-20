@@ -3,8 +3,8 @@ mod display;
 pub use display::{DisplayAttribute, DisplayField, DisplayValue, ValuationDisplay};
 pub mod gift_floor;
 pub use gift_floor::{
-    GiftFloorActor, GiftFloorEvidence, GiftFloorMark, GiftFloorValuation,
-    MINIMUM_MULTIPLIER_SAMPLES, ValuationHandle,
+    FloorEvidence, GiftFloorActor, GiftFloorEvidence, GiftFloorMark, GiftFloorValuation,
+    MINIMUM_MULTIPLIER_GIFTS, ValuationHandle,
 };
 mod strategy;
 pub use strategy::{StrategyMetadata, strategies, strategy};

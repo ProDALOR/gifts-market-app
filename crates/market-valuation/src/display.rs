@@ -1,6 +1,6 @@
 //! Strategy-owned display projections. Typed calculation outputs remain authoritative.
-use crate::{ValuationIssueCode, ValuationMetric};
-use market_gifts::{Amount, CurrencyId};
+use crate::{Multiplier, ValuationIssueCode, ValuationMetric};
+use market_gifts::CurrencyId;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -58,27 +58,27 @@ impl<'a> DisplayField<'a> {
         decimals: Option<u8>,
     ) -> Self {
         Self::metric(id, label, metric, |amount| DisplayValue::Currency {
-            amount: formatted(amount, decimals),
+            amount: formatted(amount.decimal(), decimals),
             currency_id,
         })
     }
     pub fn number(
         id: &'static str,
         label: &'static str,
-        metric: &'a ValuationMetric,
+        metric: &'a ValuationMetric<Multiplier>,
         suffix: &'static str,
         decimals: Option<u8>,
     ) -> Self {
         Self::metric(id, label, metric, |amount| DisplayValue::Number {
-            amount: formatted(amount, decimals),
+            amount: formatted(amount.decimal(), decimals),
             suffix,
         })
     }
-    fn metric(
+    fn metric<T>(
         id: &'static str,
         label: &'static str,
-        metric: &'a ValuationMetric,
-        value: impl FnOnce(&Amount) -> DisplayValue<'a>,
+        metric: &'a ValuationMetric<T>,
+        value: impl FnOnce(&T) -> DisplayValue<'a>,
     ) -> Self {
         let value = match metric {
             ValuationMetric::Value { value: amount } => value(amount),
@@ -115,13 +115,13 @@ impl<'a> DisplayField<'a> {
         self
     }
 }
-fn formatted(amount: &Amount, decimals: Option<u8>) -> String {
+fn formatted(amount: rust_decimal::Decimal, decimals: Option<u8>) -> String {
     match decimals {
         None => amount.to_string(),
         Some(decimals) => format!(
             "{:.*}",
             usize::from(decimals),
-            amount.decimal().round_dp(u32::from(decimals))
+            amount.round_dp(u32::from(decimals))
         ),
     }
 }
@@ -129,6 +129,7 @@ fn formatted(amount: &Amount, decimals: Option<u8>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use market_gifts::Amount;
     #[test]
     fn display_precision_is_exact_decimal_and_never_mutates_the_calculated_value() {
         for (input, precision, expected) in [
@@ -143,7 +144,7 @@ mod tests {
             ("2.5", Some(0), "2"),
         ] {
             let amount = Amount::new(input).unwrap();
-            assert_eq!(formatted(&amount, precision), expected);
+            assert_eq!(formatted(amount.decimal(), precision), expected);
             assert_eq!(amount, Amount::new(input).unwrap());
         }
     }

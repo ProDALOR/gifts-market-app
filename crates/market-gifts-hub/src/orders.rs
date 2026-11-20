@@ -115,9 +115,10 @@ pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
         return Ok(None);
     };
     let order = order.into_data();
-    let (model_id, backdrop_id) = match order.target {
-        GiftTarget::Gift { gift } => (gift.traits.model, gift.traits.backdrop),
+    let (gift_id, model_id, backdrop_id) = match order.target {
+        GiftTarget::Gift { gift } => (Some(gift.id), gift.traits.model, gift.traits.backdrop),
         GiftTarget::Criteria { mut criteria } => (
+            None,
             (criteria.models.len() == 1)
                 .then(|| criteria.models.pop())
                 .flatten(),
@@ -128,6 +129,7 @@ pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
         GiftTarget::Unsupported { .. } => return Ok(None),
     };
     Ok(Some(AskQuote {
+        gift_id,
         venue_id: order.book.venue_id,
         price: order.price,
         model_id,
