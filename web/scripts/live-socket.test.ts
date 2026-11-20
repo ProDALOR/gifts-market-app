@@ -57,21 +57,33 @@ const catalog = (id = "catalog") => ({
 });
 const versions = { directory: "d", collections: { gift: "v" } };
 const call = {
-  method: "valuation.evaluate" as const,
-  params: { gift: "Gift-1", currency_id: "GRAM" },
+  method: "valuation.query" as const,
+  params: {
+    target: { kind: "gift" as const, gift: "Gift-1" },
+    currency_id: "GRAM",
+    strategies: ["gift_floor"],
+  },
 };
 const report = {
-  strategy: "gift_floor",
-  evaluated_at: "2026-11-18T12:00:00Z",
-  currency_id: "GRAM",
-  gift: {
-    id: "1",
-    collection_id: "gift",
-    number: 1,
-    traits: { model: null, backdrop: null, pattern: null },
+  target: {
+    kind: "gift",
+    gift: {
+      id: "1",
+      collection_id: "gift",
+      number: 1,
+      traits: { model: null, backdrop: null, pattern: null },
+    },
   },
+  currency_id: "GRAM",
+  evaluated_at: "2026-11-18T12:00:00Z",
   stale: false,
-  display: { fields: [], summary: null, note: "Current asks" },
+  results: [
+    {
+      strategy: "gift_floor",
+      data: {},
+      display: { fields: [], summary: null, note: "Current asks" },
+    },
+  ],
 };
 const result = (id: string) => ({
   type: "result",

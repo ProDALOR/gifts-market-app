@@ -7,35 +7,13 @@ export const valuationStrategies = (
   signal?: AbortSignal,
 ): Promise<ValuationStrategy[]> =>
   request("/valuations/strategies", undefined, signal);
-export type GiftValuationRequest =
-  components["schemas"]["GiftValuationRequest"];
-export type GiftValuationResponse =
-  components["schemas"]["GiftValuationResponse"];
-export type TargetValuationRequest =
-  components["schemas"]["TargetValuationRequest"];
-export type TargetValuationResponse =
-  components["schemas"]["TargetValuationResponse"];
-export const targetValuation = (
-  query: TargetValuationRequest,
+export type ValuationQuery = components["schemas"]["ValuationQuery"];
+export type ValuationResponse = components["schemas"]["ValuationResponse"];
+export const valuation = (
+  query: ValuationQuery,
   signal?: AbortSignal,
-): Promise<TargetValuationResponse> =>
+): Promise<ValuationResponse> =>
   liveSocket.request({ method: "valuation.query", params: query }, signal);
-/** Common GUI envelope; strategy-specific calculation fields stay in the typed API result. */
-export type ValuationView = Pick<
-  GiftValuationResponse,
-  "strategy" | "evaluated_at" | "currency_id" | "stale" | "display"
-> &
-  Partial<
-    Pick<
-      GiftValuationResponse,
-      | "gift"
-      | "collection_floor"
-      | "model_floor"
-      | "backdrop_floor"
-      | "model_backdrop_floor"
-      | "evidence"
-    >
-  >;
 export type MarketStatus = components["schemas"]["MarketStatus"];
 export type Order = components["schemas"]["OrderResponse"];
 export type Sort = components["schemas"]["GiftSort"];
@@ -92,11 +70,6 @@ export async function request<T>(
   if (etag) revision?.(etag[1]);
   return value;
 }
-export const valuation = (
-  query: GiftValuationRequest,
-  signal?: AbortSignal,
-): Promise<GiftValuationResponse> =>
-  liveSocket.request({ method: "valuation.evaluate", params: query }, signal);
 export const catalog = (
   signal: AbortSignal,
   revision?: (value: string) => void,

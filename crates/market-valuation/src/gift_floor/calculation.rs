@@ -5,12 +5,7 @@ use crate::types::*;
 use market_gifts::*;
 use rust_decimal::Decimal;
 impl Statistics {
-    pub fn report(
-        &self,
-        gift: CollectibleGift,
-        lookup: GiftLookup,
-        currency: CurrencyId,
-    ) -> GiftFloorValuation {
+    pub fn report(&self, gift: &CollectibleGift) -> GiftFloorValuation {
         let empty = Floor::default();
         let model = gift
             .traits
@@ -41,11 +36,6 @@ impl Statistics {
             &backdrop_ratio,
         );
         GiftFloorValuation {
-            slug: match lookup {
-                GiftLookup::Slug(slug) => Some(slug),
-                GiftLookup::Catalog { .. } => None,
-            },
-            currency_id: currency,
             collection_floor: self.collection.metric(true),
             model_floor: model_floor.metric(model.is_some()),
             backdrop_floor: backdrop_floor.metric(backdrop.is_some()),
@@ -60,7 +50,6 @@ impl Statistics {
                 model_backdrop: pair.evidence(),
                 minimum_multiplier_gifts: MINIMUM_MULTIPLIER_GIFTS,
             },
-            gift,
         }
     }
 }

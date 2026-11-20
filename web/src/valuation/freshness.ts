@@ -1,5 +1,5 @@
-import type { ValuationView } from "../market.ts";
-import type { ValuesEntry } from "./market-values-controller.ts";
+import type { ValuationResponse } from "../market.ts";
+import type { FloorsEntry } from "./floors-controller.ts";
 import type { MarketStatus } from "../market.ts";
 export function estimateIsStale(
   report: { stale: boolean } | undefined,
@@ -16,13 +16,17 @@ export function estimateIsStale(
 
 /** Compare the original gift estimate with current inputs; the popup retains its own basis. */
 export function giftBasisChanged(
-  report: ValuationView,
-  shared: Pick<ValuesEntry, "floor" | "traits">,
+  report: ValuationResponse,
+  shared: Pick<FloorsEntry, "floor" | "traits">,
 ) {
-  if (!report.evidence || !report.gift || !report.collection_floor)
+  if (report.target.kind !== "gift") return false;
+  const result = report.results.find((row) => row.strategy === "gift_floor");
+  if (!result || "error" in result || result.strategy !== "gift_floor")
     return false;
+  const data = result.data;
+
   const equal = (
-    metric: ValuationView["collection_floor"],
+    metric: typeof data.collection_floor,
     floor: typeof shared.floor | undefined,
     proof: typeof shared.floor.evidence | undefined,
   ) =>
@@ -31,8 +35,8 @@ export function giftBasisChanged(
     !proof ||
     JSON.stringify([metric, proof]) ===
       JSON.stringify([floor.price, floor.evidence]);
-  const model = report.gift.traits.model,
-    backdrop = report.gift.traits.backdrop;
+  const model = report.target.gift.traits.model,
+    backdrop = report.target.gift.traits.backdrop;
   const pair = shared.traits?.pair;
   if (
     shared.traits &&
@@ -41,23 +45,46 @@ export function giftBasisChanged(
   )
     return true;
   return (
-    !equal(report.collection_floor, shared.floor, report.evidence.collection) ||
+    !equal(data.collection_floor, shared.floor, data.evidence.collection) ||
     !equal(
-      report.model_floor,
+      data.model_floor,
       model ? shared.traits?.models[model] : undefined,
-      report.evidence.model,
+      data.evidence.model,
     ) ||
     !equal(
-      report.backdrop_floor,
+      data.backdrop_floor,
       backdrop ? shared.traits?.backdrops[backdrop] : undefined,
-      report.evidence.backdrop,
+      data.evidence.backdrop,
     ) ||
     !equal(
-      report.model_backdrop_floor,
+      data.model_backdrop_floor,
       pair && pair.model_id === model && pair.backdrop_id === backdrop
         ? pair.floor
         : undefined,
-      report.evidence.model_backdrop,
+      data.evidence.model_backdrop,
     )
+  );
+}
+
+/** Keep native sub-millisecond precision when comparing collection calculation times. */
+export function evaluatedAfter(current: string, previous: string) {
+  const parts = (value: string) => {
+    const match = /^(.*:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value);
+    return match
+      ? {
+          second: Date.parse(match[1] + "Z"),
+          fraction: (match[2] ?? "").padEnd(9, "0"),
+        }
+      : undefined;
+  };
+  const a = parts(current),
+    b = parts(previous);
+  return (
+    !a ||
+    !b ||
+    !Number.isFinite(a.second) ||
+    !Number.isFinite(b.second) ||
+    a.second > b.second ||
+    (a.second === b.second && a.fraction > b.fraction)
   );
 }

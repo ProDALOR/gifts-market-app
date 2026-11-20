@@ -76,12 +76,12 @@
   margin-top: 6px;
 }
 
-.market-values-error {
+.floors-error {
   color: var(--muted);
   font-size: 11px;
   margin: 0 0 8px;
 }
-.market-values-error button {
+.floors-error button {
   color: var(--accent);
   text-decoration: underline;
 }

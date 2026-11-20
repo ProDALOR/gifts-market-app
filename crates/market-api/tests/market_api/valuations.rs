@@ -1,6 +1,6 @@
 use super::*;
 #[actix_web::test]
-async fn current_values_share_rest_and_watch_shapes_and_refresh_on_price_changes() {
+async fn floor_reads_and_watches_share_collection_scoped_snapshots() {
     let (state, runtime, peer, stop) = setup().await;
     let app = test::init_service(
         App::new()
@@ -8,18 +8,18 @@ async fn current_values_share_rest_and_watch_shapes_and_refresh_on_price_changes
             .configure(configure),
     )
     .await;
-    let query = serde_json::json!({"currency_id":"GRAM","collection_ids":["tg.gift.123"],"traits_for":"tg.gift.123","pair":null});
+    let query = serde_json::json!({"currency_id":"GRAM","collection_ids":["tg.gift.123"],"details":{"collection_id":"tg.gift.123","pair":null}});
     let response = test::call_service(
         &app,
         test::TestRequest::post()
-            .uri("/valuations/market")
+            .uri("/floors/query")
             .set_json(&query)
             .to_request(),
     )
     .await;
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
-    let mut rest: serde_json::Value = test::read_body_json(response).await;
+    let rest: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(
         rest["collections"][0]["floor"]["price"]["value"],
         "1.000000001"
@@ -39,15 +39,15 @@ async fn current_values_share_rest_and_watch_shapes_and_refresh_on_price_changes
         .unwrap();
     bid_filters::send(
         &mut socket,
-        serde_json::json!({"type":"market.values.watch","id":"prices","params":query}),
+        serde_json::json!({"type":"floors.watch","id":"prices","params":query}),
     )
     .await;
-    let mut ws = bid_filters::frame(&mut socket, "prices", "market.values").await["data"].clone();
-    rest.as_object_mut().unwrap().remove("evaluated_at");
-    ws.as_object_mut().unwrap().remove("evaluated_at");
+    let ws = bid_filters::frame(&mut socket, "prices", "floors.snapshot").await["data"].clone();
+    assert!(rest.get("evaluated_at").is_none());
+    assert!(rest["collections"][0]["evaluated_at"].is_string());
     assert_eq!(rest, ws);
     peer.page.send_replace(page("2"));
-    let changed = bid_filters::frame(&mut socket, "prices", "market.values").await;
+    let changed = bid_filters::frame(&mut socket, "prices", "floors.snapshot").await;
     assert_eq!(
         changed["data"]["collections"][0]["floor"]["price"]["value"],
         "2"
@@ -63,7 +63,7 @@ async fn current_values_share_rest_and_watch_shapes_and_refresh_on_price_changes
         test::call_service(
             &app,
             test::TestRequest::post()
-                .uri("/valuations/market")
+                .uri("/floors/query")
                 .set_json(&invalid)
                 .to_request()
         )
@@ -73,7 +73,7 @@ async fn current_values_share_rest_and_watch_shapes_and_refresh_on_price_changes
     );
     bid_filters::send(
         &mut socket,
-        serde_json::json!({"type":"market.values.watch","id":"prices","params":invalid}),
+        serde_json::json!({"type":"floors.watch","id":"prices","params":invalid}),
     )
     .await;
     assert_eq!(

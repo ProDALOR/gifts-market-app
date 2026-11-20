@@ -1,36 +1,37 @@
 import { liveSocket } from "../live-socket.ts";
 import type { LiveSocket } from "../live-socket.ts";
 import type { components } from "../gen/api.ts";
-type Values = components["schemas"]["MarketValues"];
-type Request = components["schemas"]["MarketValuesRequest"];
+type Values = components["schemas"]["FloorReport"];
+type Pair = NonNullable<Request["details"]>["pair"];
+type Request = components["schemas"]["FloorQuery"];
 export type SharedFloor = components["schemas"]["AskFloorValuation"];
-export type ValuesEntry = {
+export type FloorsEntry = {
   floor: SharedFloor;
-  traits?: NonNullable<Values["traits"]>;
+  traits?: NonNullable<Values["collections"][number]["traits"]>;
   stale: boolean;
   evaluatedAt: string;
   used: number;
 };
-export type ValuesState = {
+export type FloorsState = {
   currency: string;
   selected: string;
-  entries: ReadonlyMap<string, ValuesEntry>;
+  entries: ReadonlyMap<string, FloorsEntry>;
   error: string;
 };
 /** One visible-scope subscription, bounded retention and generation guards for all price consumers. */
-export class MarketValuesController {
+export class FloorsController {
   private listeners = new Set<() => void>();
-  private cache = new Map<string, ValuesEntry>();
+  private cache = new Map<string, FloorsEntry>();
   private currency = "";
   private selected = "";
   private visible: string[] = [];
-  private pair: Request["pair"] = null;
+  private pair: Pair = null;
   private unsubscribe?: () => void;
   private signature = "";
   private timer?: ReturnType<typeof setTimeout>;
   private closed = false;
   private used = 0;
-  private state: ValuesState = {
+  private state: FloorsState = {
     currency: "",
     selected: "",
     entries: new Map(),
@@ -62,7 +63,7 @@ export class MarketValuesController {
     };
     for (const listener of this.listeners) listener();
   }
-  select(currency: string, collection: string, pair: Request["pair"]) {
+  select(currency: string, collection: string, pair: Pair) {
     if (this.closed) return;
     if (
       currency === this.currency &&
@@ -102,8 +103,7 @@ export class MarketValuesController {
     const params: Request = {
       currency_id: this.currency,
       collection_ids: ids,
-      traits_for: this.selected,
-      pair: this.pair,
+      details: { collection_id: this.selected, pair: this.pair },
     };
     const signature = JSON.stringify(params);
     if (signature === this.signature) return;
@@ -111,8 +111,8 @@ export class MarketValuesController {
     this.markStale();
     this.publish("");
     const command = {
-      type: "market.values.watch" as const,
-      id: "market-values",
+      type: "floors.watch" as const,
+      id: "floors",
       params,
     };
     if (this.unsubscribe) {
@@ -124,7 +124,7 @@ export class MarketValuesController {
       (frame, sent) => {
         if (
           this.closed ||
-          sent.type !== "market.values.watch" ||
+          sent.type !== "floors.watch" ||
           JSON.stringify(sent.params) !== this.signature
         )
           return;
@@ -134,7 +134,7 @@ export class MarketValuesController {
           return;
         }
         if (
-          frame.type !== "market.values" ||
+          frame.type !== "floors.snapshot" ||
           frame.data.currency_id !== this.currency
         )
           return;
@@ -144,19 +144,20 @@ export class MarketValuesController {
           data.collections.some(
             (row) => !sent.params.collection_ids.includes(row.collection_id),
           ) ||
-          (data.traits?.collection_id ?? null) !==
-            (sent.params.traits_for ?? null) ||
-          JSON.stringify(
-            data.traits?.pair
-              ? {
-                  model_id: data.traits.pair.model_id,
-                  backdrop_id: data.traits.pair.backdrop_id,
-                }
-              : null,
-          ) !== JSON.stringify(sent.params.pair ?? null)
+          data.collections.some((row) => {
+            const details = sent.params.details;
+            if (row.collection_id !== details?.collection_id)
+              return !!row.traits;
+            if (!row.traits) return true;
+            const pair = row.traits.pair;
+            return (
+              pair?.model_id !== details.pair?.model_id ||
+              pair?.backdrop_id !== details.pair?.backdrop_id
+            );
+          })
         ) {
           this.markStale();
-          this.publish("Market values did not match the requested scope");
+          this.publish("Floor results did not match the requested scope");
           return;
         }
         for (const row of data.collections) {
@@ -164,12 +165,9 @@ export class MarketValuesController {
           this.cache.delete(key);
           this.cache.set(key, {
             floor: row.floor,
-            traits:
-              data.traits?.collection_id === row.collection_id
-                ? data.traits
-                : undefined,
+            traits: row.traits ?? undefined,
             stale: data.stale,
-            evaluatedAt: data.evaluated_at,
+            evaluatedAt: row.evaluated_at,
             used: ++this.used,
           });
         }
@@ -203,7 +201,7 @@ export class MarketValuesController {
     for (const [key, entry] of this.cache)
       if (!entry.stale) this.cache.set(key, { ...entry, stale: true });
   }
-  retry = () => this.socket.retry("market-values");
+  retry = () => this.socket.retry("floors");
   close() {
     if (this.closed) return;
     this.closed = true;

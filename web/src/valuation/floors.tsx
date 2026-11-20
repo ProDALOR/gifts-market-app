@@ -6,27 +6,27 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { ReactNode } from "react";
-import { MarketValuesController } from "./market-values-controller";
+import { FloorsController } from "./floors-controller";
 import type {
-  ValuesEntry,
-  ValuesState,
+  FloorsEntry,
+  FloorsState,
   SharedFloor,
-} from "./market-values-controller";
+} from "./floors-controller";
 import type { Order } from "../market";
 import { Quote } from "../ui/market-controls";
-import "./market-values.css";
-const empty: ValuesState = {
+import "./floors.css";
+const empty: FloorsState = {
   currency: "",
   selected: "",
   entries: new Map(),
   error: "",
 };
 const Context = createContext<{
-  state: ValuesState;
+  state: FloorsState;
   visible: (ids: string[]) => void;
   retry: () => void;
 }>({ state: empty, visible: () => {}, retry: () => {} });
-export function MarketValuesProvider({
+export function FloorsProvider({
   currency,
   collection,
   order,
@@ -37,7 +37,7 @@ export function MarketValuesProvider({
   order?: Order;
   children: ReactNode;
 }) {
-  const controller = useMemo(() => new MarketValuesController(), []);
+  const controller = useMemo(() => new FloorsController(), []);
   const state = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
@@ -72,21 +72,21 @@ export function MarketValuesProvider({
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
-export const useMarketValues = () => useContext(Context);
-export function MarketValuesStatus() {
-  const { state, retry } = useMarketValues();
+export const useFloorReport = () => useContext(Context);
+export function FloorsStatus() {
+  const { state, retry } = useFloorReport();
   return state.error ? (
-    <p className="market-values-error" role="status" title={state.error}>
+    <p className="floors-error" role="status" title={state.error}>
       Current floors are unavailable.{" "}
       <button onClick={retry}>Retry floors</button>
     </p>
   ) : null;
 }
-export function useCollectionValues(
+export function useCollectionFloors(
   id: string,
   currency?: string,
-): ValuesEntry | undefined {
-  const { state } = useMarketValues();
+): FloorsEntry | undefined {
+  const { state } = useFloorReport();
   return currency && currency !== state.currency
     ? undefined
     : state.entries.get(id);
@@ -120,7 +120,7 @@ export function FloorBadge({
   );
 }
 export function CollectionFloor({ id }: { id: string }) {
-  const { state } = useMarketValues();
+  const { state } = useFloorReport();
   const entry = state.entries.get(id);
   return (
     <FloorBadge
@@ -142,7 +142,7 @@ export function TraitFloor({
   id: string;
   kind: "model" | "backdrop" | "pattern";
 }) {
-  const { state } = useMarketValues();
+  const { state } = useFloorReport();
   if (currency && currency !== state.currency) return null;
   const entry = state.entries.get(collection || state.selected);
   const floor =

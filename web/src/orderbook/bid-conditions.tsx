@@ -3,7 +3,7 @@ import { giftNumberRange } from "../orderbook";
 import { resolveTraits } from "../catalog/traits";
 import type { BidCriteria } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
-import { TraitFloor } from "../valuation/market-values";
+import { TraitFloor } from "../valuation/floors";
 
 /** Complete accepted alternatives for bid details. */
 export function BidConditions({

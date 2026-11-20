@@ -209,7 +209,7 @@ async fn request_capacity_and_cancel_do_not_interrupt_a_healthy_subscription() {
     subscribe(&mut socket, 2).await;
     assert!(matches!(next(&mut socket).await, Message::Text(_)));
     let request = |id: &str| {
-        Message::Text(serde_json::json!({"type":"request","id":id,"method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}}).to_string().into())
+        Message::Text(serde_json::json!({"type":"request","id":id,"method":"valuation.query","params":{"target":{"kind":"gift","gift":"Gift-123"},"strategies":["gift_floor"],"currency_id":"GRAM"}}).to_string().into())
     };
     socket.send(request("first")).await.unwrap();
     tokio::time::timeout(
@@ -262,7 +262,7 @@ async fn malformed_commands_fail_validation_without_interrupting_existing_work()
     assert!(matches!(next(&mut socket).await, Message::Text(_)));
     socket
         .send(Message::Text(
-            serde_json::json!({"type":"request","id":"pending","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}})
+            serde_json::json!({"type":"request","id":"pending","method":"valuation.query","params":{"target":{"kind":"gift","gift":"Gift-123"},"strategies":["gift_floor"],"currency_id":"GRAM"}})
                 .to_string().into(),
         ))
         .await.unwrap();
@@ -273,11 +273,11 @@ async fn malformed_commands_fail_validation_without_interrupting_existing_work()
     .await
     .unwrap();
     for invalid in [
-        serde_json::json!({"type":"request","id":"bad id","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}}),
+        serde_json::json!({"type":"request","id":"bad id","method":"valuation.query","params":{"target":{"kind":"gift","gift":"Gift-123"},"strategies":["gift_floor"],"currency_id":"GRAM"}}),
         serde_json::json!({"type":"request","id":"x","method":"unknown","params":{}}),
-        serde_json::json!({"type":"request","id":"x","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM","unexpected":true}}),
+        serde_json::json!({"type":"request","id":"x","method":"valuation.query","params":{"target":{"kind":"gift","gift":"Gift-123"},"strategies":["gift_floor"],"currency_id":"GRAM","unexpected":true}}),
         serde_json::json!({"type":"cancel","id":"x","unexpected":true}),
-        serde_json::json!({"type":"request","id":"pending","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM","unexpected":true}}),
+        serde_json::json!({"type":"request","id":"pending","method":"valuation.query","params":{"target":{"kind":"gift","gift":"Gift-123"},"strategies":["gift_floor"],"currency_id":"GRAM","unexpected":true}}),
         serde_json::json!({"type":"cancel","id":"offers","unexpected":true}),
     ] {
         socket
@@ -383,7 +383,7 @@ async fn cancellation_and_pings_progress_while_a_data_write_is_blocked() {
 #[actix_web::test]
 async fn a_duplicate_request_is_a_command_rejection_and_leaves_the_original_running() {
     let (scenario, mut socket, server, job) = server().await;
-    let request=Message::Text(serde_json::json!({"type":"request","id":"r","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}}).to_string().into());
+    let request=Message::Text(serde_json::json!({"type":"request","id":"r","method":"valuation.query","params":{"target":{"kind":"gift","gift":"Gift-123"},"strategies":["gift_floor"],"currency_id":"GRAM"}}).to_string().into());
     socket.send(request.clone()).await.unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(1),

@@ -1,7 +1,11 @@
 // Full UI workflow with an isolated local catalog/feed; no Telegram or hub login.
 import assert from "node:assert/strict";
 import { orderResult, RangeWatch } from "./range-fixture.mjs";
-import { criteriaReport, marketValues } from "./valuation-fixture.mjs";
+import {
+  criteriaReport,
+  floorReport,
+  giftReport,
+} from "./valuation-fixture.mjs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
@@ -417,7 +421,7 @@ try {
       },
     };
   };
-  await page.route("**/valuations/gift", () =>
+  await page.route("**/valuations/query", () =>
     assert.fail("GUI valuation must use WebSocket"),
   );
   const snapshots = new Map();
@@ -463,23 +467,29 @@ try {
                 )
               : {
                   data:
-                    frame.method === "valuation.query"
+                    frame.params.target?.kind === "criteria"
                       ? criteriaReport(frame.params)
-                      : valuationReport(frame.params),
+                      : giftReport(
+                          frame.params,
+                          valuationReport({
+                            gift: frame.params.target.gift,
+                            currency_id: frame.params.currency_id,
+                          }),
+                        ),
                 }),
           }),
         );
       }
-      if (frame.type === "market.values.watch") {
+      if (frame.type === "floors.watch") {
         valueSubscriptions++;
         valuePeers.delete(valuePeer);
         valuePeer = { socket, id: frame.id, params: frame.params };
         valuePeers.add(valuePeer);
         socket.send(
           JSON.stringify({
-            type: "market.values",
+            type: "floors.snapshot",
             id: frame.id,
-            data: marketValues(
+            data: floorReport(
               frame.params,
               models.map((row) => row.id),
               backdrops.map((row) => row.id),
@@ -1207,14 +1217,14 @@ try {
   await page.getByLabel("Collection floor: 8 GRAM", { exact: true }).waitFor();
   const beforeFloorUpdate = valueSubscriptions;
   for (const peer of valuePeers) {
-    const data = marketValues(
+    const data = floorReport(
       peer.params,
       models.map((row) => row.id),
       backdrops.map((row) => row.id),
     );
     for (const row of data.collections) row.floor.price.value = "7";
     peer.socket.send(
-      JSON.stringify({ type: "market.values", id: peer.id, data }),
+      JSON.stringify({ type: "floors.snapshot", id: peer.id, data }),
     );
   }
   await page.getByLabel("Collection floor: 7 GRAM", { exact: true }).waitFor();

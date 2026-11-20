@@ -13,8 +13,13 @@ pub enum Command {
     Market,
     Help,
     Status,
-    Value(market_valuation::GiftValuationRequest),
+    Value(ValueRequest),
     Invalid(CommandKind),
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueRequest {
+    pub gift: market_gifts::GiftSlug,
+    pub currency_id: market_gifts::CurrencyId,
 }
 impl Command {
     pub fn kind(&self) -> CommandKind {
@@ -67,16 +72,29 @@ impl MessageHandler for MarketCommands {
                     },
                 ),
             }),
-            Command::Value(query) => Ok(match self.valuation.gift(query).await {
-                Ok(result) => render::valuation(&result),
-                Err(error) => render::error_reply(
-                    if error.code() == market_valuation::ValuationErrorCode::Unavailable {
-                        "Valuations are temporarily unavailable"
-                    } else {
-                        error.message()
-                    },
-                ),
-            }),
+            Command::Value(query) => Ok(
+                match self
+                    .valuation
+                    .query(market_valuation::ValuationQuery {
+                        target: market_valuation::ValuationTarget::Gift {
+                            gift: query.gift.into(),
+                        },
+                        currency_id: query.currency_id,
+                        strategies: vec![market_valuation::StrategyId::new("gift_floor").unwrap()],
+                        period: None,
+                    })
+                    .await
+                {
+                    Ok(result) => render::valuation(&result),
+                    Err(error) => render::error_reply(
+                        if error.code() == market_valuation::ValuationErrorCode::Unavailable {
+                            "Valuations are temporarily unavailable"
+                        } else {
+                            error.message()
+                        },
+                    ),
+                },
+            ),
             command => {
                 LaunchCommands
                     .handle(CommandRequest { command, ..request })

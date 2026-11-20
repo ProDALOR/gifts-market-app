@@ -2,21 +2,19 @@
 mod display;
 pub use display::{DisplayAttribute, DisplayField, DisplayValue, ValuationDisplay};
 pub mod gift_floor;
-pub use gift_floor::{
-    GiftFloorEvidence, GiftFloorMark, GiftFloorValuation, MINIMUM_MULTIPLIER_GIFTS,
-};
+pub use gift_floor::{GiftFloorEvidence, GiftFloorValuation, MINIMUM_MULTIPLIER_GIFTS};
 mod strategy;
 pub use strategy::{StrategyMetadata, strategies, strategy};
 mod client;
 mod market;
 pub use market::*;
 mod service;
-pub use service::{MarketValuesWatch, ValuationHandle};
+pub use service::{FloorWatch, ValuationHandle};
 pub type ValuationTask = Task;
+mod floor_projection;
 mod floors;
-mod values;
-pub use values::{
-    CollectionValues, MarketValues, MarketValuesRequest, PairFloor, PairSelection, TraitValues,
+pub use floor_projection::{
+    CollectionFloors, FloorDetails, FloorQuery, FloorReport, PairFloor, PairSelection, TraitFloors,
 };
 #[cfg(feature = "portfolio")]
 mod portfolio;

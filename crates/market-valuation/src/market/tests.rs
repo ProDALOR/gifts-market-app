@@ -8,8 +8,8 @@ use market_gifts::*;
 use market_hub_protocol::wire as w;
 use tokio_util::sync::CancellationToken;
 
-fn request(target: ValuationTarget) -> TargetValuationRequest {
-    TargetValuationRequest {
+fn request(target: ValuationTarget) -> ValuationQuery {
+    ValuationQuery {
         target,
         currency_id: "GRAM".into(),
         strategies: ["ask_floor", "execution_mean", "execution_median"]

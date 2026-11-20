@@ -177,7 +177,7 @@ fn write_frame(
     limits: WebSocketLimits,
 ) -> Write {
     async move {
-        let text = frame.payload.text(frame.scope.id());
+        let text = frame.text.clone();
         let ok = matches!(
             tokio::time::timeout(
                 limits.write_timeout,
@@ -243,9 +243,7 @@ fn schedule(
     start: &Start,
 ) -> Result<(), queue::QueueError> {
     let (id, query) = match command {
-        Command::WatchMarketValues { id, params } => {
-            (id, Some(operations::Operation::MarketValues(params)))
-        }
+        Command::WatchFloors { id, params } => (id, Some(operations::Operation::Floors(params))),
         Command::WatchOrders { id, params } => (id, Some(operations::Operation::Orders(params))),
         Command::WatchCatalog { id, collection_ids } => {
             (id, Some(operations::Operation::Catalog(collection_ids)))
@@ -307,15 +305,16 @@ fn schedule(
 /// complete multi-megabyte pages. Fragments reassemble into the same JSON message.
 async fn write_text(
     session: &mut actix_ws::Session,
-    text: String,
+    text: actix_web::web::Bytes,
     chunk: usize,
 ) -> Result<(), actix_ws::Closed> {
-    use actix_web::web::Bytes;
     use actix_ws::Item;
     if text.len() <= chunk {
-        return session.text(text).await;
+        return session
+            .text(std::str::from_utf8(&text).expect("encoded JSON is UTF-8"))
+            .await;
     }
-    let bytes = Bytes::from(text);
+    let bytes = text;
     let length = bytes.len();
     let mut start = 0;
     while start < length {

@@ -6,9 +6,8 @@ use utoipa::OpenApi;
     paths(
         crate::routes::catalog,
         crate::routes::collection,
-        crate::routes::gift_valuation,
-        crate::routes::target_valuation,
-        crate::routes::market_values,
+        crate::routes::valuation,
+        crate::routes::floors,
         crate::valuation::documentation,
         crate::valuation::strategies,
         crate::routes::read_orders,

@@ -29,8 +29,8 @@ export function ValuationStatus({ state }: { state: OrderValuationState }) {
           })}
         </time>
       </p>
-      {report.display.note && (
-        <p className="valuation-note">{report.display.note}</p>
+      {state.result!.display.note && (
+        <p className="valuation-note">{state.result!.display.note}</p>
       )}
     </>
   );

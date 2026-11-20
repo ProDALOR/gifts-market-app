@@ -1,6 +1,6 @@
 use actix_web::{App, test, web};
-#[path = "market_api/target_valuations.rs"]
-mod target_valuations;
+#[path = "market_api/valuations.rs"]
+mod valuations;
 use futures_util::{SinkExt, StreamExt};
 use market_actors::{MarketDataHandle, MarketDataService};
 #[cfg(feature = "miniapp")]
@@ -1504,14 +1504,35 @@ fn slug_page(samples: usize) -> w::Page {
     }
     page
 }
-async fn wait_slug(state: &MarketApi) -> std::sync::Arc<market_valuation::GiftFloorMark> {
+fn gift_query(gift: serde_json::Value, currency: &str) -> serde_json::Value {
+    serde_json::json!({"target":{"kind":"gift","gift":gift},"currency_id":currency,"strategies":["gift_floor"]})
+}
+fn gift_data(report: &market_valuation::ValuationReport) -> &market_valuation::GiftFloorValuation {
+    let market_valuation::StrategyOutcome::Value(market_valuation::StrategyValuation::GiftFloor(
+        data,
+    )) = &report.results[0]
+    else {
+        panic!("unexpected gift outcome {:?}", report.results)
+    };
+    data
+}
+async fn checkpoint(runtime: &TestMarket, cursor: &str) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while runtime.reads.handle().reader().cursor().unwrap() != cursor {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+async fn wait_slug(state: &MarketApi) -> std::sync::Arc<market_valuation::ValuationReport> {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if let Ok(value) = state
-                .gift_valuation(market_valuation::GiftValuationRequest {
-                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap().into(),
-                    currency_id: "GRAM".into(),
-                })
+                .valuation(
+                    serde_json::from_value(gift_query(serde_json::json!("Gift-123"), "GRAM"))
+                        .unwrap(),
+                )
                 .await
             {
                 return value;
@@ -1523,67 +1544,53 @@ async fn wait_slug(state: &MarketApi) -> std::sync::Arc<market_valuation::GiftFl
     .unwrap()
 }
 #[actix_web::test]
-async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
+async fn gift_queries_share_rest_and_websocket_reports_without_repeated_context() {
     let (state, runtime, peer, stop) = setup().await;
     peer.page.send_replace(slug_page(3));
     let direct = wait_slug(&state).await;
-    assert_eq!(direct.strategy, "gift_floor");
-    assert_eq!(direct.collection_floor.value().unwrap().as_str(), "2");
-    assert_eq!(direct.model_floor.value().unwrap().as_str(), "6");
-    assert_eq!(direct.backdrop_floor.value().unwrap().as_str(), "6");
-    assert_eq!(direct.model_backdrop_floor.value().unwrap().as_str(), "6");
-    assert_eq!(direct.model_multiplier.value().unwrap().as_str(), "3");
-    assert_eq!(direct.backdrop_multiplier.value().unwrap().as_str(), "3");
-    assert_eq!(direct.final_mark.value().unwrap().as_str(), "6");
+    let data = gift_data(&direct);
+    assert_eq!(data.collection_floor.value().unwrap().as_str(), "2");
+    assert_eq!(data.model_floor.value().unwrap().as_str(), "6");
+    assert_eq!(data.backdrop_floor.value().unwrap().as_str(), "6");
+    assert_eq!(data.final_mark.value().unwrap().as_str(), "6");
     let app = test::init_service(
         App::new()
             .app_data(web::Data::new(state.clone()))
             .configure(configure),
     )
     .await;
-    let request = serde_json::json!({"gift":"https://t.me/nft/Gift-123","currency_id":"GRAM"});
+    let query = gift_query(serde_json::json!("https://t.me/nft/Gift-123"), "GRAM");
     let response = test::call_service(
         &app,
         test::TestRequest::post()
-            .uri("/valuations/gift")
-            .set_json(&request)
+            .uri("/valuations/query")
+            .set_json(&query)
             .to_request(),
     )
     .await;
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
     let body: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(body["slug"], "Gift-123");
-    assert_eq!(body["gift"]["number"], 123);
-    assert_eq!(body["final_mark"]["value"], "6");
-    let fields = body["display"]["fields"].as_array().unwrap();
-    assert_eq!(fields.len(), 7);
-    for (id, attribute) in [
-        ("model_floor", "model"),
-        ("model_multiplier", "model"),
-        ("backdrop_floor", "backdrop"),
-        ("backdrop_multiplier", "backdrop"),
-    ] {
-        assert_eq!(
-            fields.iter().find(|field| field["id"] == id).unwrap()["attribute"],
-            attribute
-        );
+    assert_eq!(body["target"]["kind"], "gift");
+    assert_eq!(body["target"]["gift"]["id"], "gift-123");
+    assert_eq!(body["target"]["slug"], "Gift-123");
+    assert!(body["target"].get("collection_id").is_none());
+    let result = &body["results"][0];
+    assert_eq!(result["strategy"], "gift_floor");
+    assert_eq!(result["data"]["final_mark"]["value"], "6");
+    for field in ["gift", "currency_id", "slug", "evaluated_at", "stale"] {
+        assert!(result["data"].get(field).is_none());
     }
+    let fields = result["display"]["fields"].as_array().unwrap();
+    assert_eq!(fields.len(), 7);
     let final_field = fields
         .iter()
-        .find(|field| field["id"] == "final_mark")
+        .find(|field| field["primary"] == true)
         .unwrap();
-    assert_eq!(final_field["primary"], true);
-    assert_eq!(final_field["value"]["kind"], "currency");
     assert_eq!(final_field["value"]["amount"], "6.00");
-    assert_eq!(final_field["value"]["currency_id"], "GRAM");
-    assert!(body.get("revision").is_none());
-    assert!(body.get("sync").is_none());
-    assert_eq!(body["stale"], false);
-    assert!(body["evaluated_at"].is_string());
-    assert!(body.get("strategies").is_none());
-    assert!(body.get("data").is_none());
-    // Both transports share the actor and public presentation, including partial metric errors.
+    for key in ["revision", "sync", "data", "strategy"] {
+        assert!(body.get(key).is_none());
+    }
     let web_dir = peer._directory.path().join("web");
     std::fs::create_dir_all(&web_dir).unwrap();
     std::fs::write(web_dir.join("index.html"), "fixture").unwrap();
@@ -1594,71 +1601,27 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
         .await
         .unwrap();
-    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({"type":"request","id":"value-1","method":"valuation.evaluate","params":request}).to_string().into())).await.unwrap();
-    let frame = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
-                socket.next().await
-            {
-                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-                if frame["type"] == "market.status" {
-                    assert!(frame.get("id").is_none());
-                    continue;
-                }
-                break frame;
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(frame["type"], "result");
-    assert_eq!(frame["id"], "value-1");
-    assert_eq!(frame["method"], "valuation.evaluate");
-    let mut received = frame["data"].clone();
-    let mut expected = body.clone();
-    received.as_object_mut().unwrap().remove("evaluated_at");
-    expected.as_object_mut().unwrap().remove("evaluated_at");
-    assert_eq!(received, expected);
-    let missing =
-        serde_json::json!({"gift":{"collection_id":"unknown","number":123},"currency_id":"GRAM"});
-    let http_error: serde_json::Value = test::call_and_read_body_json(
-        &app,
-        test::TestRequest::post()
-            .uri("/valuations/gift")
-            .set_json(&missing)
-            .to_request(),
-    )
-    .await;
-    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({"type":"request","id":"value-2","method":"valuation.evaluate","params":missing}).to_string().into())).await.unwrap();
-    let error_frame = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
-                socket.next().await
-            {
-                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-                if frame["type"] == "market.status" {
-                    assert!(frame.get("id").is_none());
-                    continue;
-                }
-                break frame;
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(error_frame["id"], "value-2");
-    assert_eq!(error_frame["type"], "error");
-    assert_eq!(error_frame["error"], http_error["error"]);
+    bid_filters::send(&mut socket,serde_json::json!({"type":"request","id":"value","method":"valuation.query","params":query})).await;
+    let mut ws = bid_filters::frame(&mut socket, "value", "result").await["data"].clone();
+    let mut rest = body;
+    ws.as_object_mut().unwrap().remove("evaluated_at");
+    rest.as_object_mut().unwrap().remove("evaluated_at");
+    assert_eq!(rest, ws);
+    bid_filters::send(&mut socket,serde_json::json!({"type":"request","id":"old","method":"valuation.evaluate","params":query})).await;
+    assert_eq!(
+        bid_filters::frame(&mut socket, "old", "error").await["type"],
+        "error"
+    );
     socket.close(None).await.unwrap();
     api_stop.cancel();
     job.await.unwrap().unwrap();
-    for route in ["/portfolio/value"] {
+    for route in ["/portfolio/value", "/valuations/gift", "/valuations/market"] {
         assert_eq!(
             test::call_service(
                 &app,
                 test::TestRequest::post()
                     .uri(route)
-                    .set_json(&request)
+                    .set_json(&query)
                     .to_request()
             )
             .await
@@ -1674,56 +1637,30 @@ async fn gift_valuation_returns_one_coherent_report_and_partial_errors() {
         }
     }
     peer.page.send_replace(partial);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let report = wait_slug(&state).await;
-            if report.revision == "partial" {
-                assert!(report.gift.traits.backdrop.is_none());
-                assert!(report.model_floor.value().is_some());
-                assert!(report.backdrop_floor.value().is_none());
-                assert!(report.final_mark.value().is_none());
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let response = test::call_service(
+    checkpoint(&runtime, "partial").await;
+    let report: serde_json::Value = test::call_and_read_body_json(
         &app,
         test::TestRequest::post()
-            .uri("/valuations/gift")
-            .set_json(&request)
+            .uri("/valuations/query")
+            .set_json(&query)
             .to_request(),
     )
     .await;
-    assert_eq!(response.status(), 200);
-    let report: serde_json::Value = test::read_body_json(response).await;
-    assert!(report.get("revision").is_none());
-    assert!(report.get("sync").is_none());
+    assert!(report["target"]["gift"]["traits"]["backdrop"].is_null());
+    let result = &report["results"][0];
     assert_eq!(
-        report["backdrop_multiplier"]["error"]["code"],
+        result["data"]["final_mark"]["error"]["code"],
         "missing_trait"
     );
-    assert_eq!(report["final_mark"]["error"]["code"], "missing_trait");
     assert_eq!(
-        report["final_mark"]["error"]["dependency"],
+        result["data"]["final_mark"]["error"]["dependency"],
         "backdrop_multiplier"
     );
-    let primary = report["display"]["fields"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|field| field["primary"] == true)
-        .unwrap();
-    assert_eq!(primary["value"]["kind"], "unavailable");
-    assert_eq!(primary["value"]["label"], "Missing trait");
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
 #[actix_web::test]
-async fn gift_valuation_validates_links_reports_unknown_and_conflicting_gifts_and_documents_new_contract()
- {
+async fn gift_queries_validate_lookups_and_document_only_the_unified_contract() {
     let (state, runtime, peer, stop) = setup().await;
     peer.page.send_replace(slug_page(3));
     wait_slug(&state).await;
@@ -1742,8 +1679,8 @@ async fn gift_valuation_validates_links_reports_unknown_and_conflicting_gifts_an
         let response = test::call_service(
             &app,
             test::TestRequest::post()
-                .uri("/valuations/gift")
-                .set_json(serde_json::json!({"gift":gift,"currency_id":"GRAM"}))
+                .uri("/valuations/query")
+                .set_json(gift_query(serde_json::json!(gift), "GRAM"))
                 .to_request(),
         )
         .await;
@@ -1751,67 +1688,61 @@ async fn gift_valuation_validates_links_reports_unknown_and_conflicting_gifts_an
     }
     let schema: serde_json::Value =
         serde_json::from_str(&market_api::schema_json().unwrap()).unwrap();
-    assert!(schema["paths"].get("/portfolio/value").is_none());
-    assert!(schema["paths"].get("/valuations/query").is_some());
-    assert!(
-        schema["paths"]["/valuations/gift"]["post"]["responses"]
-            .get("404")
-            .is_some()
-    );
-    assert!(
-        schema["components"]["schemas"]
-            .get("ValuationRequest")
-            .is_none()
-    );
+    for key in ["/valuations/gift", "/valuations/market", "/portfolio/value"] {
+        assert!(schema["paths"].get(key).is_none());
+    }
+    for key in [
+        "GiftValuationRequest",
+        "GiftValuationResponse",
+        "TargetValuationResponse",
+        "ValuationRequest",
+    ] {
+        assert!(schema["components"]["schemas"].get(key).is_none());
+    }
     assert!(
         schema["components"]["schemas"]
             .get("ValuationQuery")
-            .is_none()
+            .is_some()
     );
+    assert!(schema["components"]["schemas"]["ResolvedTarget"]["oneOf"].is_array());
     let mut conflict = slug_page(3);
     conflict.cursor = "conflict".into();
-    let mut row = conflict
+    let mut order = conflict
         .entities
         .iter()
-        .find_map(|e| match &e.entity {
-            Some(w::entity::Entity::Order(o)) if o.item_id.as_deref() == Some("gift-123") => {
-                Some(o.clone())
+        .find_map(|row| match &row.entity {
+            Some(w::entity::Entity::Order(order))
+                if order.item_id.as_deref() == Some("gift-123") =>
+            {
+                Some(order.clone())
             }
             _ => None,
         })
         .unwrap();
-    row.id = "conflicting".into();
-    row.item_id = Some("other-identity".into());
+    order.id = "conflicting".into();
+    order.item_id = Some("other-identity".into());
     conflict.entities.push(w::Entity {
-        entity: Some(w::entity::Entity::Order(row)),
+        entity: Some(w::entity::Entity::Order(order)),
     });
     peer.page.send_replace(conflict);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let result = state
-                .gift_valuation(market_valuation::GiftValuationRequest {
-                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap().into(),
-                    currency_id: "GRAM".into(),
-                })
-                .await;
-            if let Err(error) = result {
-                assert!(matches!(
-                    error.code,
-                    market_api::error::ErrorCode::Unavailable
-                ));
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    checkpoint(&runtime, "conflict").await;
+    assert_eq!(
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/valuations/query")
+                .set_json(gift_query(serde_json::json!("Gift-123"), "GRAM"))
+                .to_request()
+        )
+        .await
+        .status(),
+        503
+    );
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
-
 #[actix_web::test]
-async fn gift_lookup_is_currency_independent_and_missing_evidence_remains_a_successful_report() {
+async fn gift_queries_resolve_across_currencies_and_preserve_missing_evidence() {
     let (state, runtime, peer, stop) = setup().await;
     let mut initial = slug_page(3);
     initial.entities.push(w::Entity {
@@ -1831,7 +1762,13 @@ async fn gift_lookup_is_currency_independent_and_missing_evidence_remains_a_succ
     peer.page.send_replace(initial);
     let value = wait_slug(&state).await;
     assert_eq!(value.currency_id.as_str(), "GRAM");
-    assert!(value.model_floor.value().is_some());
+    assert!(gift_data(&value).model_floor.value().is_some());
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure),
+    )
+    .await;
     let mut expired = slug_page(3);
     expired.cursor = "expired".into();
     for row in &mut expired.entities {
@@ -1840,35 +1777,16 @@ async fn gift_lookup_is_currency_independent_and_missing_evidence_remains_a_succ
         }
     }
     peer.page.send_replace(expired);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let value = wait_slug(&state).await;
-            if value.revision == "expired" {
-                assert!(value.final_mark.value().is_none());
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let app = test::init_service(
-        App::new()
-            .app_data(web::Data::new(state.clone()))
-            .configure(configure),
-    )
-    .await;
-    let response = test::call_service(
+    checkpoint(&runtime, "expired").await;
+    let body: serde_json::Value = test::call_and_read_body_json(
         &app,
         test::TestRequest::post()
-            .uri("/valuations/gift")
-            .set_json(serde_json::json!({"gift":"Gift-123","currency_id":"GRAM"}))
+            .uri("/valuations/query")
+            .set_json(gift_query(serde_json::json!("Gift-123"), "GRAM"))
             .to_request(),
     )
     .await;
-    assert_eq!(response.status(), 200);
-    let body: serde_json::Value = test::read_body_json(response).await;
-    for key in [
+    for field in [
         "collection_floor",
         "model_floor",
         "backdrop_floor",
@@ -1877,9 +1795,11 @@ async fn gift_lookup_is_currency_independent_and_missing_evidence_remains_a_succ
         "backdrop_multiplier",
         "final_mark",
     ] {
-        assert_eq!(body[key]["error"]["code"], "not_enough_data", "{key}");
+        assert_eq!(
+            body["results"][0]["data"][field]["error"]["code"], "not_enough_data",
+            "{field}"
+        );
     }
-    // A criteria ask cannot fabricate a gift identity from its number predicate.
     let mut criteria = slug_page(3);
     criteria.cursor = "criteria".into();
     for row in &mut criteria.entities {
@@ -1890,23 +1810,19 @@ async fn gift_lookup_is_currency_independent_and_missing_evidence_remains_a_succ
         }
     }
     peer.page.send_replace(criteria);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let result = state
-                .gift_valuation(market_valuation::GiftValuationRequest {
-                    gift: market_gifts::GiftSlug::new("Gift-123").unwrap().into(),
-                    currency_id: "GRAM".into(),
-                })
-                .await;
-            if let Err(error) = result {
-                assert!(matches!(error.code, market_api::error::ErrorCode::NotFound));
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    checkpoint(&runtime, "criteria").await;
+    assert_eq!(
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/valuations/query")
+                .set_json(gift_query(serde_json::json!("Gift-123"), "GRAM"))
+                .to_request()
+        )
+        .await
+        .status(),
+        404
+    );
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
@@ -1973,10 +1889,11 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
         let response = test::call_service(
             &app,
             test::TestRequest::post()
-                .uri("/valuations/gift")
-                .set_json(
-                    serde_json::json!({"gift":"https://t.me/nft/gIfT-00123", "currency_id":"GRAM"}),
-                )
+                .uri("/valuations/query")
+                .set_json(gift_query(
+                    serde_json::json!("https://t.me/nft/gIfT-00123"),
+                    "GRAM",
+                ))
                 .to_request(),
         )
         .await;
@@ -1985,34 +1902,38 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
             let response = test::call_service(
                 &app,
                 test::TestRequest::post()
-                    .uri("/valuations/gift")
-                    .set_json(serde_json::json!({
-                        "gift": { "collection_id": "tg.gift.123", "number": 123 },
-                        "currency_id": "GRAM"
-                    }))
+                    .uri("/valuations/query")
+                    .set_json(gift_query(
+                        serde_json::json!({"collection_id":"tg.gift.123","number":123}),
+                        "GRAM",
+                    ))
                     .to_request(),
             )
             .await;
             assert_eq!(response.status(), 200);
             let report: serde_json::Value = test::read_body_json(response).await;
-            assert!(report["slug"].is_null());
-            assert_eq!(report["gift"]["id"], "gift-123");
-            assert_eq!(report["final_mark"]["value"], "6");
+            assert!(report["target"]["slug"].is_null());
+            assert_eq!(report["target"]["gift"]["id"], "gift-123");
+            assert_eq!(report["results"][0]["data"]["final_mark"]["value"], "6");
             for (collection, number) in [("tg.gift.123", 789), ("missing", 123)] {
                 let response = test::call_service(
                     &app,
-                    test::TestRequest::post().uri("/valuations/gift")
-                        .set_json(serde_json::json!({
-                            "gift": { "collection_id": collection, "number": number }, "currency_id": "GRAM"
-                        })).to_request(),
-                ).await;
+                    test::TestRequest::post()
+                        .uri("/valuations/query")
+                        .set_json(gift_query(
+                            serde_json::json!({"collection_id":collection,"number":number}),
+                            "GRAM",
+                        ))
+                        .to_request(),
+                )
+                .await;
                 assert_eq!(response.status(), 404);
             }
         }
         if matches!(case, "renamed" | "backfilled") {
             let report: serde_json::Value = test::read_body_json(response).await;
-            assert_eq!(report["gift"]["number"], 123);
-            assert_eq!(report["gift"]["collection_id"], "tg.gift.123");
+            assert_eq!(report["target"]["gift"]["number"], 123);
+            assert_eq!(report["target"]["gift"]["collection_id"], "tg.gift.123");
             for path in ["/catalog", "/collections/tg.gift.123"] {
                 let response =
                     test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;

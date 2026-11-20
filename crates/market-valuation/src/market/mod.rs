@@ -13,15 +13,17 @@ pub use target::{ResolvedTarget, ValuationTarget, ValuationTargetKind};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct TargetValuationRequest {
+pub struct ValuationQuery {
     pub target: ValuationTarget,
     pub currency_id: CurrencyId,
     /// Explicit, nonempty selection from the strategy catalog. Input order is preserved.
+    #[cfg_attr(feature = "schema", schema(min_items = 1, max_items = 8))]
     pub strategies: Vec<StrategyId>,
     /// Both bounds are required when selecting an execution strategy; until is exclusive.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub period: Option<Period>,
 }
-impl TargetValuationRequest {
+impl ValuationQuery {
     pub fn validate(&self) -> Result<(), ValuationError> {
         if self.strategies.is_empty() || self.strategies.len() > 8 {
             return Err(ValuationError::invalid("select 1..=8 valuation strategies"));
@@ -141,7 +143,7 @@ pub enum StrategyOutcome {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct TargetValuationReport {
+pub struct ValuationReport {
     pub target: ResolvedTarget,
     pub currency_id: CurrencyId,
     #[cfg_attr(feature="schema",schema(value_type=String,format=DateTime))]
@@ -152,7 +154,7 @@ pub struct TargetValuationReport {
 impl StrategyOutcome {
     pub fn display<'a>(&'a self, currency: &'a CurrencyId) -> ValuationDisplay<'a> {
         let (price, summary, note) = match self {
-            Self::Value(StrategyValuation::GiftFloor(data)) => return data.display(),
+            Self::Value(StrategyValuation::GiftFloor(data)) => return data.display(currency),
             Self::Value(StrategyValuation::AskFloor(data)) => (
                 &data.price,
                 Some(format!(

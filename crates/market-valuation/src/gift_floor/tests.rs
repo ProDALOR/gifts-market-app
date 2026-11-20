@@ -160,14 +160,38 @@ pub(crate) fn book() -> (tempfile::TempDir, market_replica::ReplicaWriter) {
         .unwrap();
     (dir, writer)
 }
-fn request() -> GiftValuationRequest {
-    GiftValuationRequest {
-        gift: GiftLookup::Catalog {
-            collection_id: "gift".into(),
-            number: GiftNumber::new(123).unwrap(),
+fn request() -> ValuationQuery {
+    ValuationQuery {
+        target: ValuationTarget::Gift {
+            gift: GiftLookup::Catalog {
+                collection_id: "gift".into(),
+                number: GiftNumber::new(123).unwrap(),
+            },
         },
         currency_id: "GRAM".into(),
+        strategies: vec![StrategyId::new("gift_floor").unwrap()],
+        period: None,
     }
+}
+struct Evaluation {
+    data: GiftFloorValuation,
+    stale: bool,
+}
+impl std::ops::Deref for Evaluation {
+    type Target = GiftFloorValuation;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+async fn evaluate(handle: &ValuationHandle) -> Result<Evaluation, ValuationError> {
+    let report = handle.query(request()).await?;
+    let StrategyOutcome::Value(StrategyValuation::GiftFloor(data)) = &report.results[0] else {
+        panic!("unexpected gift outcome: {:?}", report.results)
+    };
+    Ok(Evaluation {
+        data: data.clone(),
+        stale: report.stale,
+    })
 }
 async fn stop(data: MarketDataService, task: ValuationTask) {
     task.shutdown().await.unwrap();
@@ -185,9 +209,7 @@ async fn unified_report_uses_combination_floor_and_full_precision_then_reacts_to
     let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
         .await
         .unwrap();
-    let first = handle.gift(request()).await.unwrap();
-    assert_eq!(first.revision, "initial");
-    assert_eq!(handle.gift_metadata().id, first.strategy);
+    let first = evaluate(&handle).await.unwrap();
     assert_eq!(first.collection_floor.value().unwrap().as_str(), "3");
     assert_eq!(first.model_floor.value().unwrap().as_str(), "10");
     assert_eq!(first.backdrop_floor.value().unwrap().as_str(), "11");
@@ -202,8 +224,7 @@ async fn unified_report_uses_combination_floor_and_full_precision_then_reacts_to
             changes: vec![ask("pair0", "m", "b", "20.125", 123, None)],
         })
         .unwrap();
-    let next = handle.gift(request()).await.unwrap();
-    assert_eq!(next.revision, "replaced");
+    let next = evaluate(&handle).await.unwrap();
     assert_eq!(
         next.model_backdrop_floor.value().unwrap().as_str(),
         "20.125"
@@ -358,7 +379,7 @@ async fn cross_venue_listings_and_broad_criteria_cannot_satisfy_distinct_gift_re
     let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
         .await
         .unwrap();
-    let mark = handle.gift(request()).await.unwrap();
+    let mark = evaluate(&handle).await.unwrap();
     assert_eq!(
         mark.evidence.collection,
         FloorEvidence {
@@ -408,8 +429,7 @@ async fn cached_statistics_expire_with_the_earliest_ask_without_a_replica_update
         .await
         .unwrap();
     assert_eq!(
-        handle
-            .gift(request())
+        evaluate(&handle)
             .await
             .unwrap()
             .final_mark
@@ -422,8 +442,7 @@ async fn cached_statistics_expire_with_the_earliest_ask_without_a_replica_update
         (expires - jiff::Timestamp::now().as_millisecond()).max(0) as u64 + 30,
     ))
     .await;
-    let refreshed = handle.gift(request()).await.unwrap();
-    assert_eq!(refreshed.revision, "expiring");
+    let refreshed = evaluate(&handle).await.unwrap();
     assert_eq!(refreshed.collection_floor.value().unwrap().as_str(), "3");
     assert_eq!(refreshed.final_mark.value().unwrap().as_str(), "36.67");
     stop(data, task).await;
@@ -439,7 +458,7 @@ async fn gift_actor_shutdown_cancels_a_request_waiting_for_the_shared_reader() {
         .await
         .unwrap();
     let held = hold(&data.reader).await;
-    let pending = tokio::spawn(async move { handle.gift(request()).await });
+    let pending = tokio::spawn(async move { evaluate(&handle).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
     task.shutdown().await.unwrap();
     assert!(pending.await.unwrap().is_err());
@@ -464,7 +483,7 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
     let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
         .await
         .unwrap();
-    let result = handle.gift(request()).await.unwrap();
+    let result = evaluate(&handle).await.unwrap();
     let mut output = result.data.clone();
     output.model_floor = ValuationMetric::Value {
         value: Amount::new("10000000000000000.000000001").unwrap(),
@@ -478,7 +497,8 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
             dependency: None,
         },
     };
-    let display = output.display();
+    let currency = CurrencyId::from("GRAM");
+    let display = output.display(&currency);
     let ids = display
         .fields
         .iter()
@@ -540,17 +560,17 @@ async fn mark_freshness_tracks_delayed_data_without_putting_sync_in_calculations
     let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
         .await
         .unwrap();
-    let live = handle.gift(request()).await.unwrap();
+    let live = evaluate(&handle).await.unwrap();
     assert!(!live.stale);
     writer.mark(market_replica::SyncState::Stale);
-    let delayed = handle.gift(request()).await.unwrap();
+    let delayed = evaluate(&handle).await.unwrap();
     assert!(delayed.stale);
     assert_eq!(live.final_mark.value(), delayed.final_mark.value());
     let value = serde_json::to_value(&delayed.data).unwrap();
     assert!(value.get("sync").is_none());
     assert!(value.get("revision").is_none());
     writer.mark(market_replica::SyncState::Live);
-    assert!(!handle.gift(request()).await.unwrap().stale);
+    assert!(!evaluate(&handle).await.unwrap().stale);
     assert!(
         delayed.stale,
         "a previously prepared mark stays marked as delayed"

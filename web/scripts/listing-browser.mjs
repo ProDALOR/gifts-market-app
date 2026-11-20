@@ -1,5 +1,5 @@
 import { RangeWatch, orderResult } from "./range-fixture.mjs";
-import { criteriaReport } from "./valuation-fixture.mjs";
+import { criteriaReport, giftReport } from "./valuation-fixture.mjs";
 // Live transitions and valuation lifecycle against isolated React components and a fake feed.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -324,7 +324,7 @@ try {
     release,
     requests = [];
   const cancelled = new Set();
-  await page.route("**/valuations/gift", () =>
+  await page.route("**/valuations/query", () =>
     assert.fail("GUI valuation must use WebSocket"),
   );
   let connections = 0,
@@ -359,7 +359,10 @@ try {
         );
         return;
       }
-      if (command.method === "valuation.query") {
+      if (
+        command.method === "valuation.query" &&
+        command.params.target?.kind === "criteria"
+      ) {
         peer.send(
           JSON.stringify({
             type: "result",
@@ -370,8 +373,11 @@ try {
         );
         return;
       }
-      assert.equal(command.method, "valuation.evaluate");
-      const body = command.params;
+      assert.equal(command.method, "valuation.query");
+      const body = {
+        gift: command.params.target.gift,
+        currency_id: command.params.currency_id,
+      };
       requests.push(body);
       if (mode === "hold")
         await new Promise((resolve) => {
@@ -400,7 +406,7 @@ try {
                 type: "result",
                 id: command.id,
                 method: command.method,
-                data: response,
+                data: giftReport(command.params, response),
               },
         ),
       );

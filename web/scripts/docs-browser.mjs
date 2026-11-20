@@ -129,9 +129,10 @@ try {
     JSON.stringify({
       type: "request",
       id: "typed-value",
-      method: "valuation.evaluate",
+      method: "valuation.query",
       params: {
-        gift: { collection_id: "unknown", number: 1 },
+        target: { kind: "gift", gift: { collection_id: "unknown", number: 1 } },
+        strategies: ["gift_floor"],
         currency_id: "GRAM",
       },
     }),
@@ -190,7 +191,7 @@ try {
   }
   await page
     .locator("#ws-message-request td code")
-    .filter({ hasText: '"valuation.evaluate"' })
+    .filter({ hasText: '"valuation.query"' })
     .waitFor();
   await mkdir(new URL("../test-artifacts", import.meta.url), {
     recursive: true,

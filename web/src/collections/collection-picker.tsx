@@ -13,7 +13,7 @@ import {
 } from "../previews/preview-environment";
 import { SearchIcon } from "../ui/icons";
 import type { Collection } from "../orderbook";
-import { CollectionFloor, useMarketValues } from "../valuation/market-values";
+import { CollectionFloor, useFloorReport } from "../valuation/floors";
 export const CollectionRail = memo(function CollectionRail({
   collections,
   selected,
@@ -23,7 +23,7 @@ export const CollectionRail = memo(function CollectionRail({
   selected: string;
   select: (id: string) => void;
 }) {
-  const { visible } = useMarketValues();
+  const { visible } = useFloorReport();
   const [searching, setSearching] = useState(false),
     [query, setQuery] = useState("");
   const { reducedMotion } = usePreviewEnvironment();

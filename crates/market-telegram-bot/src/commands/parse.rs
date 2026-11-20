@@ -1,7 +1,7 @@
+use super::ValueRequest;
 use super::{Command, CommandRequest};
 use market_gifts::{CurrencyId, GiftSlug};
 use market_telegram::IncomingMessage;
-use market_valuation::GiftValuationRequest;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
     Start,
@@ -85,7 +85,7 @@ pub(crate) fn parse<S: AsRef<str>>(
     })
 }
 
-fn value(arguments: &str) -> Option<GiftValuationRequest> {
+fn value(arguments: &str) -> Option<ValueRequest> {
     if arguments.len() > 2048 {
         return None;
     }
@@ -96,8 +96,5 @@ fn value(arguments: &str) -> Option<GiftValuationRequest> {
     if parts.next().is_some() {
         return None;
     }
-    Some(GiftValuationRequest {
-        gift: gift.into(),
-        currency_id,
-    })
+    Some(ValueRequest { gift, currency_id })
 }

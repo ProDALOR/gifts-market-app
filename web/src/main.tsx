@@ -17,10 +17,7 @@ import { TraitPreview } from "./previews/trait-preview";
 import { VenueIcon } from "./ui/icons";
 import { OrderDetails } from "./orderbook/order-details";
 import { TargetValuations } from "./valuation/target-valuations";
-import {
-  MarketValuesProvider,
-  MarketValuesStatus,
-} from "./valuation/market-values";
+import { FloorsProvider, FloorsStatus } from "./valuation/floors";
 import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
 import { CurrencyPicker, SortPicker } from "./ui/pickers";
@@ -282,7 +279,7 @@ function App({ context }: { context: TelegramContext }) {
   );
 
   return (
-    <MarketValuesProvider
+    <FloorsProvider
       currency={choice.currency}
       collection={choice.collection}
       order={selected}
@@ -319,7 +316,7 @@ function App({ context }: { context: TelegramContext }) {
               selected={choice.collection}
               select={selectedType}
             />
-            <MarketValuesStatus />
+            <FloorsStatus />
             {(startupError || optionsError || error) && (
               <div role="alert" className="notice">
                 {startupError || optionsError || error}
@@ -580,7 +577,7 @@ function App({ context }: { context: TelegramContext }) {
           />
         )}
       </div>
-    </MarketValuesProvider>
+    </FloorsProvider>
   );
 }
 

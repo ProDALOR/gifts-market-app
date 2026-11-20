@@ -17,7 +17,7 @@ impl ExecutionStatistics {
                 gifts: 0,
                 venues: 0,
                 minimum_executions: MINIMUM,
-                minimum_gifts: if context.target.gift.is_some() {
+                minimum_gifts: if context.target.gift().is_some() {
                     1
                 } else {
                     MINIMUM
@@ -141,28 +141,24 @@ pub(super) fn eligible(order: &GiftOrder, target: &ResolvedTarget) -> bool {
     if order.price.decimal() <= Decimal::ZERO || order.quantity == 0 {
         return false;
     }
-    if let Some(wanted) = &target.gift {
+    if let Some(wanted) = target.gift() {
         return matches!(&order.target,GiftTarget::Gift{gift} if gift.id==wanted.id);
     }
     match &order.target {
         GiftTarget::Gift { gift } => {
             target
-                .model_id
-                .as_ref()
+                .model()
                 .is_none_or(|id| gift.traits.model.as_ref() == Some(id))
                 && target
-                    .backdrop_id
-                    .as_ref()
+                    .backdrop()
                     .is_none_or(|id| gift.traits.backdrop.as_ref() == Some(id))
         }
         GiftTarget::Criteria { criteria } => {
             target
-                .model_id
-                .as_ref()
+                .model()
                 .is_none_or(|id| criteria.models.as_slice() == [id.clone()])
                 && target
-                    .backdrop_id
-                    .as_ref()
+                    .backdrop()
                     .is_none_or(|id| criteria.backdrops.as_slice() == [id.clone()])
         }
         GiftTarget::Unsupported { .. } => false,

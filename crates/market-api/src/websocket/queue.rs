@@ -5,9 +5,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(super) enum Payload {
-    MarketValues(Arc<market_valuation::MarketValues>),
-    TargetValuation(Arc<market_valuation::TargetValuationReport>),
-    Result(Arc<market_valuation::GiftFloorMark>),
+    Floors(Arc<market_valuation::FloorReport>),
+    Valuation(Arc<market_valuation::ValuationReport>),
     Orders(Arc<str>),
     MarketStatus(crate::models::MarketStatus),
     Catalog(market_gifts::CatalogVersions),
@@ -21,24 +20,17 @@ impl Payload {
     }
     pub fn text(&self, id: &str) -> String {
         match self {
-            Self::MarketValues(data) => serde_json::to_string(&ServerFrame::MarketValues {
+            Self::Floors(data) => serde_json::to_string(&ServerFrame::Floors {
                 id: id.into(),
                 data,
             })
             .expect("market values serialize"),
-            Self::TargetValuation(report) => serde_json::to_string(&ServerFrame::Result(
-                crate::models::ApiResult::TargetValuation {
-                    id: id.into(),
-                    data: crate::valuation::TargetValuationResponse::from(&**report),
-                },
-            ))
-            .expect("target valuation serializes"),
-            Self::Result(mark) => {
+            Self::Valuation(report) => {
                 serde_json::to_string(&ServerFrame::Result(crate::models::ApiResult::Valuation {
                     id: id.into(),
-                    data: crate::valuation::GiftValuationResponse::from(&**mark),
+                    data: crate::valuation::ValuationResponse::from(&**report),
                 }))
-                .expect("valuation result serializes")
+                .expect("target valuation serializes")
             }
             Self::Orders(encoded) => encoded.to_string(),
             Self::MarketStatus(status) => {
@@ -60,12 +52,6 @@ impl Payload {
                 error: error.clone(),
             })
             .expect("public error serializes"),
-        }
-    }
-    fn bytes(&self, id: &str) -> usize {
-        match self {
-            Self::Orders(encoded) => encoded.len(),
-            _ => self.text(id).len(),
         }
     }
 }
@@ -93,7 +79,7 @@ impl Scope {
 }
 pub(super) struct Frame {
     pub scope: Scope,
-    pub payload: Payload,
+    pub text: actix_web::web::Bytes,
     pub terminal: bool,
     _bytes: OwnedSemaphorePermit,
 }
@@ -130,7 +116,8 @@ impl Sender {
         terminal: bool,
         cancel: &CancellationToken,
     ) -> Result<(), QueueError> {
-        let size = payload.bytes(scope.id());
+        let text: actix_web::web::Bytes = payload.text(scope.id()).into();
+        let size = text.len();
         if size > self.limits.queue_bytes {
             return Err(QueueError::SlowConsumer);
         }
@@ -144,7 +131,7 @@ impl Sender {
             self.tx
                 .send(Frame {
                     scope,
-                    payload,
+                    text,
                     terminal,
                     _bytes: permit,
                 })
@@ -160,7 +147,8 @@ impl Sender {
         self.try_payload(scope, Payload::CommandError(error))
     }
     fn try_payload(&self, scope: Scope, payload: Payload) -> Result<(), QueueError> {
-        let size = payload.bytes(scope.id());
+        let text: actix_web::web::Bytes = payload.text(scope.id()).into();
+        let size = text.len();
         let permit = self
             .bytes
             .clone()
@@ -169,7 +157,7 @@ impl Sender {
         self.tx
             .try_send(Frame {
                 scope,
-                payload,
+                text,
                 terminal: false,
                 _bytes: permit,
             })

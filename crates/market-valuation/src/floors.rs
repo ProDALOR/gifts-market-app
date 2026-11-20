@@ -54,6 +54,7 @@ impl Floor {
     }
 }
 pub(crate) struct Statistics {
+    pub evaluated_at: jiff::Timestamp,
     pub known_models: BTreeSet<ModelId>,
     pub known_backdrops: BTreeSet<BackdropId>,
     pub collection: Floor,
@@ -99,6 +100,7 @@ impl Statistics {
     pub fn read(snapshot: &ValuationSnapshot, scope: &BookScope) -> Result<Self, ValuationError> {
         snapshot.require_currency(&scope.currency)?;
         let mut stats = Self {
+            evaluated_at: jiff::Timestamp::now(),
             known_models: snapshot.model_ids(&scope.collection)?,
             known_backdrops: snapshot.backdrop_ids(&scope.collection)?,
             collection: Floor::default(),
@@ -108,7 +110,11 @@ impl Statistics {
             dependencies: snapshot.dependencies(
                 [scope.clone()],
                 &scope.currency,
-                &[CatalogTrait::Model, CatalogTrait::Backdrop],
+                &[
+                    CatalogTrait::Model,
+                    CatalogTrait::Backdrop,
+                    CatalogTrait::Pattern,
+                ],
                 &[],
             )?,
             created: Instant::now(),
@@ -181,6 +187,7 @@ impl Statistics {
                 {
                     floor.identities.clear();
                 }
+                stats.evaluated_at = jiff::Timestamp::now();
                 return Ok(stats);
             }
             token = page.next_page_token;

@@ -77,15 +77,6 @@ impl ValuationErrorDetails {
     }
 }
 
-/// Evaluate one concrete gift using the unified floor strategy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct GiftValuationRequest {
-    pub gift: market_gifts::GiftLookup,
-    pub currency_id: CurrencyId,
-}
-
 #[cfg(feature = "portfolio")]
 impl StrategyId {
     pub fn model_floor() -> Self {

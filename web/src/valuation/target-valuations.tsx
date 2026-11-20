@@ -3,11 +3,11 @@ import type {
   CatalogOption,
   Collection,
   TraitFilters,
-  TargetValuationRequest,
-  TargetValuationResponse,
+  ValuationQuery,
+  ValuationResponse,
   ValuationStrategy,
 } from "../market";
-import { targetValuation } from "../market";
+import { valuation } from "../market";
 import { Modal } from "../ui/modal";
 import { ValuationFields } from "./display";
 import { strategyClient } from "./strategies";
@@ -78,7 +78,7 @@ function ValuationPanel({
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [report, setReport] = useState<{
-    value: TargetValuationResponse;
+    value: ValuationResponse;
     generation: number;
   }>();
   const request = useRef<AbortController | null>(null);
@@ -135,7 +135,7 @@ function ValuationPanel({
     const stop = new AbortController();
     request.current = stop;
     const generation = liveSocket.statusSnapshot().generation;
-    const target: TargetValuationRequest["target"] =
+    const target: ValuationQuery["target"] =
       kind === "model_backdrop"
         ? {
             kind,
@@ -165,7 +165,7 @@ function ValuationPanel({
             until: new Date(until).toISOString(),
           }
         : null;
-      const value = await targetValuation(
+      const value = await valuation(
         {
           target,
           currency_id: currency,

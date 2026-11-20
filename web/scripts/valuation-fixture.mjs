@@ -28,34 +28,59 @@ export function criteriaReport(params) {
     ],
   };
 }
-export function marketValues(params, models = [], backdrops = []) {
+const calculatedAt = new Map();
+export function floorReport(params, models = [], backdrops = []) {
   const floor = (value) => ({
     price: { value },
     evidence: { listings: 3, gifts: 3 },
   });
   return {
     currency_id: params.currency_id,
-    evaluated_at: new Date().toISOString(),
     stale: false,
-    collections: params.collection_ids.map((collection_id) => ({
-      collection_id,
-      floor: floor("8"),
-    })),
-    ...(params.traits_for
-      ? {
-          traits: {
-            collection_id: params.traits_for,
-            models: Object.fromEntries(
-              models.map((id) => [id, floor("10.000000001")]),
-            ),
-            backdrops: Object.fromEntries(
-              backdrops.map((id) => [id, floor("9")]),
-            ),
-            ...(params.pair
-              ? { pair: { ...params.pair, floor: floor("12.5") } }
-              : {}),
-          },
-        }
-      : {}),
+    collections: params.collection_ids.map((collection_id) => {
+      const key = params.currency_id + ":" + collection_id;
+      if (!calculatedAt.has(key))
+        calculatedAt.set(key, new Date().toISOString());
+      const details = params.details;
+      return {
+        collection_id,
+        evaluated_at: calculatedAt.get(key),
+        floor: floor("8"),
+        ...(details?.collection_id === collection_id
+          ? {
+              traits: {
+                models: Object.fromEntries(
+                  models.map((id) => [id, floor("10.000000001")]),
+                ),
+                backdrops: Object.fromEntries(
+                  backdrops.map((id) => [id, floor("9")]),
+                ),
+                ...(details.pair
+                  ? { pair: { ...details.pair, floor: floor("12.5") } }
+                  : {}),
+              },
+            }
+          : {}),
+      };
+    }),
+  };
+}
+export function giftReport(params, data) {
+  const {
+    strategy,
+    stale,
+    evaluated_at,
+    gift,
+    slug,
+    currency_id,
+    display,
+    ...metrics
+  } = data;
+  return {
+    target: { kind: "gift", gift, ...(slug ? { slug } : {}) },
+    currency_id,
+    evaluated_at,
+    stale,
+    results: [{ strategy, data: metrics, display }],
   };
 }

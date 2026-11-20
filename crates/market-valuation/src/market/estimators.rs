@@ -23,7 +23,7 @@ pub struct ValuationContext<'a> {
 impl<'a> ValuationContext<'a> {
     pub(crate) fn new(
         snapshot: &'a ValuationSnapshot,
-        request: &'a TargetValuationRequest,
+        request: &'a ValuationQuery,
         books: &'a BookCache,
     ) -> Result<Self, ValuationError> {
         snapshot.require_currency(&request.currency_id)?;
@@ -59,11 +59,8 @@ impl<'a> ValuationContext<'a> {
             .as_ref()
             .map_err(Clone::clone)
     }
-    pub(crate) fn gift_floor(
-        &self,
-        lookup: market_gifts::GiftLookup,
-    ) -> Result<GiftFloorValuation, ValuationError> {
-        let gift = self.target.gift.clone().ok_or_else(|| {
+    pub(crate) fn gift_floor(&self) -> Result<GiftFloorValuation, ValuationError> {
+        let gift = self.target.gift().ok_or_else(|| {
             ValuationError::with_details(
                 ValuationErrorCode::UnsupportedTarget,
                 "gift_floor requires an individual gift",
@@ -79,25 +76,23 @@ impl<'a> ValuationContext<'a> {
                     currency: self.currency.clone(),
                 },
             )?
-            .report(gift, lookup, self.currency.clone()))
+            .report(gift))
     }
 }
 pub struct AskFloor;
 impl Estimator for AskFloor {
     type Output = AskFloorValuation;
     fn evaluate(&self, context: &ValuationContext<'_>) -> Result<Self::Output, ValuationError> {
-        if context.target.gift.is_none() && context.target.criteria.is_none() {
+        if context.target.gift().is_none() && context.target.criteria().is_none() {
             let stats = context.books.get(
                 context.snapshot,
                 &BookScope {
-                    collection: context.target.collection_id.clone(),
+                    collection: context.target.collection().clone(),
                     currency: context.currency.clone(),
                 },
             )?;
-            let (price, evidence) = stats.selection(
-                context.target.model_id.as_ref(),
-                context.target.backdrop_id.as_ref(),
-            );
+            let (price, evidence) =
+                stats.selection(context.target.model(), context.target.backdrop());
             return Ok(AskFloorValuation { price, evidence });
         }
         let query = context

@@ -1,44 +1,58 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MarketValuesController } from "../src/valuation/market-values-controller.ts";
+import { FloorsController } from "../src/valuation/floors-controller.ts";
 import type { LiveFrame, SubscriptionCommand } from "../src/ws-protocol.ts";
 import { parseFrame } from "../src/ws-protocol.ts";
-import { giftBasisChanged } from "../src/valuation/freshness.ts";
-import type { ValuationView } from "../src/market.ts";
-import type { ValuesEntry } from "../src/valuation/market-values-controller.ts";
+import {
+  giftBasisChanged,
+  evaluatedAfter,
+} from "../src/valuation/freshness.ts";
+import type { ValuationResponse } from "../src/market.ts";
+import type { FloorsEntry } from "../src/valuation/floors-controller.ts";
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 test("gift estimates become stale when prices, evidence or catalog membership change", () => {
   const evidence = { listings: 3, gifts: 3 },
     price = { value: "10" };
-  const report: ValuationView = {
-    strategy: "gift_floor",
+  const report: ValuationResponse = {
+    target: {
+      kind: "gift",
+      gift: {
+        id: "1",
+        collection_id: "gift",
+        number: 1,
+        traits: { model: "model", backdrop: "backdrop" },
+      },
+    },
     currency_id: "GRAM",
     evaluated_at: "2026-11-20T12:00:00Z",
     stale: false,
-    display: { fields: [], note: "", summary: null },
-    gift: {
-      id: "1",
-      collection_id: "gift",
-      number: 1,
-      traits: { model: "model", backdrop: "backdrop" },
-    },
-    collection_floor: price,
-    model_floor: price,
-    backdrop_floor: price,
-    model_backdrop_floor: price,
-    evidence: {
-      collection: evidence,
-      model: evidence,
-      backdrop: evidence,
-      model_backdrop: evidence,
-      minimum_multiplier_gifts: 3,
-    },
+    results: [
+      {
+        strategy: "gift_floor",
+        data: {
+          collection_floor: price,
+          model_floor: price,
+          backdrop_floor: price,
+          model_backdrop_floor: price,
+          model_multiplier: price,
+          backdrop_multiplier: price,
+          final_mark: price,
+          evidence: {
+            collection: evidence,
+            model: evidence,
+            backdrop: evidence,
+            model_backdrop: evidence,
+            minimum_multiplier_gifts: 3,
+          },
+        },
+        display: { fields: [], note: "", summary: null },
+      },
+    ],
   };
   const floor = { price, evidence };
-  const shared: Pick<ValuesEntry, "floor" | "traits"> = {
+  const shared: Pick<FloorsEntry, "floor" | "traits"> = {
     floor,
     traits: {
-      collection_id: "gift",
       models: { model: floor },
       backdrops: { backdrop: floor },
       pair: { model_id: "model", backdrop_id: "backdrop", floor },
@@ -77,7 +91,7 @@ function fixture() {
     retries = 0;
   let receive!: (frame: LiveFrame, command: SubscriptionCommand) => void,
     status!: (value: string) => void;
-  const controller = new MarketValuesController({
+  const controller = new FloorsController({
     subscribe(command, frame, changed) {
       commands.push(command);
       receive = frame;
@@ -93,34 +107,39 @@ function fixture() {
       retries++;
     },
   });
-  const emit = (command = commands.at(-1)!, price = "3") => {
-    assert.equal(command.type, "market.values.watch");
-    if (command.type !== "market.values.watch") throw Error();
+  const emit = (
+    command = commands.at(-1)!,
+    price = "3",
+    times: Record<string, string> = {},
+  ) => {
+    assert.equal(command.type, "floors.watch");
+    if (command.type !== "floors.watch") throw Error();
     const floor = {
       price: { value: price },
       evidence: { listings: 3, gifts: 3 },
     };
+    const details = command.params.details;
     const frame = {
-      type: "market.values" as const,
+      type: "floors.snapshot" as const,
       id: command.id,
       data: {
         currency_id: command.params.currency_id,
-        evaluated_at: "2026-11-20T12:00:00Z",
         stale: false,
         collections: command.params.collection_ids.map((collection_id) => ({
           collection_id,
+          evaluated_at:
+            times[collection_id] ?? "2026-11-20T12:00:00.000000001Z",
           floor,
+          ...(details?.collection_id === collection_id
+            ? {
+                traits: {
+                  models: { model: floor },
+                  backdrops: { backdrop: floor },
+                  ...(details.pair ? { pair: { ...details.pair, floor } } : {}),
+                },
+              }
+            : {}),
         })),
-        traits: command.params.traits_for
-          ? {
-              collection_id: command.params.traits_for,
-              models: { model: floor },
-              backdrops: { backdrop: floor },
-              ...(command.params.pair
-                ? { pair: { ...command.params.pair, floor } }
-                : {}),
-            }
-          : undefined,
       },
     };
     receive(frame, command);
@@ -153,8 +172,8 @@ test("visible floors are batched once and scope changes reject old frames before
     await settle();
     assert.equal(f.commands.length, 1);
     const first = f.commands[0];
-    assert.equal(first.type, "market.values.watch");
-    if (first.type !== "market.values.watch") return;
+    assert.equal(first.type, "floors.watch");
+    if (first.type !== "floors.watch") return;
     assert.equal(first.params.collection_ids.length, 8);
     f.emit();
     assert.equal(
@@ -256,4 +275,37 @@ test("market floor frames reject duplicate scopes, impossible evidence and mixed
   } finally {
     f.controller.close();
   }
+});
+
+test("other collections do not advance selected freshness, including nanosecond changes", async () => {
+  const f = fixture();
+  try {
+    f.controller.select("GRAM", "gift", null);
+    f.controller.visibleCollections(["other"]);
+    await settle();
+    f.emit();
+    const before = f.controller.getSnapshot().entries.get("gift")!.evaluatedAt;
+    f.emit(undefined, "3", { other: "2026-11-20T12:01:00Z" });
+    assert.equal(
+      f.controller.getSnapshot().entries.get("gift")!.evaluatedAt,
+      before,
+    );
+    assert.equal(evaluatedAfter(before, "2026-11-20T12:00:01Z"), false);
+  } finally {
+    f.controller.close();
+  }
+  assert.equal(
+    evaluatedAfter(
+      "2026-11-20T12:00:00.123000001Z",
+      "2026-11-20T12:00:00.123Z",
+    ),
+    true,
+  );
+  assert.equal(
+    evaluatedAfter(
+      "2026-11-20T12:00:00.123Z",
+      "2026-11-20T12:00:00.123000001Z",
+    ),
+    false,
+  );
 });

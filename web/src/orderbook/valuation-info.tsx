@@ -44,7 +44,7 @@ function CalculationPopup({
     metadata: strategy,
     error,
     retry,
-  } = useStrategy(state.report?.strategy);
+  } = useStrategy(state.result?.strategy);
   return (
     <Modal
       className="valuation-popup"

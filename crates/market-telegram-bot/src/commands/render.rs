@@ -1,29 +1,33 @@
 use super::{CommandKind, Reply};
 use market_gifts::SyncState;
 use market_valuation::DisplayValue;
-use market_valuation::GiftFloorMark;
+use market_valuation::ValuationReport;
 pub(super) fn error_reply(error: impl std::fmt::Display) -> Reply {
     Reply {
         text: error.to_string().chars().take(300).collect(),
     }
 }
-pub(super) fn valuation(value: &GiftFloorMark) -> Reply {
+pub(super) fn valuation(value: &ValuationReport) -> Reply {
     let label = value
-        .slug
-        .as_ref()
+        .target
+        .slug()
         .map(ToString::to_string)
         .unwrap_or_else(|| "Gift valuation".into());
     let mut text = format!("{label}\nCurrency: {}", value.currency_id);
-    for field in value.data.display().fields {
-        text.push_str(&format!("\n\n{}: ", field.label));
-        match field.value {
-            DisplayValue::Currency {
-                amount,
-                currency_id,
-            } => text.push_str(&format!("{amount} {currency_id}")),
-            DisplayValue::Number { amount, suffix } => text.push_str(&format!("{amount}{suffix}")),
-            DisplayValue::Unavailable { message, .. } => {
-                text.push_str(&message.chars().take(300).collect::<String>())
+    for result in &value.results {
+        for field in result.display(&value.currency_id).fields {
+            text.push_str(&format!("\n\n{}: ", field.label));
+            match field.value {
+                DisplayValue::Currency {
+                    amount,
+                    currency_id,
+                } => text.push_str(&format!("{amount} {currency_id}")),
+                DisplayValue::Number { amount, suffix } => {
+                    text.push_str(&format!("{amount}{suffix}"))
+                }
+                DisplayValue::Unavailable { message, .. } => {
+                    text.push_str(&message.chars().take(300).collect::<String>())
+                }
             }
         }
     }
@@ -80,14 +84,6 @@ mod tests {
             value: Amount::new(value).unwrap(),
         };
         let report = GiftFloorValuation {
-            slug: Some(GiftSlug::new("Gift-123").unwrap()),
-            gift: CollectibleGift {
-                id: "gift".into(),
-                collection_id: "collection".into(),
-                number: Some(GiftNumber::new(123).unwrap()),
-                traits: GiftTraits::default(),
-            },
-            currency_id: "GRAM".into(),
             collection_floor: metric("3.123456789"),
             model_floor: metric("10"),
             backdrop_floor: metric("11"),
@@ -119,12 +115,20 @@ mod tests {
                 minimum_multiplier_gifts: 3,
             },
         };
-        let mark = market_valuation::Mark {
-            stale: false,
-            strategy: "gift_floor",
-            data: report,
-            revision: "pinned".into(),
+        let mark = ValuationReport {
+            target: ResolvedTarget::Gift {
+                gift: CollectibleGift {
+                    id: "gift".into(),
+                    collection_id: "collection".into(),
+                    number: Some(GiftNumber::new(123).unwrap()),
+                    traits: GiftTraits::default(),
+                },
+                slug: Some(GiftSlug::new("Gift-123").unwrap()),
+            },
+            currency_id: "GRAM".into(),
             evaluated_at: jiff::Timestamp::now(),
+            stale: false,
+            results: vec![StrategyOutcome::Value(StrategyValuation::GiftFloor(report))],
         };
         let text = valuation(&mark).text;
         assert!(text.contains("Collection floor: 3.123456789 GRAM"));

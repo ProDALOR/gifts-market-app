@@ -1,6 +1,5 @@
 //! The result and evidence produced by gift_floor, independent of transport presentation.
 use crate::{FloorEvidence, Multiplier, ValuationMetric};
-use market_gifts::{CollectibleGift, CurrencyId, GiftSlug};
 use serde::{Deserialize, Serialize};
 pub const MINIMUM_MULTIPLIER_GIFTS: u32 = 3;
 
@@ -16,9 +15,6 @@ pub struct GiftFloorEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftFloorValuation {
-    pub slug: Option<GiftSlug>,
-    pub gift: CollectibleGift,
-    pub currency_id: CurrencyId,
     pub collection_floor: ValuationMetric,
     pub model_floor: ValuationMetric,
     pub backdrop_floor: ValuationMetric,

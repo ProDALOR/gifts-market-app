@@ -120,10 +120,10 @@ fn summary(name: &str) -> &'static str {
         "catalog.watch" => {
             "Watch catalog content revisions for up to eight collections, without polling."
         }
-        "market.values.watch" => {
+        "floors.watch" => {
             "Watch batched current collection and selected trait ask floors, refreshed on relevant changes or expiry."
         }
-        "market.values" => {
+        "floors.snapshot" => {
             "Atomic current-ask projection in the requested currency. Missing evidence has a typed reason."
         }
         "catalog.versions" => {
@@ -141,39 +141,19 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         "request" => serde_json::to_value(Command::Request(ApiRequest::Valuation {
             id: "request-1".into(),
             params: Box::new(serde_json::from_value(
-                json!({"gift":"Gift-123","currency_id":"GRAM"}),
+                json!({"target":{"kind":"gift","gift":"Gift-123"},"currency_id":"GRAM","strategies":["gift_floor"]}),
             )?),
         }))?,
         "cancel" => serde_json::to_value(Command::Cancel {
             id: "request-1".into(),
         })?,
         "result" => {
-            let mut data = json!({
-                "slug":null,"gift":{"id":"gift-123","collection_id":"tg.gift.123","number":123,"traits":{"model":"model","backdrop":"backdrop","pattern":null}},
-                "currency_id":"GRAM",
-                "evidence":{"collection":{"listings":3,"gifts":3},"model":{"listings":3,"gifts":3},"backdrop":{"listings":3,"gifts":3},"model_backdrop":{"listings":1,"gifts":1},"minimum_multiplier_gifts":3}
-            });
-            for field in [
-                "collection_floor",
-                "model_floor",
-                "backdrop_floor",
-                "model_backdrop_floor",
-                "model_multiplier",
-                "backdrop_multiplier",
-                "final_mark",
-            ] {
-                data[field] = json!({"value":"1"});
-            }
-            let data: market_valuation::GiftFloorValuation = serde_json::from_value(data)?;
+            let report: market_valuation::ValuationReport = serde_json::from_value(
+                json!({"target":{"kind":"collection","collection_id":"tg.gift.123"},"currency_id":"GRAM","evaluated_at":"2026-11-18T12:00:00Z","stale":false,"results":[{"strategy":"ask_floor","data":{"price":{"value":"3"},"evidence":{"listings":3,"gifts":3}}}]}),
+            )?;
             serde_json::to_value(ServerFrame::Result(ApiResult::Valuation {
                 id: "request-1".into(),
-                data: GiftValuationResponse {
-                    strategy: "gift_floor",
-                    stale: false,
-                    evaluated_at: "2026-11-18T12:00:00Z".parse().expect("example timestamp"),
-                    display: data.display(),
-                    data: &data,
-                },
+                data: crate::valuation::ValuationResponse::from(&report),
             }))?
         }
         "orders.watch" => serde_json::to_value(Command::WatchOrders {
@@ -203,17 +183,17 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             id: "catalog".into(),
             collection_ids: vec!["tg.gift.123".into()],
         })?,
-        "market.values.watch" => serde_json::to_value(Command::WatchMarketValues {
+        "floors.watch" => serde_json::to_value(Command::WatchFloors {
             id: "prices".into(),
             params: Box::new(serde_json::from_value(
-                json!({"currency_id":"GRAM","collection_ids":["tg.gift.123"],"traits_for":"tg.gift.123","pair":null}),
+                json!({"currency_id":"GRAM","collection_ids":["tg.gift.123"],"details":{"collection_id":"tg.gift.123","pair":null}}),
             )?),
         })?,
-        "market.values" => {
+        "floors.snapshot" => {
             let data = serde_json::from_value(
-                json!({"currency_id":"GRAM","evaluated_at":"2026-11-18T12:00:00Z","stale":false,"collections":[{"collection_id":"tg.gift.123","floor":{"price":{"value":"3"},"evidence":{"listings":3,"gifts":3}}}],"traits":{"collection_id":"tg.gift.123","models":{},"backdrops":{}}}),
+                json!({"currency_id":"GRAM","stale":false,"collections":[{"collection_id":"tg.gift.123","evaluated_at":"2026-11-18T12:00:00Z","floor":{"price":{"value":"3"},"evidence":{"listings":3,"gifts":3}},"traits":{"models":{},"backdrops":{}}}]}),
             )?;
-            serde_json::to_value(ServerFrame::MarketValues {
+            serde_json::to_value(ServerFrame::Floors {
                 id: "prices".into(),
                 data: &data,
             })?
@@ -240,7 +220,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
     };
     let mut examples = vec![json!({"name":name,"payload":value})];
     if name == "request" {
-        let request = Command::Request(ApiRequest::TargetValuation {
+        let request = Command::Request(ApiRequest::Valuation {
             id: "target.1".into(),
             params: Box::new(serde_json::from_value(
                 json!({"target":{"kind":"collection","collection_id":"tg.gift.123"},"currency_id":"GRAM","strategies":["ask_floor","execution_mean","execution_median"],"period":{"from":"2026-01-01T00:00:00Z","until":"2026-02-01T00:00:00Z"}}),

@@ -9,37 +9,40 @@ const page = {
   sync,
   page: { data: [], cursor: "checkpoint", next_page_token: "", sync },
 };
+const display = {
+  summary: null,
+  note: "Exact amounts",
+  fields: [
+    {
+      id: "final",
+      label: "Estimate",
+      primary: true,
+      value: {
+        kind: "currency",
+        amount: "100000000000000000.000000001",
+        currency_id: "GRAM",
+      },
+    },
+  ],
+};
 const result = {
   type: "result",
   id: "op.2",
-  method: "valuation.evaluate",
+  method: "valuation.query",
   data: {
-    strategy: "floor",
-    evaluated_at: "2026-11-18T12:00:00Z",
+    target: {
+      kind: "gift",
+      gift: {
+        id: "1",
+        collection_id: "gift",
+        number: 1,
+        traits: { model: null, backdrop: null, pattern: null },
+      },
+    },
     currency_id: "GRAM",
-    gift: {
-      id: "1",
-      collection_id: "gift",
-      number: 1,
-      traits: { model: null, backdrop: null, pattern: null },
-    },
+    evaluated_at: "2026-11-18T12:00:00Z",
     stale: false,
-    display: {
-      summary: null,
-      note: "Exact amounts",
-      fields: [
-        {
-          id: "final",
-          label: "Estimate",
-          primary: true,
-          value: {
-            kind: "currency",
-            amount: "100000000000000000.000000001",
-            currency_id: "GRAM",
-          },
-        },
-      ],
-    },
+    results: [{ strategy: "gift_floor", data: {}, display }],
   },
 };
 test("typed envelopes preserve opaque revisions and exact decimal strings", () => {
@@ -79,12 +82,21 @@ test("invalid JSON, envelope identities and malformed payloads are rejected befo
     { ...page, page: { ...page.page, data: [null] } },
     { ...page, page: { ...page.page, data: [{ id: "bad", quantity: 0 }] } },
     { ...result, method: "unknown" },
-    { ...result, data: { ...result.data, gift: null } },
+    {
+      ...result,
+      data: { ...result.data, target: { kind: "gift", gift: null } },
+    },
     {
       ...result,
       data: {
         ...result.data,
-        display: { fields: [{ value: { kind: "currency", amount: NaN } }] },
+        results: [
+          {
+            strategy: "gift_floor",
+            data: {},
+            display: { fields: [{ value: { kind: "currency", amount: NaN } }] },
+          },
+        ],
       },
     },
     { type: "error", id: "op.1", error: { message: "Missing code" } },
@@ -300,12 +312,12 @@ test("target valuations validate scope identity, independent outcomes and unique
         {
           strategy: "ask_floor",
           data: { price: { value: "1.25" } },
-          display: result.data.display,
+          display: display,
         },
         {
           strategy: "execution_mean",
           error: { code: "capacity_exceeded", message: "Shorten the period" },
-          display: result.data.display,
+          display: display,
         },
       ],
     },

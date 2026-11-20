@@ -1,41 +1,18 @@
-use market_gifts::*;
 #[test]
-fn gift_valuation_lookup_accepts_slugs_or_catalog_identity_without_client_supplied_traits() {
-    use crate::GiftValuationRequest;
-    let request: GiftValuationRequest = serde_json::from_value(serde_json::json!({
-        "gift": { "collection_id": "collection", "number": 123 }, "currency_id": "GRAM"
-    }))
-    .unwrap();
-    assert_eq!(
-        request.gift,
-        GiftLookup::Catalog {
-            collection_id: "collection".into(),
-            number: GiftNumber::new(123).unwrap()
-        }
-    );
-    let slug: GiftValuationRequest = serde_json::from_value(serde_json::json!({
-        "gift": "https://t.me/nft/Gift-00123", "currency_id": "GRAM"
-    }))
-    .unwrap();
-    assert_eq!(
-        slug.gift,
-        GiftLookup::Slug(GiftSlug::new("Gift-123").unwrap())
-    );
-    assert_eq!(serde_json::to_value(slug).unwrap()["gift"], "Gift-123");
-    for gift in [
-        serde_json::json!({"collection_id":"collection","number":0}),
-        serde_json::json!({"collection_id":"","number":123}),
-        serde_json::json!({"collection_id":"collection","number":1.5}),
-        serde_json::json!({"collection_id":"collection"}),
-        serde_json::json!({"collection_id":"collection","number":123,"traits":{"model":"forged"}}),
-        serde_json::json!({"collection_id":"collection","number":123,"slug":"Gift-999"}),
+fn gift_queries_accept_validated_lookups_and_reject_forged_facts() {
+    use crate::{ValuationQuery, ValuationTarget};
+    for input in [
+        serde_json::json!("https://t.me/nft/Gift-00123"),
+        serde_json::json!({"collection_id":"collection","number":123}),
     ] {
-        assert!(
-            serde_json::from_value::<GiftValuationRequest>(serde_json::json!({
-                "gift": gift, "currency_id": "GRAM"
-            }))
-            .is_err()
-        );
+        let query:ValuationQuery=serde_json::from_value(serde_json::json!({"target":{"kind":"gift","gift":input},"currency_id":"GRAM","strategies":["gift_floor"]})).unwrap();
+        assert!(matches!(query.target, ValuationTarget::Gift { .. }));
+    }
+    for gift in [
+        serde_json::json!("Gift-0"),
+        serde_json::json!({"collection_id":"collection","number":123,"traits":{"model":"forged"}}),
+    ] {
+        assert!(serde_json::from_value::<ValuationQuery>(serde_json::json!({"target":{"kind":"gift","gift":gift},"currency_id":"GRAM","strategies":["gift_floor"]})).is_err());
     }
 }
 

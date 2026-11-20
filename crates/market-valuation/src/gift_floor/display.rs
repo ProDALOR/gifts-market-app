@@ -2,14 +2,14 @@
 use super::GiftFloorValuation;
 use crate::{DisplayAttribute, DisplayField, ValuationDisplay};
 impl GiftFloorValuation {
-    pub fn display(&self) -> ValuationDisplay<'_> {
+    pub fn display<'a>(&'a self, currency: &'a market_gifts::CurrencyId) -> ValuationDisplay<'a> {
         ValuationDisplay {
             fields: vec![
                 DisplayField::currency(
                     "final_mark",
                     "Final mark",
                     &self.final_mark,
-                    &self.currency_id,
+                    currency,
                     Some(2),
                 )
                 .primary(),
@@ -17,7 +17,7 @@ impl GiftFloorValuation {
                     "collection_floor",
                     "Collection floor",
                     &self.collection_floor,
-                    &self.currency_id,
+                    currency,
                     None,
                 )
                 .basis(),
@@ -25,7 +25,7 @@ impl GiftFloorValuation {
                     "model_floor",
                     "Model floor",
                     &self.model_floor,
-                    &self.currency_id,
+                    currency,
                     None,
                 )
                 .basis()
@@ -34,7 +34,7 @@ impl GiftFloorValuation {
                     "backdrop_floor",
                     "Backdrop floor",
                     &self.backdrop_floor,
-                    &self.currency_id,
+                    currency,
                     None,
                 )
                 .basis()
@@ -43,7 +43,7 @@ impl GiftFloorValuation {
                     "model_backdrop_floor",
                     "Model × backdrop floor",
                     &self.model_backdrop_floor,
-                    &self.currency_id,
+                    currency,
                     None,
                 )
                 .basis(),

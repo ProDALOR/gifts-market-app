@@ -4,7 +4,7 @@ export type RequestCall = components["schemas"]["ApiRequest"];
 export type RequestResult = components["schemas"]["ApiResult"];
 export type SubscriptionCommand = Extract<
   components["schemas"]["Command"],
-  { type: "orders.watch" | "catalog.watch" | "market.values.watch" }
+  { type: "orders.watch" | "catalog.watch" | "floors.watch" }
 >;
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -44,7 +44,8 @@ const giftFacts = (value: unknown) =>
 const gift = (value: unknown) =>
   giftFacts(value) && record(value) && text(value.collection_id);
 const valuationTarget = (value: unknown) => {
-  if (!record(value) || !text(value.collection_id)) return false;
+  if (!record(value) || (value.kind !== "gift" && !text(value.collection_id)))
+    return false;
   if (value.kind !== "criteria" && value.criteria != null) return false;
   switch (value.kind) {
     case "collection":
@@ -68,8 +69,8 @@ const valuationTarget = (value: unknown) => {
     case "gift":
       return (
         gift(value.gift) &&
-        record(value.gift) &&
-        value.gift.collection_id === value.collection_id &&
+        nullableText(value.slug) &&
+        value.collection_id === undefined &&
         value.model_id == null &&
         value.backdrop_id == null
       );
@@ -313,40 +314,40 @@ export function parseFrame(raw: unknown): LiveFrame {
         record(value.versions.collections) &&
         Object.values(value.versions.collections).every(nullableText);
       break;
-    case "market.values": {
+    case "floors.snapshot": {
       const d = value.data;
+      const traits = (value: unknown) =>
+        record(value) &&
+        value.collection_id === undefined &&
+        record(value.models) &&
+        Object.values(value.models).every(floor) &&
+        record(value.backdrops) &&
+        Object.values(value.backdrops).every(floor) &&
+        (value.pair == null ||
+          (record(value.pair) &&
+            text(value.pair.model_id) &&
+            text(value.pair.backdrop_id) &&
+            floor(value.pair.floor)));
       valid =
         record(d) &&
         hasNoLegacyFields(d) &&
+        d.evaluated_at === undefined &&
+        d.traits === undefined &&
         text(d.currency_id) &&
-        text(d.evaluated_at) &&
         typeof d.stale === "boolean" &&
         Array.isArray(d.collections) &&
         d.collections.length > 0 &&
         d.collections.length <= 8 &&
         d.collections.every(
-          (row) => record(row) && text(row.collection_id) && floor(row.floor),
+          (row) =>
+            record(row) &&
+            text(row.collection_id) &&
+            text(row.evaluated_at) &&
+            floor(row.floor) &&
+            (row.traits == null || traits(row.traits)),
         ) &&
         new Set(d.collections.map((row) => record(row) && row.collection_id))
-          .size === d.collections.length &&
-        (d.traits == null ||
-          (record(d.traits) &&
-            text(d.traits.collection_id) &&
-            d.collections.some(
-              (row) =>
-                record(row) &&
-                row.collection_id ===
-                  (d.traits as Record<string, unknown>).collection_id,
-            ) &&
-            record(d.traits.models) &&
-            Object.values(d.traits.models).every(floor) &&
-            record(d.traits.backdrops) &&
-            Object.values(d.traits.backdrops).every(floor) &&
-            (d.traits.pair == null ||
-              (record(d.traits.pair) &&
-                text(d.traits.pair.model_id) &&
-                text(d.traits.pair.backdrop_id) &&
-                floor(d.traits.pair.floor)))));
+          .size === d.collections.length;
       break;
     }
     case "result": {
@@ -377,15 +378,7 @@ export function parseFrame(raw: unknown): LiveFrame {
               ) &&
               new Set(d.results.map((row) => record(row) && row.strategy))
                 .size === d.results.length
-            : value.method === "valuation.evaluate" &&
-              record(d) &&
-              hasNoLegacyFields(d) &&
-              text(d.strategy) &&
-              text(d.evaluated_at) &&
-              text(d.currency_id) &&
-              gift(d.gift) &&
-              typeof d.stale === "boolean" &&
-              display(d.display);
+            : false;
       break;
     }
   }

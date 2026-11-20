@@ -23,11 +23,11 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
-    #[serde(rename = "market.values.watch")]
-    WatchMarketValues {
+    #[serde(rename = "floors.watch")]
+    WatchFloors {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
-        params: Box<market_valuation::MarketValuesRequest>,
+        params: Box<market_valuation::FloorQuery>,
     },
     Request(ApiRequest),
     #[serde(rename = "orders.watch")]
@@ -52,39 +52,32 @@ pub enum Command {
 #[serde(tag = "method", deny_unknown_fields)]
 pub enum ApiRequest {
     #[serde(rename = "valuation.query")]
-    TargetValuation {
+    Valuation {
+        #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
-        params: Box<market_valuation::TargetValuationRequest>,
+        params: Box<market_valuation::ValuationQuery>,
     },
     #[serde(rename = "orders.query")]
     Orders {
         id: String,
         params: Box<market_gifts::GiftOrderQuery>,
     },
-    #[serde(rename = "valuation.evaluate")]
-    Valuation {
-        #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
-        id: String,
-        params: Box<market_valuation::GiftValuationRequest>,
-    },
 }
 impl ApiRequest {
     pub(crate) fn id(&self) -> &str {
         match self {
-            Self::Valuation { id, .. }
-            | Self::Orders { id, .. }
-            | Self::TargetValuation { id, .. } => id,
+            Self::Orders { id, .. } | Self::Valuation { id, .. } => id,
         }
     }
 }
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame<'a> {
-    #[serde(rename = "market.values")]
-    MarketValues {
+    #[serde(rename = "floors.snapshot")]
+    Floors {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
-        data: &'a market_valuation::MarketValues,
+        data: &'a market_valuation::FloorReport,
     },
     Result(ApiResult<'a>),
     /// Rejected command; active operations continue unchanged. Empty ID if no valid ID was parsed.
@@ -126,9 +119,10 @@ pub enum ServerFrame<'a> {
 #[serde(tag = "method")]
 pub enum ApiResult<'a> {
     #[serde(rename = "valuation.query")]
-    TargetValuation {
+    Valuation {
+        #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
         id: String,
-        data: crate::valuation::TargetValuationResponse<'a>,
+        data: crate::valuation::ValuationResponse<'a>,
     },
     #[serde(rename = "orders.query")]
     Orders {
@@ -136,21 +130,14 @@ pub enum ApiResult<'a> {
         #[serde(flatten)]
         data: crate::orders::OrderReadResponse<'a>,
     },
-    #[serde(rename = "valuation.evaluate")]
-    Valuation {
-        #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
-        id: String,
-        data: GiftValuationResponse<'a>,
-    },
 }
-pub use crate::valuation::GiftValuationResponse;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn typed_requests_keep_flat_wire_envelopes_and_reject_unknown_methods_and_parameters() {
-        let value = serde_json::json!({"type":"request","id":"request-1","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"}});
+        let value = serde_json::json!({"type":"request","id":"request-1","method":"valuation.query","params":{"target":{"kind":"gift","gift":"Gift-123"},"strategies":["gift_floor"],"currency_id":"GRAM"}});
         let request: Command = serde_json::from_value(value.clone()).unwrap();
         assert!(matches!(
             request,
@@ -165,10 +152,10 @@ mod tests {
             serde_json::json!({"type":"watch_catalog","id":"old","collection_ids":[]}),
             serde_json::json!({"type":"subscribe","id":"old","query":{"filters":{"collection_id":"gift","currency_id":"GRAM"}}}),
             serde_json::json!({"type":"unsubscribe","id":"old"}),
-            serde_json::json!({"type":"request","id":"x","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM"},"extra":true}),
+            serde_json::json!({"type":"request","id":"x","method":"valuation.query","params":{"target":{"kind":"gift","gift":"Gift-123"},"strategies":["gift_floor"],"currency_id":"GRAM"},"extra":true}),
             serde_json::json!({"type":"cancel","id":"x","extra":true}),
             serde_json::json!({"type":"request","id":"x","method":"arbitrary.invoke","params":{}}),
-            serde_json::json!({"type":"request","id":"x","method":"valuation.evaluate","params":{"gift":"Gift-123","currency_id":"GRAM","extra":true}}),
+            serde_json::json!({"type":"request","id":"x","method":"valuation.query","params":{"target":{"kind":"gift","gift":"Gift-123"},"strategies":["gift_floor"],"currency_id":"GRAM","extra":true}}),
         ] {
             assert!(serde_json::from_value::<Command>(invalid).is_err());
         }

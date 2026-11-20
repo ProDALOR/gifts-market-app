@@ -63,63 +63,40 @@ test("concrete previews use supplied media, never guessed paths or hypothetical 
 
 test("gift valuation preserves every strategy outcome and uses typed requests and preserves structured failures", async (t) => {
   const { valuation, ApiFailure } = await import("../src/market.ts");
-  const query = { gift: "https://t.me/nft/Gift-123", currency_id: "GRAM" };
-  const metric = { value: "6" };
-  const report: import("../src/market.ts").GiftValuationResponse = {
-    strategy: "gift_floor",
-    revision: "r1",
-    evaluated_at: "2026-11-18T12:00:00Z",
-    slug: "Gift-123",
-    gift: {
-      id: "gift123",
-      collection_id: "gift",
-      number: 123,
-      traits: { model: "model", backdrop: null, pattern: null },
+  const query = {
+    target: { kind: "gift" as const, gift: "https://t.me/nft/Gift-123" },
+    currency_id: "GRAM",
+    strategies: ["ask_floor"],
+  };
+  const report: import("../src/market.ts").ValuationResponse = {
+    target: {
+      kind: "gift",
+      gift: {
+        id: "gift123",
+        collection_id: "gift",
+        number: 123,
+        traits: { model: "model" },
+      },
     },
     currency_id: "GRAM",
-    sync: { ready: true, state: "live", updated_at: null },
-    collection_floor: metric,
-    model_floor: metric,
-    backdrop_floor: metric,
-    model_backdrop_floor: metric,
-    model_multiplier: metric,
-    backdrop_multiplier: metric,
-    final_mark: metric,
-    evidence: {
-      collection: { listings: 3, gifts: 3 },
-      model: { listings: 3, gifts: 3 },
-      backdrop: { listings: 3, gifts: 3 },
-      model_backdrop: { listings: 1, gifts: 1 },
-      minimum_multiplier_gifts: 3,
-    },
-    display: {
-      fields: [
-        {
-          id: "strategy_value",
-          label: "A strategy-defined value",
-          primary: true,
-          value: { kind: "currency", amount: "6.00", currency_id: "GRAM" },
+    evaluated_at: "2026-11-18T12:00:00Z",
+    stale: false,
+    results: [
+      {
+        strategy: "ask_floor",
+        data: { price: { value: "6" }, evidence: { listings: 3, gifts: 3 } },
+        display: {
+          fields: [],
+          summary: "Strategy summary",
+          note: "Strategy note",
         },
-        {
-          id: "strategy_issue",
-          label: "An unavailable value",
-          primary: false,
-          value: {
-            kind: "unavailable",
-            label: "Unavailable",
-            message: "Missing observations",
-            detail: "1 of 3",
-          },
-        },
-      ],
-      summary: "Strategy summary",
-      note: "Strategy note",
-    },
+      },
+    ],
   };
   let fail = false;
   const { liveSocket } = await import("../src/live-socket.ts");
   t.mock.method(liveSocket, "request", async (call) => {
-    assert.deepEqual(call, { method: "valuation.evaluate", params: query });
+    assert.deepEqual(call, { method: "valuation.query", params: query });
     if (fail) throw new ApiFailure("not_found", "Gift is not in market data");
     return report;
   });

@@ -11,22 +11,22 @@ pub struct MarketApi {
     encoder: Arc<crate::encoding::OrderEncoder>,
 }
 impl MarketApi {
-    pub async fn market_values(
+    pub async fn floors(
         &self,
-        query: market_valuation::MarketValuesRequest,
-    ) -> Result<Arc<market_valuation::MarketValues>> {
-        Ok(self.valuation.values(query).await?)
+        query: market_valuation::FloorQuery,
+    ) -> Result<Arc<market_valuation::FloorReport>> {
+        Ok(self.valuation.floors(query).await?)
     }
-    pub(crate) async fn watch_market_values(
+    pub(crate) async fn watch_floors(
         &self,
-        query: market_valuation::MarketValuesRequest,
-    ) -> Result<market_valuation::MarketValuesWatch> {
-        Ok(self.valuation.watch_values(query).await?)
+        query: market_valuation::FloorQuery,
+    ) -> Result<market_valuation::FloorWatch> {
+        Ok(self.valuation.watch_floors(query).await?)
     }
-    pub async fn target_valuation(
+    pub async fn valuation(
         &self,
-        query: market_valuation::TargetValuationRequest,
-    ) -> Result<Arc<market_valuation::TargetValuationReport>> {
+        query: market_valuation::ValuationQuery,
+    ) -> Result<Arc<market_valuation::ValuationReport>> {
         Ok(self.valuation.query(query).await?)
     }
     pub(crate) fn status_updates(&self) -> watch::Receiver<SyncStatus> {
@@ -97,11 +97,5 @@ impl MarketApi {
         snapshot: market_gifts::ReadSnapshotId,
     ) -> Result<()> {
         Ok(self.data.release_read_snapshot(snapshot).await?)
-    }
-    pub async fn gift_valuation(
-        &self,
-        query: market_valuation::GiftValuationRequest,
-    ) -> Result<Arc<market_valuation::GiftFloorMark>> {
-        Ok(self.valuation.gift(query).await?)
     }
 }

@@ -1,10 +1,10 @@
-import type { Order, CatalogOption, ValuationView } from "../market";
+import type { Order, CatalogOption } from "../market";
 import { BidConditions } from "./bid-conditions";
 import { giftDetails } from "../orderbook";
 import { GiftArtwork } from "../previews/gift-artwork";
 import { ValuationFields } from "../valuation/display";
 import { backdropPalette } from "../previews/gift-appearance";
-import { useCollectionValues, FloorBadge } from "../valuation/market-values";
+import { useCollectionFloors, FloorBadge } from "../valuation/floors";
 
 export function OrderAttributes({
   order,
@@ -16,19 +16,18 @@ export function OrderAttributes({
   order: Order;
   options: ReadonlyMap<string, CatalogOption>;
   names: ReadonlyMap<string, string>;
-  fields?: ValuationView["display"]["fields"];
+  fields?: NonNullable<
+    import("../valuation/use-order-valuation").OrderValuationState["result"]
+  >["display"]["fields"];
   summary?: string | null;
 }) {
-  const shared = useCollectionValues(
+  const shared = useCollectionFloors(
     order.book.collection_id,
     order.book.currency_id,
   );
   const pair = shared?.traits?.pair;
   const market = shared && (
-    <section
-      className="shared-market-values"
-      aria-label="Current market ask values"
-    >
+    <section className="shared-floors" aria-label="Current market ask values">
       <h3>Current market asks</h3>
       <div>
         <FloorBadge

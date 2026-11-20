@@ -41,8 +41,8 @@ impl Handler<Evaluate<crate::service::Work, crate::service::Output, ValuationErr
             let _request = request;
             let work = source.prepare(move |snapshot| -> Result<_, ValuationError> {
                 let output = match input {
-                    crate::service::Work::Values { request, previous } => {
-                        crate::service::Output::Values(crate::values::ValuesRead::read(
+                    crate::service::Work::Floors { request, previous } => {
+                        crate::service::Output::Floors(crate::floor_projection::FloorRead::read(
                             &snapshot,
                             &request,
                             &books,
@@ -66,9 +66,9 @@ impl Handler<Evaluate<crate::service::Work, crate::service::Output, ValuationErr
                                     .evaluate(&context)
                                     .map(StrategyValuation::ExecutionMedian),
                                 "gift_floor" => match &input.target {
-                                    ValuationTarget::Gift { gift } => context
-                                        .gift_floor(gift.clone())
-                                        .map(StrategyValuation::GiftFloor),
+                                    ValuationTarget::Gift { .. } => {
+                                        context.gift_floor().map(StrategyValuation::GiftFloor)
+                                    }
                                     _ => Err(ValuationError::with_details(
                                         ValuationErrorCode::UnsupportedTarget,
                                         "gift_floor requires an individual gift",
@@ -95,7 +95,7 @@ impl Handler<Evaluate<crate::service::Work, crate::service::Output, ValuationErr
                         snapshot.check_cancelled()?;
                         let evaluated_at = jiff::Timestamp::now();
                         let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
-                        let report = TargetValuationReport {
+                        let report = ValuationReport {
                             target: context.target.clone(),
                             currency_id: input.currency_id.clone(),
                             evaluated_at,

@@ -54,37 +54,24 @@ fn catalog_response<T, U: serde::Serialize>(
         response.json(present(snapshot.data))
     }
 }
-#[utoipa::path(post,path="/valuations/gift",tag="Valuations",summary="Value a gift with one coherent floor report",description="Accepts a Telegram gift URL, slug, or gift object with collection_id and number, plus currency_id. Resolves gift facts and all metrics from one consistent market view. Returns collection, model, backdrop and matching model+backdrop floors; two-decimal dimensionless model/backdrop multipliers; and final_mark = round2(min(matching floor, collection floor * unrounded multipliers)). Rounding uses midpoint-to-even. Floor prices retain exact precision. Multipliers require at least three distinct identifiable gifts for the collection and selected trait. Each metric has value or a structured error; a resolved gift returns 200 even when some metrics are unavailable. A strategy-owned display projection supplies ordered fields, labels, formatted values, emphasis, summary and note for generic clients. Typed calculation fields remain in the response. One strategy, calculation time and stale flag apply to the whole report. The response slug is null for catalog references. Unknown/unlisted gifts return 404. No Telegram account or external lookup is used.",request_body=market_valuation::GiftValuationRequest,responses((status=200,body=GiftValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub(crate) async fn gift_valuation(
+#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Value a collection, trait selection or gift with explicit strategies",description="Strategies are selected explicitly from /valuations/strategies. Targets are collection, model, backdrop, model_backdrop, gift or accepted criteria. Criteria combine model/backdrop/symbol alternatives with gift-number bounds; ask_floor values the complete matching selection. Execution estimators require explicit inclusive from and exclusive until bounds; at least three observations across three distinct gifts are required for collection/trait targets; an individual-gift target uses its own history. Mean weights execution records equally, independently of quantity. One report uses one pinned view; unavailable evidence or an unsupported target is reported per strategy. Available history is not guaranteed complete. Every typed result includes its strategy-owned display projection. All strategies share read budgets and cancellation.",request_body=market_valuation::ValuationQuery,responses((status=200,body=crate::valuation::ValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+pub(crate) async fn valuation(
     state: web::Data<MarketApi>,
-    query: web::Json<market_valuation::GiftValuationRequest>,
+    query: web::Json<market_valuation::ValuationQuery>,
 ) -> Result<HttpResponse> {
-    let result = state.gift_valuation(query.into_inner()).await?;
+    let report = state.valuation(query.into_inner()).await?;
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(GiftValuationResponse::from(result.as_ref())))
+        .json(crate::valuation::ValuationResponse::from(report.as_ref())))
 }
-
-#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Value a collection, trait selection or gift with explicit strategies",description="Strategies are selected explicitly from /valuations/strategies. Targets are collection, model, backdrop, model_backdrop, gift or accepted criteria. Criteria combine model/backdrop/symbol alternatives with gift-number bounds; ask_floor values the complete matching selection. Execution estimators require explicit inclusive from and exclusive until bounds; at least three observations across three distinct gifts are required for collection/trait targets; an individual-gift target uses its own history. Mean weights execution records equally, independently of quantity. One report uses one pinned view; unavailable evidence or an unsupported target is reported per strategy. Available history is not guaranteed complete. Every typed result includes its strategy-owned display projection. Read budgets and cancellation are shared with the gift endpoint.",request_body=market_valuation::TargetValuationRequest,responses((status=200,body=crate::valuation::TargetValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub(crate) async fn target_valuation(
+#[utoipa::path(post,path="/floors/query",tag="Valuations",summary="Read batched current collection and trait ask floors",description="Batches up to eight collection/currency scopes into one pinned read. details includes all model/backdrop floors and an optional requested pair for one selected collection. These are current asks across venues, regardless of the orders tab or its filters. WebSocket floors.watch keeps the same projection current with scoped updates and listing expiry.",request_body=market_valuation::FloorQuery,responses((status=200,body=market_valuation::FloorReport),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+pub(crate) async fn floors(
     state: web::Data<MarketApi>,
-    query: web::Json<market_valuation::TargetValuationRequest>,
-) -> Result<HttpResponse> {
-    let report = state.target_valuation(query.into_inner()).await?;
-    Ok(HttpResponse::Ok()
-        .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(crate::valuation::TargetValuationResponse::from(
-            report.as_ref(),
-        )))
-}
-#[utoipa::path(post,path="/valuations/market",tag="Valuations",summary="Read current floors for visible collections and all selected traits",description="Batches up to eight collection/currency scopes into one pinned read. traits_for includes all model/backdrop floors and an optional requested pair for one selected collection. These are current asks across venues, regardless of the orders tab or its filters. WebSocket market.values.watch keeps the same projection current with scoped updates and listing expiry.",request_body=market_valuation::MarketValuesRequest,responses((status=200,body=market_valuation::MarketValues),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub(crate) async fn market_values(
-    state: web::Data<MarketApi>,
-    query: web::Json<market_valuation::MarketValuesRequest>,
+    query: web::Json<market_valuation::FloorQuery>,
 ) -> Result<HttpResponse> {
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(state.market_values(query.into_inner()).await?.as_ref()))
+        .json(state.floors(query.into_inner()).await?.as_ref()))
 }
 
 #[utoipa::path(post,path="/orders/query",tag="Orders",summary="Read a latest or frozen ordered slice",description="Latest is the default and retains no view. Set view.kind to snapshot to open or reuse a snapshot lease. Ordering keys are portable across latest, frozen and WebSocket reads. The server enforces read budgets. Expired leases return restart_read.",request_body=GiftOrderQuery,responses((status=200,body=crate::orders::OrderReadResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
@@ -132,9 +119,8 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
             .route(web::post().to(read_orders))
             .route(web::delete().to(release_read)),
     )
-    .route("/valuations/gift", web::post().to(gift_valuation))
-    .route("/valuations/query", web::post().to(target_valuation))
-    .route("/valuations/market", web::post().to(market_values))
+    .route("/valuations/query", web::post().to(valuation))
+    .route("/floors/query", web::post().to(floors))
     .service(
         web::resource("/media/{kind}/{id}/{variant:preview}")
             .wrap(actix_web::middleware::Compress::default())

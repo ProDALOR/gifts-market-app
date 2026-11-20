@@ -2,7 +2,7 @@
 use serde::Serialize;
 use utoipa::ToSchema;
 #[derive(Debug, Serialize, ToSchema)]
-pub struct TargetValuationResponse<'a> {
+pub struct ValuationResponse<'a> {
     pub target: &'a market_valuation::ResolvedTarget,
     pub currency_id: &'a market_gifts::CurrencyId,
     #[schema(value_type=String,format=DateTime)]
@@ -16,8 +16,8 @@ pub struct StrategyOutcomeResponse<'a> {
     pub result: &'a market_valuation::StrategyOutcome,
     pub display: market_valuation::ValuationDisplay<'a>,
 }
-impl<'a> From<&'a market_valuation::TargetValuationReport> for TargetValuationResponse<'a> {
-    fn from(report: &'a market_valuation::TargetValuationReport) -> Self {
+impl<'a> From<&'a market_valuation::ValuationReport> for ValuationResponse<'a> {
+    fn from(report: &'a market_valuation::ValuationReport) -> Self {
         Self {
             target: &report.target,
             currency_id: &report.currency_id,
@@ -34,29 +34,6 @@ impl<'a> From<&'a market_valuation::TargetValuationReport> for TargetValuationRe
         }
     }
 }
-#[derive(Debug, Serialize, ToSchema)]
-pub struct GiftValuationResponse<'a> {
-    pub strategy: &'a str,
-    /// True when market updates were delayed during evaluation.
-    pub stale: bool,
-    #[schema(value_type = String, format = DateTime)]
-    pub evaluated_at: jiff::Timestamp,
-    #[serde(flatten)]
-    pub data: &'a market_valuation::GiftFloorValuation,
-    pub display: market_valuation::ValuationDisplay<'a>,
-}
-impl<'a> From<&'a market_valuation::GiftFloorMark> for GiftValuationResponse<'a> {
-    fn from(value: &'a market_valuation::GiftFloorMark) -> Self {
-        Self {
-            strategy: value.strategy,
-            stale: value.stale,
-            evaluated_at: value.evaluated_at,
-            data: &value.data,
-            display: value.data.display(),
-        }
-    }
-}
-
 /// Public presentation adds HTTP links to transport-independent strategy metadata.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct StrategyResponse {

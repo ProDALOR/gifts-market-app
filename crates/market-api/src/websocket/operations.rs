@@ -7,7 +7,7 @@ use crate::{MarketApi, config::WebSocketLimits, error::ApiError};
 use market_actors::DataUpdate;
 use tokio_util::sync::CancellationToken;
 pub(super) enum Operation {
-    MarketValues(Box<market_valuation::MarketValuesRequest>),
+    Floors(Box<market_valuation::FloorQuery>),
     Request(crate::models::ApiRequest),
     Orders(Box<market_gifts::GiftOrderQuery>),
     Catalog(Vec<market_gifts::CollectionId>),
@@ -35,8 +35,8 @@ pub(super) async fn run(
     limits: WebSocketLimits,
 ) -> End {
     let _cancel_on_exit = cancel.clone().drop_guard();
-    if let Operation::MarketValues(request) = query {
-        let setup = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=tokio::time::timeout(limits.setup_timeout,market.watch_market_values(*request))=>result.unwrap_or_else(|_|Err(ApiError::timed_out("Market values setup timed out")))};
+    if let Operation::Floors(request) = query {
+        let setup = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=tokio::time::timeout(limits.setup_timeout,market.watch_floors(*request))=>result.unwrap_or_else(|_|Err(ApiError::timed_out("Market values setup timed out")))};
         let mut watch = match setup {
             Ok(watch) => watch,
             Err(error) => {
@@ -50,7 +50,7 @@ pub(super) async fn run(
             if let Err(error) = tx
                 .send(
                     Scope::Operation(key.clone()),
-                    Payload::MarketValues(value),
+                    Payload::Floors(value),
                     false,
                     &cancel,
                 )
@@ -77,10 +77,9 @@ pub(super) async fn run(
     if let Operation::Request(request) = query {
         let work = async {
             match request {
-                crate::models::ApiRequest::TargetValuation { params, .. } => market
-                    .target_valuation(*params)
-                    .await
-                    .map(Payload::TargetValuation),
+                crate::models::ApiRequest::Valuation { params, .. } => {
+                    market.valuation(*params).await.map(Payload::Valuation)
+                }
                 crate::models::ApiRequest::Orders { id, params } => {
                     let read = market.query_orders(*params).await?;
                     market
@@ -90,9 +89,6 @@ pub(super) async fn run(
                         })
                         .await
                         .map(Payload::Orders)
-                }
-                crate::models::ApiRequest::Valuation { params, .. } => {
-                    market.gift_valuation(*params).await.map(Payload::Result)
                 }
             }
         };
@@ -105,7 +101,7 @@ pub(super) async fn run(
     }
     let setup = async {
         match query {
-            Operation::MarketValues(_) => unreachable!("values handled above"),
+            Operation::Floors(_) => unreachable!("values handled above"),
             Operation::Request(_) => unreachable!("requests handled above"),
             Operation::Orders(query) => market.watch_orders(*query).await,
             Operation::Catalog(ids) => market.subscribe_catalog(ids).await,

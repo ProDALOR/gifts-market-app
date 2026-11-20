@@ -4,7 +4,7 @@ import type { TraitFilters, TraitKey } from "../market";
 import { traits } from "../orderbook";
 import type { CatalogOption, Collection } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
-import { TraitFloor } from "../valuation/market-values";
+import { TraitFloor } from "../valuation/floors";
 export const TraitPickers = memo(function TraitPickers({
   collection,
   loading = false,

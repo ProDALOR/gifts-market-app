@@ -2,7 +2,6 @@
 mod calculation;
 mod display;
 mod result;
-use crate::Mark;
 pub use result::*;
 pub const METADATA: crate::StrategyMetadata = crate::StrategyMetadata {
     id: "gift_floor",
@@ -12,6 +11,5 @@ pub const METADATA: crate::StrategyMetadata = crate::StrategyMetadata {
     targets: &[crate::ValuationTargetKind::Gift],
     requires_period: false,
 };
-pub type GiftFloorMark = Mark<GiftFloorValuation>;
 #[cfg(test)]
 pub(crate) mod tests;

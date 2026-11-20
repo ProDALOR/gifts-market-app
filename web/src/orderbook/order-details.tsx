@@ -134,7 +134,7 @@ export function OrderDetails({
             options={options}
             names={names}
             fields={state.fields.secondary}
-            summary={state.report?.display.summary}
+            summary={state.result?.display.summary}
           />
           {removed && (
             <p className="listing-gone" role="status">
