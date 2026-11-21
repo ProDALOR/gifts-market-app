@@ -564,7 +564,6 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
     }
     for (path, method) in [
         ("/orders/query", "post"),
-        ("/orders/query", "post"),
         ("/catalog", "get"),
         ("/collections/{id}", "get"),
     ] {
@@ -592,26 +591,37 @@ async fn public_contract_contains_no_legacy_money_item_or_trade_models() {
     assert!(snapshot.get("range").is_some());
     assert!(snapshot.get("next").is_none());
     assert!(snapshot.get("snapshot").is_none());
-    fn assert_app_facing(value: &serde_json::Value) {
+    fn assert_app_facing(value: &serde_json::Value, path: &str) {
         match value {
             serde_json::Value::Object(object) => {
                 if let Some(properties) = object.get("properties").and_then(|v| v.as_object()) {
-                    for field in ["sync", "cursor", "revision", "observed", "updated_at"] {
+                    for field in ["sync", "cursor", "observed", "updated_at"] {
                         assert!(!properties.contains_key(field), "Public field {field}");
                     }
+                    // Static strategy contract tokens are unrelated to storage revisions.
+                    assert!(
+                        !properties.contains_key("revision")
+                            || matches!(
+                                path.split('/').nth(3),
+                                Some("StrategyResponse" | "StrategyOutcomeResponse")
+                            ),
+                        "Operational revision at {path}"
+                    );
                 }
                 if let Some(description) = object.get("description").and_then(|v| v.as_str()) {
                     assert!(!description.contains("replica"), "{description}");
                 }
-                for value in object.values() {
-                    assert_app_facing(value);
+                for (key, value) in object {
+                    assert_app_facing(value, &format!("{path}/{key}"));
                 }
             }
-            serde_json::Value::Array(values) => values.iter().for_each(assert_app_facing),
+            serde_json::Value::Array(values) => values
+                .iter()
+                .for_each(|value| assert_app_facing(value, path)),
             _ => {}
         }
     }
-    assert_app_facing(&schema);
+    assert_app_facing(&schema, "");
     assert!(
         schema["paths"]["/orders/query"]["delete"]["responses"]
             .get("503")
@@ -1581,13 +1591,24 @@ async fn gift_queries_share_rest_and_websocket_reports_without_repeated_context(
     for field in ["gift", "currency_id", "slug", "evaluated_at", "stale"] {
         assert!(result["data"].get(field).is_none());
     }
-    let fields = result["display"]["fields"].as_array().unwrap();
-    assert_eq!(fields.len(), 7);
-    let final_field = fields
+    assert!(result.get("display").is_none());
+    let discovery: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri("/valuations/strategies")
+            .to_request(),
+    )
+    .await;
+    let metadata = discovery
+        .as_array()
+        .unwrap()
         .iter()
-        .find(|field| field["primary"] == true)
+        .find(|row| row["id"] == "gift_floor")
         .unwrap();
-    assert_eq!(final_field["value"]["amount"], "6.00");
+    assert_eq!(result["revision"], metadata["revision"]);
+    assert_eq!(metadata["display"]["fields"].as_array().unwrap().len(), 7);
+    assert_eq!(metadata["display"]["fields"][0]["id"], "final_mark");
+    assert_eq!(metadata["display"]["fields"][0]["format"]["decimals"], 2);
     for key in ["revision", "sync", "data", "strategy"] {
         assert!(body.get(key).is_none());
     }

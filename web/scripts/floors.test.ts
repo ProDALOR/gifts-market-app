@@ -50,7 +50,7 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
             minimum_multiplier_gifts: 3,
           },
         },
-        display: { fields: [], note: "", summary: null },
+        revision: "r1",
       },
     ],
   };
@@ -146,7 +146,7 @@ function report(
     results: [
       {
         strategy: "catalog_floor",
-        display: { fields: [], note: "Current asks" },
+        revision: "r1",
         data: {
           collections: scope.collection_ids.map((collection_id) => ({
             collection_id,

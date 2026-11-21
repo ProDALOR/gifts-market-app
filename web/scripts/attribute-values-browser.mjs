@@ -133,6 +133,28 @@ try {
       false,
     );
   };
+  assert.deepEqual(
+    await page.locator(".collection-floor .quote-amount").allTextContents(),
+    ["12.35M", "12.35M"],
+  );
+  assert.ok(
+    (
+      await page
+        .locator(".collection-floor .floor-badge")
+        .first()
+        .getAttribute("title")
+    ).includes("12345678.123456789"),
+  );
+  const pricesFit = async () =>
+    assert.ok(
+      await page
+        .locator(".collection-floor .quote-amount")
+        .evaluateAll((nodes) =>
+          nodes.every((node) => node.scrollWidth <= node.clientWidth),
+        ),
+      "Large collection floors remain fully visible",
+    );
+  await pricesFit();
   await geometry(false);
   await page.getByRole("button", { name: "Model", exact: true }).click();
   await page.locator(".trait-option-value .floor-badge").waitFor();
@@ -168,6 +190,7 @@ try {
   const requestsBeforeResize = commands.length;
   await page.setViewportSize({ width: 1200, height: 900 });
   await geometry(true);
+  await pricesFit();
   await checkTrait();
   await page.setViewportSize({ width: 320, height: 844 });
   await geometry(false);

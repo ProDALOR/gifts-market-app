@@ -81,7 +81,7 @@ const report = {
     {
       strategy: "gift_floor",
       data: {},
-      display: { fields: [], summary: null, note: "Current asks" },
+      revision: "r1",
     },
   ],
 };

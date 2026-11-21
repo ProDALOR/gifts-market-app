@@ -133,7 +133,10 @@ function valuationReport(d: unknown) {
       (row) =>
         record(row) &&
         text(row.strategy) &&
-        display(row.display) &&
+        text(row.revision) &&
+        row.revision.length > 0 &&
+        row.revision.length <= 64 &&
+        !Object.hasOwn(row, "display") &&
         ((record(row.data) && !Object.hasOwn(row, "error")) ||
           (record(row.error) &&
             text(row.error.code) &&
@@ -184,36 +187,6 @@ function order(value: unknown) {
     default:
       return false;
   }
-}
-function display(value: unknown) {
-  if (
-    !record(value) ||
-    !Array.isArray(value.fields) ||
-    !text(value.note) ||
-    !nullableText(value.summary)
-  )
-    return false;
-  return value.fields.every((field) => {
-    if (
-      !record(field) ||
-      !text(field.id) ||
-      !text(field.label) ||
-      typeof field.primary !== "boolean" ||
-      !record(field.value)
-    )
-      return false;
-    const v = field.value;
-    switch (v.kind) {
-      case "currency":
-        return text(v.amount) && text(v.currency_id);
-      case "number":
-        return text(v.amount) && text(v.suffix);
-      case "unavailable":
-        return text(v.label) && text(v.message) && nullableText(v.detail);
-      default:
-        return false;
-    }
-  });
 }
 const sequence = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;

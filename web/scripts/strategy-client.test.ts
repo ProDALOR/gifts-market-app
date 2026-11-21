@@ -13,6 +13,8 @@ const row = (id: string, revision = "r1"): ValuationStrategy => ({
   requires_period: false,
   documentation_url: `/guides/${id}`,
   documentation_revision: revision,
+  revision,
+  display: {fields: [], evidence: [], note: ""},
 });
 
 test("strategy metadata shares requests, survives one cancelled consumer and expires on use", async () => {

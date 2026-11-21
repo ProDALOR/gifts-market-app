@@ -1,3 +1,4 @@
+import { validateDefinitions } from "./presentation.ts";
 import { valuationStrategies } from "../market.ts";
 import type { ValuationQuery, ValuationStrategy } from "../market.ts";
 import { ResourceCache } from "../resources/cache.ts";
@@ -9,6 +10,7 @@ export class StrategyClient {
     this.catalog = new ResourceCache(
       async (_key, signal) => {
         const value = await load(signal);
+        validateDefinitions(value);
         return { value, bytes: JSON.stringify(value).length * 2 };
       },
       128 * 1024,

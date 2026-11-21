@@ -72,6 +72,19 @@ try {
     description: row.id,
     documentation_url: "/guides/" + row.id,
     documentation_revision: "one",
+    revision: "r1",
+    display: {
+      fields: [
+        {
+          id: "mark",
+          label: "Value",
+          primary: true,
+          format: { kind: "currency", decimals: null },
+        },
+      ],
+      evidence: [],
+      note: row.id + " note",
+    },
   }));
   await page.route("**/valuations/strategies", async (route) => {
     metadataRequests++;
@@ -93,7 +106,9 @@ try {
   const queries = [],
     cancelled = [];
   let held,
-    rejectRemoved = false;
+    rejectRemoved = false,
+    deployAfterDiscovery = false,
+    incompatibleDefinition = false;
   await page.routeWebSocket("**/ws", (ws) => {
     ws.send(JSON.stringify({ type: "market.status", status: "available" }));
     ws.onMessage((raw) => {
@@ -119,6 +134,21 @@ try {
         );
         return;
       }
+      if (deployAfterDiscovery) {
+        deployAfterDiscovery = false;
+        for (const row of rows) row.revision = "r2";
+        rows[0].display = {
+          ...rows[0].display,
+          fields: [
+            {
+              id: "mark",
+              label: "Value",
+              primary: true,
+              format: { kind: "currency", decimals: 2 },
+            },
+          ],
+        };
+      }
       const params = command.params,
         n = params.target.gift?.number;
       const data = {
@@ -139,22 +169,13 @@ try {
         stale: false,
         results: [...params.strategies].reverse().map((strategy) => ({
           strategy,
-          data: {},
-          display: {
-            fields: [
-              {
-                id: "mark",
-                label: "Value",
-                primary: true,
-                value: {
-                  kind: "currency",
-                  amount:
-                    strategy === "future_selection" ? "10" : String(n * 20),
-                  currency_id: params.currency_id,
-                },
-              },
-            ],
-            note: strategy + " note",
+          revision: incompatibleDefinition
+            ? "unavailable_revision"
+            : rows.find((row) => row.id === strategy).revision,
+          data: {
+            mark: {
+              value: strategy === "future_selection" ? "10" : String(n * 20),
+            },
           },
         })),
       };
@@ -165,11 +186,6 @@ try {
         delete failed.data;
         failed.error = {
           code: "not_enough_data",
-          message: "No comparable gifts",
-        };
-        failed.display.fields[0].value = {
-          kind: "unavailable",
-          label: "No data",
           message: "No comparable gifts",
         };
       }
@@ -286,7 +302,7 @@ try {
   assert.equal(await page.locator("output").textContent(), "3");
   const beforePartial = queries.length;
   await page.evaluate(() => window.choose(4));
-  await page.getByText("No data", { exact: true }).waitFor();
+  await page.getByText("Not enough data", { exact: true }).waitFor();
   assert.equal(
     await selectionRow.locator(".quote-amount").textContent(),
     "10",
@@ -419,6 +435,49 @@ try {
     await page.getByText("Estimate may be outdated", { exact: true }).count(),
     0,
   );
+  const beforeDeployment = queries.length;
+  const beforeDeploymentMetadata = metadataRequests;
+  deployAfterDiscovery = true;
+  await page.evaluate(() => window.choose(8));
+  await page.waitForFunction(
+    () => document.querySelector("output")?.textContent === "8",
+  );
+  assert.equal(
+    queries.length,
+    beforeDeployment + 1,
+    "Metadata refresh reuses the completed calculation",
+  );
+  assert.equal(
+    metadataRequests,
+    beforeDeploymentMetadata + 1,
+    "Only one metadata reload after a contract mismatch",
+  );
+  assert.equal(
+    await selectionRow.locator(".quote-amount").textContent(),
+    "10.00",
+    "New metadata precision renders the same typed value",
+  );
+  incompatibleDefinition = true;
+  const beforeMismatch = queries.length;
+  const beforeMismatchMetadata = metadataRequests;
+  await page.evaluate(() => window.choose(9));
+  await page
+    .getByRole("alert")
+    .getByText("Valuation strategy definition changed", { exact: true })
+    .waitFor();
+  assert.equal(queries.length, beforeMismatch + 1);
+  assert.equal(
+    metadataRequests,
+    beforeMismatchMetadata + 1,
+    "Persistent deployment mismatch cannot loop",
+  );
+  assert.equal(
+    await page.locator("output").textContent(),
+    "",
+    "Never render values against mismatched definitions",
+  );
+  incompatibleDefinition = false;
+  await page.evaluate(() => window.choose(undefined));
   assert.deepEqual(errors, []);
   console.log(
     "Strategy input browser passed: capability selection, reversed results, stacked results, guide reuse, cancellation, target changes, discovery recovery and minute refresh/visibility cleanup.",

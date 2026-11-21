@@ -20,6 +20,7 @@ pub trait Strategy {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const DOCUMENTATION: &'static str;
+    const DISPLAY: crate::DisplayDefinition;
     fn evaluate(
         &self,
         input: &Self::Input,
@@ -34,6 +35,7 @@ pub struct StrategyMetadata {
     /// Markdown with inline ($...$) and display ($$...$$) LaTeX formulas.
     pub documentation: &'static str,
     pub input: InputContract,
+    pub display: crate::DisplayDefinition,
 }
 impl StrategyMetadata {
     const fn of<S: Strategy>() -> Self {
@@ -43,6 +45,7 @@ impl StrategyMetadata {
             description: S::DESCRIPTION,
             documentation: S::DOCUMENTATION,
             input: S::Input::CONTRACT,
+            display: S::DISPLAY,
         }
     }
 }

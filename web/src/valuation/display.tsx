@@ -1,8 +1,9 @@
-import type { components } from "../gen/api";
+import type {
+  PresentedField as Field,
+  FieldValue as Value,
+} from "./presentation";
 import { amount } from "../market";
 import { Quote } from "../ui/market-controls";
-type Field = components["schemas"]["DisplayField"];
-type Value = components["schemas"]["DisplayValue"];
 function ValueResult({ value, compact }: { value: Value; compact: boolean }) {
   switch (value.kind) {
     case "unavailable":

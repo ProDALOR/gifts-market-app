@@ -39,8 +39,8 @@ export function ValuationStatus({
               })}
             </time>
           </p>
-          {valuation?.result.display.note && (
-            <p className="valuation-note">{valuation.result.display.note}</p>
+          {valuation?.strategy.display.note && (
+            <p className="valuation-note">{valuation.strategy.display.note}</p>
           )}
         </>
       )}

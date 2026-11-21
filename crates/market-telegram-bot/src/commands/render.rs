@@ -160,7 +160,7 @@ mod tests {
         assert!(text.contains("Model multiplier: 1.20×"));
         assert!(text.contains("Backdrop multiplier: 3.67×"));
         assert!(text.contains("Final mark: 36.67 GRAM"));
-        assert!(text.contains("Model × backdrop floor: 100 GRAM"));
+        assert!(text.contains("Model & backdrop floor: 100 GRAM"));
         assert!(text.contains("Ask floor"));
         assert!(text.contains("Gift floor"));
         assert!(text.contains("external_strategy"));

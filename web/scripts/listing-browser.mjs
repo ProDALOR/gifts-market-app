@@ -1,3 +1,4 @@
+import { fixtureDisplay } from "./valuation-fixture.mjs";
 import { RangeWatch, orderResult } from "./range-fixture.mjs";
 import { criteriaReport, giftReport } from "./valuation-fixture.mjs";
 // Live transitions and valuation lifecycle against isolated React components and a fake feed.
@@ -119,45 +120,9 @@ function report(body) {
     model_multiplier: { value: "1.25" },
     backdrop_multiplier: missing,
     final_mark: missing,
-    display: {
-      fields: [
-        {
-          id: "confidence",
-          label: "Fixture confidence",
-          primary: false,
-          value: { kind: "number", amount: "87.500", suffix: "%" },
-        },
-        {
-          id: "decision",
-          label: "Fixture decision",
-          primary: true,
-          value: {
-            kind: "unavailable",
-            label: "Not enough data",
-            message: missing.error.message,
-            detail: "1 of 3 fixture observations",
-          },
-        },
-        {
-          id: "model_floor",
-          label: "Fixture price",
-          primary: false,
-          value: {
-            kind: "currency",
-            amount: String(number * 10),
-            currency_id: body.currency_id,
-          },
-        },
-        {
-          id: "model_multiplier",
-          label: "Fixture score",
-          primary: false,
-          value: { kind: "number", amount: "1.2500", suffix: " points" },
-        },
-      ],
-      summary: "5 fixture observations",
-      note: `A note owned by the fixture strategy. Gift #${number}.`,
-    },
+    decision: missing,
+    confidence: { value: "87.5" },
+
     evidence: {
       collection: { listings: 5, gifts: 5 },
       model: { listings: 3, gifts: 3 },
@@ -283,6 +248,39 @@ try {
     description: "Discovered strategy description.",
     documentation_url: "/__fixture_strategy.md",
     documentation_revision: "r1",
+    revision: "r1",
+    display: {
+      fields: [
+        {
+          id: "confidence",
+          label: "Fixture confidence",
+          primary: false,
+          format: { kind: "number", decimals: 3, suffix: "%" },
+        },
+        {
+          id: "decision",
+          label: "Fixture decision",
+          primary: true,
+          format: { kind: "currency", decimals: 2 },
+        },
+        {
+          id: "model_floor",
+          label: "Fixture price",
+          primary: false,
+          format: { kind: "currency", decimals: null },
+        },
+        {
+          id: "model_multiplier",
+          label: "Fixture score",
+          primary: false,
+          format: { kind: "number", decimals: 4, suffix: " points" },
+        },
+      ],
+      evidence: [
+        { path: "/evidence/collection/gifts", label: "fixture observations" },
+      ],
+      note: "A note owned by the fixture strategy.",
+    },
   };
   await page.route("**/valuations/strategies", async (route) => {
     metadataRequests++;
@@ -299,6 +297,7 @@ try {
               {
                 ...strategyMetadata,
                 id: "ask_floor",
+                display: fixtureDisplay("ask_floor"),
                 input: "selection",
                 targets: ["criteria"],
               },
@@ -406,11 +405,8 @@ try {
       const response = report(body);
       if (reportKind === "identity") response.gift.number++;
       if (reportKind !== "partial") {
-        response.display.fields.find((field) => field.primary).value = {
-          kind: "currency",
-          amount: "25.00",
-          currency_id: reportKind === "currency" ? "XTR" : body.currency_id,
-        };
+        response.decision = { value: "25" };
+        if (reportKind === "currency") response.currency_id = "XTR";
         if (reportKind === "stale") response.stale = true;
       }
       // Deliberately deliver late results too: canceled IDs must be ignored by the client.
@@ -810,8 +806,13 @@ try {
     metadataBeforePopup,
     "The popup uses the request's discovered metadata",
   );
-  assert.ok(
-    (await guide.textContent()).includes("Gift #2."),
+  assert.equal(
+    (
+      await guide
+        .locator('[data-metric="model_floor"] .valuation-value')
+        .textContent()
+    ).trim(),
+    "20",
     "A delayed estimate cannot replace the next gift's result",
   );
   assert.equal(
@@ -1198,7 +1199,11 @@ try {
         0,
       );
     else
-      await page.locator(".valuation-summary .currency-symbol.star").waitFor();
+      await page
+        .getByText("Gift details changed. Refresh this market and try again.", {
+          exact: true,
+        })
+        .waitFor();
     assert.equal(await page.locator(".price-comparison").count(), 0);
   }
   reportKind = "identity";

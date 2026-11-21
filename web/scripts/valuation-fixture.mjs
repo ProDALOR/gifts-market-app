@@ -14,22 +14,8 @@ export function criteriaReport(params) {
     results: [
       {
         strategy: "ask_floor",
+        revision: "r1",
         data: { price: { value: "12" }, evidence: { listings: 3, gifts: 3 } },
-        display: {
-          fields: [
-            {
-              id: "ask_floor",
-              label: "Matching ask floor",
-              primary: true,
-              value: {
-                kind: "currency",
-                amount: "12",
-                currency_id: params.currency_id,
-              },
-            },
-          ],
-          note: "Current matching asks, before fees.",
-        },
       },
     ],
   };
@@ -53,7 +39,7 @@ export function floorReport(
     results: [
       {
         strategy: "catalog_floor",
-        display: { fields: [], note: "Current asks" },
+        revision: "r1",
         data: {
           collections: params.target.collection_ids.map((collection_id) => {
             const key = params.currency_id + ":" + collection_id;
@@ -102,7 +88,7 @@ export function giftReport(params, data) {
     gift,
     slug,
     currency_id,
-    display,
+    revision = "r1",
     ...metrics
   } = data;
   return {
@@ -110,6 +96,51 @@ export function giftReport(params, data) {
     currency_id,
     evaluated_at,
     stale,
-    results: [{ strategy, data: metrics, display }],
+    results: [{ strategy, revision, data: metrics }],
   };
+}
+
+/** Static discovery definitions shared by fixtures; values only occur in reports. */
+export function fixtureDisplay(id) {
+  const currency = (id, label, decimals = null, primary = false) => ({
+    id,
+    label,
+    primary,
+    format: { kind: "currency", decimals },
+  });
+  return id === "gift_floor"
+    ? {
+        fields: [
+          currency("final_mark", "Final mark", 2, true),
+          currency("collection_floor", "Collection floor"),
+          currency("model_floor", "Model floor"),
+          currency("backdrop_floor", "Backdrop floor"),
+          currency("model_backdrop_floor", "Model & backdrop floor"),
+          {
+            id: "model_multiplier",
+            label: "Model multiplier",
+            primary: false,
+            format: { kind: "number", decimals: 2, suffix: "×" },
+          },
+          {
+            id: "backdrop_multiplier",
+            label: "Backdrop multiplier",
+            primary: false,
+            format: { kind: "number", decimals: 2, suffix: "×" },
+          },
+        ],
+        evidence: [
+          { path: "/evidence/collection/gifts", label: "gifts" },
+          { path: "/evidence/collection/listings", label: "listings" },
+        ],
+        note: "Current asks, before fees.",
+      }
+    : {
+        fields: [currency("price", "Matching ask floor", null, true)],
+        evidence: [
+          { path: "/evidence/gifts", label: "gifts" },
+          { path: "/evidence/listings", label: "listings" },
+        ],
+        note: "Current matching asks, before fees.",
+      };
 }

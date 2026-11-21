@@ -58,7 +58,7 @@ function CalculationPopup({
   close: () => void;
 }) {
   useEffect(() => playbackBudget.suspendAll(), []);
-  const { strategy, result } = valuation;
+  const { strategy, fields, evidence } = valuation;
   return (
     <Modal
       className="valuation-popup"
@@ -69,9 +69,9 @@ function CalculationPopup({
     >
       <div className="valuation-popup-body">
         <section aria-label="Valuation result" aria-busy={state.loading}>
-          <ValuationFields fields={result.display.fields} />
-          {result.display.summary && (
-            <p className="valuation-note">{result.display.summary}</p>
+          <ValuationFields fields={fields} />
+          {evidence.length > 0 && (
+            <p className="valuation-note">{evidence.join(" · ")}</p>
           )}
           <ValuationStatus state={state} valuation={valuation} detailed />
         </section>

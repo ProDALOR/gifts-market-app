@@ -124,7 +124,7 @@ fn summary(name: &str) -> &'static str {
             "Watch any explicitly selected strategies using the same ValuationQuery as HTTP and finite WebSocket requests. Updates follow observed dependencies and expiry."
         }
         "valuation.snapshot" => {
-            "Atomic valuation report, using the same typed results and display projections as a finite query."
+            "Atomic valuation report, using the same typed results and static contract revisions as a finite query."
         }
         "catalog.versions" => {
             "Compact opaque catalog content tokens. Compare with unquoted HTTP ETags to revalidate changed entries."

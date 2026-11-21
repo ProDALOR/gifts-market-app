@@ -409,6 +409,30 @@ async fn every_registered_strategy_runs_through_its_typed_input_for_the_same_gif
             id.as_str()
         );
         assert!(matches!(result, StrategyOutcome::Value(_)));
+        let wire = serde_json::to_value(result).unwrap();
+        let metadata = crate::strategy(result.strategy()).unwrap();
+        for field in metadata.display.fields {
+            let metric = &wire["data"][field.id];
+            assert!(
+                metric.is_object(),
+                "{} missing metric {}",
+                metadata.id,
+                field.id
+            );
+            assert_ne!(metric.get("value").is_some(), metric.get("error").is_some());
+        }
+        for evidence in metadata.display.evidence {
+            assert!(
+                wire["data"].pointer(evidence.path).is_some(),
+                "{} missing evidence {}",
+                metadata.id,
+                evidence.path
+            );
+        }
+        assert_eq!(
+            result.display(&report.currency_id).fields.len(),
+            metadata.display.fields.len()
+        );
     }
     let StrategyOutcome::Value(StrategyValuation::AskFloor(ask)) = &report.results[0] else {
         panic!()

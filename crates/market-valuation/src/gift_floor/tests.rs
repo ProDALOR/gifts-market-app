@@ -498,7 +498,8 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
         },
     };
     let currency = CurrencyId::from("GRAM");
-    let display = output.display(&currency);
+    let display =
+        StrategyOutcome::Value(StrategyValuation::GiftFloor(output.clone())).display(&currency);
     let ids = display
         .fields
         .iter()
@@ -510,11 +511,6 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
         1
     );
     let field = |id| display.fields.iter().find(|field| field.id == id).unwrap();
-    let json = serde_json::to_value(&display).unwrap();
-    for field in json["fields"].as_array().unwrap() {
-        assert!(field.get("attribute").is_none());
-        assert!(field.get("basis").is_none());
-    }
     assert!(field("final_mark").primary);
     let crate::DisplayValue::Currency { amount, .. } = &field("final_mark").value else {
         panic!("money");
@@ -533,7 +529,7 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
         panic!("error");
     };
     assert_eq!(*label, "Not enough data");
-    assert_eq!(*message, "More observations are needed");
+    assert_eq!(message, "More observations are needed");
     assert_eq!(detail.as_deref(), Some("1 / 3 required samples"));
     assert_eq!(
         output.model_floor.value().unwrap().as_str(),

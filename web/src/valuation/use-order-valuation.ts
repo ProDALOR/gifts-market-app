@@ -15,6 +15,7 @@ import type {
 } from "../market";
 import { useCollectionFloors } from "./floors";
 import { compatibleStrategies, strategyClient } from "./strategies";
+import { presentResult, type PresentedField } from "./presentation.ts";
 import { sameCriteria } from "./targets.ts";
 
 /** One request/response model for concrete gifts and complete bid conditions. */
@@ -35,7 +36,7 @@ export function useOrderValuation(order: Order) {
   const [state, setState] = useState<{
     key: string;
     report?: ValuationResponse;
-    strategies?: ValuationStrategy[];
+    valuations?: Omit<OrderValuation, "stale">[];
     error?: string;
     pending: boolean;
     generation?: number;
@@ -87,7 +88,7 @@ export function useOrderValuation(order: Order) {
       try {
         const rows = await strategyClient.list(stop.signal);
         stop.signal.throwIfAborted();
-        const strategies = compatibleStrategies(rows, target.kind).sort(
+        let strategies = compatibleStrategies(rows, target.kind).sort(
           (a, b) =>
             Number(b.input === "resolved_gift") -
             Number(a.input === "resolved_gift"),
@@ -131,7 +132,38 @@ export function useOrderValuation(order: Order) {
           throw new Error(
             "Valuation results did not match the requested strategies.",
           );
-        setState({ key, report, strategies, generation, pending: false });
+        if (
+          report.results.some(
+            (result) =>
+              strategies.find((row) => row.id === result.strategy)?.revision !==
+              result.revision,
+          )
+        ) {
+          // Reuse the completed calculation; only reload stale presentation metadata once.
+          strategyClient.invalidate();
+          const fresh = await strategyClient.list(stop.signal);
+          stop.signal.throwIfAborted();
+          strategies = strategies.map(
+            (row) => fresh.find((current) => current.id === row.id) ?? row,
+          );
+        }
+        const valuations = strategies.map((strategy) => {
+          const result = report.results.find(
+            (row) => row.strategy === strategy.id,
+          )!;
+          const presentation = presentResult(
+            strategy,
+            result,
+            report.currency_id,
+          );
+          return {
+            strategy,
+            result,
+            ...presentation,
+            primaryFields: presentation.fields.filter((field) => field.primary),
+          };
+        });
+        setState({ key, report, valuations, generation, pending: false });
       } catch (error) {
         if (!stop.signal.aborted) {
           // A cached catalog can outlive a deployment. Retry should discover current contracts.
@@ -164,28 +196,21 @@ export function useOrderValuation(order: Order) {
     };
   }, [key, available]);
   const current = state.key === key ? state : undefined;
-  const strategies = current?.strategies ?? [];
   const report = current?.report;
   const outdated = estimateIsStale(report, current?.generation, availability);
-  const valuations: OrderValuation[] = strategies.flatMap((strategy) => {
-    const result = report?.results.find((row) => row.strategy === strategy.id);
-    if (!result || !report) return [];
-    return [
-      {
-        strategy,
-        result,
-        primaryFields: result.display.fields.filter((field) => field.primary),
-        stale:
-          outdated ||
-          !!(
-            shared &&
-            (shared.stale ||
-              (giftBasisChanged(report, shared, strategy.id) ??
-                evaluatedAfter(shared.evaluatedAt, report.evaluated_at)))
-          ),
-      },
-    ];
-  });
+  const valuations: OrderValuation[] = (current?.valuations ?? []).map(
+    (valuation) => ({
+      ...valuation,
+      stale:
+        outdated ||
+        !!(
+          shared &&
+          (shared.stale ||
+            (giftBasisChanged(report!, shared, valuation.strategy.id) ??
+              evaluatedAfter(shared.evaluatedAt, report!.evaluated_at)))
+        ),
+    }),
+  );
   return {
     key,
     report,
@@ -200,6 +225,8 @@ export type OrderValuationState = ReturnType<typeof useOrderValuation>;
 export type OrderValuation = {
   strategy: ValuationStrategy;
   result: ValuationResponse["results"][number];
-  primaryFields: ValuationResponse["results"][number]["display"]["fields"];
+  fields: PresentedField[];
+  evidence: string[];
+  primaryFields: PresentedField[];
   stale: boolean;
 };

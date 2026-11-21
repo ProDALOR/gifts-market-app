@@ -2,6 +2,7 @@ use super::GiftFloorValuation;
 use crate::{ResolvedGiftInput, Strategy, ValuationContext, ValuationError};
 pub struct GiftFloor;
 impl Strategy for GiftFloor {
+    const DISPLAY: crate::DisplayDefinition = super::display::DISPLAY;
     type Input = ResolvedGiftInput;
     type Output = GiftFloorValuation;
     const ID: &'static str = "gift_floor";

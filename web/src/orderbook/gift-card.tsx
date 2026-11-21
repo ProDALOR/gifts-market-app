@@ -104,7 +104,11 @@ export const GiftCard = memo(function GiftCard({
           <strong>{modelName(order, options, collectionName)}</strong>
         )}
         <div className={`quote price${order.kind === "bid" ? " bid" : ""}`}>
-          <Quote price={order.price} currency={order.book.currency_id} />
+          <Quote
+            price={order.price}
+            currency={order.book.currency_id}
+            format="listing"
+          />
         </div>
       </div>
       <button

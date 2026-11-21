@@ -12,6 +12,7 @@ market-gifts-hub.workspace = true
 market-hub-protocol.workspace = true
 tonic.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 utoipa = { workspace = true, optional = true }
 market-gifts.workspace = true
 rust_decimal.workspace = true
@@ -23,7 +24,6 @@ tracing.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 market-actors.workspace = true
-serde_json.workspace = true
 tempfile = "3"
 [lints]
 workspace = true

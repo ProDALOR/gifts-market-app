@@ -1,32 +1,89 @@
-//! Strategy-owned display projections. Typed calculation outputs remain authoritative.
-use crate::{Multiplier, ValuationIssueCode, ValuationMetric};
-use market_gifts::CurrencyId;
+//! Static strategy presentation contracts; query outputs contain calculation data only.
 use serde::Serialize;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct ValuationDisplay<'a> {
-    /// Strategy-defined field order is preserved.
-    pub fields: Vec<DisplayField<'a>>,
-    pub summary: Option<String>,
+pub struct DisplayDefinition {
+    pub fields: &'static [FieldDefinition],
+    pub evidence: &'static [EvidenceDefinition],
     pub note: &'static str,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct DisplayField<'a> {
+pub struct FieldDefinition {
+    /// Top-level metric key in the strategy's typed data, containing value or error.
     pub id: &'static str,
     pub label: &'static str,
     pub primary: bool,
-    pub value: DisplayValue<'a>,
+    pub format: FieldFormat,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub enum DisplayValue<'a> {
-    /// Ready to display: precision and rounding were chosen by the strategy.
+pub enum FieldFormat {
+    Currency {
+        decimals: Option<u8>,
+    },
+    Number {
+        decimals: Option<u8>,
+        suffix: &'static str,
+    },
+}
+#[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct EvidenceDefinition {
+    /// RFC 6901 JSON pointer within strategy data. Absent evidence is omitted.
+    pub path: &'static str,
+    pub label: &'static str,
+}
+impl FieldDefinition {
+    pub const fn currency(id: &'static str, label: &'static str, decimals: Option<u8>) -> Self {
+        Self {
+            id,
+            label,
+            primary: false,
+            format: FieldFormat::Currency { decimals },
+        }
+    }
+    pub const fn number(
+        id: &'static str,
+        label: &'static str,
+        suffix: &'static str,
+        decimals: Option<u8>,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            primary: false,
+            format: FieldFormat::Number { decimals, suffix },
+        }
+    }
+    pub const fn primary(mut self) -> Self {
+        self.primary = true;
+        self
+    }
+}
+
+/// Local rendering for text consumers, using the same definitions advertised by discovery.
+/// These projections are never added to HTTP or WebSocket results.
+#[derive(Debug)]
+pub struct ValuationDisplay {
+    pub fields: Vec<DisplayField>,
+    pub summary: Option<String>,
+    pub note: &'static str,
+}
+#[derive(Debug)]
+pub struct DisplayField {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub primary: bool,
+    pub value: DisplayValue,
+}
+#[derive(Debug)]
+pub enum DisplayValue {
     Currency {
         amount: String,
-        currency_id: &'a CurrencyId,
+        currency_id: market_gifts::CurrencyId,
     },
     Number {
         amount: String,
@@ -34,69 +91,103 @@ pub enum DisplayValue<'a> {
     },
     Unavailable {
         label: &'static str,
-        message: &'a str,
+        message: String,
         detail: Option<String>,
     },
 }
-impl<'a> DisplayField<'a> {
-    pub fn currency(
-        id: &'static str,
-        label: &'static str,
-        metric: &'a ValuationMetric,
-        currency_id: &'a CurrencyId,
-        decimals: Option<u8>,
-    ) -> Self {
-        Self::metric(id, label, metric, |amount| DisplayValue::Currency {
-            amount: formatted(amount.decimal(), decimals),
-            currency_id,
-        })
-    }
-    pub fn number(
-        id: &'static str,
-        label: &'static str,
-        metric: &'a ValuationMetric<Multiplier>,
-        suffix: &'static str,
-        decimals: Option<u8>,
-    ) -> Self {
-        Self::metric(id, label, metric, |amount| DisplayValue::Number {
-            amount: formatted(amount.decimal(), decimals),
-            suffix,
-        })
-    }
-    fn metric<T>(
-        id: &'static str,
-        label: &'static str,
-        metric: &'a ValuationMetric<T>,
-        value: impl FnOnce(&T) -> DisplayValue<'a>,
-    ) -> Self {
-        let value = match metric {
-            ValuationMetric::Value { value: amount } => value(amount),
-            ValuationMetric::Unavailable { error } => DisplayValue::Unavailable {
-                label: match error.code {
-                    ValuationIssueCode::NotEnoughData => "Not enough data",
-                    ValuationIssueCode::MissingTrait => "Missing trait",
-                    ValuationIssueCode::InvalidBaseline => "Invalid baseline",
-                    ValuationIssueCode::CalculationOverflow => "Calculation overflow",
-                },
-                message: &error.message,
-                detail: error.required_samples.map(|required| {
-                    format!(
-                        "{} / {required} required samples",
-                        error.available_samples.unwrap_or(0)
-                    )
-                }),
-            },
+impl DisplayDefinition {
+    pub(crate) fn render(
+        &self,
+        data: &serde_json::Value,
+        error: Option<&str>,
+        currency: &market_gifts::CurrencyId,
+    ) -> ValuationDisplay {
+        let error_field = self
+            .fields
+            .iter()
+            .find(|field| field.primary)
+            .or(self.fields.first())
+            .copied()
+            .unwrap_or(FieldDefinition::currency("value", "Value", None).primary());
+        let definitions = if error.is_some() {
+            std::slice::from_ref(&error_field)
+        } else {
+            self.fields
         };
-        Self {
-            id,
-            label,
-            primary: false,
-            value,
+        let fields = definitions
+            .iter()
+            .map(|field| {
+                let metric = &data[field.id];
+                let value = metric["value"]
+                    .as_str()
+                    .and_then(|value| rust_decimal::Decimal::from_str_exact(value).ok());
+                let value = match (value, field.format, error) {
+                    (Some(amount), FieldFormat::Currency { decimals }, None) => {
+                        DisplayValue::Currency {
+                            amount: formatted(amount, decimals),
+                            currency_id: currency.clone(),
+                        }
+                    }
+                    (Some(amount), FieldFormat::Number { decimals, suffix }, None) => {
+                        DisplayValue::Number {
+                            amount: formatted(amount, decimals),
+                            suffix,
+                        }
+                    }
+                    _ => {
+                        let issue = &metric["error"];
+                        DisplayValue::Unavailable {
+                            label: issue_label(issue["code"].as_str().unwrap_or("")),
+                            message: error
+                                .or_else(|| issue["message"].as_str())
+                                .unwrap_or("Value is unavailable")
+                                .to_owned(),
+                            detail: issue["required_samples"].as_u64().map(|required| {
+                                format!(
+                                    "{} / {required} required samples",
+                                    issue["available_samples"].as_u64().unwrap_or(0)
+                                )
+                            }),
+                        }
+                    }
+                };
+                DisplayField {
+                    id: field.id,
+                    label: field.label,
+                    primary: field.primary,
+                    value,
+                }
+            })
+            .collect();
+        let evidence = if error.is_some() {
+            vec![]
+        } else {
+            self.evidence
+                .iter()
+                .filter_map(|field| {
+                    let value = data.pointer(field.path)?;
+                    let value = value
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .or_else(|| value.as_str().map(str::to_owned))?;
+                    Some(format!("{value} {}", field.label))
+                })
+                .collect::<Vec<_>>()
+        };
+        ValuationDisplay {
+            fields,
+            summary: (!evidence.is_empty()).then(|| evidence.join(" · ")),
+            note: self.note,
         }
     }
-    pub fn primary(mut self) -> Self {
-        self.primary = true;
-        self
+}
+fn issue_label(code: &str) -> &'static str {
+    match code {
+        "not_enough_data" => "Not enough data",
+        "missing_trait" => "Missing trait",
+        "invalid_baseline" => "Invalid baseline",
+        "calculation_overflow" => "Calculation overflow",
+        _ => "Unavailable",
     }
 }
 fn formatted(amount: rust_decimal::Decimal, decimals: Option<u8>) -> String {
@@ -113,9 +204,8 @@ fn formatted(amount: rust_decimal::Decimal, decimals: Option<u8>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use market_gifts::Amount;
     #[test]
-    fn display_precision_is_exact_decimal_and_never_mutates_the_calculated_value() {
+    fn precision_is_exact_decimal_and_uses_midpoint_to_even() {
         for (input, precision, expected) in [
             (
                 "10000000000000000.000000001",
@@ -127,9 +217,13 @@ mod tests {
             ("1.2", Some(3), "1.200"),
             ("2.5", Some(0), "2"),
         ] {
-            let amount = Amount::new(input).unwrap();
-            assert_eq!(formatted(amount.decimal(), precision), expected);
-            assert_eq!(amount, Amount::new(input).unwrap());
+            assert_eq!(
+                formatted(
+                    rust_decimal::Decimal::from_str_exact(input).unwrap(),
+                    precision
+                ),
+                expected
+            );
         }
     }
 }

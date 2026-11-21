@@ -44,6 +44,11 @@ pub struct CatalogFloorValuation {
 /// The picker projection is an ordinary strategy with catalog-scoped typed input.
 pub struct CatalogFloor;
 impl Strategy for CatalogFloor {
+    const DISPLAY: crate::DisplayDefinition = crate::DisplayDefinition {
+        fields: &[],
+        evidence: &[],
+        note: "Current eligible asks, before fees.",
+    };
     type Input = CatalogInput;
     type Output = Arc<CatalogFloorValuation>;
     const ID: &'static str = "catalog_floor";

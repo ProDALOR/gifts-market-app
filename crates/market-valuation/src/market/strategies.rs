@@ -8,6 +8,20 @@ use market_gifts::{GiftTarget, OrderSource};
 use std::collections::BTreeSet;
 pub struct AskFloor;
 impl Strategy for AskFloor {
+    const DISPLAY: crate::DisplayDefinition = crate::DisplayDefinition {
+        fields: &[crate::FieldDefinition::currency("price", "Value", None).primary()],
+        evidence: &[
+            crate::EvidenceDefinition {
+                path: "/evidence/gifts",
+                label: "gifts",
+            },
+            crate::EvidenceDefinition {
+                path: "/evidence/listings",
+                label: "listings",
+            },
+        ],
+        note: "Lowest eligible ask, before fees.",
+    };
     type Input = SelectionInput;
     const ID: &'static str = "ask_floor";
     const NAME: &'static str = "Ask floor";
@@ -84,6 +98,32 @@ impl Strategy for AskFloor {
 }
 pub struct ExecutionMean;
 impl Strategy for ExecutionMean {
+    const DISPLAY: crate::DisplayDefinition = crate::DisplayDefinition {
+        fields: &[crate::FieldDefinition::currency("price", "Value", Some(2)).primary()],
+        evidence: &[
+            crate::EvidenceDefinition {
+                path: "/evidence/executions",
+                label: "executions",
+            },
+            crate::EvidenceDefinition {
+                path: "/evidence/gifts",
+                label: "gifts",
+            },
+            crate::EvidenceDefinition {
+                path: "/evidence/venues",
+                label: "venues",
+            },
+            crate::EvidenceDefinition {
+                path: "/evidence/first_execution",
+                label: "first execution",
+            },
+            crate::EvidenceDefinition {
+                path: "/evidence/last_execution",
+                label: "last execution",
+            },
+        ],
+        note: "Unweighted arithmetic mean per execution record; observed history only.",
+    };
     type Input = ExecutionInput;
     const ID: &'static str = "execution_mean";
     const NAME: &'static str = "Execution mean";
@@ -106,6 +146,32 @@ impl Strategy for ExecutionMean {
 }
 pub struct ExecutionMedian;
 impl Strategy for ExecutionMedian {
+    const DISPLAY: crate::DisplayDefinition = crate::DisplayDefinition {
+        fields: &[crate::FieldDefinition::currency("price", "Value", Some(2)).primary()],
+        evidence: &[
+            crate::EvidenceDefinition {
+                path: "/evidence/executions",
+                label: "executions",
+            },
+            crate::EvidenceDefinition {
+                path: "/evidence/gifts",
+                label: "gifts",
+            },
+            crate::EvidenceDefinition {
+                path: "/evidence/venues",
+                label: "venues",
+            },
+            crate::EvidenceDefinition {
+                path: "/evidence/first_execution",
+                label: "first execution",
+            },
+            crate::EvidenceDefinition {
+                path: "/evidence/last_execution",
+                label: "last execution",
+            },
+        ],
+        note: "Median per execution record; observed history only.",
+    };
     type Input = ExecutionInput;
     const ID: &'static str = "execution_median";
     const NAME: &'static str = "Execution median";

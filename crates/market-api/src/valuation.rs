@@ -14,7 +14,7 @@ pub struct ValuationResponse<'a> {
 pub struct StrategyOutcomeResponse<'a> {
     #[serde(flatten)]
     pub result: &'a market_valuation::StrategyOutcome,
-    pub display: market_valuation::ValuationDisplay<'a>,
+    pub revision: &'static str,
 }
 impl<'a> From<&'a market_valuation::ValuationReport> for ValuationResponse<'a> {
     fn from(report: &'a market_valuation::ValuationReport) -> Self {
@@ -28,7 +28,7 @@ impl<'a> From<&'a market_valuation::ValuationReport> for ValuationResponse<'a> {
                 .iter()
                 .map(|result| StrategyOutcomeResponse {
                     result,
-                    display: result.display(&report.currency_id),
+                    revision: catalog().revisions[result.strategy()].as_str(),
                 })
                 .collect(),
         }
@@ -40,6 +40,8 @@ pub struct StrategyResponse {
     pub id: &'static str,
     pub name: &'static str,
     pub description: &'static str,
+    pub revision: String,
+    pub display: market_valuation::DisplayDefinition,
     pub documentation_url: String,
     pub documentation_revision: String,
     pub input: market_valuation::InputContract,
@@ -52,6 +54,11 @@ impl From<&market_valuation::StrategyMetadata> for StrategyResponse {
             id: metadata.id,
             name: metadata.name,
             description: metadata.description,
+            revision: content_revision(
+                &serde_json::to_vec(&(metadata.input, metadata.display))
+                    .expect("static strategy contract serializes"),
+            ),
+            display: metadata.display,
             input: metadata.input,
             targets: metadata.input.targets(),
             requires_period: metadata.input.requires_period(),
@@ -99,14 +106,18 @@ impl Content {
 }
 struct StrategyCatalog {
     index: Content,
+    revisions: std::collections::BTreeMap<&'static str, String>,
     guides: std::collections::BTreeMap<&'static str, Content>,
 }
 impl StrategyCatalog {
     fn new<'a>(metadata: impl IntoIterator<Item = &'a market_valuation::StrategyMetadata>) -> Self {
         let mut rows = Vec::new();
         let mut guides = std::collections::BTreeMap::new();
+        let mut revisions = std::collections::BTreeMap::new();
         for metadata in metadata {
-            rows.push(StrategyResponse::from(metadata));
+            let row = StrategyResponse::from(metadata);
+            revisions.insert(metadata.id, row.revision.clone());
+            rows.push(row);
             guides.insert(
                 metadata.id,
                 Content::new(
@@ -123,6 +134,7 @@ impl StrategyCatalog {
                 "application/json",
             ),
             guides,
+            revisions,
         }
     }
 }
@@ -130,7 +142,7 @@ fn catalog() -> &'static StrategyCatalog {
     static CATALOG: std::sync::OnceLock<StrategyCatalog> = std::sync::OnceLock::new();
     CATALOG.get_or_init(|| StrategyCatalog::new(market_valuation::strategies()))
 }
-#[utoipa::path(get,path="/valuations/strategies",tag="Valuations",summary="Discover valuation strategies and supported targets",description="IDs match strategy fields in valuation responses. Each entry advertises its typed input contract. Supported targets and execution-period requirements are derived from that contract. Each strategy owns its display name, description and Markdown documentation with LaTeX math. Follow documentation_url to fetch the guide. documentation_revision changes with guide content. Both discovery and documentation support ETag revalidation.",responses((status=200,body=Vec<StrategyResponse>,headers(("ETag"=String,description="Strategy catalog content revision"))),(status=304,description="Strategy catalog is unchanged")))]
+#[utoipa::path(get,path="/valuations/strategies",tag="Valuations",summary="Discover valuation strategies and supported targets",description="IDs match strategy fields in valuation responses. Each entry advertises its typed input contract. Supported targets and execution-period requirements are derived from that contract. Each strategy owns its display name, description, static display definition and Markdown documentation with LaTeX math. Display field IDs select top-level typed metrics. Field formats define decimal precision (midpoint-to-even), currency or numeric suffix and primary emphasis. Evidence paths are RFC 6901 JSON pointers into strategy data; absent evidence is omitted. revision identifies the input/display contract and matches each query/watch result. Follow documentation_url to fetch the guide. documentation_revision changes with guide content. Both discovery and documentation support ETag revalidation.",responses((status=200,body=Vec<StrategyResponse>,headers(("ETag"=String,description="Strategy catalog content revision"))),(status=304,description="Strategy catalog is unchanged")))]
 pub(crate) async fn strategies(req: actix_web::HttpRequest) -> actix_web::HttpResponse {
     catalog().index.response(&req)
 }
@@ -156,16 +168,20 @@ pub(crate) async fn documentation(
 mod tests {
     use actix_web::{App, http::header, test};
     #[actix_web::test]
-    async fn display_schema_only_exposes_consumed_fields() {
+    async fn query_results_contain_typed_data_and_revision_without_display_projection() {
         use utoipa::OpenApi;
         let schema = serde_json::to_value(crate::ApiDoc::openapi()).unwrap();
         let schemas = &schema["components"]["schemas"];
-        let fields = schemas["DisplayField"]["properties"].as_object().unwrap();
-        assert_eq!(fields.len(), 4);
-        for name in ["id", "label", "primary", "value"] {
-            assert!(fields.contains_key(name));
-        }
-        assert!(schemas.get("DisplayAttribute").is_none());
+        assert!(schemas.get("ValuationDisplay").is_none());
+        assert!(schemas.get("DisplayValue").is_none());
+        assert!(
+            schemas["StrategyOutcomeResponse"]["allOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|part| part["properties"]["revision"].is_object())
+        );
+        assert!(schemas["StrategyResponse"]["properties"]["display"].is_object());
     }
     #[actix_web::test]
     async fn catalog_revalidation_tracks_documentation_changes_and_each_guide_has_its_own_revision()
@@ -179,6 +195,7 @@ mod tests {
                     description: "first",
                     documentation,
                     input: market_valuation::InputContract::Selection,
+                    display: market_valuation::strategy("ask_floor").unwrap().display,
                 },
                 market_valuation::StrategyMetadata {
                     id: "two",
@@ -186,6 +203,7 @@ mod tests {
                     description: "second",
                     documentation: "other guide",
                     input: market_valuation::InputContract::Selection,
+                    display: market_valuation::strategy("ask_floor").unwrap().display,
                 },
             ]
         }
@@ -221,6 +239,43 @@ mod tests {
         .await;
         assert_eq!(response.status(), 304);
         assert!(test::read_body(response).await.is_empty());
+    }
+    #[actix_web::test]
+    async fn contract_revisions_track_presentation_and_input_independently_of_guides() {
+        use super::*;
+        let base = *market_valuation::strategy("ask_floor").unwrap();
+        let mut changed = base;
+        changed.documentation = "New guide content";
+        let original = StrategyResponse::from(&base);
+        let docs = StrategyResponse::from(&changed);
+        assert_eq!(original.revision, docs.revision);
+        assert_ne!(original.documentation_revision, docs.documentation_revision);
+        changed = base;
+        const FIELDS: &[market_valuation::FieldDefinition] =
+            &[market_valuation::FieldDefinition::currency("price", "Estimate", Some(2)).primary()];
+        changed.display.fields = FIELDS;
+        let display = StrategyResponse::from(&changed);
+        assert_ne!(original.revision, display.revision);
+        assert_eq!(
+            original.documentation_revision,
+            display.documentation_revision
+        );
+        let old_catalog = StrategyCatalog::new([&base]);
+        let new_catalog = StrategyCatalog::new([&changed]);
+        assert_ne!(old_catalog.index.etag, new_catalog.index.etag);
+        assert_eq!(
+            old_catalog.guides[base.id].etag,
+            new_catalog.guides[base.id].etag
+        );
+        changed = base;
+        changed.input = market_valuation::InputContract::ResolvedGift;
+        assert_ne!(original.revision, StrategyResponse::from(&changed).revision);
+        changed = base;
+        changed.display.evidence = &[market_valuation::EvidenceDefinition {
+            path: "/evidence/gifts",
+            label: "unique gifts",
+        }];
+        assert_ne!(original.revision, StrategyResponse::from(&changed).revision);
     }
     #[actix_web::test]
     async fn discovered_metadata_links_to_each_strategys_own_guide_without_market_state() {

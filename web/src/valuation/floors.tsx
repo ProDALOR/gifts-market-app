@@ -14,7 +14,7 @@ import type {
   SharedFloor,
 } from "./floors-controller";
 import type { Order } from "../market";
-import { roundedAmount } from "../market";
+import { roundedAmount } from "../amount";
 import { Quote } from "../ui/market-controls";
 import "./floors.css";
 const empty: FloorsState = {
@@ -112,6 +112,7 @@ export function FloorBadge({
   label = "Current floor",
   compact = false,
   rounded = false,
+  abbreviated = false,
 }: {
   floor?: SharedFloor;
   currency: string;
@@ -119,6 +120,7 @@ export function FloorBadge({
   label?: string;
   compact?: boolean;
   rounded?: boolean;
+  abbreviated?: boolean;
 }) {
   if (!floor) return null;
   const price = "value" in floor.price ? floor.price.value : undefined;
@@ -133,7 +135,15 @@ export function FloorBadge({
       aria-label={`${label}: ${display ? `${display} ${currency}` : "unavailable"}${stale ? "; updates pending" : ""}`}
     >
       {!compact && <span>{label}</span>}
-      {display ? <Quote price={display} currency={currency} /> : <span>—</span>}
+      {display ? (
+        <Quote
+          price={abbreviated ? price! : display}
+          currency={currency}
+          format={abbreviated ? "compact" : "exact"}
+        />
+      ) : (
+        <span>—</span>
+      )}
     </span>
   );
 }
@@ -172,7 +182,7 @@ export function CollectionFloor({ id }: { id: string }) {
       stale={entry?.stale}
       currency={state.currency}
       compact
-      rounded
+      abbreviated
     />
   );
 }

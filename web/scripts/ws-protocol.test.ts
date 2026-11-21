@@ -9,22 +9,6 @@ const page = {
   sync,
   page: { data: [], cursor: "checkpoint", next_page_token: "", sync },
 };
-const display = {
-  summary: null,
-  note: "Exact amounts",
-  fields: [
-    {
-      id: "final",
-      label: "Estimate",
-      primary: true,
-      value: {
-        kind: "currency",
-        amount: "100000000000000000.000000001",
-        currency_id: "GRAM",
-      },
-    },
-  ],
-};
 const result = {
   type: "result",
   id: "op.2",
@@ -42,7 +26,13 @@ const result = {
     currency_id: "GRAM",
     evaluated_at: "2026-11-18T12:00:00Z",
     stale: false,
-    results: [{ strategy: "gift_floor", data: {}, display }],
+    results: [
+      {
+        strategy: "gift_floor",
+        data: { final_mark: { value: "100000000000000000.000000001" } },
+        revision: "r1",
+      },
+    ],
   },
 };
 test("typed envelopes preserve opaque revisions and exact decimal strings", () => {
@@ -312,12 +302,12 @@ test("target valuations validate scope identity, independent outcomes and unique
         {
           strategy: "ask_floor",
           data: { price: { value: "1.25" } },
-          display: display,
+          revision: "r1",
         },
         {
           strategy: "execution_mean",
           error: { code: "capacity_exceeded", message: "Shorten the period" },
-          display: display,
+          revision: "r1",
         },
       ],
     },
@@ -329,20 +319,22 @@ test("target valuations validate scope identity, independent outcomes and unique
     data: value.data,
   };
   assert.deepEqual(parseFrame(JSON.stringify(snapshot)), snapshot);
-  for (const field of [
-    null,
-    { ...display.fields[0], value: null },
-    { ...display.fields[0], value: [] },
-  ]) {
+  for (const revision of [null, "", "x".repeat(65)]) {
     const data = {
       ...value.data,
-      results: [
-        { ...value.data.results[0], display: { ...display, fields: [field] } },
-      ],
+      results: [{ ...value.data.results[0], revision }],
     };
     assert.throws(() => parseFrame(JSON.stringify({ ...value, data })));
     assert.throws(() => parseFrame(JSON.stringify({ ...snapshot, data })));
   }
+  const legacy = {
+    ...value,
+    data: {
+      ...value.data,
+      results: [{ ...value.data.results[0], display: { fields: [] } }],
+    },
+  };
+  assert.throws(() => parseFrame(JSON.stringify(legacy)));
   for (const invalid of [
     {
       ...value,

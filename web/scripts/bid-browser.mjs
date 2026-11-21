@@ -1,3 +1,4 @@
+import { fixtureDisplay } from "./valuation-fixture.mjs";
 // Bid cards stay static; details share bounded playback with gift and filter previews.
 import assert from "node:assert/strict";
 import { gzipSync } from "node:zlib";
@@ -105,6 +106,8 @@ const server = await createServer({
               JSON.stringify([
                 {
                   id: "ask_floor",
+                  revision: "r1",
+                  display: fixtureDisplay("ask_floor"),
                   name: "Matching asks",
                   description: "Fixture",
                   input: "selection",

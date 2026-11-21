@@ -153,22 +153,6 @@ pub struct ExecutionPriceValuation {
     /// Observed records only: this does not assert complete history or independent sellers.
     pub evidence: ExecutionEvidence,
 }
-impl ExecutionEvidence {
-    fn summary(&self) -> String {
-        let mut text = format!(
-            "{} executions · {} gifts · {} venues",
-            self.executions, self.gifts, self.venues
-        );
-        if let Some((first, last)) = self.first_execution.zip(self.last_execution) {
-            text.push_str(&format!(
-                " · observed {} – {} UTC",
-                first.strftime("%Y-%m-%d %H:%M"),
-                last.strftime("%Y-%m-%d %H:%M")
-            ));
-        }
-        text
-    }
-}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "strategy", content = "data", rename_all = "snake_case")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -223,67 +207,26 @@ impl StrategyOutcome {
             Self::Error { strategy, .. } => strategy.as_str(),
         }
     }
-    pub fn display<'a>(&'a self, currency: &'a CurrencyId) -> ValuationDisplay<'a> {
-        let (price, summary, note) = match self {
-            Self::Value(StrategyValuation::CatalogFloor(data)) => {
-                return ValuationDisplay {
-                    fields: vec![],
-                    summary: Some(format!("{} collections", data.collections.len())),
-                    note: "Current eligible asks, before fees.",
-                };
-            }
-            Self::Value(StrategyValuation::GiftFloor(data)) => return data.display(currency),
-            Self::Value(StrategyValuation::AskFloor(data)) => (
-                &data.price,
-                Some(format!(
-                    "{} gifts · {} listings",
-                    data.evidence.gifts, data.evidence.listings
-                )),
-                "Lowest eligible ask, before fees.",
-            ),
-            Self::Value(StrategyValuation::ExecutionMean(data)) => (
-                &data.price,
-                Some(data.evidence.summary()),
-                "Unweighted arithmetic mean per execution record; observed history only.",
-            ),
-            Self::Value(StrategyValuation::ExecutionMedian(data)) => (
-                &data.price,
-                Some(data.evidence.summary()),
-                "Median per execution record; observed history only.",
-            ),
-            Self::Error { error, .. } => {
-                return ValuationDisplay {
-                    fields: vec![DisplayField {
-                        id: "price",
-                        label: "Value",
-                        primary: true,
-                        value: DisplayValue::Unavailable {
-                            label: "Unavailable",
-                            message: &error.message,
-                            detail: None,
-                        },
-                    }],
-                    summary: None,
-                    note: "The other strategy results remain available.",
-                };
-            }
+    pub fn display(&self, currency: &CurrencyId) -> ValuationDisplay {
+        const FALLBACK: crate::DisplayDefinition = crate::DisplayDefinition {
+            fields: &[crate::FieldDefinition::currency("price", "Value", None).primary()],
+            evidence: &[],
+            note: "",
         };
-        let decimals = matches!(
-            self,
-            Self::Value(
-                StrategyValuation::ExecutionMean(_) | StrategyValuation::ExecutionMedian(_)
-            )
-        )
-        .then_some(2);
-        ValuationDisplay {
-            fields: vec![
-                DisplayField::currency("price", "Value", price, currency, decimals).primary(),
-            ],
-            summary,
-            note,
+        let display =
+            crate::strategy(self.strategy()).map_or(FALLBACK, |metadata| metadata.display);
+        match self {
+            Self::Value(value) => {
+                let value = serde_json::to_value(value).expect("typed valuation serializes");
+                display.render(&value["data"], None, currency)
+            }
+            Self::Error { error, .. } => {
+                display.render(&serde_json::Value::Null, Some(&error.message), currency)
+            }
         }
     }
 }
+
 pub(crate) fn unavailable(
     code: ValuationIssueCode,
     message: impl Into<String>,

@@ -11,9 +11,10 @@ const html = `<!doctype html><html><head><meta name="viewport" content="width=de
 import React,{useState}from'react';import{createRoot}from'react-dom/client';
 import{FloorDetails}from'/src/orderbook/floor-details.tsx';import{ExecutionTime}from'/src/orderbook/execution-time.tsx';import{OrderValuationSummary}from'/src/orderbook/order-valuation.tsx';
 const at=new Date(Date.now()-3*3600000).toISOString();
-const result={strategy:'fixture',data:{},display:{fields:[{id:'floor',label:'Estimate',primary:true,value:{kind:'currency',amount:'12.50',currency_id:'GRAM'}}]}};
-const strategy={id:'fixture',name:'Gift floor',description:'Fixture',input:'resolved_gift',targets:['gift'],requires_period:false,documentation_url:'/guide',documentation_revision:'1'};
-const state={key:'fixture',report:{target:{kind:'gift',gift:{id:'g',number:1,collection_id:'c',traits:{}}},currency_id:'GRAM',evaluated_at:at,stale:false,results:[result]},valuations:[{strategy,result,primaryFields:result.display.fields,stale:false}],available:true,loading:false};
+const result={strategy:'fixture',revision:'r1',data:{floor:{value:'12.50'}}};
+const strategy={id:'fixture',name:'Gift floor',description:'Fixture',input:'resolved_gift',targets:['gift'],requires_period:false,documentation_url:'/guide',documentation_revision:'1',revision:'r1',display:{fields:[{id:'floor',label:'Estimate',primary:true,format:{kind:'currency',decimals:2}}],evidence:[],note:''}};
+const fields=[{id:'floor',label:'Estimate',primary:true,value:{kind:'currency',amount:'12.50',currency_id:'GRAM'}}];
+const state={key:'fixture',report:{target:{kind:'gift',gift:{id:'g',number:1,collection_id:'c',traits:{}}},currency_id:'GRAM',evaluated_at:at,stale:false,results:[result]},valuations:[{strategy,result,fields,evidence:[],primaryFields:fields,stale:false}],available:true,loading:false};
 function App(){const[kind,setKind]=useState('value');window.setFloorKind=setKind;const floor=kind==='value'?{price:{value:'10.000000001'},evidence:{gifts:2,listings:4}}:kind==='empty'?{price:{error:{code:'not_enough_data',message:'No eligible asks match this selection'}},evidence:{gifts:0,listings:0}}:undefined;
 return React.createElement('main',{className:'workspace'},React.createElement('section',{className:'detail-body'},React.createElement(ExecutionTime,{at}),React.createElement(OrderValuationSummary,{state}),React.createElement(FloorDetails,{label:'Model floor',name:'Dogfather',floor,currency:'GRAM',loading:kind==='loading',error:kind==='error'?'Attribute floors could not be loaded':''})));}
 createRoot(document.getElementById('fixture')).render(React.createElement(App));

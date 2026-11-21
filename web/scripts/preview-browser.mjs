@@ -30,9 +30,9 @@ import {useBackgroundPlaybackSuspension} from '/src/previews/use-playback.ts';
 import {ValuationInfo} from '/src/orderbook/valuation-info.tsx';
 import {OrderDetails} from '/src/orderbook/order-details.tsx';
 import {playbackBudget} from '/src/previews/playback-budget.ts';
-const previewStrategy={id:'preview',name:'Preview strategy',description:'Fixture strategy',input:'resolved_gift',targets:['gift'],requires_period:false,documentation_url:'/__preview_guide.md',documentation_revision:'one'};
-const previewResult={strategy:'preview',data:{},display:{fields:[],note:'Fixture estimate'}};
-const valuationState={key:'preview',strategy:previewStrategy,result:previewResult,strategies:[previewStrategy],primaryFields:[],loading:false,
+const previewStrategy={id:'preview',name:'Preview strategy',description:'Fixture strategy',input:'resolved_gift',targets:['gift'],requires_period:false,documentation_url:'/__preview_guide.md',documentation_revision:'one',revision:'r1',display:{fields:[],evidence:[],note:'Fixture estimate'}};
+const previewResult={strategy:'preview',revision:'r1',data:{}};
+const valuationState={key:'preview',strategy:previewStrategy,result:previewResult,strategies:[previewStrategy],fields:[],evidence:[],primaryFields:[],loading:false,
  report:{target:{kind:'gift',gift:{id:'gift',collection_id:'gift',traits:{}}},currency_id:'GRAM',stale:false,evaluated_at:'2026-11-18T12:00:00Z',results:[previewResult]}};
 const root=createRoot(document.getElementById('fixture'));
 window.mount=(large=false)=>root.render(React.createElement(GiftPreview,{order,options,fallback:'G',size:large?'large':'small',playback:large?'detail':'interaction'},
@@ -56,7 +56,7 @@ function Many({detail}) {
  return React.createElement(React.Fragment,null,
   React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook'},React.createElement(TraitPreview,{collection:bulkCollection,options:bulkOptions,filters:bulkFilters,reset}))),
   detail?React.createElement(GiftArtwork,{media:options.get('model').media,fallback:'D',playback:'detail',className:'detail-test'}):null,
-  detail?React.createElement(ValuationInfo,{state:valuationState}):null);
+  detail?React.createElement(ValuationInfo,{state:valuationState,valuation:valuationState}):null);
 }
 window.preload=()=>Promise.all(bulk.map(item=>loadAnimationData('/media/models/'+item.id+'/animation',new AbortController().signal)));
 window.mountMany=(detail=false)=>{document.getElementById('fixture').style.margin='0';root.render(React.createElement(Many,{detail}));};
@@ -361,6 +361,9 @@ try {
           description: "Fixture strategy",
           documentation_url: "/__preview_guide.md",
           documentation_revision: "one",
+          revision: "r1",
+          input: "resolved_gift", targets: ["gift"], requires_period: false,
+          display: {fields: [], evidence: [], note: "Fixture estimate"},
         },
       ],
     });
@@ -671,7 +674,7 @@ try {
     await page.setViewportSize({ width, height: 850 });
     await page
       .getByRole("heading", {
-        name: kind === "executed" ? "Execution price" : "Asking price",
+        name: kind === "executed" ? "Paid" : "Ask price",
         exact: true,
       })
       .waitFor();

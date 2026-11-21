@@ -1,3 +1,4 @@
+import { fixtureDisplay } from "./valuation-fixture.mjs";
 // Full UI workflow with an isolated local catalog/feed; no Telegram or hub login.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -312,6 +313,8 @@ try {
       json: [
         {
           id: "gift_floor",
+          revision: "r1",
+          display: fixtureDisplay("gift_floor"),
           input: "resolved_gift",
           targets: ["gift"],
           requires_period: false,
@@ -322,6 +325,8 @@ try {
         },
         {
           id: "ask_floor",
+          revision: "r1",
+          display: fixtureDisplay("ask_floor"),
           input: "selection",
           targets: ["criteria"],
           requires_period: false,
@@ -355,74 +360,7 @@ try {
       model_multiplier: { value: "1.25" },
       backdrop_multiplier: { value: "1.13" },
       final_mark: { value: "11.25" },
-      display: {
-        fields: [
-          {
-            id: "final_mark",
-            label: "Final mark",
-            primary: true,
-            value: {
-              kind: "currency",
-              amount: "11.25",
-              currency_id: body.currency_id,
-            },
-          },
-          {
-            id: "collection_floor",
-            label: "Collection floor",
-            primary: false,
-            value: {
-              kind: "currency",
-              amount: "8",
-              currency_id: body.currency_id,
-            },
-          },
-          {
-            id: "model_floor",
-            label: "Model floor",
-            primary: false,
-            value: {
-              kind: "currency",
-              amount: "10.000000001",
-              currency_id: body.currency_id,
-            },
-          },
-          {
-            id: "backdrop_floor",
-            label: "Backdrop floor",
-            primary: false,
-            value: {
-              kind: "currency",
-              amount: "9",
-              currency_id: body.currency_id,
-            },
-          },
-          {
-            id: "model_backdrop_floor",
-            label: "Model × backdrop floor",
-            primary: false,
-            value: {
-              kind: "currency",
-              amount: "12.5",
-              currency_id: body.currency_id,
-            },
-          },
-          {
-            id: "model_multiplier",
-            label: "Model multiplier",
-            primary: false,
-            value: { kind: "number", amount: "1.25", suffix: "×" },
-          },
-          {
-            id: "backdrop_multiplier",
-            label: "Backdrop multiplier",
-            primary: false,
-            value: { kind: "number", amount: "1.13", suffix: "×" },
-          },
-        ],
-        summary: "5 collection listings",
-        note: "Current asks, before fees.",
-      },
+
       evidence: {
         collection: { listings: 5, gifts: 5 },
         model: { listings: 3, gifts: 3 },
@@ -658,7 +596,15 @@ try {
     loadedBeforeShortcut,
     "Returning to the top preserves loaded listings",
   );
-  await price("0.500000001");
+  await price("0.50..");
+  assert.equal(
+    await page
+      .locator(".gift-grid .quote-amount")
+      .first()
+      .getAttribute("title"),
+    "0.500000001 GRAM",
+    "Cards retain the full quote on hover",
+  );
   await page
     .getByRole("alert")
     .filter({ hasText: "Choices unavailable" })
@@ -804,7 +750,7 @@ try {
   await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
-  await price("0.500000001");
+  await price("0.50..");
   await scrollMore(80);
   await scrollMore(125);
   assert.equal(
@@ -943,7 +889,7 @@ try {
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await button("Reverse sort direction").click();
-  await price("10,000,000,000,000,000.000000001");
+  await price("10,000,000,000,000,000.00..");
   for (const width of [320, 390, 480, 1440]) {
     await page.setViewportSize({ width, height: 844 });
     assert.equal(
@@ -1052,7 +998,7 @@ try {
   );
   await sort("Price");
   await button("Reverse sort direction").click();
-  await price("0.500000001");
+  await price("0.50..");
   await currency("XTR");
   await price("850");
   assert.equal(
@@ -1060,7 +1006,7 @@ try {
     1,
   );
   await currency("GRAM");
-  await price("0.500000001");
+  await price("0.50..");
   await page.goto(
     `${base}/?collection=bunny&currency=GRAM&sort=price_asc&max=12`,
   );
@@ -1075,7 +1021,7 @@ try {
     "Changing units clears a bound denominated in the old currency",
   );
   await currency("GRAM");
-  await price("0.500000001");
+  await price("0.50..");
   await button("Bids").click();
   await cards(1);
   const bidViewport = page.viewportSize();
@@ -1355,7 +1301,7 @@ try {
   await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
-  await price("0.500000001");
+  await price("0.50..");
   assert.equal(new URL(page.url()).searchParams.get("sort"), "price_asc");
   const opener = page.locator(".card-open").first();
   await opener.click();
