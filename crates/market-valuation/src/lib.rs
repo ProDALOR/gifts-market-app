@@ -42,3 +42,6 @@ pub mod source;
 pub use source::{ValuationSnapshot, ValuationSource};
 #[cfg(test)]
 mod test_support;
+
+#[cfg(test)]
+mod preparation_benchmark;

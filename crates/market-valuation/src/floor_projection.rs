@@ -63,48 +63,24 @@ impl Strategy for CatalogFloor {
         let mut collections = Vec::with_capacity(request.collection_ids.len());
         for collection in &request.collection_ids {
             context.snapshot().check_cancelled()?;
-            let book = context.floor_statistics(collection)?;
-            let floor = |model, backdrop| {
-                let (price, evidence) = book.selection(model, backdrop);
-                AskFloorValuation { price, evidence }
-            };
-            let traits = request
+            let details = request
                 .details
                 .as_ref()
-                .filter(|details| &details.collection_id == collection)
-                .map(|details| TraitFloors {
-                    models: book
-                        .known_models
-                        .iter()
-                        .map(|id| (id.clone(), floor(Some(id), None)))
-                        .collect(),
-                    backdrops: book
-                        .known_backdrops
-                        .iter()
-                        .map(|id| (id.clone(), floor(None, Some(id))))
-                        .collect(),
-                    patterns: book
-                        .known_patterns
-                        .iter()
-                        .map(|id| {
-                            let empty = crate::floors::Floor::default();
-                            let floor = book.patterns.get(id).unwrap_or(&empty);
-                            (
-                                id.clone(),
-                                AskFloorValuation {
-                                    price: floor.metric(true),
-                                    evidence: floor.evidence(),
-                                },
-                            )
-                        })
-                        .collect(),
-                    pair: details.pair.as_ref().map(|pair| PairFloor {
+                .filter(|details| &details.collection_id == collection);
+            let book = if details.is_some() {
+                context.floor_statistics(collection)?
+            } else {
+                context.collection_statistics(collection)?
+            };
+            let traits = if let Some(details) = details {
+                let pair = if let Some(pair) = &details.pair {
+                    Some(PairFloor {
                         model_id: pair.model_id.clone(),
                         backdrop_id: pair.backdrop_id.clone(),
                         floor: if book.known_models.contains(&pair.model_id)
                             && book.known_backdrops.contains(&pair.backdrop_id)
                         {
-                            floor(Some(&pair.model_id), Some(&pair.backdrop_id))
+                            context.pair_floor(collection, &pair.model_id, &pair.backdrop_id)?
                         } else {
                             AskFloorValuation {
                                 price: market::unavailable(
@@ -116,12 +92,50 @@ impl Strategy for CatalogFloor {
                                 evidence: FloorEvidence::default(),
                             }
                         },
-                    }),
-                });
+                    })
+                } else {
+                    None
+                };
+                Some(TraitFloors {
+                    models: book
+                        .known_models
+                        .iter()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                book.selection(crate::floors::FloorSelection::Model(id)),
+                            )
+                        })
+                        .collect(),
+                    backdrops: book
+                        .known_backdrops
+                        .iter()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                book.selection(crate::floors::FloorSelection::Backdrop(id)),
+                            )
+                        })
+                        .collect(),
+                    patterns: book
+                        .known_patterns
+                        .iter()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                book.selection(crate::floors::FloorSelection::Pattern(id)),
+                            )
+                        })
+                        .collect(),
+                    pair,
+                })
+            } else {
+                None
+            };
             collections.push(CollectionFloors {
                 collection_id: collection.clone(),
                 evaluated_at: book.evaluated_at,
-                floor: floor(None, None),
+                floor: book.selection(crate::floors::FloorSelection::Collection),
                 traits,
             });
         }

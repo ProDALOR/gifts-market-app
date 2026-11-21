@@ -8,7 +8,7 @@ $$F=\min_i p_i$$
 
 One eligible ask is sufficient. With no matching asks, the price carries `not_enough_data`; missing evidence never becomes zero. Prices retain their original decimal precision. This is an asking price, not a completed sale or guaranteed realizable value.
 
-All requested strategies use the same pinned market snapshot. Cached collection statistics follow relevant data changes, listing expiry and a five-minute safety age.
+All requested strategies use the same pinned market snapshot. Cached statistics follow relevant data changes and listing expiry. Periodic rechecks reuse unchanged values. Collection-only requests prepare no trait choices; model and backdrop floors are independent, while combinations use a bounded indexed orderbook read on demand.
 
 For accepted criteria, each nonempty model/backdrop/symbol group is an OR selection and groups combine with AND; gift-number bounds further restrict eligible asks. Empty groups are unrestricted. This returns the floor of the complete selection, rather than combining separate trait minima. It is useful for valuing bid conditions. The listing browser's Any/All bid matching mode does not change valuation semantics.
 

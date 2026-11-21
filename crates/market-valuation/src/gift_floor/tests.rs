@@ -283,7 +283,7 @@ async fn statistics_cache_ignores_unrelated_metadata_and_tracks_backdrop_depende
 }
 
 #[tokio::test]
-async fn unchanged_statistics_survive_thirty_seconds_and_rebuild_at_the_safety_age() {
+async fn unchanged_statistics_reuse_prices_across_periodic_rechecks() {
     let (_dir, writer) = book();
     let data = MarketDataService::start(writer.reader(), 2, 1)
         .await
@@ -301,7 +301,7 @@ async fn unchanged_statistics_survive_thirty_seconds_and_rebuild_at_the_safety_a
         &books.get(&data.reader.snapshot().unwrap(), &scope).unwrap()
     ));
     tokio::time::advance(Duration::from_secs(270)).await;
-    assert!(!Arc::ptr_eq(
+    assert!(Arc::ptr_eq(
         &first,
         &books.get(&data.reader.snapshot().unwrap(), &scope).unwrap()
     ));

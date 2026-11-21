@@ -1,7 +1,7 @@
 //! One internal owner for observed data, metadata and expiry.
 use super::*;
 use crate::{
-    floors::{MAX_AGE, Statistics},
+    floors::{RECHECK_INTERVAL, Statistics},
     source::{BookScope, OrderDependency, ReadDependencies, ValuationSnapshot},
 };
 use market_gifts::{CollectionId, CurrencyId, GiftLookup, GiftOrderQuery};
@@ -20,7 +20,7 @@ impl ReadSet {
             metadata: None,
             statistics: vec![],
             observations: vec![],
-            deadline: Instant::now() + MAX_AGE,
+            deadline: Instant::now() + RECHECK_INTERVAL,
         }
     }
     pub fn statistics(&mut self, stats: Arc<Statistics>) -> Result<(), ValuationError> {
@@ -30,7 +30,9 @@ impl ReadSet {
             .iter_mut()
             .find(|entry| entry.scope == stats.scope)
         {
-            *previous = stats;
+            if stats.traits_prepared() || !previous.traits_prepared() {
+                *previous = stats;
+            }
         } else {
             self.statistics.push(stats);
         }

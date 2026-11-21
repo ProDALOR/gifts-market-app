@@ -5,7 +5,7 @@ use crate::types::*;
 use market_gifts::*;
 use rust_decimal::Decimal;
 impl Statistics {
-    pub fn report(&self, gift: &CollectibleGift) -> GiftFloorValuation {
+    pub fn report(&self, gift: &CollectibleGift, pair: &Floor) -> GiftFloorValuation {
         let empty = Floor::default();
         let model = gift
             .traits
@@ -20,10 +20,6 @@ impl Statistics {
         let model_floor = model.and_then(|id| self.models.get(id)).unwrap_or(&empty);
         let backdrop_floor = backdrop
             .and_then(|id| self.backdrops.get(id))
-            .unwrap_or(&empty);
-        let pair = model
-            .zip(backdrop)
-            .and_then(|(m, b)| self.pairs.get(&(m.clone(), b.clone())))
             .unwrap_or(&empty);
         let model_ratio = ratio(&self.collection, model_floor, model.is_some());
         let backdrop_ratio = ratio(&self.collection, backdrop_floor, backdrop.is_some());

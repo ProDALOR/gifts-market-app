@@ -64,6 +64,37 @@ impl<'a> ValuationContext<'a> {
         }
     }
 
+    pub(crate) fn collection_statistics(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Arc<Statistics>, ValuationError> {
+        let stats = self.books.collection(
+            self.snapshot,
+            &BookScope {
+                collection: collection.clone(),
+                currency: self.currency.clone(),
+            },
+        )?;
+        self.reads.borrow_mut().statistics(stats.clone())?;
+        Ok(stats)
+    }
+    pub(crate) fn pair_floor(
+        &self,
+        collection: &CollectionId,
+        model: &market_gifts::ModelId,
+        backdrop: &market_gifts::BackdropId,
+    ) -> Result<crate::AskFloorValuation, ValuationError> {
+        let target = crate::ResolvedTarget::Selection {
+            collection_id: collection.clone(),
+            criteria: market_gifts::GiftCriteria {
+                models: vec![model.clone()],
+                backdrops: vec![backdrop.clone()],
+                ..Default::default()
+            },
+        };
+        super::strategies::matching_ask_floor(self, &target)
+    }
+
     /// Strategies read observations here so watches follow their actual sources and expiry.
     pub fn orders(
         &self,

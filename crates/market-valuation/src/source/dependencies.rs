@@ -142,8 +142,9 @@ impl ValuationSnapshot {
                 id: scope.collection.to_string(),
                 ..Default::default()
             });
-            if let Some(w::entity::Entity::ItemType(item)) =
-                self.entity(w::EntityKind::ItemType, &scope.collection)?
+            if !kinds.is_empty()
+                && let Some(w::entity::Entity::ItemType(item)) =
+                    self.entity(w::EntityKind::ItemType, &scope.collection)?
             {
                 let rules = market_gifts_hub::CollectionChoices::new(&item)
                     .map_err(|e| Status::unavailable(e.to_string()))?;

@@ -208,6 +208,7 @@ impl ResolvedTarget {
         self.criteria().is_some_and(|criteria| {
             criteria.models.len() <= 1
                 && criteria.backdrops.len() <= 1
+                && (criteria.models.is_empty() || criteria.backdrops.is_empty())
                 && criteria.patterns.is_empty()
                 && criteria.number.is_none()
         })

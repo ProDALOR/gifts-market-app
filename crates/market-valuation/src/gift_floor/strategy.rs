@@ -14,8 +14,23 @@ impl Strategy for GiftFloor {
         input: &Self::Input,
         context: &ValuationContext<'_>,
     ) -> Result<Self::Output, ValuationError> {
-        Ok(context
-            .floor_statistics(&input.gift().collection_id)?
-            .report(input.gift()))
+        let stats = context.floor_statistics(&input.gift().collection_id)?;
+        let pair = match (
+            input.gift().traits.model.as_ref(),
+            input.gift().traits.backdrop.as_ref(),
+        ) {
+            (Some(model), Some(backdrop))
+                if stats.known_models.contains(model)
+                    && stats.known_backdrops.contains(backdrop) =>
+            {
+                crate::floors::Floor::from_valuation(&context.pair_floor(
+                    &input.gift().collection_id,
+                    model,
+                    backdrop,
+                )?)
+            }
+            _ => crate::floors::Floor::default(),
+        };
+        Ok(stats.report(input.gift(), &pair))
     }
 }

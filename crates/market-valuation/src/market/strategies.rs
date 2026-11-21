@@ -36,65 +36,80 @@ impl Strategy for AskFloor {
     ) -> Result<Self::Output, ValuationError> {
         let target = input.target();
         if target.simple_floor() {
-            let stats = context.floor_statistics(target.collection().expect("single selection"))?;
-            let (price, evidence) = stats.selection(target.model(), target.backdrop());
-            return Ok(AskFloorValuation { price, evidence });
+            let collection = target.collection().expect("single selection");
+            let selection = match (target.model(), target.backdrop()) {
+                (Some(model), None) => crate::floors::FloorSelection::Model(model),
+                (None, Some(backdrop)) => crate::floors::FloorSelection::Backdrop(backdrop),
+                _ => crate::floors::FloorSelection::Collection,
+            };
+            let stats = if matches!(selection, crate::floors::FloorSelection::Collection) {
+                context.collection_statistics(collection)?
+            } else {
+                context.floor_statistics(collection)?
+            };
+            return Ok(stats.selection(selection));
         }
-        let query = target.query(context.currency().clone(), OrderSource::Asks, None);
-        let mut token = String::new();
-        let mut floor: Option<Amount> = None;
-        let mut gifts = BTreeSet::new();
-        let mut count = 0;
-        let mut budget = market_replica::catalog_read::ScanBudget::default();
-        loop {
-            budget.page()?;
-            let page = context.orders(&query, token)?;
-            for order in page.data {
-                context.snapshot().check_cancelled()?;
-                if order
-                    .expires_at
-                    .is_some_and(|expiry| expiry <= jiff::Timestamp::now())
-                    || !eligible(&order, target)
-                {
-                    continue;
-                }
-                count += 1;
-                if count > MAX_OBSERVATIONS {
-                    return Err(ValuationError::capacity("ask observation budget exceeded"));
-                }
-                if let GiftTarget::Gift { gift } = &order.target {
-                    gifts.insert(gift.id.clone());
-                }
-                if floor
-                    .as_ref()
-                    .is_none_or(|old| order.price.decimal() < old.decimal())
-                {
-                    floor = Some(order.price.clone());
-                }
-            }
-            if page.next_page_token.is_empty() {
-                break;
-            }
-            token = page.next_page_token;
-        }
-        Ok(AskFloorValuation {
-            price: floor.map_or_else(
-                || {
-                    unavailable(
-                        ValuationIssueCode::NotEnoughData,
-                        "No eligible asks match this target",
-                        None,
-                        None,
-                    )
-                },
-                |value| ValuationMetric::Value { value },
-            ),
-            evidence: FloorEvidence {
-                listings: count as u32,
-                gifts: gifts.len() as u32,
-            },
-        })
+        matching_ask_floor(context, target)
     }
+}
+pub(crate) fn matching_ask_floor(
+    context: &ValuationContext<'_>,
+    target: &ResolvedTarget,
+) -> Result<AskFloorValuation, ValuationError> {
+    let query = target.query(context.currency().clone(), OrderSource::Asks, None);
+    let mut token = String::new();
+    let mut floor: Option<Amount> = None;
+    let mut gifts = BTreeSet::new();
+    let mut count = 0;
+    let mut budget = market_replica::catalog_read::ScanBudget::default();
+    loop {
+        budget.page()?;
+        let page = context.orders(&query, token)?;
+        for order in page.data {
+            context.snapshot().check_cancelled()?;
+            if order
+                .expires_at
+                .is_some_and(|expiry| expiry <= jiff::Timestamp::now())
+                || !eligible(&order, target)
+            {
+                continue;
+            }
+            count += 1;
+            if count > MAX_OBSERVATIONS {
+                return Err(ValuationError::capacity("ask observation budget exceeded"));
+            }
+            if let GiftTarget::Gift { gift } = &order.target {
+                gifts.insert(gift.id.clone());
+            }
+            if floor
+                .as_ref()
+                .is_none_or(|old| order.price.decimal() < old.decimal())
+            {
+                floor = Some(order.price.clone());
+            }
+        }
+        if page.next_page_token.is_empty() {
+            break;
+        }
+        token = page.next_page_token;
+    }
+    Ok(AskFloorValuation {
+        price: floor.map_or_else(
+            || {
+                unavailable(
+                    ValuationIssueCode::NotEnoughData,
+                    "No eligible asks match this target",
+                    None,
+                    None,
+                )
+            },
+            |value| ValuationMetric::Value { value },
+        ),
+        evidence: FloorEvidence {
+            listings: count as u32,
+            gifts: gifts.len() as u32,
+        },
+    })
 }
 pub struct ExecutionMean;
 impl Strategy for ExecutionMean {

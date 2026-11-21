@@ -1,4 +1,4 @@
-//! One bounded pass supplies all components; cached data follows revisions and listing expiry.
+//! Lightweight collection summaries and independent trait floors; combinations are read on demand.
 use crate::{FloorEvidence, ValuationIssueCode, ValuationMetric};
 use crate::{
     ValuationError,
@@ -6,7 +6,7 @@ use crate::{
 };
 use market_gifts::*;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -14,14 +14,26 @@ use tokio::time::Instant;
 
 const STAT_LIMIT: usize = 20_000;
 const GIFT_MEMBERSHIP_LIMIT: usize = 200_000;
-const CACHE_LIMIT: usize = 8;
-pub(crate) const MAX_AGE: Duration = Duration::from_secs(300);
+const TRAIT_CACHE_LIMIT: usize = 8;
+const COLLECTION_CACHE_LIMIT: usize = 512;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Preparation {
+    Collection,
+    Traits,
+}
+pub(crate) enum FloorSelection<'a> {
+    Collection,
+    Model(&'a ModelId),
+    Backdrop(&'a BackdropId),
+    Pattern(&'a PatternId),
+}
+pub(crate) const RECHECK_INTERVAL: Duration = Duration::from_secs(300);
 
 #[derive(Default, Clone)]
 pub(crate) struct Floor {
     pub price: Option<Amount>,
     evidence: FloorEvidence,
-    identities: BTreeSet<Arc<GiftId>>,
+    identities: HashSet<Arc<GiftId>>,
 }
 impl Floor {
     /// Return the number of new identity memberships for bounded evidence accounting.
@@ -38,6 +50,13 @@ impl Floor {
         self.evidence.gifts += u32::from(added);
         usize::from(added)
     }
+    pub fn from_valuation(value: &crate::AskFloorValuation) -> Self {
+        Self {
+            price: value.price.value().cloned(),
+            evidence: value.evidence.clone(),
+            identities: HashSet::new(),
+        }
+    }
     pub fn evidence(&self) -> FloorEvidence {
         self.evidence.clone()
     }
@@ -49,7 +68,7 @@ impl Floor {
                 listings: gifts,
                 gifts,
             },
-            identities: BTreeSet::new(),
+            identities: HashSet::new(),
         }
     }
 }
@@ -63,9 +82,8 @@ pub(crate) struct Statistics {
     pub models: BTreeMap<ModelId, Floor>,
     pub backdrops: BTreeMap<BackdropId, Floor>,
     pub patterns: BTreeMap<PatternId, Floor>,
-    pub pairs: BTreeMap<(ModelId, BackdropId), Floor>,
+    preparation: Preparation,
     dependencies: ReadDependencies,
-    created: Instant,
     expires_at_ms: i64,
 }
 impl Statistics {
@@ -73,60 +91,101 @@ impl Statistics {
         self.dependencies.key_count()
     }
     pub(crate) fn deadline(&self) -> tokio::time::Instant {
-        let age = MAX_AGE.saturating_sub(self.created.elapsed());
         let expiry = std::time::Duration::from_millis(
             self.expires_at_ms
                 .saturating_sub(jiff::Timestamp::now().as_millisecond())
                 .max(0) as u64,
         );
-        tokio::time::Instant::now() + age.min(expiry)
+        tokio::time::Instant::now() + RECHECK_INTERVAL.min(expiry)
     }
 
-    pub(crate) fn selection(
-        &self,
-        model: Option<&ModelId>,
-        backdrop: Option<&BackdropId>,
-    ) -> (crate::ValuationMetric, FloorEvidence) {
-        let floor = match (model, backdrop) {
-            (None, None) => Some(&self.collection),
-            (Some(model), None) => self.models.get(model),
-            (None, Some(backdrop)) => self.backdrops.get(backdrop),
-            (Some(model), Some(backdrop)) => self.pairs.get(&(model.clone(), backdrop.clone())),
+    pub(crate) fn traits_prepared(&self) -> bool {
+        self.preparation == Preparation::Traits
+    }
+    pub(crate) fn selection(&self, selection: FloorSelection<'_>) -> crate::AskFloorValuation {
+        let floor = match selection {
+            FloorSelection::Collection => Some(&self.collection),
+            FloorSelection::Model(id) => self.models.get(id),
+            FloorSelection::Backdrop(id) => self.backdrops.get(id),
+            FloorSelection::Pattern(id) => self.patterns.get(id),
         };
         let empty = Floor::default();
         let floor = floor.unwrap_or(&empty);
-        (floor.metric(true), floor.evidence())
+        crate::AskFloorValuation {
+            price: floor.metric(true),
+            evidence: floor.evidence(),
+        }
+    }
+    fn collection_only(&self, snapshot: &ValuationSnapshot) -> Result<Self, ValuationError> {
+        Ok(Self {
+            scope: self.scope.clone(),
+            evaluated_at: self.evaluated_at,
+            known_models: BTreeSet::new(),
+            known_backdrops: BTreeSet::new(),
+            known_patterns: BTreeSet::new(),
+            collection: self.collection.clone(),
+            models: BTreeMap::new(),
+            backdrops: BTreeMap::new(),
+            patterns: BTreeMap::new(),
+            preparation: Preparation::Collection,
+            dependencies: snapshot.dependencies(
+                [self.scope.clone()],
+                &self.scope.currency,
+                &[],
+                &[],
+            )?,
+            expires_at_ms: self.expires_at_ms,
+        })
     }
     pub fn current(&self, snapshot: &ValuationSnapshot) -> Result<bool, ValuationError> {
-        Ok(self.created.elapsed() < MAX_AGE
+        Ok(jiff::Timestamp::now().as_millisecond() < self.expires_at_ms
             && snapshot.dependencies_data_current(&self.dependencies)?
-            && self.created.elapsed() < MAX_AGE
             && jiff::Timestamp::now().as_millisecond() < self.expires_at_ms)
     }
-    pub fn read(snapshot: &ValuationSnapshot, scope: &BookScope) -> Result<Self, ValuationError> {
+    pub fn read(
+        snapshot: &ValuationSnapshot,
+        scope: &BookScope,
+        preparation: Preparation,
+    ) -> Result<Self, ValuationError> {
+        let started = Instant::now();
         snapshot.require_currency(&scope.currency)?;
         let mut stats = Self {
             scope: scope.clone(),
             evaluated_at: jiff::Timestamp::now(),
-            known_models: snapshot.model_ids(&scope.collection)?,
-            known_backdrops: snapshot.backdrop_ids(&scope.collection)?,
-            known_patterns: snapshot.pattern_ids(&scope.collection)?,
+            known_models: if preparation == Preparation::Traits {
+                snapshot.model_ids(&scope.collection)?
+            } else {
+                BTreeSet::new()
+            },
+            known_backdrops: if preparation == Preparation::Traits {
+                snapshot.backdrop_ids(&scope.collection)?
+            } else {
+                BTreeSet::new()
+            },
+            known_patterns: if preparation == Preparation::Traits {
+                snapshot.pattern_ids(&scope.collection)?
+            } else {
+                BTreeSet::new()
+            },
             collection: Floor::default(),
             models: BTreeMap::new(),
             backdrops: BTreeMap::new(),
             patterns: BTreeMap::new(),
-            pairs: BTreeMap::new(),
+            preparation,
             dependencies: snapshot.dependencies(
                 [scope.clone()],
                 &scope.currency,
-                &[
-                    CatalogTrait::Model,
-                    CatalogTrait::Backdrop,
-                    CatalogTrait::Pattern,
-                ],
+                if preparation == Preparation::Traits {
+                    &[
+                        CatalogTrait::Model,
+                        CatalogTrait::Backdrop,
+                        CatalogTrait::Pattern,
+                    ]
+                } else {
+                    &[]
+                },
                 &[],
             )?,
-            created: Instant::now(),
             expires_at_ms: i64::MAX,
         };
         if stats.known_models.len() + stats.known_backdrops.len() + stats.known_patterns.len()
@@ -147,6 +206,12 @@ impl Statistics {
                 memberships += stats.collection.observe(&quote.price, gift.as_ref());
                 if let Some(at) = quote.expires_at {
                     stats.expires_at_ms = stats.expires_at_ms.min(at.as_millisecond());
+                }
+                if preparation == Preparation::Collection {
+                    if memberships > GIFT_MEMBERSHIP_LIMIT {
+                        return Err(capacity());
+                    }
+                    continue;
                 }
                 let model = quote
                     .model_id
@@ -181,18 +246,10 @@ impl Statistics {
                         .or_default()
                         .observe(&quote.price, gift.as_ref());
                 }
-                if let Some((model, backdrop)) = model.zip(backdrop) {
-                    memberships += stats
-                        .pairs
-                        .entry((model.clone(), backdrop.clone()))
-                        .or_default()
-                        .observe(&quote.price, gift.as_ref());
-                }
                 if memberships > GIFT_MEMBERSHIP_LIMIT
                     || stats.models.len()
                         + stats.backdrops.len()
                         + stats.patterns.len()
-                        + stats.pairs.len()
                         + stats.known_models.len()
                         + stats.known_backdrops.len()
                         + stats.known_patterns.len()
@@ -208,11 +265,11 @@ impl Statistics {
                     .chain(stats.models.values_mut())
                     .chain(stats.backdrops.values_mut())
                     .chain(stats.patterns.values_mut())
-                    .chain(stats.pairs.values_mut())
                 {
-                    floor.identities.clear();
+                    floor.identities = HashSet::new();
                 }
                 stats.evaluated_at = jiff::Timestamp::now();
+                tracing::debug!(collection=%scope.collection,currency=%scope.currency,?preparation,rows=stats.collection.evidence.listings,models=stats.models.len(),backdrops=stats.backdrops.len(),patterns=stats.patterns.len(),elapsed_ms=started.elapsed().as_millis(),"prepared valuation floors");
                 return Ok(stats);
             }
             token = page.next_page_token;
@@ -228,11 +285,39 @@ struct CachedBook {
     used: Instant,
 }
 #[derive(Default)]
-pub(crate) struct BookCache(Mutex<HashMap<BookScope, CachedBook>>);
+struct CachedBooks {
+    collections: HashMap<BookScope, CachedBook>,
+    traits: HashMap<BookScope, CachedBook>,
+}
+#[derive(Default)]
+pub(crate) struct BookCache(Mutex<CachedBooks>);
+impl CachedBooks {
+    fn insert(&mut self, scope: BookScope, stats: Arc<Statistics>) {
+        let (books, limit) = if stats.traits_prepared() {
+            (&mut self.traits, TRAIT_CACHE_LIMIT)
+        } else {
+            (&mut self.collections, COLLECTION_CACHE_LIMIT)
+        };
+        if !books.contains_key(&scope) && books.len() >= limit {
+            if let Some(oldest) = books
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(scope, _)| scope.clone())
+            {
+                books.remove(&oldest);
+            }
+        }
+        books.insert(
+            scope,
+            CachedBook {
+                stats,
+                used: Instant::now(),
+            },
+        );
+    }
+}
 impl BookCache {
-    fn lock(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, HashMap<BookScope, CachedBook>>, ValuationError> {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, CachedBooks>, ValuationError> {
         self.0
             .lock()
             .map_err(|_| ValuationError::unavailable("Valuation cache is unavailable"))
@@ -242,10 +327,29 @@ impl BookCache {
         snapshot: &ValuationSnapshot,
         scope: &BookScope,
     ) -> Result<Arc<Statistics>, ValuationError> {
+        self.prepare(snapshot, scope, Preparation::Traits)
+    }
+    pub fn collection(
+        &self,
+        snapshot: &ValuationSnapshot,
+        scope: &BookScope,
+    ) -> Result<Arc<Statistics>, ValuationError> {
+        self.prepare(snapshot, scope, Preparation::Collection)
+    }
+    fn prepare(
+        &self,
+        snapshot: &ValuationSnapshot,
+        scope: &BookScope,
+        preparation: Preparation,
+    ) -> Result<Arc<Statistics>, ValuationError> {
         let cached = {
             let mut books = self.lock()?;
-            books.retain(|_, entry| entry.used.elapsed() < MAX_AGE);
-            books.get_mut(scope).map(|entry| {
+            let entries = if preparation == Preparation::Traits {
+                &mut books.traits
+            } else {
+                &mut books.collections
+            };
+            entries.get_mut(scope).map(|entry| {
                 entry.used = Instant::now();
                 entry.stats.clone()
             })
@@ -255,26 +359,19 @@ impl BookCache {
         {
             return Ok(cached);
         }
-        // ReadExecutor serializes heavy preparation and pins after admission. No cache
-        // lock spans dependency validation, catalog access or the orderbook traversal.
-        let stats = Arc::new(Statistics::read(snapshot, scope)?);
+        // All preparation runs on the shared heavy-read lane, pinned after admission.
+        let stats = Arc::new(Statistics::read(snapshot, scope, preparation)?);
+        let summary = if preparation == Preparation::Traits {
+            Some(Arc::new(stats.collection_only(snapshot)?))
+        } else {
+            None
+        };
         snapshot.check_cancelled()?;
         let mut books = self.lock()?;
-        if !books.contains_key(scope) && books.len() >= CACHE_LIMIT {
-            let oldest = books
-                .iter()
-                .min_by_key(|(_, entry)| entry.used)
-                .map(|(scope, _)| scope.clone())
-                .unwrap();
-            books.remove(&oldest);
+        if let Some(summary) = summary {
+            books.insert(scope.clone(), summary);
         }
-        books.insert(
-            scope.clone(),
-            CachedBook {
-                stats: stats.clone(),
-                used: Instant::now(),
-            },
-        );
+        books.insert(scope.clone(), stats.clone());
         Ok(stats)
     }
 }
@@ -323,3 +420,7 @@ impl Floor {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "preparation_tests.rs"]
+mod preparation_tests;
