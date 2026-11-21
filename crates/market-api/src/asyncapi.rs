@@ -121,7 +121,7 @@ fn summary(name: &str) -> &'static str {
             "Watch catalog content revisions for up to eight collections, without polling."
         }
         "valuation.watch" => {
-            "Watch any explicitly selected strategies using the same ValuationQuery as HTTP and finite WebSocket requests. Updates follow observed dependencies and expiry."
+            "Watch any explicitly selected strategies using the same ValuationQuery as HTTP and finite WebSocket requests. Data changes and expiry are sampled once per minute; cached values are retained between refreshes. Availability changes update the status promptly. Unchanged refreshes do not emit duplicate snapshots."
         }
         "valuation.snapshot" => {
             "Atomic valuation report, using the same typed results and static contract revisions as a finite query."

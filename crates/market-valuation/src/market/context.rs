@@ -51,8 +51,9 @@ impl<'a> ValuationContext<'a> {
         );
         match result {
             Ok(stats) => {
-                self.reads.borrow_mut().statistics(stats.clone())?;
-                Ok(stats)
+                let statistics = stats.statistics.clone();
+                self.reads.borrow_mut().statistics(stats)?;
+                Ok(statistics)
             }
             Err(error) => {
                 self.observe(&GiftOrderQuery::new(market_gifts::GiftFilters::new(
@@ -75,8 +76,9 @@ impl<'a> ValuationContext<'a> {
                 currency: self.currency.clone(),
             },
         )?;
-        self.reads.borrow_mut().statistics(stats.clone())?;
-        Ok(stats)
+        let statistics = stats.statistics.clone();
+        self.reads.borrow_mut().statistics(stats)?;
+        Ok(statistics)
     }
     pub(crate) fn pair_floor(
         &self,
@@ -95,7 +97,7 @@ impl<'a> ValuationContext<'a> {
         super::strategies::matching_ask_floor(self, &target)
     }
 
-    /// Strategies read observations here so watches follow their actual sources and expiry.
+    /// Record the sources that the next periodic refresh needs to validate.
     pub fn orders(
         &self,
         query: &GiftOrderQuery,
@@ -105,20 +107,15 @@ impl<'a> ValuationContext<'a> {
         let page = self.snapshot.valuation_orders(query, continuation)?;
         if query.source == OrderSource::Asks {
             let now = jiff::Timestamp::now();
-            for expiry in page
+            if let Some(expiry) = page
                 .data
                 .iter()
                 .filter_map(|order| order.expires_at)
                 .filter(|expiry| *expiry > now)
+                .min()
             {
-                let remaining = std::time::Duration::from_millis(
-                    expiry
-                        .as_millisecond()
-                        .saturating_sub(now.as_millisecond())
-                        .max(0) as u64,
-                );
-                let mut reads = self.reads.borrow_mut();
-                reads.deadline = reads.deadline.min(tokio::time::Instant::now() + remaining);
+                // Expiry invalidates at the next scheduled refresh, without shortening it.
+                self.reads.borrow_mut().expires_at(expiry);
             }
         }
         Ok(page)

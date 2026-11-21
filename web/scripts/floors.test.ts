@@ -593,3 +593,71 @@ test("selected floor loading and failure state remains scoped through retries an
     "Switching scopes clears the former error",
   );
 });
+
+test("older cached detail responses wait for the minute refresh instead of retrying in a loop", async (t) => {
+  const f = fixture(t);
+  f.load(async (q) => report(q, "5", "2026-11-20T12:01:00Z"));
+  f.controller.configure("GRAM", ["gift"], "", null);
+  await flush(t);
+  let details = 0;
+  f.load((q) => {
+    if (target(q).details && ++details > 1) return new Promise(() => {}); // Bound the old retry-loop failure mode.
+    return Promise.resolve(report(q, "1", "2026-11-20T12:00:00Z"));
+  });
+  f.controller.configure("GRAM", ["gift"], "gift", null);
+  await flush(t);
+  assert.equal(details, 1);
+  assert.equal(
+    f.controller.getSnapshot().entries.get("gift")?.floor.price.value,
+    "5",
+  );
+  assert.equal(f.controller.getSnapshot().detail.pending, false);
+  await flush(t, 1_000);
+  assert.equal(details, 1);
+  f.load(async (q) => report(q, "6", "2026-11-20T12:02:00Z"));
+  await flush(t, 59_000);
+  await flush(t);
+  assert.equal(
+    f.controller.getSnapshot().entries.get("gift")?.floor.price.value,
+    "6",
+  );
+  assert.ok(f.controller.getSnapshot().entries.get("gift")?.traits);
+});
+
+test("a slow selected detail request owns its summary slot across refreshes and collection switches", async (t) => {
+  const f = fixture(t),
+    ids = Array.from({ length: 9 }, (_, i) => `gift-${i}`);
+  let release!: () => void;
+  f.load((q) =>
+    target(q).details
+      ? new Promise((resolve) => {
+          release = () => resolve(report(q, "999"));
+        })
+      : Promise.resolve(report(q)),
+  );
+  f.controller.configure("GRAM", ids, "gift-0", null);
+  await flush(t);
+  await flush(t, 60_000);
+  await flush(t);
+  assert.ok(
+    f.calls
+      .filter(({ query }) => !target(query).details)
+      .every(({ query }) => !target(query).collection_ids.includes("gift-0")),
+    "The minute sweep cannot duplicate the in-flight detail's summary",
+  );
+  const old = f.calls.find(({ query }) => target(query).details)!;
+  f.load(async (q) => report(q, "4"));
+  f.controller.configure("GRAM", ids, "gift-1", null);
+  assert.equal(old.signal.aborted, true);
+  await flush(t);
+  release();
+  await flush(t, 0);
+  assert.equal(
+    f.controller.getSnapshot().entries.get("gift-0")?.floor.price.value,
+    "4",
+  );
+  assert.equal(
+    f.controller.getSnapshot().entries.get("gift-1")?.floor.price.value,
+    "4",
+  );
+});

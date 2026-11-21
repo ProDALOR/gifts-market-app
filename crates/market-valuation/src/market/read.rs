@@ -25,16 +25,23 @@ impl ValuationRead {
     ) -> Result<Arc<Self>, ValuationError> {
         let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
         if let Some(previous) = previous {
-            if previous.reads.current(snapshot)? {
-                if previous.report.stale == stale {
+            let due = tokio::time::Instant::now() >= previous.deadline();
+            if !(due && transient(&previous.report.results)) && previous.reads.current(snapshot)? {
+                if !due && previous.report.stale == stale {
                     return Ok(previous.clone());
                 }
-                let mut report = previous.report.as_ref().clone();
-                report.stale = stale;
-                return Ok(Arc::new(Self {
-                    report: Arc::new(report),
-                    reads: previous.reads.clone(),
-                }));
+                let mut reads = previous.reads.clone();
+                if due {
+                    reads.renew();
+                }
+                let report = if previous.report.stale == stale {
+                    previous.report.clone()
+                } else {
+                    let mut report = previous.report.as_ref().clone();
+                    report.stale = stale;
+                    Arc::new(report)
+                };
+                return Ok(Arc::new(Self { report, reads }));
             }
         }
         snapshot.require_currency(&input.currency_id)?;
@@ -73,7 +80,7 @@ impl ValuationRead {
         let deadline = reads.deadline;
         if deadline <= tokio::time::Instant::now() {
             return Err(ValuationError::unavailable(
-                "Asks expired during the read; retry",
+                "Valuation refresh elapsed during the read; retry",
             ));
         }
         let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
@@ -95,10 +102,19 @@ fn retry_deadline(
     results: &[StrategyOutcome],
     deadline: tokio::time::Instant,
 ) -> tokio::time::Instant {
-    if results.iter().any(|result| matches!(result, StrategyOutcome::Error {error,..} if matches!(error.code, StrategyFailureCode::Unavailable | StrategyFailureCode::TimedOut))) {
+    if transient(results) {
         deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
-    } else { deadline }
+    } else {
+        deadline
+    }
 }
+fn transient(results: &[StrategyOutcome]) -> bool {
+    results.iter().any(|result| {
+        matches!(result, StrategyOutcome::Error {error,..}
+        if matches!(error.code, StrategyFailureCode::Unavailable | StrategyFailureCode::TimedOut))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

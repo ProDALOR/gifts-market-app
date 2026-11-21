@@ -141,12 +141,12 @@ async fn benchmark_preparation() {
                 collection: "gift".into(),
                 currency: "GRAM".into(),
             };
-            let first = cache.collection(&snapshot, &scope).unwrap();
+            let first = cache.collection(&snapshot, &scope).unwrap().statistics;
             let time = Instant::now();
             for _ in 0..1_000 {
                 assert!(std::sync::Arc::ptr_eq(
                     &first,
-                    &cache.collection(&snapshot, &scope).unwrap()
+                    &cache.collection(&snapshot, &scope).unwrap().statistics
                 ));
             }
             println!(

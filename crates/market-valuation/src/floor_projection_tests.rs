@@ -207,6 +207,8 @@ async fn watches_expire_without_updates_survive_cancelled_next_and_release_capac
             .as_str(),
         "1"
     );
+    tokio::time::sleep(Duration::from_millis(1550)).await;
+    crate::test_support::refresh_interval().await;
     let next = tokio::time::timeout(Duration::from_secs(4), watch.changed())
         .await
         .unwrap()
@@ -226,12 +228,13 @@ async fn watches_expire_without_updates_survive_cancelled_next_and_release_capac
             changes: vec![ask("new", "m", "b", "2", 789, None)],
         })
         .unwrap();
-    // Cancellation during debounce must retain the fact that the source changed.
+    // Cancelling while awaiting the next refresh must not lose its deadline.
     assert!(
         tokio::time::timeout(Duration::from_millis(30), watch.changed())
             .await
             .is_err()
     );
+    crate::test_support::refresh_interval().await;
     assert_eq!(
         catalog(
             &tokio::time::timeout(Duration::from_secs(2), watch.changed())
@@ -330,6 +333,7 @@ async fn a_batch_refresh_keeps_other_collections_calculation_times() {
             changes: vec![change],
         })
         .unwrap();
+    crate::test_support::refresh_interval().await;
     let next = read(Some(first.clone())).await.unwrap().unwrap();
     assert!(!Arc::ptr_eq(&first, &next));
     assert_eq!(
@@ -397,6 +401,7 @@ async fn symbol_floors_deduplicate_gifts_and_follow_catalog_and_order_changes() 
             changes: vec![symbolic("symbol-one", "4")],
         })
         .unwrap();
+    crate::test_support::refresh_interval().await;
     let next = read().await.unwrap().unwrap();
     assert_eq!(
         catalog(&next.report).collections[0]
@@ -430,6 +435,7 @@ async fn symbol_floors_deduplicate_gifts_and_follow_catalog_and_order_changes() 
             }],
         })
         .unwrap();
+    crate::test_support::refresh_interval().await;
     let removed = read().await.unwrap().unwrap();
     assert!(
         catalog(&removed.report).collections[0]

@@ -1,39 +1,38 @@
-//! Weak watch sharing plus eight hot completed reads with a fifteen-second idle TTL.
+//! Weak sharing for active watches plus a bounded LRU of completed reads.
 use super::{PreparedQuery, ValuationError, ValuationRead};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, Weak},
 };
 
-const CAPACITY: usize = 32;
+const SHARING_CAPACITY: usize = 32;
 #[derive(Default)]
 pub(super) struct ReadCache(Mutex<Entries>);
 #[derive(Default)]
 struct Entries {
     weak: VecDeque<(PreparedQuery, Weak<ValuationRead>)>,
-    hot: VecDeque<(tokio::time::Instant, Arc<ValuationRead>)>,
+    completed: VecDeque<Arc<ValuationRead>>,
 }
-const HOT_CAPACITY: usize = 8;
-const HOT_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+const COMPLETED_CAPACITY: usize = 8;
 impl Entries {
-    fn prune(&mut self) {
-        self.hot
-            .retain(|(until, _)| *until > tokio::time::Instant::now());
+    fn remove_unused(&mut self) {
         self.weak.retain(|(_, read)| read.strong_count() > 0);
+    }
+    fn touch(&mut self, read: &Arc<ValuationRead>) {
+        self.completed.retain(|cached| !Arc::ptr_eq(cached, read));
+        if self.completed.len() >= COMPLETED_CAPACITY {
+            self.completed.pop_front();
+        }
+        self.completed.push_back(read.clone());
     }
 }
 impl ReadCache {
-    pub fn prune(&self) {
-        if let Ok(mut entries) = self.0.try_lock() {
-            entries.prune();
-        }
-    }
     pub fn get(&self, key: &PreparedQuery) -> Result<Option<Arc<ValuationRead>>, ValuationError> {
         let mut entries = self
             .0
             .lock()
             .map_err(|_| ValuationError::unavailable("Valuation cache unavailable"))?;
-        entries.prune();
+        entries.remove_unused();
         let Some(index) = entries
             .weak
             .iter()
@@ -44,6 +43,9 @@ impl ReadCache {
         let entry = entries.weak.remove(index).expect("located entry");
         let read = entry.1.upgrade();
         entries.weak.push_back(entry);
+        if let Some(read) = &read {
+            entries.touch(read);
+        }
         Ok(read)
     }
     pub fn insert(
@@ -55,7 +57,7 @@ impl ReadCache {
             .0
             .lock()
             .map_err(|_| ValuationError::unavailable("Valuation cache unavailable"))?;
-        entries.prune();
+        entries.remove_unused();
         let replaced = entries
             .weak
             .iter()
@@ -64,23 +66,16 @@ impl ReadCache {
         entries
             .weak
             .retain(|(candidate, read)| !candidate.same_query(&key) && read.strong_count() > 0);
-        if entries.weak.len() == CAPACITY {
+        if entries.weak.len() == SHARING_CAPACITY {
             entries.weak.pop_front();
         }
         entries.weak.push_back((key, Arc::downgrade(read)));
-        entries.hot.retain(|(_, cached)| {
-            !Arc::ptr_eq(cached, read)
-                && replaced
-                    .as_ref()
-                    .is_none_or(|previous| !Arc::ptr_eq(previous, cached))
-        });
-        while entries.hot.len() >= HOT_CAPACITY {
-            entries.hot.pop_front();
+        if let Some(previous) = replaced {
+            entries
+                .completed
+                .retain(|cached| !Arc::ptr_eq(&previous, cached));
         }
-        entries.hot.push_back((
-            (tokio::time::Instant::now() + HOT_TTL).min(read.deadline()),
-            read.clone(),
-        ));
+        entries.touch(read);
         Ok(())
     }
 }
@@ -90,12 +85,10 @@ mod tests {
     use super::*;
     use crate::market::read_set::ReadSet;
 
-    #[tokio::test(start_paused = true)]
-    async fn replacing_a_query_releases_its_previous_hot_read() {
-        let cache = ReadCache::default();
-        let query = crate::ValuationQuery {
+    fn query(index: usize) -> PreparedQuery {
+        crate::ValuationQuery {
             target: crate::ValuationTarget::Selection {
-                collection_id: "gift".into(),
+                collection_id: market_gifts::CollectionId::new(index.to_string()).unwrap(),
                 criteria: Default::default(),
             },
             currency_id: "GRAM".into(),
@@ -103,44 +96,14 @@ mod tests {
             period: None,
         }
         .prepare()
-        .unwrap();
-        let read = || {
-            Arc::new(ValuationRead {
-                report: Arc::new(crate::ValuationReport {
-                    target: crate::ResolvedTarget::Selection {
-                        collection_id: "gift".into(),
-                        criteria: Default::default(),
-                    },
-                    currency_id: "GRAM".into(),
-                    evaluated_at: jiff::Timestamp::now(),
-                    stale: false,
-                    results: vec![],
-                }),
-                reads: ReadSet::new(),
-            })
-        };
-        let previous = read();
-        let weak = Arc::downgrade(&previous);
-        cache.insert(query.clone(), &previous).unwrap();
-        drop(previous);
-        assert!(weak.upgrade().is_some());
-        let current = read();
-        cache.insert(query.clone(), &current).unwrap();
-        assert!(
-            weak.upgrade().is_none(),
-            "A superseded read has no cache owner"
-        );
-        assert!(Arc::ptr_eq(&current, &cache.get(&query).unwrap().unwrap()));
-        assert_eq!(cache.0.lock().unwrap().hot.len(), 1);
+        .unwrap()
     }
-    #[tokio::test(start_paused = true)]
-    async fn entries_are_bounded_and_completed_reads_expire() {
-        let cache = ReadCache::default();
-        let read = Arc::new(ValuationRead {
+    fn read(index: usize) -> Arc<ValuationRead> {
+        Arc::new(ValuationRead {
             report: Arc::new(crate::ValuationReport {
                 target: crate::ResolvedTarget::Selection {
-                    collection_id: "gift".into(),
-                    criteria: market_gifts::GiftCriteria::default(),
+                    collection_id: market_gifts::CollectionId::new(index.to_string()).unwrap(),
+                    criteria: Default::default(),
                 },
                 currency_id: "GRAM".into(),
                 evaluated_at: jiff::Timestamp::now(),
@@ -148,34 +111,101 @@ mod tests {
                 results: vec![],
             }),
             reads: ReadSet::new(),
-        });
-        let query = |index: usize| {
-            crate::ValuationQuery {
-                target: crate::ValuationTarget::Selection {
-                    collection_id: market_gifts::CollectionId::new(index.to_string()).unwrap(),
-                    criteria: market_gifts::GiftCriteria::default(),
-                },
-                currency_id: "GRAM".into(),
-                strategies: vec![crate::StrategyId::new("ask_floor").unwrap()],
-                period: None,
-            }
-            .prepare()
-            .unwrap()
-        };
-        for index in 0..=CAPACITY {
-            cache.insert(query(index), &read).unwrap();
-        }
-        assert_eq!(cache.0.lock().unwrap().weak.len(), CAPACITY);
-        assert_eq!(
-            cache.0.lock().unwrap().hot.len(),
-            1,
-            "Repeated consumers retain one hot read"
+        })
+    }
+    #[tokio::test(start_paused = true)]
+    async fn retained_reports_do_not_expire_but_keep_their_freshness_deadline() {
+        let cache = ReadCache::default();
+        let report = read(0);
+        let deadline = report.deadline();
+        let weak = Arc::downgrade(&report);
+        cache.insert(query(0), &report).unwrap();
+        drop(report);
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
+        let retained = cache.get(&query(0)).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&retained, &weak.upgrade().unwrap()));
+        assert_eq!(retained.deadline(), deadline);
+        assert!(
+            retained.deadline() < tokio::time::Instant::now(),
+            "Retention never renews freshness"
         );
+    }
+    #[test]
+    fn completed_reports_evict_by_recency_and_hits_promote_them() {
+        let cache = ReadCache::default();
+        for index in 0..COMPLETED_CAPACITY {
+            cache.insert(query(index), &read(index)).unwrap();
+        }
+        let first = cache.get(&query(0)).unwrap().unwrap();
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        cache
+            .insert(query(COMPLETED_CAPACITY), &read(COMPLETED_CAPACITY))
+            .unwrap();
+        assert!(
+            cache.get(&query(1)).unwrap().is_none(),
+            "The least recently used report is evicted"
+        );
+        assert!(weak.upgrade().is_some(), "A hit protects the older report");
+        assert_eq!(cache.0.lock().unwrap().completed.len(), COMPLETED_CAPACITY);
+    }
+    #[test]
+    fn active_watches_share_reads_after_completed_report_eviction() {
+        let cache = ReadCache::default();
+        let active = read(0); // The watch owns the read independently of the LRU.
+        cache.insert(query(0), &active).unwrap();
+        for index in 1..=COMPLETED_CAPACITY {
+            cache.insert(query(index), &read(index)).unwrap();
+        }
+        assert!(
+            !cache
+                .0
+                .lock()
+                .unwrap()
+                .completed
+                .iter()
+                .any(|read| Arc::ptr_eq(read, &active))
+        );
+        assert!(Arc::ptr_eq(
+            &active,
+            &cache.get(&query(0)).unwrap().unwrap()
+        ));
+        assert_eq!(cache.0.lock().unwrap().completed.len(), COMPLETED_CAPACITY);
+    }
+    #[test]
+    fn replacing_a_query_releases_its_previous_completed_read() {
+        let cache = ReadCache::default();
+        let previous = read(0);
+        let weak = Arc::downgrade(&previous);
+        cache.insert(query(0), &previous).unwrap();
+        drop(previous);
+        let current = read(0);
+        cache.insert(query(0), &current).unwrap();
+        assert!(weak.upgrade().is_none());
+        assert!(Arc::ptr_eq(
+            &current,
+            &cache.get(&query(0)).unwrap().unwrap()
+        ));
+        assert_eq!(cache.0.lock().unwrap().completed.len(), 1);
+    }
+    #[test]
+    fn both_indexes_are_bounded_and_evicted_unused_reads_are_released() {
+        let cache = ReadCache::default();
+        let active: Vec<_> = (0..=SHARING_CAPACITY).map(read).collect();
+        for (index, read) in active.iter().enumerate() {
+            cache.insert(query(index), read).unwrap();
+        }
+        assert_eq!(cache.0.lock().unwrap().weak.len(), SHARING_CAPACITY);
+        assert_eq!(cache.0.lock().unwrap().completed.len(), COMPLETED_CAPACITY);
         assert!(cache.get(&query(0)).unwrap().is_none());
-        assert!(Arc::ptr_eq(&read, &cache.get(&query(1)).unwrap().unwrap()));
-        drop(read);
-        tokio::time::advance(HOT_TTL).await;
-        assert!(cache.get(&query(1)).unwrap().is_none());
-        assert!(cache.0.lock().unwrap().weak.is_empty());
+        assert!(Arc::ptr_eq(
+            &active[1],
+            &cache.get(&query(1)).unwrap().unwrap()
+        ));
+        let oldest = Arc::downgrade(&active[2]);
+        drop(active);
+        assert!(oldest.upgrade().is_none());
+        assert!(cache.get(&query(2)).unwrap().is_none());
+        assert_eq!(cache.0.lock().unwrap().weak.len(), COMPLETED_CAPACITY);
     }
 }

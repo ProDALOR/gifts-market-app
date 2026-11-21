@@ -141,7 +141,15 @@ fn row_ids(result: &serde_json::Value) -> Vec<String> {
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 pub(super) async fn frame(socket: &mut Socket, id: &str, kind: &str) -> serde_json::Value {
-    tokio::time::timeout(Duration::from_secs(3), async {
+    frame_with_timeout(socket, id, kind, Duration::from_secs(3)).await
+}
+pub(super) async fn frame_with_timeout(
+    socket: &mut Socket,
+    id: &str,
+    kind: &str,
+    wait: Duration,
+) -> serde_json::Value {
+    tokio::time::timeout(wait, async {
         loop {
             if let tokio_tungstenite::tungstenite::Message::Text(text) =
                 socket.next().await.unwrap().unwrap()

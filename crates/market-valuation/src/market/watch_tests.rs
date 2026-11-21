@@ -73,6 +73,7 @@ async fn identical_consumers_share_reads_without_sharing_their_lifecycle() {
                 .collect(),
         })
         .unwrap();
+    crate::test_support::refresh_interval().await;
     let (a, b) = tokio::time::timeout(Duration::from_secs(2), async {
         tokio::join!(first.changed(), second.changed())
     })
@@ -145,6 +146,7 @@ async fn history_watches_follow_backfills_ignore_asks_and_share_one_scan_per_rep
                 .collect(),
         })
         .unwrap();
+    crate::test_support::refresh_interval().await;
     let report = tokio::time::timeout(Duration::from_secs(2), watch.changed())
         .await
         .unwrap()
@@ -233,8 +235,9 @@ async fn mixed_strategy_reads_skip_unrelated_changes_and_observe_gift_listing_ex
         .unwrap();
     let same = read(Some(first.clone())).await.unwrap().unwrap();
     assert!(Arc::ptr_eq(&first, &same));
-    assert!(first.deadline() < tokio::time::Instant::now() + Duration::from_secs(2));
-    tokio::time::sleep_until(first.deadline() + Duration::from_millis(20)).await;
+    assert!(first.deadline() > tokio::time::Instant::now() + Duration::from_secs(58));
+    tokio::time::sleep(Duration::from_millis(1550)).await;
+    crate::test_support::refresh_interval().await;
     let changed = read(Some(first.clone())).await.unwrap().unwrap();
     assert!(!Arc::ptr_eq(&first, &changed));
     assert!(
@@ -273,12 +276,184 @@ async fn finite_queries_reuse_canonical_reads_and_invalidate_after_market_change
             changes: vec![ask("new-price", "m", "b", "1", 999, None)],
         })
         .unwrap();
+    assert!(Arc::ptr_eq(
+        &report,
+        &handle.query(first.clone()).await.unwrap()
+    ));
+    crate::test_support::refresh_interval().await;
     let updated = handle.query(first).await.unwrap();
     assert!(!Arc::ptr_eq(&report, &updated));
     let StrategyOutcome::Value(StrategyValuation::AskFloor(value)) = &updated.results[0] else {
         panic!()
     };
     assert_eq!(value.price.value().unwrap().as_str(), "1");
+    task.shutdown().await.unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn narrow_ask_reports_apply_expiry_without_requiring_a_book_change() {
+    let (_dir, mut writer) = book();
+    let expiry = jiff::Timestamp::now().as_millisecond() + 1000;
+    writer
+        .apply(w::Batch {
+            cursor: "narrow-expiry".into(),
+            changes: vec![ask("expiring-pair", "m", "b", "1", 999, Some(expiry))],
+        })
+        .unwrap();
+    let runtime =
+        market_replica::ReadRuntime::new(writer.reader(), 2, CancellationToken::new()).unwrap();
+    let source = crate::ValuationSource::new(runtime.handle());
+    let books = Arc::new(crate::floors::BookCache::default());
+    let mut input = query(&["ask_floor"]);
+    let ValuationTarget::Selection { criteria, .. } = &mut input.target else {
+        unreachable!()
+    };
+    criteria.models = vec!["m".into()];
+    criteria.backdrops = vec!["b".into()];
+    let input = input.prepare().unwrap();
+    let read = |previous: Option<Arc<ValuationRead>>| {
+        let books = books.clone();
+        let input = input.clone();
+        source.prepare(move |snapshot| {
+            ValuationRead::read(&snapshot, &input, &books, previous.as_ref())
+        })
+    };
+    let first = read(None).await.unwrap().unwrap();
+    assert!(
+        first.statistics().is_empty(),
+        "The narrow query does not prepare collection floors"
+    );
+    assert!(
+        matches!(&first.report.results[0], StrategyOutcome::Value(StrategyValuation::AskFloor(value)) if value.price.value().unwrap().as_str() == "1")
+    );
+    tokio::time::sleep(Duration::from_millis(
+        (expiry - jiff::Timestamp::now().as_millisecond()).max(0) as u64 + 20,
+    ))
+    .await;
+    assert!(Arc::ptr_eq(
+        &first,
+        &read(Some(first.clone())).await.unwrap().unwrap()
+    ));
+    crate::test_support::refresh_interval().await;
+    let next = read(Some(first)).await.unwrap().unwrap();
+    assert!(
+        matches!(&next.report.results[0], StrategyOutcome::Value(StrategyValuation::AskFloor(value)) if value.price.value().unwrap().as_str() == "100")
+    );
+    crate::test_support::refresh_interval().await;
+    let unchanged = read(Some(next.clone())).await.unwrap().unwrap();
+    assert!(Arc::ptr_eq(&next.report, &unchanged.report));
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn finite_queries_retain_their_previous_result_past_the_refresh_boundary() {
+    let (_dir, mut writer) = book();
+    let data = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let request = query(&["execution_mean", "execution_median"]);
+    let report = handle.query(request.clone()).await.unwrap();
+    let previous = Arc::downgrade(&report);
+    drop(report);
+    crate::test_support::refresh_interval().await;
+    let again = handle.query(request.clone()).await.unwrap();
+    assert!(Arc::ptr_eq(
+        &again,
+        &previous
+            .upgrade()
+            .expect("Retain data for dependency validation")
+    ));
+    let changed_at = again.evaluated_at;
+    drop(again);
+    crate::test_support::refresh_interval().await;
+    assert_eq!(
+        handle.query(request).await.unwrap().evaluated_at,
+        changed_at
+    );
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(24 * 60 * 60)).await;
+    tokio::time::resume();
+    let idle = handle
+        .query(query(&["execution_mean", "execution_median"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        idle.evaluated_at, changed_at,
+        "Idle retention does not force recomputation"
+    );
+    writer
+        .apply(w::Batch {
+            cursor: "history-after-idle".into(),
+            changes: (0..3)
+                .map(|i| super::tests::execution(i, "10", "2026-01-10T00:00:00Z"))
+                .collect(),
+        })
+        .unwrap();
+    let request = query(&["execution_mean", "execution_median"]);
+    assert!(
+        Arc::ptr_eq(&idle, &handle.query(request.clone()).await.unwrap()),
+        "Retention preserves the minute gate"
+    );
+    crate::test_support::refresh_interval().await;
+    let refreshed = handle.query(request).await.unwrap();
+    assert!(!Arc::ptr_eq(&idle, &refreshed));
+    assert!(
+        matches!(&refreshed.results[0], StrategyOutcome::Value(StrategyValuation::ExecutionMean(value)) if value.price.value().unwrap().as_str() == "10")
+    );
+    task.shutdown().await.unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn active_watches_keep_sharing_after_completed_report_lru_eviction() {
+    let (_dir, mut writer) = book();
+    let data = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let request = query(&["ask_floor"]);
+    let mut watch = handle.watch(request.clone()).await.unwrap();
+    let baseline = watch.current();
+    for number in 1..=9 {
+        let mut other = request.clone();
+        let ValuationTarget::Selection { criteria, .. } = &mut other.target else {
+            unreachable!()
+        };
+        let number = market_gifts::GiftNumber::new(number).unwrap();
+        criteria.number = Some(market_gifts::GiftNumberRange {
+            min: Some(number),
+            max: Some(number),
+        });
+        handle.query(other).await.unwrap();
+    }
+    assert!(
+        Arc::ptr_eq(&baseline, &handle.query(request.clone()).await.unwrap()),
+        "Active watch ownership survives completed-result eviction"
+    );
+    writer
+        .apply(w::Batch {
+            cursor: "after-lru-eviction".into(),
+            changes: vec![ask("new-floor", "m", "b", "1", 999, None)],
+        })
+        .unwrap();
+    crate::test_support::refresh_interval().await;
+    let (watched, queried) = tokio::join!(watch.changed(), handle.query(request));
+    let (watched, queried) = (watched.unwrap(), queried.unwrap());
+    assert!(Arc::ptr_eq(&watched, &queried));
+    assert!(
+        matches!(&watched.results[0], StrategyOutcome::Value(StrategyValuation::AskFloor(value)) if value.price.value().unwrap().as_str() == "1")
+    );
+    drop(watch);
     task.shutdown().await.unwrap();
     let stop = CancellationToken::new();
     stop.cancel();

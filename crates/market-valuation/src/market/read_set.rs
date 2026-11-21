@@ -1,7 +1,7 @@
-//! One internal owner for observed data, metadata and expiry.
+//! One internal owner for observed dependencies and the minimum refresh deadline.
 use super::*;
 use crate::{
-    floors::{RECHECK_INTERVAL, Statistics},
+    floors::{REFRESH_INTERVAL, Statistics, StatisticsRead},
     source::{BookScope, OrderDependency, ReadDependencies, ValuationSnapshot},
 };
 use market_gifts::{CollectionId, CurrencyId, GiftLookup, GiftOrderQuery};
@@ -12,6 +12,7 @@ pub(super) struct ReadSet {
     metadata: Option<ReadDependencies>,
     pub(super) statistics: Vec<Arc<Statistics>>,
     observations: Vec<OrderDependency>,
+    expires_at: Option<jiff::Timestamp>,
     pub(super) deadline: Instant,
 }
 impl ReadSet {
@@ -20,11 +21,13 @@ impl ReadSet {
             metadata: None,
             statistics: vec![],
             observations: vec![],
-            deadline: Instant::now() + RECHECK_INTERVAL,
+            expires_at: None,
+            deadline: Instant::now() + REFRESH_INTERVAL,
         }
     }
-    pub fn statistics(&mut self, stats: Arc<Statistics>) -> Result<(), ValuationError> {
-        self.deadline = self.deadline.min(stats.deadline());
+    pub fn statistics(&mut self, read: StatisticsRead) -> Result<(), ValuationError> {
+        self.deadline = self.deadline.min(read.refresh_after);
+        let stats = read.statistics;
         if let Some(previous) = self
             .statistics
             .iter_mut()
@@ -102,8 +105,22 @@ impl ReadSet {
         }
         Ok(())
     }
+    pub fn renew(&mut self) {
+        self.deadline = Instant::now() + REFRESH_INTERVAL;
+    }
+    pub fn expires_at(&mut self, at: jiff::Timestamp) {
+        self.expires_at = Some(self.expires_at.map_or(at, |previous| previous.min(at)));
+    }
     pub fn current(&self, snapshot: &ValuationSnapshot) -> Result<bool, ValuationError> {
-        if Instant::now() >= self.deadline {
+        snapshot.check_cancelled()?;
+        // Changes and expirations are intentionally sampled at most once a minute.
+        if Instant::now() < self.deadline {
+            return Ok(true);
+        }
+        if self
+            .expires_at
+            .is_some_and(|at| at <= jiff::Timestamp::now())
+        {
             return Ok(false);
         }
         if let Some(metadata) = &self.metadata
@@ -112,7 +129,7 @@ impl ReadSet {
             return Ok(false);
         }
         for stats in &self.statistics {
-            if !stats.current(snapshot)? {
+            if !stats.data_current(snapshot)? {
                 return Ok(false);
             }
         }
@@ -121,7 +138,7 @@ impl ReadSet {
                 return Ok(false);
             }
         }
-        // Metadata validation can cross a listing's expiry while the view is pinned.
-        Ok(Instant::now() < self.deadline)
+        snapshot.check_cancelled()?;
+        Ok(true)
     }
 }

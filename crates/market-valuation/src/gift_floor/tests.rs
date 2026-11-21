@@ -224,6 +224,15 @@ async fn unified_report_uses_combination_floor_and_full_precision_then_reacts_to
             changes: vec![ask("pair0", "m", "b", "20.125", 123, None)],
         })
         .unwrap();
+    assert_eq!(
+        evaluate(&handle)
+            .await
+            .unwrap()
+            .model_backdrop_floor
+            .value(),
+        first.model_backdrop_floor.value()
+    );
+    crate::test_support::refresh_interval().await;
     let next = evaluate(&handle).await.unwrap();
     assert_eq!(
         next.model_backdrop_floor.value().unwrap().as_str(),
@@ -245,7 +254,10 @@ async fn statistics_cache_ignores_unrelated_metadata_and_tracks_backdrop_depende
         collection: "gift".into(),
         currency: "GRAM".into(),
     };
-    let first = books.get(&data.reader.snapshot().unwrap(), &scope).unwrap();
+    let first = books
+        .get(&data.reader.snapshot().unwrap(), &scope)
+        .unwrap()
+        .statistics;
     writer
         .apply(w::Batch {
             cursor: "unrelated".into(),
@@ -258,7 +270,10 @@ async fn statistics_cache_ignores_unrelated_metadata_and_tracks_backdrop_depende
         .unwrap();
     assert!(Arc::ptr_eq(
         &first,
-        &books.get(&data.reader.snapshot().unwrap(), &scope).unwrap()
+        &books
+            .get(&data.reader.snapshot().unwrap(), &scope)
+            .unwrap()
+            .statistics
     ));
     writer
         .apply(w::Batch {
@@ -273,9 +288,13 @@ async fn statistics_cache_ignores_unrelated_metadata_and_tracks_backdrop_depende
             ))],
         })
         .unwrap();
+    crate::test_support::refresh_interval().await;
     assert!(!Arc::ptr_eq(
         &first,
-        &books.get(&data.reader.snapshot().unwrap(), &scope).unwrap()
+        &books
+            .get(&data.reader.snapshot().unwrap(), &scope)
+            .unwrap()
+            .statistics
     ));
     let stop = CancellationToken::new();
     stop.cancel();
@@ -294,16 +313,25 @@ async fn unchanged_statistics_reuse_prices_across_periodic_rechecks() {
         collection: "gift".into(),
         currency: "GRAM".into(),
     };
-    let first = books.get(&data.reader.snapshot().unwrap(), &scope).unwrap();
+    let first = books
+        .get(&data.reader.snapshot().unwrap(), &scope)
+        .unwrap()
+        .statistics;
     tokio::time::advance(Duration::from_secs(31)).await;
     assert!(Arc::ptr_eq(
         &first,
-        &books.get(&data.reader.snapshot().unwrap(), &scope).unwrap()
+        &books
+            .get(&data.reader.snapshot().unwrap(), &scope)
+            .unwrap()
+            .statistics
     ));
     tokio::time::advance(Duration::from_secs(270)).await;
     assert!(Arc::ptr_eq(
         &first,
-        &books.get(&data.reader.snapshot().unwrap(), &scope).unwrap()
+        &books
+            .get(&data.reader.snapshot().unwrap(), &scope)
+            .unwrap()
+            .statistics
     ));
     tokio::time::resume();
     let stop = CancellationToken::new();
@@ -413,7 +441,7 @@ async fn cross_venue_listings_and_broad_criteria_cannot_satisfy_distinct_gift_re
 }
 
 #[tokio::test]
-async fn cached_statistics_expire_with_the_earliest_ask_without_a_replica_update() {
+async fn cached_statistics_apply_ask_expiry_at_the_next_refresh_without_a_replica_update() {
     let (_dir, mut writer) = book();
     let expires = jiff::Timestamp::now().as_millisecond() + 1000;
     writer
@@ -442,6 +470,17 @@ async fn cached_statistics_expire_with_the_earliest_ask_without_a_replica_update
         (expires - jiff::Timestamp::now().as_millisecond()).max(0) as u64 + 30,
     ))
     .await;
+    assert_eq!(
+        evaluate(&handle)
+            .await
+            .unwrap()
+            .collection_floor
+            .value()
+            .unwrap()
+            .as_str(),
+        "1"
+    );
+    crate::test_support::refresh_interval().await;
     let refreshed = evaluate(&handle).await.unwrap();
     assert_eq!(refreshed.collection_floor.value().unwrap().as_str(), "3");
     assert_eq!(refreshed.final_mark.value().unwrap().as_str(), "36.67");

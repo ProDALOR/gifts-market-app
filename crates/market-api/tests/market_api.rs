@@ -1571,6 +1571,11 @@ async fn wait_slug(state: &MarketApi) -> std::sync::Arc<market_valuation::Valuat
     .await
     .unwrap()
 }
+async fn advance_valuation_refresh() {
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::resume();
+}
 #[actix_web::test]
 async fn gift_queries_share_rest_and_websocket_reports_without_repeated_context() {
     let (state, runtime, peer, stop) = setup().await;
@@ -1677,6 +1682,7 @@ async fn gift_queries_share_rest_and_websocket_reports_without_repeated_context(
     }
     peer.page.send_replace(partial);
     checkpoint(&runtime, "partial").await;
+    advance_valuation_refresh().await;
     let report: serde_json::Value = test::call_and_read_body_json(
         &app,
         test::TestRequest::post()
@@ -1765,6 +1771,7 @@ async fn gift_queries_validate_lookups_and_document_only_the_unified_contract() 
     });
     peer.page.send_replace(conflict);
     checkpoint(&runtime, "conflict").await;
+    advance_valuation_refresh().await;
     assert_eq!(
         test::call_service(
             &app,
@@ -1817,6 +1824,7 @@ async fn gift_queries_resolve_across_currencies_and_preserve_missing_evidence() 
     }
     peer.page.send_replace(expired);
     checkpoint(&runtime, "expired").await;
+    advance_valuation_refresh().await;
     let body: serde_json::Value = test::call_and_read_body_json(
         &app,
         test::TestRequest::post()
@@ -1850,6 +1858,7 @@ async fn gift_queries_resolve_across_currencies_and_preserve_missing_evidence() 
     }
     peer.page.send_replace(criteria);
     checkpoint(&runtime, "criteria").await;
+    advance_valuation_refresh().await;
     assert_eq!(
         test::call_service(
             &app,
@@ -1925,6 +1934,7 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
         })
         .await
         .unwrap();
+        advance_valuation_refresh().await;
         let response = test::call_service(
             &app,
             test::TestRequest::post()

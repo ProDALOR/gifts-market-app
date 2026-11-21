@@ -48,7 +48,14 @@ async fn floor_reads_and_watches_share_collection_scoped_snapshots() {
     assert_eq!(rest["target"], ws["target"]);
     assert_eq!(rest["results"], ws["results"]);
     peer.page.send_replace(page("2"));
-    let changed = bid_filters::frame(&mut socket, "prices", "valuation.snapshot").await;
+    // Exercise the real timer in HTTP worker runtimes, not the fixture clock.
+    let changed = bid_filters::frame_with_timeout(
+        &mut socket,
+        "prices",
+        "valuation.snapshot",
+        Duration::from_secs(65),
+    )
+    .await;
     assert_eq!(
         changed["data"]["results"][0]["data"]["collections"][0]["floor"]["price"]["value"],
         "2"
@@ -196,7 +203,13 @@ async fn target_strategies_share_rest_and_websocket_results_and_keep_partial_fai
         entity: Some(w::entity::Entity::Order(execution)),
     });
     peer.page.send_replace(changed);
-    let updated = bid_filters::frame(&mut socket, "target-live", "valuation.snapshot").await;
+    let updated = bid_filters::frame_with_timeout(
+        &mut socket,
+        "target-live",
+        "valuation.snapshot",
+        Duration::from_secs(65),
+    )
+    .await;
     assert_eq!(
         updated["data"]["results"][1]["data"]["price"]["value"],
         "40"

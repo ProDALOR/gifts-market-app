@@ -36,6 +36,7 @@ name = "miniapp_api"
 required-features = ["miniapp"]
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 actix.workspace = true
 flate2.workspace = true
 market-hub-protocol.workspace = true

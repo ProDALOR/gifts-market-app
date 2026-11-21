@@ -56,7 +56,7 @@ export class FloorsController {
   private collections = new Set<string>();
   private queued = new Set<string>();
   private running = new Map<AbortController, string[]>();
-  private detail?: { stop: AbortController };
+  private detail?: { stop: AbortController; selected: string };
   private detailsAt = new Map<string, number>();
   private detailsDirty = false;
   private errors = new Map<string, string>();
@@ -220,6 +220,7 @@ export class FloorsController {
     // A separate foreground request never queues behind the full catalog sweep.
     if (this.selected && this.detailsDirty && !this.detail) this.loadDetails();
     const inFlight = new Set([...this.running.values()].flat());
+    if (this.detail) inFlight.add(this.detail.selected);
     while (this.running.size < 2) {
       const ids = [...this.queued]
         .filter((id) => this.collections.has(id) && !inFlight.has(id))
@@ -290,8 +291,8 @@ export class FloorsController {
       if (!this.collections.has(row.collection_id)) continue;
       const previous = this.cache.get(row.collection_id);
       if (previous && evaluatedAfter(previous.evaluatedAt, row.evaluated_at)) {
-        if (row.traits && row.collection_id === this.selected)
-          this.detailsDirty = true;
+        // The server may still hold an older detail result. Retry on the minute
+        // timer; immediately pumping repeats the same cached response in a loop.
         continue;
       }
       const traits =
@@ -367,7 +368,7 @@ export class FloorsController {
       collection_ids: [selected],
       details: { collection_id: selected, pair: this.pair },
     };
-    const work = { stop: new AbortController() };
+    const work = { stop: new AbortController(), selected };
     this.detail = work;
     this.detailsDirty = false;
     this.publish();

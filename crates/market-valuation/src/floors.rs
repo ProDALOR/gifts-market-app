@@ -6,16 +6,16 @@ use crate::{
 };
 use market_gifts::*;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, BTreeSet, HashSet},
+    sync::Arc,
     time::Duration,
 };
 use tokio::time::Instant;
 
 const STAT_LIMIT: usize = 20_000;
 const GIFT_MEMBERSHIP_LIMIT: usize = 200_000;
-const TRAIT_CACHE_LIMIT: usize = 8;
-const COLLECTION_CACHE_LIMIT: usize = 512;
+mod cache;
+pub(crate) use cache::{BookCache, StatisticsRead};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Preparation {
     Collection,
@@ -27,7 +27,7 @@ pub(crate) enum FloorSelection<'a> {
     Backdrop(&'a BackdropId),
     Pattern(&'a PatternId),
 }
-pub(crate) const RECHECK_INTERVAL: Duration = Duration::from_secs(300);
+pub(crate) const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Default, Clone)]
 pub(crate) struct Floor {
@@ -90,15 +90,6 @@ impl Statistics {
     pub(crate) fn metadata_keys(&self) -> usize {
         self.dependencies.key_count()
     }
-    pub(crate) fn deadline(&self) -> tokio::time::Instant {
-        let expiry = std::time::Duration::from_millis(
-            self.expires_at_ms
-                .saturating_sub(jiff::Timestamp::now().as_millisecond())
-                .max(0) as u64,
-        );
-        tokio::time::Instant::now() + RECHECK_INTERVAL.min(expiry)
-    }
-
     pub(crate) fn traits_prepared(&self) -> bool {
         self.preparation == Preparation::Traits
     }
@@ -137,7 +128,11 @@ impl Statistics {
             expires_at_ms: self.expires_at_ms,
         })
     }
-    pub fn current(&self, snapshot: &ValuationSnapshot) -> Result<bool, ValuationError> {
+    /// Immutable observations can be validated independently of cache ownership.
+    pub(crate) fn data_current(
+        &self,
+        snapshot: &ValuationSnapshot,
+    ) -> Result<bool, ValuationError> {
         Ok(jiff::Timestamp::now().as_millisecond() < self.expires_at_ms
             && snapshot.dependencies_data_current(&self.dependencies)?
             && jiff::Timestamp::now().as_millisecond() < self.expires_at_ms)
@@ -280,102 +275,6 @@ fn capacity() -> ValuationError {
     ValuationError::capacity("Gift valuation statistics budget exceeded")
 }
 
-struct CachedBook {
-    stats: Arc<Statistics>,
-    used: Instant,
-}
-#[derive(Default)]
-struct CachedBooks {
-    collections: HashMap<BookScope, CachedBook>,
-    traits: HashMap<BookScope, CachedBook>,
-}
-#[derive(Default)]
-pub(crate) struct BookCache(Mutex<CachedBooks>);
-impl CachedBooks {
-    fn insert(&mut self, scope: BookScope, stats: Arc<Statistics>) {
-        let (books, limit) = if stats.traits_prepared() {
-            (&mut self.traits, TRAIT_CACHE_LIMIT)
-        } else {
-            (&mut self.collections, COLLECTION_CACHE_LIMIT)
-        };
-        if !books.contains_key(&scope) && books.len() >= limit {
-            if let Some(oldest) = books
-                .iter()
-                .min_by_key(|(_, entry)| entry.used)
-                .map(|(scope, _)| scope.clone())
-            {
-                books.remove(&oldest);
-            }
-        }
-        books.insert(
-            scope,
-            CachedBook {
-                stats,
-                used: Instant::now(),
-            },
-        );
-    }
-}
-impl BookCache {
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, CachedBooks>, ValuationError> {
-        self.0
-            .lock()
-            .map_err(|_| ValuationError::unavailable("Valuation cache is unavailable"))
-    }
-    pub fn get(
-        &self,
-        snapshot: &ValuationSnapshot,
-        scope: &BookScope,
-    ) -> Result<Arc<Statistics>, ValuationError> {
-        self.prepare(snapshot, scope, Preparation::Traits)
-    }
-    pub fn collection(
-        &self,
-        snapshot: &ValuationSnapshot,
-        scope: &BookScope,
-    ) -> Result<Arc<Statistics>, ValuationError> {
-        self.prepare(snapshot, scope, Preparation::Collection)
-    }
-    fn prepare(
-        &self,
-        snapshot: &ValuationSnapshot,
-        scope: &BookScope,
-        preparation: Preparation,
-    ) -> Result<Arc<Statistics>, ValuationError> {
-        let cached = {
-            let mut books = self.lock()?;
-            let entries = if preparation == Preparation::Traits {
-                &mut books.traits
-            } else {
-                &mut books.collections
-            };
-            entries.get_mut(scope).map(|entry| {
-                entry.used = Instant::now();
-                entry.stats.clone()
-            })
-        };
-        if let Some(cached) = cached
-            && cached.current(snapshot)?
-        {
-            return Ok(cached);
-        }
-        // All preparation runs on the shared heavy-read lane, pinned after admission.
-        let stats = Arc::new(Statistics::read(snapshot, scope, preparation)?);
-        let summary = if preparation == Preparation::Traits {
-            Some(Arc::new(stats.collection_only(snapshot)?))
-        } else {
-            None
-        };
-        snapshot.check_cancelled()?;
-        let mut books = self.lock()?;
-        if let Some(summary) = summary {
-            books.insert(scope.clone(), summary);
-        }
-        books.insert(scope.clone(), stats.clone());
-        Ok(stats)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,7 +319,3 @@ impl Floor {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "preparation_tests.rs"]
-mod preparation_tests;
