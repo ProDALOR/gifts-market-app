@@ -119,10 +119,11 @@ impl ValuationSnapshot {
         let mut query = request(scope);
         query.page_token = page_token;
         let page = self.reader.read(query)?.page;
-        let mut data = Vec::new();
+        let mut data = Vec::with_capacity(page.entities.len());
         for entity in page.entities {
+            self.check_cancelled()?;
             if let Some(w::entity::Entity::Order(order)) = entity.entity
-                && let Some(quote) = market_gifts_hub::ask_quote(order, now_ms)
+                && let Some(quote) = market_gifts_hub::ask_quote(&order, now_ms)
                     .map_err(|e| Status::unavailable(e.to_string()))?
             {
                 data.push(quote);

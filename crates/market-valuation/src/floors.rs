@@ -202,7 +202,7 @@ impl Statistics {
             let page = snapshot.asks(scope, now, token)?;
             for quote in page.data {
                 snapshot.check_cancelled()?;
-                let gift = quote.gift_id.as_ref().map(|id| Arc::new(id.clone()));
+                let gift = quote.gift_id.map(Arc::new);
                 memberships += stats.collection.observe(&quote.price, gift.as_ref());
                 if let Some(at) = quote.expires_at {
                     stats.expires_at_ms = stats.expires_at_ms.min(at.as_millisecond());

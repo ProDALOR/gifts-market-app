@@ -252,6 +252,44 @@ test("collections and selected traits refresh every minute without polling on re
     "Returning within a minute reuses the validated trait cache",
   );
 });
+test("summary batches reuse trait payload weights without serializing cached maps again", async (t) => {
+  const f = fixture(t);
+  let serialized = 0;
+  f.load(async (query) => {
+    const result = report(query);
+    const traits = catalogFloors(result.results[0].data)
+      ? result.results[0].data.collections[0].traits
+      : undefined;
+    if (traits)
+      Object.defineProperty(traits, "toJSON", {
+        value() {
+          serialized++;
+          return { ...traits };
+        },
+      });
+    return result;
+  });
+  const ids = Array.from({ length: 25 }, (_, i) => `gift-${i}`);
+  f.controller.configure("GRAM", ids, "gift-0", null);
+  await flush(t);
+  assert.ok(f.controller.getSnapshot().entries.get("gift-0")?.traits);
+  assert.equal(serialized, 1);
+  f.controller.configure("GRAM", [...ids, "another"], "gift-0", null);
+  await flush(t);
+  assert.equal(f.controller.getSnapshot().entries.size, 26);
+  assert.equal(
+    serialized,
+    1,
+    "Unrelated summaries do not allocate new trait JSON strings",
+  );
+  await flush(t, 60_000);
+  await flush(t);
+  assert.equal(
+    serialized,
+    2,
+    "A replacement trait payload gets a fresh weight",
+  );
+});
 test("summary admission is bounded and selected details do not wait for the full sweep", async (t) => {
   const f = fixture(t),
     ids = Array.from({ length: 40 }, (_, i) => `gift-${i}`),

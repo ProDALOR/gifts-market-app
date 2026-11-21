@@ -10,12 +10,13 @@ import type {
 } from "../market.ts";
 import type { components } from "../gen/api.ts";
 type Values = components["schemas"]["CatalogFloorValuation"];
+type TraitFloors = NonNullable<Values["collections"][number]["traits"]>;
 type CatalogTarget = Extract<ValuationQuery["target"], { kind: "catalog" }>;
 type Pair = NonNullable<CatalogTarget["details"]>["pair"];
 export type SharedFloor = components["schemas"]["AskFloorValuation"];
 export type FloorsEntry = {
   floor: SharedFloor;
-  traits?: NonNullable<Values["collections"][number]["traits"]>;
+  traits?: TraitFloors;
   stale: boolean;
   evaluatedAt: string;
   used: number;
@@ -51,6 +52,7 @@ export class FloorsController {
   private deps: Dependencies;
   private listeners = new Set<() => void>();
   private cache = new Map<string, FloorsEntry>();
+  private traitBytes = new WeakMap<TraitFloors, number>();
   private collections = new Set<string>();
   private queued = new Set<string>();
   private running = new Map<AbortController, string[]>();
@@ -404,7 +406,14 @@ export class FloorsController {
     let bytes = 0;
     for (let i = 0; i < traits.length; i++) {
       const [id, entry] = traits[i];
-      bytes += JSON.stringify(entry.traits).length * 2;
+      const value = entry.traits!;
+      let size = this.traitBytes.get(value);
+      if (size === undefined) {
+        // Payloads are immutable; unrelated summary batches reuse this weight.
+        size = JSON.stringify(value).length * 2;
+        this.traitBytes.set(value, size);
+      }
+      bytes += size;
       if (i >= 8 || bytes > 8 * 1024 * 1024) {
         this.cache.set(id, { ...entry, traits: undefined });
         this.detailsAt.delete(id);

@@ -56,6 +56,68 @@ async fn dependency_checks_use_revisions_then_a_bounded_worker_and_memoize_succe
     data.task.run(stop).await.unwrap();
 }
 #[tokio::test]
+async fn ask_traversal_continues_after_an_empty_eligible_page_and_stays_pinned() {
+    let (_dir, mut writer) = fixture();
+    let changes = (0..1000)
+        .map(|i| {
+            let mut row = order("3");
+            if let Some(w::change::Change::Upsert(w::Entity {
+                entity: Some(w::entity::Entity::Order(order)),
+            })) = &mut row.change
+            {
+                order.id = format!("ask.{i:04}");
+                order.expires_at_ms = (i < 500).then_some(10);
+            }
+            row
+        })
+        .collect();
+    writer
+        .apply(w::Batch {
+            cursor: "asks".into(),
+            changes,
+        })
+        .unwrap();
+    let runtime =
+        market_replica::ReadRuntime::new(writer.reader(), 1, CancellationToken::new()).unwrap();
+    let source = ValuationSource::new(runtime.handle());
+    let snapshot = source.snapshot().unwrap();
+    let scope = BookScope {
+        collection: "gift".into(),
+        currency: "GRAM".into(),
+    };
+    let first = snapshot.asks(&scope, 10, String::new()).unwrap();
+    assert!(first.data.is_empty());
+    assert!(!first.next_page_token.is_empty());
+    // Updating the writer during traversal must not replace the pinned order.
+    writer
+        .apply(w::Batch {
+            cursor: "changed".into(),
+            changes: vec![order("99")],
+        })
+        .unwrap();
+    let mut token = first.next_page_token;
+    let mut count = 0;
+    let mut pages = 1;
+    loop {
+        let page = snapshot.asks(&scope, 10, token).unwrap();
+        pages += 1;
+        count += page.data.len();
+        assert!(page.data.iter().all(|quote| quote.price.as_str() == "3"));
+        if page.next_page_token.is_empty() {
+            break;
+        }
+        token = page.next_page_token;
+        assert!(
+            pages <= 3,
+            "Traversal must advance across equal-price orders"
+        );
+    }
+    assert_eq!(count, 501);
+    assert_eq!(pages, 3);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn cancelling_a_worker_stops_its_scan_at_the_next_page_and_releases_capacity() {
     let (_dir, mut writer) = fixture();
     let changes = (0..601)

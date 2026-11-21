@@ -5,7 +5,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(super) enum Payload {
-    Encoded(Arc<str>),
+    Encoded(actix_web::web::Bytes),
     MarketStatus(crate::models::MarketStatus),
     Catalog(market_gifts::CatalogVersions),
     Error(ApiError),
@@ -18,7 +18,7 @@ impl Payload {
     }
     pub fn bytes(&self, id: &str) -> actix_web::web::Bytes {
         let text = match self {
-            Self::Encoded(encoded) => return crate::encoding::body(encoded.clone()),
+            Self::Encoded(encoded) => return encoded.clone(),
             Self::MarketStatus(status) => {
                 serde_json::to_string(&ServerFrame::MarketStatus { status: *status })
                     .expect("market status serializes")
@@ -157,6 +157,19 @@ impl Sender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn encoded_frames_share_the_serialization_buffer_through_the_queue() {
+        let bytes = actix_web::web::Bytes::from(vec![b'x'; 1024]);
+        let payload = Payload::Encoded(bytes.clone());
+        assert_eq!(payload.bytes("read").as_ptr(), bytes.as_ptr());
+        let (tx, mut rx) = channel(&WebSocketLimits::default());
+        tx.send(Scope::Global, payload, false, &CancellationToken::new())
+            .await
+            .unwrap();
+        let frame = rx.recv().await.unwrap();
+        assert_eq!(frame.text.as_ptr(), bytes.as_ptr());
+        assert_eq!(frame.text, bytes);
+    }
     #[tokio::test]
     async fn queue_budget_includes_inflight_frames_and_cancelled_generations_are_filtered() {
         let limits = WebSocketLimits {

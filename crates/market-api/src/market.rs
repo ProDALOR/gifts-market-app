@@ -47,14 +47,14 @@ impl MarketApi {
     pub(crate) async fn encode_orders(
         &self,
         event: crate::encoding::OrderEvent,
-    ) -> Result<Arc<str>> {
+    ) -> Result<actix_web::web::Bytes> {
         self.encoder.encode(event).await
     }
     pub(crate) async fn encode_valuation(
         &self,
         report: Arc<market_valuation::ValuationReport>,
         envelope: crate::encoding::ValuationEnvelope,
-    ) -> Result<Arc<str>> {
+    ) -> Result<actix_web::web::Bytes> {
         self.encoder.valuation(report, envelope).await
     }
     pub(crate) async fn watch_orders(

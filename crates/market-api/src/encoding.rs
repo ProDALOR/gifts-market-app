@@ -4,6 +4,7 @@ use crate::{
     models::{ApiResult, ServerFrame},
     orders::*,
 };
+use actix_web::web::Bytes;
 use market_actors::{OrderRead, OrderResult};
 use std::{
     collections::HashMap,
@@ -12,15 +13,6 @@ use std::{
 };
 use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
-struct SharedJson(Arc<str>);
-impl AsRef<[u8]> for SharedJson {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
-}
-pub(crate) fn body(value: Arc<str>) -> actix_web::web::Bytes {
-    actix_web::web::Bytes::from_owner(SharedJson(value))
-}
 pub(crate) enum OrderEvent {
     Read {
         id: String,
@@ -63,18 +55,18 @@ impl ResponseEncoder {
             registration: std::sync::Mutex::new(()),
         }
     }
-    pub async fn encode(&self, event: OrderEvent) -> Result<Arc<str>> {
+    pub async fn encode(&self, event: OrderEvent) -> Result<Bytes> {
         self.encode_response(ResponseEvent::Orders(event)).await
     }
     pub async fn valuation(
         &self,
         report: Arc<market_valuation::ValuationReport>,
         envelope: ValuationEnvelope,
-    ) -> Result<Arc<str>> {
+    ) -> Result<Bytes> {
         self.encode_response(ResponseEvent::Valuation { report, envelope })
             .await
     }
-    async fn encode_response(&self, event: ResponseEvent) -> Result<Arc<str>> {
+    async fn encode_response(&self, event: ResponseEvent) -> Result<Bytes> {
         let stop = self.stop.child_token();
         let _cancel = stop.clone().drop_guard();
         let permit = self
@@ -140,7 +132,7 @@ fn encode_response(
     event: ResponseEvent,
     limit: usize,
     stop: tokio_util::sync::CancellationToken,
-) -> Result<Arc<str>> {
+) -> Result<Bytes> {
     let mut writer = Limited {
         bytes: vec![],
         limit,
@@ -226,9 +218,8 @@ fn encode_response(
             ApiError::unavailable("Response encoding failed")
         });
     }
-    String::from_utf8(writer.bytes)
-        .map(Arc::from)
-        .map_err(|_| ApiError::unavailable("Invalid encoded response"))
+    // Bytes takes ownership of the serialization buffer without copying it.
+    Ok(Bytes::from(writer.bytes))
 }
 #[cfg(test)]
 mod tests {
@@ -243,7 +234,7 @@ mod tests {
             .valuation(valuation_report(), ValuationEnvelope::Rest)
             .await
             .unwrap();
-        let rest: serde_json::Value = serde_json::from_str(&rest).unwrap();
+        let rest: serde_json::Value = serde_json::from_slice(&rest).unwrap();
         for envelope in [
             ValuationEnvelope::Query("read".into()),
             ValuationEnvelope::Snapshot("watch".into()),
@@ -252,7 +243,7 @@ mod tests {
                 .valuation(valuation_report(), envelope)
                 .await
                 .unwrap();
-            let frame: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            let frame: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
             assert_eq!(frame["data"], rest);
         }
         let small = ResponseEncoder::new(64);
@@ -347,7 +338,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&text).unwrap();
         assert_eq!(value["data"], expected["data"]);
         assert_eq!(value["range"], expected["range"]);
         let snapshot = encoder
@@ -361,7 +352,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&snapshot).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(&snapshot).unwrap(),
             serde_json::json!({"type":"orders.snapshot","id":"x","sequence":0,"data":[],"range":{"start":null,"end":null}})
         );
         let delta = encoder
@@ -375,7 +366,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&delta).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(&delta).unwrap(),
             serde_json::json!({"type":"orders.changed","id":"x","sequence":1,"upserts":[],"removed":[]})
         );
         let small = ResponseEncoder::new(8);

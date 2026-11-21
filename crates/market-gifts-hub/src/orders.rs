@@ -2,6 +2,7 @@ use super::{BACKDROP, MODEL, NUMBER, PATTERN, Result, invalid};
 use jiff::Timestamp;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
+use rust_decimal::prelude::ToPrimitive;
 use std::collections::BTreeMap;
 fn required<T>(value: Option<T>) -> Result<T> {
     value.ok_or_else(|| invalid("missing gift market field"))
@@ -36,36 +37,42 @@ fn option_values(value: &w::AttributePredicate) -> TargetResult<&[w::AttributeVa
         _ => Err(UnsupportedGiftReason::UnsupportedConstraints),
     }
 }
-fn options<T: TryFrom<String>>(value: w::AttributePredicate) -> TargetResult<Vec<T>> {
-    let mut ids = option_values(&value)?
+fn options<T: TryFrom<String>>(value: &w::AttributePredicate) -> TargetResult<Vec<T>> {
+    let values = option_values(value)?;
+    let convert = |id: &str| {
+        id.to_owned()
+            .try_into()
+            .map_err(|_| UnsupportedGiftReason::InvalidAttributes)
+    };
+    // Singleton predicates dominate concrete gifts; avoid a second temporary vector.
+    if let [value] = values {
+        return Ok(vec![convert(required_option(value)?)?]);
+    }
+    let mut ids = values
         .iter()
         .map(required_option)
         .collect::<TargetResult<Vec<_>>>()?;
     ids.sort();
     ids.dedup();
-    ids.into_iter()
-        .map(|id| {
-            id.to_owned()
-                .try_into()
-                .map_err(|_| UnsupportedGiftReason::InvalidAttributes)
-        })
-        .collect()
+    ids.into_iter().map(convert).collect()
 }
-fn number(value: w::AttributeValue) -> TargetResult<GiftNumber> {
+fn number(value: &w::AttributeValue) -> TargetResult<GiftNumber> {
     match value
         .value
+        .as_ref()
         .ok_or(UnsupportedGiftReason::InvalidAttributes)?
     {
-        w::attribute_value::Value::Integer(value) => u32::try_from(value)
+        w::attribute_value::Value::Integer(value) => u32::try_from(*value)
             .map_err(|_| UnsupportedGiftReason::InvalidAttributes)
             .and_then(|n| GiftNumber::new(n).map_err(|_| UnsupportedGiftReason::InvalidAttributes)),
         _ => Err(UnsupportedGiftReason::InvalidAttributes),
     }
 }
-fn number_range(value: w::AttributePredicate) -> TargetResult<GiftNumberRange> {
+fn number_range(value: &w::AttributePredicate) -> TargetResult<GiftNumberRange> {
     use w::attribute_predicate::Predicate as P;
     let range = match value
         .predicate
+        .as_ref()
         .ok_or(UnsupportedGiftReason::InvalidAttributes)?
     {
         P::Eq(value) => {
@@ -76,8 +83,8 @@ fn number_range(value: w::AttributePredicate) -> TargetResult<GiftNumberRange> {
             }
         }
         P::Range(value) => GiftNumberRange {
-            min: value.min.map(number).transpose()?,
-            max: value.max.map(number).transpose()?,
+            min: value.min.as_ref().map(number).transpose()?,
+            max: value.max.as_ref().map(number).transpose()?,
         },
         _ => return Err(UnsupportedGiftReason::UnsupportedConstraints),
     };
@@ -88,7 +95,7 @@ fn number_range(value: w::AttributePredicate) -> TargetResult<GiftNumberRange> {
 }
 
 /// Apply the same quantity and trait rules as order projection to an active ask.
-fn active_floor_order(value: w::Order, now_ms: i64) -> Result<Option<GiftOrder>> {
+fn active_floor_order(value: &w::Order, now_ms: i64) -> Result<Option<GiftOrder>> {
     if value.mode != w::OrderMode::Ask as i32
         || value.expires_at_ms.is_some_and(|expiry| expiry <= now_ms)
     {
@@ -100,7 +107,7 @@ fn active_floor_order(value: w::Order, now_ms: i64) -> Result<Option<GiftOrder>>
     {
         return Ok(None);
     }
-    let order = order(value)?;
+    let order = order_ref(value)?;
     if order.price.decimal() <= rust_decimal::Decimal::ZERO {
         return Ok(None);
     }
@@ -110,7 +117,7 @@ fn active_floor_order(value: w::Order, now_ms: i64) -> Result<Option<GiftOrder>>
     Ok(Some(order))
 }
 
-pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
+pub fn ask_quote(value: &w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
     let Some(order) = active_floor_order(value, now_ms)? else {
         return Ok(None);
     };
@@ -147,7 +154,7 @@ pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
     }))
 }
 
-fn criteria(attributes: BTreeMap<String, w::AttributePredicate>) -> TargetResult<GiftCriteria> {
+fn criteria(attributes: &BTreeMap<String, w::AttributePredicate>) -> TargetResult<GiftCriteria> {
     let mut result = GiftCriteria::default();
     for (key, value) in attributes {
         match key.as_str() {
@@ -161,9 +168,9 @@ fn criteria(attributes: BTreeMap<String, w::AttributePredicate>) -> TargetResult
     Ok(result)
 }
 fn target(
-    id: Option<String>,
+    id: Option<&str>,
     collection_id: CollectionId,
-    attributes: BTreeMap<String, w::AttributePredicate>,
+    attributes: &BTreeMap<String, w::AttributePredicate>,
 ) -> GiftTarget {
     let criteria = match criteria(attributes) {
         Ok(value) => value,
@@ -187,7 +194,7 @@ fn target(
                     reason: UnsupportedGiftReason::NonConcreteGift,
                 };
             }
-            match id.try_into() {
+            match id.to_owned().try_into() {
                 Ok(id) => GiftTarget::Gift {
                     gift: CollectibleGift {
                         id,
@@ -232,9 +239,9 @@ pub fn order_ref(value: &w::Order) -> Result<GiftOrder> {
     let order = GiftOrderData {
         id: value.id.clone().try_into().map_err(invalid)?,
         target: target(
-            value.item_id.clone(),
+            value.item_id.as_deref(),
             book.collection_id.clone(),
-            value.attributes.clone(),
+            &value.attributes,
         ),
         book,
         kind: match w::OrderMode::try_from(value.mode) {
@@ -258,10 +265,8 @@ fn gift_quantity(value: &str) -> Result<u32> {
         .map_err(invalid)?
         .normalize();
     decimal
-        .to_string()
-        .parse::<u32>()
-        .ok()
-        .filter(|quantity| *quantity > 0)
+        .to_u32()
+        .filter(|quantity| *quantity > 0 && decimal.scale() == 0)
         .ok_or_else(|| invalid("gift quantity must be a positive integer"))
 }
 /// Gift facts from a listing, without constructing pricing, timestamps or presentation fields.
@@ -275,8 +280,10 @@ pub fn concrete_gift(value: w::Order) -> Result<Option<CollectibleGift>> {
         .item_type_id
         .try_into()
         .map_err(invalid)?;
-    Ok(match target(value.item_id, collection, value.attributes) {
-        GiftTarget::Gift { gift } => Some(gift),
-        _ => None,
-    })
+    Ok(
+        match target(value.item_id.as_deref(), collection, &value.attributes) {
+            GiftTarget::Gift { gift } => Some(gift),
+            _ => None,
+        },
+    )
 }
