@@ -21,7 +21,7 @@ export function giftAppearance(
     ? options.get(selected.backdrop)
     : undefined;
   const pattern = selected?.pattern ? options.get(selected.pattern) : undefined;
-  const palette = media ? backdropPalette(backdrop) : undefined;
+  const palette = backdropPalette(backdrop);
   const patternUrl =
     palette && pattern?.kind === "pattern"
       ? pattern.media?.thumbnail_url

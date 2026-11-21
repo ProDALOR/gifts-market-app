@@ -80,10 +80,18 @@ function Artwork({
     playback === "collection" ? 180 : 100,
   );
   const interactive = hovered || focused;
-  const priority =
+  const group =
     playback === "detail"
-      ? 100
+      ? "detail"
       : interactive
+        ? "interaction"
+        : playback === "collection"
+          ? "collection"
+          : "selection";
+  const priority =
+    group === "detail"
+      ? 100
+      : group === "interaction"
         ? 30
         : preferVectorPlayback
           ? 25
@@ -96,7 +104,15 @@ function Artwork({
     (playback === "detail" ||
       interactive ||
       (settled && playback !== "interaction"));
-  useEffect(() => () => clearTimeout(hoverTimer.current), [canInteract]);
+  useEffect(() => {
+    clearTimeout(hoverTimer.current);
+    if (!visible || !canInteract) {
+      setHovered(false);
+    } else if (host.current?.matches(":hover")) {
+      hoverTimer.current = setTimeout(() => setHovered(true), 150);
+    }
+    return () => clearTimeout(hoverTimer.current);
+  }, [visible, canInteract]);
   const [animationReady, setAnimationReady] = useState(false);
   const artworkReady = image.ready || animationReady;
   const [requested, setRequested] = useState(false);
@@ -170,6 +186,7 @@ function Artwork({
             active={shouldAnimate}
             vector={preferVectorPlayback}
             priority={priority}
+            group={group}
             retain={visible && pageVisible && !reducedMotion}
             ready={animationReady}
             onReady={setAnimationReady}

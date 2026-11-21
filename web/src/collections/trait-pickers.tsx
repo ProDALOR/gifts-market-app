@@ -1,10 +1,16 @@
 import { collectionOptions } from "../catalog/selectors";
-import { memo, useEffect, useRef, useState } from "react";
+import {
+  rarityGroups,
+  groupSelection,
+  toggleRarityGroup,
+} from "../catalog/rarity";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { TraitFilters, TraitKey } from "../market";
 import { traits } from "../orderbook";
 import type { CatalogOption, Collection } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
 import { TraitFloor } from "../valuation/floors";
+import { usePickerMotion } from "./picker-motion";
 export const TraitPickers = memo(function TraitPickers({
   collection,
   loading = false,
@@ -25,6 +31,7 @@ export const TraitPickers = memo(function TraitPickers({
   change: (id: TraitKey, value?: string[]) => void;
 }) {
   const [query, setQuery] = useState("");
+  const { shown, shell, panel, content } = usePickerMotion(open, query);
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -33,24 +40,38 @@ export const TraitPickers = memo(function TraitPickers({
     const outside = (event: MouseEvent) => {
       if (!host.current?.contains(event.target as Node)) setOpen(undefined);
     };
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(undefined);
-        document.getElementById(`pick-${open}`)?.focus();
-      }
-    };
     document.addEventListener("click", outside);
-    document.addEventListener("keydown", key);
     return () => {
       document.removeEventListener("click", outside);
-      document.removeEventListener("keydown", key);
     };
-  }, [open]);
-  const trait = traits.find((trait) => trait.id === open);
-  const available = open ? collectionOptions(collection, open, options) : [];
-  const chosen = open ? filters[open] || [] : [];
+  }, [open, setOpen]);
+  const trait = traits.find((trait) => trait.id === shown);
+  const available = shown ? collectionOptions(collection, shown, options) : [];
+  const chosen = shown ? filters[shown] || [] : [];
+  const groups = useMemo(
+    () => rarityGroups(available, query),
+    [available, query],
+  );
   return (
-    <div className="trait-controls" ref={host}>
+    <div
+      className="trait-controls"
+      ref={host}
+      onKeyDown={(event) => {
+        if (
+          open &&
+          event.key === "Escape" &&
+          !event.defaultPrevented &&
+          !event.nativeEvent.isComposing
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(undefined);
+          host.current
+            ?.querySelector<HTMLButtonElement>(`#pick-${open}`)
+            ?.focus({ preventScroll: true });
+        }
+      }}
+    >
       <div className="pickers">
         {traits.map((trait) => {
           const count = (filters[trait.id] || []).length;
@@ -67,92 +88,131 @@ export const TraitPickers = memo(function TraitPickers({
                 collectionOptions(collection, trait.id, options).length === 0
               }
               onClick={() => {
-                setOpen(open === trait.id ? undefined : trait.id);
-                setQuery("");
+                const next = open === trait.id ? undefined : trait.id;
+                setOpen(next);
+                if (next) setQuery("");
               }}
             >
               {trait.label}
-              {count > 0 && <span className="pick-count">{count}</span>}
+              {count > 0 && (
+                <span key={count} className="pick-count">
+                  {count}
+                </span>
+              )}
             </button>
           );
         })}
       </div>
-      {open && (
-        <section
-          id="trait-panel"
-          className="picker-panel"
-          aria-label={`${trait?.label} choices`}
+      {shown && (
+        <div
+          className="trait-panel-shell"
+          ref={shell}
+          inert={!open}
+          aria-hidden={!open}
         >
-          <input
-            className="trait-search"
-            aria-label={`Search ${trait?.label.toLowerCase()} choices`}
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={`Search ${trait?.label.toLowerCase()}…`}
-          />
-          <div
-            className="trait-options"
-            role="group"
-            aria-label={`${trait?.label} options`}
+          <section
+            ref={panel}
+            id="trait-panel"
+            className="picker-panel"
+            aria-label={`${trait?.label} choices`}
           >
-            <button
-              className="trait-option"
-              aria-pressed={!chosen.length}
-              onClick={() => change(open, undefined)}
+            <input
+              className="trait-search"
+              aria-label={`Search ${trait?.label.toLowerCase()} choices`}
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={`Search ${trait?.label.toLowerCase()}…`}
+            />
+            <div
+              ref={content}
+              className="trait-options"
+              role="group"
+              aria-label={`${trait?.label} options`}
             >
-              Any
-            </button>
-            {available
-              .filter((option) =>
-                option.name.toLowerCase().includes(query.toLowerCase()),
-              )
-              .map((option) => (
-                <button
-                  key={option.id}
-                  className="trait-option"
-                  aria-label={option.name}
-                  aria-pressed={chosen.includes(option.id)}
-                  onClick={() =>
-                    change(
-                      open,
-                      chosen.includes(option.id)
-                        ? chosen.filter((id) => id !== option.id)
-                        : [...chosen, option.id],
-                    )
-                  }
+              <button
+                type="button"
+                className="trait-option"
+                aria-pressed={!chosen.length}
+                onClick={() => change(shown, undefined)}
+              >
+                Any
+              </button>
+              {groups.map((group) => (
+                <div
+                  className="trait-group"
+                  role="group"
+                  aria-label={`${group.label} rarity`}
+                  key={group.key}
                 >
-                  <OptionArt option={option} />
-                  <span className="trait-option-copy">
-                    <span className="trait-option-name">{option.name}</span>
-                    {option.kind !== "pattern" && (
-                      <span className="trait-option-value">
-                        <TraitFloor
-                          collection={collection?.id}
-                          id={option.id}
-                          kind={option.kind}
-                        />
-                      </span>
-                    )}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    className="trait-group-toggle"
+                    aria-pressed={groupSelection(group.options, chosen)}
+                    aria-label={`${group.label} rarity`}
+                    title="Select or deselect all matching attributes in this group"
+                    onClick={() =>
+                      change(shown, toggleRarityGroup(group.options, chosen))
+                    }
+                  >
+                    <span className="trait-group-label">{group.label}</span>
+                    <span className="trait-group-count">
+                      {group.options.length}
+                    </span>
+                  </button>
+                  <div className="trait-group-options">
+                    {group.options.map((option) => (
+                      <button
+                        key={option.id}
+                        className="trait-option"
+                        aria-label={option.name}
+                        aria-pressed={chosen.includes(option.id)}
+                        onClick={() =>
+                          change(
+                            shown,
+                            chosen.includes(option.id)
+                              ? chosen.filter((id) => id !== option.id)
+                              : [...chosen, option.id],
+                          )
+                        }
+                      >
+                        <OptionArt option={option} />
+                        <span className="trait-option-copy">
+                          <span className="trait-option-name">
+                            {option.name}
+                          </span>
+                          {option.kind !== "pattern" && (
+                            <span className="trait-option-value">
+                              <TraitFloor
+                                rounded
+                                collection={collection?.id}
+                                id={option.id}
+                                kind={option.kind}
+                              />
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ))}
-            {loading && !available.length && (
-              <span className="rail-empty">Loading choices…</span>
-            )}
-            {!loading && !available.length && (
-              <span className="rail-empty">
-                {loadError
-                  ? "Could not load choices — retry above"
-                  : "No choices"}
-              </span>
-            )}
-            {!!available.length &&
-              !available.some((option) =>
-                option.name.toLowerCase().includes(query.toLowerCase()),
-              ) && <span className="rail-empty">No matching traits</span>}
-          </div>
-        </section>
+              {loading && !available.length && (
+                <span className="rail-empty">Loading choices…</span>
+              )}
+              {!loading && !available.length && (
+                <span className="rail-empty">
+                  {loadError
+                    ? "Could not load choices — retry above"
+                    : "No choices"}
+                </span>
+              )}
+              {!!available.length && !groups.length && (
+                <span className="rail-empty">No matching traits</span>
+              )}
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );

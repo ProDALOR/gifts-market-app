@@ -13,8 +13,9 @@ import React,{useState}from'react';import{createRoot}from'react-dom/client';
 import{FloorsProvider}from'/src/valuation/floors.tsx';import{CollectionRail}from'/src/collections/collection-picker.tsx';import{TraitPickers}from'/src/collections/trait-pickers.tsx';
 const media={preview_url:'/art.svg',thumbnail_url:'/art.svg'};
 const collections=[{id:'a',name:'Intelligence Cup',preview:media,model_ids:['a-model'],backdrop_ids:['a-back'],pattern_ids:[]},{id:'b',name:'Resistance Dog',preview:media,model_ids:['b-model'],backdrop_ids:['b-back'],pattern_ids:[]}];
+const collectionIds=collections.map(c=>c.id);
 const options=new Map(collections.flatMap(c=>[[c.id+'-model',{id:c.id+'-model',name:'Very long '+c.name+' model with an unbrokenlongnamethatmustfit',kind:'model',media}],[c.id+'-back',{id:c.id+'-back',name:'Long '+c.name+' backdrop',kind:'backdrop',palette:{center:'#664455',edge:'#332233',pattern:'#222222'}}]]));
-function App(){const[selected,select]=useState('a'),[open,setOpen]=useState(),[filters,change]=useState({});window.chooseCollection=select;const collection=collections.find(c=>c.id===selected);const scoped=React.useMemo(()=>new Map([...options].filter(([id])=>id.startsWith(selected+'-'))),[selected]);return React.createElement(FloorsProvider,{currency:'GRAM',collection:selected},React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook market-shell'},React.createElement('aside',{className:'market-sidebar'},React.createElement(CollectionRail,{collections,selected,select}),React.createElement(TraitPickers,{collection,options:scoped,filters,open,setOpen,change:(key,value)=>change({...filters,[key]:value})})),React.createElement('section',{className:'market-results'},'Values test'))));}
+function App(){const[selected,select]=useState('a'),[open,setOpen]=useState(),[filters,change]=useState({});window.chooseCollection=select;const collection=collections.find(c=>c.id===selected);const scoped=React.useMemo(()=>new Map([...options].filter(([id])=>id.startsWith(selected+'-'))),[selected]);return React.createElement(FloorsProvider,{currency:'GRAM',collection:selected,collections:collections.map(c=>c.id)},React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook market-shell'},React.createElement('aside',{className:'market-sidebar'},React.createElement(CollectionRail,{collections,selected,select}),React.createElement(TraitPickers,{collection,options:scoped,filters,open,setOpen,change:(key,value)=>change({...filters,[key]:value})})),React.createElement('section',{className:'market-results'},'Values test'))));}
 createRoot(document.getElementById('fixture')).render(React.createElement(App));
 </script></body></html>`;
 const server = await createServer({
@@ -63,9 +64,10 @@ try {
     socket.onMessage((raw) => {
       const command = JSON.parse(String(raw));
       if (command.type === "cancel") return;
-      assert.equal(command.type, "valuation.watch");
+      assert.equal(command.type, "request");
+      assert.equal(command.method, "valuation.query");
       commands.push(command);
-      const selected = command.params.target.details.collection_id;
+      const selected = command.params.target.details?.collection_id ?? "a";
       const data = floorReport(
         command.params,
         [selected + "-model"],
@@ -80,7 +82,12 @@ try {
       }
       const send = () =>
         socket.send(
-          JSON.stringify({ type: "valuation.snapshot", id: command.id, data }),
+          JSON.stringify({
+            type: "result",
+            id: command.id,
+            method: "valuation.query",
+            data,
+          }),
         );
       if (hold) held.push({ send, command });
       else send();
@@ -187,7 +194,15 @@ try {
   await page.locator(".trait-option-value .quote-amount").waitFor();
   assert.equal(
     await page.locator(".trait-option-value .quote-amount").textContent(),
-    "10.123456789",
+    "10.12",
+  );
+  assert.ok(
+    (
+      await page
+        .locator(".trait-option-value .floor-badge")
+        .getAttribute("title")
+    ).includes("10.123456789"),
+    "Tooltips retain the exact floor",
   );
   hold = true;
   await page.evaluate(() => window.chooseCollection("b"));
@@ -206,16 +221,16 @@ try {
   await page.waitForFunction(
     () =>
       document.querySelector(".trait-option-value .quote-amount")
-        ?.textContent === "10.123456789",
+        ?.textContent === "10.12",
   );
   b.send();
   assert.equal(
     await page.locator(".trait-option-value .quote-amount").textContent(),
-    "10.123456789",
+    "10.12",
   );
   assert.ok(
     commands.length <= requestsBeforeResize + 4,
-    "Resizing and picker state do not start per-option watches",
+    "Resizing and picker state do not start per-option queries",
   );
   await mkdir("/tmp/gifts-market-ui", { recursive: true });
   await page.screenshot({

@@ -5,6 +5,52 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Exact attribute rarity in parts per thousand: 5 means 0.5%, 1000 means 100%.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct RarityPermille(u16);
+#[cfg(feature = "schema")]
+impl utoipa::PartialSchema for RarityPermille {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::Integer)
+            .minimum(Some(0.0))
+            .maximum(Some(1000.0))
+            .into()
+    }
+}
+#[cfg(feature = "schema")]
+impl utoipa::ToSchema for RarityPermille {}
+impl TryFrom<u16> for RarityPermille {
+    type Error = crate::InvalidValue;
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        if value <= 1000 {
+            Ok(Self(value))
+        } else {
+            Err(crate::InvalidValue(
+                "rarity must be between 0 and 1000 permille",
+            ))
+        }
+    }
+}
+impl From<RarityPermille> for u16 {
+    fn from(value: RarityPermille) -> Self {
+        value.0
+    }
+}
+
+/// Numeric rarity and crafted rarity tiers have distinct meanings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum GiftRarity {
+    Percentage { permille: RarityPermille },
+    Uncommon,
+    Rare,
+    Epic,
+    Legendary,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftCollection {
@@ -20,6 +66,8 @@ pub struct GiftModel {
     pub id: ModelId,
     pub name: String,
     pub media: Option<GiftMedia>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rarity: Option<GiftRarity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +84,8 @@ pub struct GiftBackdrop {
     pub id: BackdropId,
     pub name: String,
     pub palette: Option<BackdropPalette>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rarity: Option<GiftRarity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +94,8 @@ pub struct GiftPattern {
     pub id: PatternId,
     pub name: String,
     pub media: Option<GiftMedia>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rarity: Option<GiftRarity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

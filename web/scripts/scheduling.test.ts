@@ -68,11 +68,24 @@ test("playback preemption stops old players before starting replacements", () =>
     active = new Set<string>();
   let peak = 0;
   const request = (id: string, priority: number) =>
-    budget.request(priority, (granted) => {
-      if (granted) active.add(id);
-      else active.delete(id);
-      peak = Math.max(peak, active.size);
-    });
+    budget.request(
+      {
+        priority,
+        group:
+          priority >= 100
+            ? "detail"
+            : priority >= 30
+              ? "interaction"
+              : priority >= 20
+                ? "selection"
+                : "collection",
+      },
+      (granted) => {
+        if (granted) active.add(id);
+        else active.delete(id);
+        peak = Math.max(peak, active.size);
+      },
+    ).cancel;
   const low = request("rail", 10),
     selected = request("selected", 20),
     interaction = request("interaction", 30);

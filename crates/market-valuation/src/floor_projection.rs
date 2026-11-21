@@ -30,6 +30,9 @@ pub struct PairFloor {
 pub struct TraitFloors {
     pub models: BTreeMap<ModelId, AskFloorValuation>,
     pub backdrops: BTreeMap<BackdropId, AskFloorValuation>,
+    /// Current ask floors for symbols, independent of the gift-floor estimate formula.
+    #[serde(default)]
+    pub patterns: BTreeMap<PatternId, AskFloorValuation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pair: Option<PairFloor>,
 }
@@ -45,7 +48,7 @@ impl Strategy for CatalogFloor {
     type Output = Arc<CatalogFloorValuation>;
     const ID: &'static str = "catalog_floor";
     const NAME: &'static str = "Catalog ask floors";
-    const DESCRIPTION: &'static str = "Batched collection, model and backdrop ask floors.";
+    const DESCRIPTION: &'static str = "Batched collection, model, backdrop and symbol ask floors.";
     const DOCUMENTATION: &'static str = include_str!("catalog_floor.md");
     fn evaluate(
         &self,
@@ -75,6 +78,21 @@ impl Strategy for CatalogFloor {
                         .known_backdrops
                         .iter()
                         .map(|id| (id.clone(), floor(None, Some(id))))
+                        .collect(),
+                    patterns: book
+                        .known_patterns
+                        .iter()
+                        .map(|id| {
+                            let empty = crate::floors::Floor::default();
+                            let floor = book.patterns.get(id).unwrap_or(&empty);
+                            (
+                                id.clone(),
+                                AskFloorValuation {
+                                    price: floor.metric(true),
+                                    evidence: floor.evidence(),
+                                },
+                            )
+                        })
                         .collect(),
                     pair: details.pair.as_ref().map(|pair| PairFloor {
                         model_id: pair.model_id.clone(),

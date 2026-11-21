@@ -1,14 +1,7 @@
-import type { Order, CatalogOption } from "./market.ts";
+import type { Order, CatalogOption, TraitFilters } from "./market.ts";
+import { resolveTraits } from "./catalog/traits.ts";
+export { traits } from "./catalog/traits.ts";
 export type { Collection, CatalogOption } from "./market.ts";
-export const traits = [
-  { id: "models", label: "Model", kind: "model" },
-  {
-    id: "backdrops",
-    label: "Backdrop",
-    kind: "backdrop",
-  },
-  { id: "patterns", label: "Symbol", kind: "pattern" },
-] as const;
 export function serial(order: Order): string | undefined {
   return order.target.kind === "gift" && order.target.number != null
     ? String(order.target.number)
@@ -28,9 +21,8 @@ export function modelName(
       : order.target.kind === "criteria"
         ? order.target.models
         : [];
-  return models.length === 1
-    ? options.get(models[0])?.name || fallback
-    : fallback;
+  const model = models.length === 1 ? options.get(models[0]) : undefined;
+  return model?.kind === "model" ? model.name : fallback;
 }
 export function listingLink(order: Order): string | undefined {
   if (!order.market_url) return;
@@ -70,16 +62,23 @@ export function giftDetails(
   if (target.kind === "unsupported")
     return [{ label: "Conditions", value: target.message }];
   const rows: GiftDetail[] = [];
-  for (const trait of traits) {
-    const id = target.kind === "gift" ? target.traits[trait.kind] : undefined;
-    const ids = target.kind === "criteria" ? target[trait.id] : id ? [id] : [];
-    if (target.kind === "gift" && !ids.length) continue;
-    const option = ids.length === 1 ? options?.get(ids[0]) : undefined;
+  const selection: TraitFilters =
+    target.kind === "criteria"
+      ? target
+      : {
+          models: target.traits.model ? [target.traits.model] : [],
+          backdrops: target.traits.backdrop ? [target.traits.backdrop] : [],
+          patterns: target.traits.pattern ? [target.traits.pattern] : [],
+        };
+  for (const trait of resolveTraits(selection, options ?? new Map(), names)) {
+    if (target.kind === "gift" && !trait.entries.length) continue;
+    const option =
+      trait.entries.length === 1 ? trait.entries[0].option : undefined;
     rows.push({
       label: trait.label,
       attribute: trait.kind,
-      value: ids.length
-        ? ids.map((id) => names.get(id) || "Unavailable").join(" / ")
+      value: trait.entries.length
+        ? trait.entries.map((entry) => entry.name).join(" / ")
         : "Any",
       ...(option?.kind === trait.kind ? { option } : {}),
     });
@@ -87,7 +86,5 @@ export function giftDetails(
   const criteria = target.kind === "criteria" ? target : undefined;
   const number = giftNumberRange(criteria?.number);
   if (number) rows.push({ label: "Gift #", value: number });
-  if (target.kind === "criteria" && order.quantity > 1)
-    rows.push({ label: "Quantity", value: String(order.quantity) });
   return rows;
 }

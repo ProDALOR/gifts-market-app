@@ -212,22 +212,40 @@ pub enum Choice {
     Backdrop(GiftBackdrop),
     Pattern(GiftPattern),
 }
+/// Optional descriptive metadata must not prevent the collection from loading.
+fn rarity(option: &w::AttributeOption) -> Option<GiftRarity> {
+    if let Some(value) = option.meta.get("rarity.permille") {
+        return Some(GiftRarity::Percentage {
+            permille: value.parse::<u16>().ok()?.try_into().ok()?,
+        });
+    }
+    match option.meta.get("rarity.label")?.as_str() {
+        "uncommon" => Some(GiftRarity::Uncommon),
+        "rare" => Some(GiftRarity::Rare),
+        "epic" => Some(GiftRarity::Epic),
+        "legendary" => Some(GiftRarity::Legendary),
+        _ => None,
+    }
+}
 pub fn choice(option: w::AttributeOption) -> Result<Option<Choice>> {
     Ok(match option.attribute_id.as_str() {
         MODEL => Some(Choice::Model(GiftModel {
             id: option.id.clone().try_into().map_err(invalid)?,
             name: option.name.clone(),
             media: media(&option),
+            rarity: rarity(&option),
         })),
         BACKDROP => Some(Choice::Backdrop(GiftBackdrop {
             id: option.id.clone().try_into().map_err(invalid)?,
             name: option.name.clone(),
             palette: palette(&option),
+            rarity: rarity(&option),
         })),
         PATTERN => Some(Choice::Pattern(GiftPattern {
             id: option.id.clone().try_into().map_err(invalid)?,
             name: option.name.clone(),
             media: media(&option),
+            rarity: rarity(&option),
         })),
         _ => None,
     })

@@ -172,6 +172,17 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 440, height: 880 } });
+  const refreshValuation = async () => {
+    const before = requests.length;
+    await page.clock.fastForward(60_000);
+    for (let tries = 0; requests.length === before && tries < 100; tries++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(
+      requests.length,
+      before + 1,
+      "One batch refreshes all strategies each minute",
+    );
+  };
   const settled = () =>
     page.waitForFunction(
       () =>
@@ -480,9 +491,7 @@ try {
     "Discovery failures do not dispatch guessed strategies",
   );
   metadataFails = false;
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
+  await refreshValuation();
   await page.locator('.valuation-summary [data-metric="decision"]').waitFor();
   assert.ok(
     await page.evaluate(() =>
@@ -531,11 +540,31 @@ try {
     }),
     "The caption sits below the artwork",
   );
-  assert.equal(await page.locator(".attribute-visual").count(), 3);
+  assert.equal(await page.locator(".attribute-visual .option-art").count(), 5);
   await page.locator(".attribute-model .gift-model-image.loaded").waitFor();
+  await page.locator(".attribute-pair .gift-model-image.loaded").waitFor();
+  assert.equal(
+    await page.locator(".attribute-collection .gift-placeholder-gift").count(),
+    1,
+  );
+  assert.equal(
+    await page.locator(".attribute-pair .model-animation").count(),
+    0,
+    "Paired artwork stays static",
+  );
+  await page.locator(".attribute-pattern").scrollIntoViewIfNeeded();
   await page.locator(".attribute-pattern .gift-model-image.loaded").waitFor();
-  await page.waitForFunction(
-    () => document.querySelector(".attribute-backdrop canvas")?.width > 1,
+  assert.equal(
+    await page.locator(".attribute-backdrop canvas").count(),
+    0,
+    "Backdrop attribute uses the shared CSS swatch",
+  );
+  assert.ok(
+    await page
+      .locator(".attribute-backdrop .swatch")
+      .evaluate((element) =>
+        getComputedStyle(element).backgroundImage.includes("radial-gradient"),
+      ),
   );
   assert.ok(
     (
@@ -618,7 +647,7 @@ try {
     );
   }
   await page.screenshot({ path: "/tmp/gifts-market-ui/details-desktop.png" });
-  await page.setViewportSize({ width: 1024, height: 400 });
+  await page.setViewportSize({ width: 1024, height: 320 });
   const fixedDetails = await page.evaluate(() => ({
     art: document.querySelector(".detail-art").getBoundingClientRect().top,
     close: document
@@ -749,31 +778,27 @@ try {
   await waitReport();
   release();
   assert.ok((await page.locator("#detail-title").textContent()).includes("#2"));
+  assert.equal(
+    guideModuleRequests,
+    0,
+    "The guide renderer stays unloaded before the first info intent",
+  );
   mode = "error";
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
+  await refreshValuation();
   await page
     .locator('.valuation-summary [role="alert"]')
     .getByText("Please try again", { exact: true })
     .waitFor();
   mode = "ok";
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
+  await refreshValuation();
   await waitReport();
-  assert.equal(
-    guideModuleRequests,
-    0,
-    "The Markdown and math renderer stay unloaded until the guide opens",
-  );
   const guide = page.locator(".valuation-popup");
   const info = page.getByRole("button", {
     name: "How is this calculated?",
     exact: true,
   });
   const metadataBeforePopup = metadataRequests;
-  assert.equal(guideRequests, 0, "Guides remain intent-only");
+  const guideRequestsBeforeOpen = guideRequests;
   await info.focus();
   await page.keyboard.press("Enter");
   await page
@@ -803,7 +828,11 @@ try {
   await content
     .getByRole("heading", { name: "Gift floor valuation", exact: true })
     .waitFor();
-  assert.equal(guideRequests, 2, "Guide retries after an error");
+  assert.equal(
+    guideRequests,
+    guideRequestsBeforeOpen + 2,
+    "Guide retries after an error",
+  );
   assert.deepEqual(
     await guide.locator(".valuation-metrics > li h4").allTextContents(),
     [
@@ -880,7 +909,7 @@ try {
   await toggleGuide();
   assert.equal(
     guideRequests,
-    2,
+    guideRequestsBeforeOpen + 2,
     "Collapsing and reopening reuses cached rendered math",
   );
   // Refreshes keep the breakdown, metadata and already-rendered guide alive.
@@ -893,9 +922,7 @@ try {
   });
   mode = "hold";
   release = undefined;
-  await page.evaluate(() =>
-    document.querySelector('button[aria-label="Refresh valuation"]').click(),
-  );
+  await refreshValuation();
   await guide.getByText("Refreshing estimate…", { exact: true }).waitFor();
   for (let tries = 0; !release && tries < 100; tries++)
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -913,8 +940,8 @@ try {
   assert.equal(requests.length, requestsBeforeRefresh + 1);
   assert.equal(
     metadataRequests,
-    metadataBeforeRefresh,
-    "Refreshing does not rediscover unchanged strategy metadata",
+    metadataBeforeRefresh + 1,
+    "Minute refresh revalidates cached deployment metadata once",
   );
   assert.equal(
     guideRequests,
@@ -929,9 +956,7 @@ try {
     "Refreshing does not typeset the guide again",
   );
   mode = "error";
-  await page.evaluate(() =>
-    document.querySelector('button[aria-label="Refresh valuation"]').click(),
-  );
+  await refreshValuation();
   await guide.getByText("Previous estimate shown.", { exact: true }).waitFor();
   assert.equal(
     await content.evaluate(
@@ -941,19 +966,17 @@ try {
   );
   assert.equal(await page.locator(".price-comparison").count(), 0);
   mode = "ok";
-  await page.evaluate(() =>
-    document.querySelector('button[aria-label="Refresh valuation"]').click(),
-  );
+  await refreshValuation();
   await settled();
   reportKind = "stale";
-  await page.evaluate(() =>
-    document.querySelector('button[aria-label="Refresh valuation"]').click(),
+  await refreshValuation();
+  await settled();
+  assert.equal(
+    await page.getByText("Estimate may be outdated", { exact: true }).count(),
+    0,
   );
-  await guide.getByText("Estimate may be outdated", { exact: true }).waitFor();
   reportKind = "partial";
-  await page.evaluate(() =>
-    document.querySelector('button[aria-label="Refresh valuation"]').click(),
-  );
+  await refreshValuation();
   await settled();
   await page.setViewportSize({ width: 390, height: 844 });
   await content
@@ -1075,17 +1098,13 @@ try {
   );
   // Only a single live currency estimate can be compared with an active ask.
   reportKind = "estimate";
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
+  await refreshValuation();
   await page.getByText("About 20% below estimate", { exact: true }).waitFor();
 
   // A response started before an interruption stays outdated even if it arrives after recovery.
   mode = "hold";
   release = undefined;
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
+  await refreshValuation();
   await page.waitForFunction(
     () =>
       document
@@ -1095,7 +1114,10 @@ try {
   assert.ok(release);
   const pendingRequests = requests.length;
   socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
-  await page.getByText("Estimate may be outdated", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByText("Estimate may be outdated", { exact: true }).count(),
+    0,
+  );
   socket.send(JSON.stringify({ type: "market.status", status: "available" }));
   mode = "success";
   release();
@@ -1106,15 +1128,19 @@ try {
     pendingRequests,
     "recovery must not duplicate in-flight requests",
   );
-  await page.getByText("Estimate may be outdated", { exact: true }).waitFor();
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
+  assert.equal(
+    await page.getByText("Estimate may be outdated", { exact: true }).count(),
+    0,
+  );
+  await refreshValuation();
   await page.getByText("About 20% below estimate", { exact: true }).waitFor();
   assert.equal(await page.locator(".valuation-breakdown").count(), 0);
   const requestsBeforeDelay = requests.length;
   socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
-  await page.getByText("Estimate may be outdated", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByText("Estimate may be outdated", { exact: true }).count(),
+    0,
+  );
   assert.equal(await page.locator(".price-comparison").count(), 0);
   socket.send(JSON.stringify({ type: "market.status", status: "available" }));
   await page.waitForTimeout(50);
@@ -1128,9 +1154,7 @@ try {
     requestsBeforeDelay,
     "availability changes must not trigger valuation requests",
   );
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
+  await refreshValuation();
   await page.getByText("About 20% below estimate", { exact: true }).waitFor();
 
   await page.setViewportSize({ width: 320, height: 720 });
@@ -1143,25 +1167,24 @@ try {
   await page.screenshot({ path: "/tmp/gifts-market-ui/details-estimate.png" });
   for (const variant of ["stale", "currency"]) {
     reportKind = variant;
-    await page
-      .getByRole("button", { name: "Refresh valuation", exact: true })
-      .click();
+    await refreshValuation();
     await settled();
     await page
       .locator('.valuation-summary [data-metric="decision"] .valuation-value')
       .waitFor();
     if (variant === "stale")
-      await page
-        .getByText("Estimate may be outdated", { exact: true })
-        .waitFor();
+      assert.equal(
+        await page
+          .getByText("Estimate may be outdated", { exact: true })
+          .count(),
+        0,
+      );
     else
       await page.locator(".valuation-summary .currency-symbol.star").waitFor();
     assert.equal(await page.locator(".price-comparison").count(), 0);
   }
   reportKind = "identity";
-  await page
-    .getByRole("button", { name: "Refresh valuation", exact: true })
-    .click();
+  await refreshValuation();
   await page
     .getByText("Gift details changed. Refresh this market and try again.", {
       exact: true,
@@ -1171,9 +1194,7 @@ try {
   reportKind = "estimate";
   for (const kind of ["bid", "executed"]) {
     await page.evaluate((order) => window.selectListing(order), { ...b, kind });
-    await page
-      .getByRole("button", { name: "Refresh valuation", exact: true })
-      .click();
+    await refreshValuation();
     await settled();
     await page
       .locator('.valuation-summary [data-metric="decision"] .valuation-value')
@@ -1181,7 +1202,7 @@ try {
     assert.equal(await page.locator(".price-comparison").count(), 0);
     await page
       .getByRole("heading", {
-        name: kind === "bid" ? "Bid price" : "Execution price",
+        name: kind === "bid" ? "Bid price" : "Paid",
         exact: true,
       })
       .waitFor();
@@ -1249,8 +1270,18 @@ try {
       "An exceptionally long collectible collection name",
     ),
   );
+  let sharedDetailRequests;
   for (const kind of ["ask", "bid", "executed"]) {
     await page.evaluate((order) => window.renderDetails(order), { ...b, kind });
+    await settled();
+    if (sharedDetailRequests === undefined)
+      sharedDetailRequests = requests.length;
+    else
+      assert.equal(
+        requests.length,
+        sharedDetailRequests,
+        "Ask/history mode changes reuse the valuation of the same gift",
+      );
     for (const [width, height] of [
       [320, 568],
       [390, 844],
@@ -1312,6 +1343,11 @@ try {
           path: `/tmp/gifts-market-ui/review-${kind}-${width}.png`,
         });
     }
+    assert.equal(
+      requests.length,
+      sharedDetailRequests,
+      "Responsive layout changes do not request another valuation",
+    );
   }
   await page.evaluate(
     (order) =>
@@ -1523,10 +1559,85 @@ try {
     0,
     "Unmount cancels an outstanding exit callback",
   );
+  const execution = await page.evaluate((order) => {
+    const executed = {
+      ...order,
+      kind: "executed",
+      executed_at: new Date(Date.now() - 10 * 60_000).toISOString(),
+    };
+    window.renderListing(executed);
+    return executed;
+  }, a);
+  await page.getByText("10m", { exact: true }).waitFor();
+  assert.equal(
+    await page.locator(".execution-age").getAttribute("datetime"),
+    execution.executed_at,
+  );
+  assert.ok(
+    (await page.locator(".card-open").getAttribute("title")).startsWith(
+      "Executed ",
+    ),
+  );
+  for (const width of [320, 1200]) {
+    await page.setViewportSize({ width, height: 844 });
+    assert.equal(
+      await page.locator(".execution-age").evaluate((age) => {
+        const card = age.closest(".gift-card").getBoundingClientRect();
+        const number = age.previousElementSibling.getBoundingClientRect();
+        const bounds = age.getBoundingClientRect();
+        return (
+          bounds.left >= card.left &&
+          bounds.right <= card.right &&
+          bounds.top >= number.bottom
+        );
+      }),
+      true,
+      "Execution age fits below the number on mobile and desktop",
+    );
+    if (width === 320) {
+      await page.locator(".gift-card").screenshot({
+        path: "/tmp/gifts-market-ui/history-execution-age.png",
+      });
+    }
+  }
+  await page.clock.runFor(60_000);
+  await page.getByText("11m", { exact: true }).waitFor();
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.clock.runFor(120_000);
+  assert.equal(await page.locator(".execution-age").textContent(), "11m");
+  await page.evaluate(() => {
+    delete document.hidden;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.getByText("13m", { exact: true }).waitFor();
+  await page.evaluate(
+    (order) => window.renderListing({ ...order, kind: "ask" }),
+    execution,
+  );
+  await page.locator(".execution-age").waitFor({ state: "detached" });
+  assert.equal(await page.locator(".card-open").getAttribute("title"), null);
+  await page.evaluate(
+    (order) => window.renderListing({ ...order, executed_at: undefined }),
+    execution,
+  );
+  await page.waitForFunction(
+    () => document.querySelector(".card-open")?.title === "",
+  );
+  assert.equal(
+    await page.locator(".execution-age").count(),
+    0,
+    "Missing execution times never fall back to observation time",
+  );
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(
-    "Listing browser passed: 60-second clock, new/grey ribbons, bounded expiry, unified report, exact units, cancelled requests, retry, strategy discovery and lazy Markdown/LaTeX calculation guide.",
+    "Listing browser passed: 60-second clock, new/grey ribbons, bounded expiry, unified report, exact units, cancelled requests, retry, strategy discovery, lazy calculation guide and live execution ages.",
   );
 } finally {
   await browser?.close();

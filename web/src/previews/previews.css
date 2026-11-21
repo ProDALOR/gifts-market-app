@@ -56,7 +56,7 @@
   min-width: 0;
   gap: 1px;
 }
-.preview-model > span {
+.preview-model > span[title] {
   font-size: 10px;
   font-weight: 650;
   line-height: 13px;
@@ -113,6 +113,27 @@
   display: block;
   width: 100%;
   height: 100%;
+}
+.unrestricted-trait {
+  display: inline-block;
+  position: relative;
+  flex: none;
+  width: var(--unrestricted-size, 96px);
+  height: var(--unrestricted-size, 96px);
+  --gift-placeholder-opacity: 0.4;
+}
+.unrestricted-trait > .gift-loading-placeholder {
+  position: static;
+  width: 100%;
+  height: 100%;
+  opacity: 1;
+}
+.unrestricted-trait > span {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: var(--unrestricted-badge, 28px);
+  line-height: 1;
 }
 .gift-placeholder-shimmer {
   transform: translateX(-100%);

@@ -28,6 +28,8 @@ const options=new Map([
 import {loadAnimationData} from '/src/previews/animation-data.ts';
 import {useBackgroundPlaybackSuspension} from '/src/previews/use-playback.ts';
 import {ValuationInfo} from '/src/orderbook/valuation-info.tsx';
+import {OrderDetails} from '/src/orderbook/order-details.tsx';
+import {playbackBudget} from '/src/previews/playback-budget.ts';
 const previewStrategy={id:'preview',name:'Preview strategy',description:'Fixture strategy',input:'resolved_gift',targets:['gift'],requires_period:false,documentation_url:'/__preview_guide.md',documentation_revision:'one'};
 const previewResult={strategy:'preview',data:{},display:{fields:[],note:'Fixture estimate'}};
 const valuationState={key:'preview',strategy:previewStrategy,result:previewResult,strategies:[previewStrategy],primaryFields:[],loading:false,
@@ -58,6 +60,15 @@ function Many({detail}) {
 }
 window.preload=()=>Promise.all(bulk.map(item=>loadAnimationData('/media/models/'+item.id+'/animation',new AbortController().signal)));
 window.mountMany=(detail=false)=>{document.getElementById('fixture').style.margin='0';root.render(React.createElement(Many,{detail}));};
+const detailNames=new Map([['gift','Gift'],['venue','MRKT'],['model','Model'],['backdrop','Backdrop'],['pattern','Pattern']]);
+function ActualDetails({kind}) {
+ const {number,...target}=order.target;
+ const selected={id:'detail',kind,target,book:{collection_id:'gift',currency_id:'GRAM',venue_id:'venue'},quantity:1,price:'12',observed_at:'2026-11-18T12:00:00Z'};
+ return React.createElement(React.Fragment,null,React.createElement(Many,{detail:false}),React.createElement(OrderDetails,{selected,options,names:detailNames,collectionName:'Gift',close:()=>window.mountMany(false)}));
+}
+window.mountActualDetails=kind=>root.render(React.createElement(ActualDetails,{kind}));
+window.setPlaybackLimit=limit=>playbackBudget.setLimit(limit);
+window.mountShared=()=>root.render(React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook'},React.createElement(GiftArtwork,{media:options.get('model').media,fallback:'C',playback:'collection',className:'collection-sample'}),React.createElement(TraitPreview,{collection:bulkCollection,options:bulkOptions,filters:bulkFilters,reset}))));
 window.mountRail=()=>{const collections=Array.from({length:124},(_,i)=>({id:'rail-'+i,name:'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i+'/thumbnail',animation_url:'/media/models/rail-'+i+'/animation'},model_ids:['rail-'+i],backdrop_ids:[],pattern_ids:[]}));root.render(React.createElement('div',{className:'workspace'},React.createElement(CollectionRail,{collections,selected:'rail-123',select:reset})));};
 function Desktop() {
  const [collections,setCollections]=React.useState(()=>Array.from({length:124},(_,i)=>({id:'rail-'+i,name:i===123?'Intelligence Cup':'Rail '+i,preview:{thumbnail_url:'/media/models/rail-'+i+'/thumbnail',animation_url:'/media/models/rail-'+i+'/animation'},model_ids:[],backdrop_ids:[],pattern_ids:[]})));
@@ -111,6 +122,16 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "hardwareConcurrency", {
+      configurable: true,
+      get: () => 4,
+    });
+    Object.defineProperty(navigator, "deviceMemory", {
+      configurable: true,
+      get: () => 4,
+    });
+  });
   page.setDefaultTimeout(10000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -520,7 +541,7 @@ try {
   await page.waitForFunction(
     () =>
       document.querySelectorAll(".preview-model .model-animation.ready canvas")
-        .length === 6,
+        .length === 10,
   );
   await page.evaluate(() => {
     window.before = new Map(
@@ -549,7 +570,7 @@ try {
               model.querySelector(".model-animation canvas"),
         ).length,
     ),
-    6,
+    10,
     "Reflow keeps every admitted player mounted",
   );
   await page.waitForFunction(() =>
@@ -566,7 +587,7 @@ try {
     .waitFor();
   assert.equal(
     await page.locator(".model-animation.ready canvas").count(),
-    6,
+    10,
     "Interacting with a waiting model preempts autoplay instead of exceeding the limit",
   );
   await page.mouse.move(479, 800);
@@ -626,7 +647,109 @@ try {
   await page.waitForFunction(
     () =>
       document.querySelectorAll(".preview-model .model-animation.ready canvas")
-        .length === 6,
+        .length === 10,
+  );
+  const beforeActualDetails = animations;
+  await page.evaluate(() => window.mountActualDetails("ask"));
+  await page.locator(".detail-art .model-animation.ready > svg").waitFor();
+  assert.equal(
+    await page.locator(".preview-model .model-animation.ready canvas").count(),
+    0,
+    "Standalone ask details own background playback suspension",
+  );
+  await page.evaluate(() => {
+    window.detailPlayer = document.querySelector(
+      ".detail-art .model-animation > svg",
+    );
+  });
+  for (const [kind, width] of [
+    ["ask", 390],
+    ["executed", 1200],
+    ["ask", 390],
+  ]) {
+    await page.evaluate((kind) => window.mountActualDetails(kind), kind);
+    await page.setViewportSize({ width, height: 850 });
+    await page
+      .getByRole("heading", {
+        name: kind === "executed" ? "Execution price" : "Asking price",
+        exact: true,
+      })
+      .waitFor();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".detail-art .model-animation.ready > svg") ===
+        window.detailPlayer,
+    );
+    assert.equal(
+      await page.locator(".attribute-visual .model-animation").count(),
+      0,
+      "Attribute artwork remains static for asks and history",
+    );
+    assert.equal(
+      await page.locator(".attribute-backdrop canvas").count(),
+      0,
+      "Backdrop swatches do not allocate canvases",
+    );
+    assert.equal(
+      await page
+        .locator(".preview-model .model-animation.ready canvas")
+        .count(),
+      0,
+      "History keeps background playback suspended",
+    );
+  }
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.waitForFunction(
+    () => !document.querySelector(".detail-art .model-animation > svg"),
+  );
+  await page.locator(".detail-art .gift-model-image.loaded").waitFor();
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.locator(".detail-art .model-animation.ready > svg").waitFor();
+  assert.equal(
+    animations,
+    beforeActualDetails,
+    "Source changes, resizing and motion preferences reuse cached animation data",
+  );
+  await page
+    .getByRole("button", { name: "Close details", exact: true })
+    .click();
+  await page.locator(".detail").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".preview-model .model-animation.ready canvas")
+        .length === 10,
+  );
+  await page.evaluate(() => window.mountShared());
+  await page
+    .locator(".collection-sample .model-animation.ready canvas")
+    .waitFor();
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".preview-model .model-animation.ready canvas")
+        .length === 9,
+  );
+  const beforeSharing = animations;
+  await page.evaluate(() => window.setPlaybackLimit(3));
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".model-animation.ready canvas").length === 3,
+  );
+  assert.equal(
+    await page
+      .locator(".collection-sample .model-animation.ready canvas")
+      .count(),
+    1,
+    "A crowded selection cannot freeze collection controls",
+  );
+  await page.evaluate(() => window.setPlaybackLimit(10));
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".model-animation.ready canvas").length === 10,
+  );
+  assert.equal(
+    animations,
+    beforeSharing,
+    "Flexible grants reuse decoded animations",
   );
   await page.evaluate(() => window.mountRail());
   await page
@@ -808,7 +931,7 @@ try {
     node.scrollTop = 0;
   });
   await selectedTile.locator(".model-animation.ready canvas").waitFor();
-  assert.ok((await page.locator(".model-animation canvas").count()) <= 6);
+  assert.ok((await page.locator(".model-animation canvas").count()) <= 10);
   await page.setViewportSize({ width: 480, height: 700 });
   await page.evaluate(() => window.unmount());
   const beforeReferences = animations;
@@ -960,7 +1083,7 @@ try {
     () =>
       document.querySelectorAll(
         ".model-animation.ready > svg,.model-animation.ready > canvas",
-      ).length === 6,
+      ).length === 10,
   );
   assert.ok((await page.locator(".model-animation.ready > svg").count()) > 0);
   assert.ok(

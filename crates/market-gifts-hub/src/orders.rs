@@ -115,8 +115,13 @@ pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
         return Ok(None);
     };
     let order = order.into_data();
-    let (gift_id, model_id, backdrop_id) = match order.target {
-        GiftTarget::Gift { gift } => (Some(gift.id), gift.traits.model, gift.traits.backdrop),
+    let (gift_id, model_id, backdrop_id, pattern_id) = match order.target {
+        GiftTarget::Gift { gift } => (
+            Some(gift.id),
+            gift.traits.model,
+            gift.traits.backdrop,
+            gift.traits.pattern,
+        ),
         GiftTarget::Criteria { mut criteria } => (
             None,
             (criteria.models.len() == 1)
@@ -124,6 +129,9 @@ pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
                 .flatten(),
             (criteria.backdrops.len() == 1)
                 .then(|| criteria.backdrops.pop())
+                .flatten(),
+            (criteria.patterns.len() == 1)
+                .then(|| criteria.patterns.pop())
                 .flatten(),
         ),
         GiftTarget::Unsupported { .. } => return Ok(None),
@@ -134,6 +142,7 @@ pub fn ask_quote(value: w::Order, now_ms: i64) -> Result<Option<AskQuote>> {
         price: order.price,
         model_id,
         backdrop_id,
+        pattern_id,
         expires_at: order.expires_at,
     }))
 }

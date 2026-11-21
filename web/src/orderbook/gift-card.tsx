@@ -9,6 +9,7 @@ import { FRESHNESS_MS } from "./order-activity";
 import { usePreviewEnvironment } from "../previews/preview-environment";
 import { VenueIcon } from "../ui/icons";
 import { Quote } from "../ui/market-controls";
+import { ExecutionAge } from "./execution-age";
 export const GiftCard = memo(function GiftCard({
   order,
   options,
@@ -66,24 +67,29 @@ export const GiftCard = memo(function GiftCard({
         </>
       )}
       <div className="card-head">
-        <span
-          className="serial"
-          title={
-            order.target.kind === "unsupported"
-              ? order.target.message
-              : undefined
-          }
-        >
-          {criteria
-            ? `Bid · ×${order.quantity.toLocaleString()}`
-            : unsupported
-              ? "Unsupported"
-              : number
-                ? `#${number}`
-                : order.quantity !== 1
-                  ? `×${order.quantity}`
-                  : "Gift"}
-        </span>
+        <div className="card-identity">
+          <span
+            className="serial"
+            title={
+              order.target.kind === "unsupported"
+                ? order.target.message
+                : undefined
+            }
+          >
+            {criteria
+              ? `×${order.quantity.toLocaleString()}`
+              : unsupported
+                ? "Unsupported"
+                : number
+                  ? `#${number}`
+                  : order.quantity !== 1
+                    ? `×${order.quantity}`
+                    : "Gift"}
+          </span>
+          {order.kind === "executed" && order.executed_at && (
+            <ExecutionAge at={order.executed_at} />
+          )}
+        </div>
         <span className="venue-icon" title={venueName}>
           <VenueIcon name={venueName} />
         </span>
@@ -103,6 +109,11 @@ export const GiftCard = memo(function GiftCard({
       </div>
       <button
         className="card-open"
+        title={
+          order.kind === "executed" && order.executed_at
+            ? `Executed ${new Date(order.executed_at).toLocaleString()}`
+            : undefined
+        }
         aria-label={`View ${order.kind === "bid" ? "bid for " : ""}${collectionName}${number ? ` #${number}` : ""} on ${venueName}${activity ? (activity.state === "removed" ? ", left refreshed results" : ", new") : ""}`}
         data-order-id={order.id}
         data-venue-id={order.book.venue_id}

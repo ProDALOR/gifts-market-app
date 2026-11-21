@@ -1,5 +1,9 @@
 import type { CatalogOption, TraitFilters } from "../market.ts";
-import { traits } from "../orderbook.ts";
+export const traits = [
+  { id: "models", label: "Model", kind: "model" },
+  { id: "backdrops", label: "Backdrop", kind: "backdrop" },
+  { id: "patterns", label: "Symbol", kind: "pattern" },
+] as const;
 
 /** Preserve restricted IDs even when catalog entries are missing or have the wrong kind. */
 export function resolveTraits(

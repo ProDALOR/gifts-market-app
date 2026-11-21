@@ -4,20 +4,19 @@ import { resolveTraits } from "../catalog/traits";
 import type { BidCriteria } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
 import { TraitFloor } from "../valuation/floors";
+import { UnrestrictedTrait } from "../previews/unrestricted-trait";
 
 /** Complete accepted alternatives for bid details. */
 export function BidConditions({
   criteria,
   options,
   names,
-  quantity,
   collection,
   currency,
 }: {
   criteria: BidCriteria;
   options: ReadonlyMap<string, CatalogOption>;
   names?: ReadonlyMap<string, string>;
-  quantity?: number;
   collection?: string;
   currency?: string;
 }) {
@@ -30,9 +29,18 @@ export function BidConditions({
             <dt>{trait.label}</dt>
             <dd>
               {!trait.entries.length && (
-                <span className="condition-any">
-                  Any {trait.label.toLowerCase()}
-                </span>
+                <details className="condition-any">
+                  <summary
+                    className="condition-chip"
+                    aria-label={`Any ${trait.label.toLowerCase()}`}
+                    title={`Any ${trait.label.toLowerCase()}`}
+                  >
+                    <UnrestrictedTrait kind={trait.kind} decorative />
+                  </summary>
+                  <span className="condition-any-label">
+                    Any {trait.label.toLowerCase()}
+                  </span>
+                </details>
               )}
               {trait.entries.map(({ id, name, option }) => {
                 return (
@@ -64,12 +72,6 @@ export function BidConditions({
               #{number}
             </span>
           </dd>
-        </div>
-      )}
-      {quantity != null && (
-        <div data-condition="quantity">
-          <dt>Quantity</dt>
-          <dd>{quantity.toLocaleString()}</dd>
         </div>
       )}
     </dl>

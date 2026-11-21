@@ -286,8 +286,8 @@ try {
   const connections = new Set();
   const catalogPeers = new Set();
   const openSockets = new Set();
-  const valuePeers = new Set();
-  let valueSubscriptions = 0;
+  let floorRequests = 0;
+  let floorPrice = "8";
   const catalogCommands = [];
   let socketCount = 0,
     orderSubscriptions = 0;
@@ -457,15 +457,40 @@ try {
     socket.send(JSON.stringify({ type: "market.status", status: "available" }));
     socketCount++;
     openSockets.add(socket);
-    let connection, catalogPeer, valuePeer;
+    let connection, catalogPeer;
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
       if (frame.type === "cancel" || frame.type === "unsubscribe") {
         if (frame.id === connection?.id) connections.delete(connection);
         if (frame.id === catalogPeer?.id) catalogPeers.delete(catalogPeer);
-        if (frame.id === valuePeer?.id) valuePeers.delete(valuePeer);
       }
       if (frame.type === "request") {
+        if (
+          frame.method === "valuation.query" &&
+          frame.params.target?.kind === "catalog"
+        ) {
+          floorRequests++;
+          const data = floorReport(
+            frame.params,
+            models.map((row) => row.id),
+            backdrops.map((row) => row.id),
+            patterns.map((row) => row.id),
+          );
+          for (const row of data.results[0].data.collections) {
+            row.floor.price.value = floorPrice;
+            if (floorPrice === "7")
+              row.floor.evidence = { gifts: 8, listings: 10 };
+          }
+          socket.send(
+            JSON.stringify({
+              type: "result",
+              id: frame.id,
+              method: frame.method,
+              data,
+            }),
+          );
+          return;
+        }
         socket.send(
           JSON.stringify({
             type: "result",
@@ -488,23 +513,6 @@ try {
                           }),
                         ),
                 }),
-          }),
-        );
-      }
-      if (frame.type === "valuation.watch") {
-        valueSubscriptions++;
-        valuePeers.delete(valuePeer);
-        valuePeer = { socket, id: frame.id, params: frame.params };
-        valuePeers.add(valuePeer);
-        socket.send(
-          JSON.stringify({
-            type: "valuation.snapshot",
-            id: frame.id,
-            data: floorReport(
-              frame.params,
-              models.map((row) => row.id),
-              backdrops.map((row) => row.id),
-            ),
           }),
         );
       }
@@ -532,7 +540,6 @@ try {
     socket.onClose(() => {
       connections.delete(connection);
       catalogPeers.delete(catalogPeer);
-      valuePeers.delete(valuePeer);
       openSockets.delete(socket);
     });
   });
@@ -597,8 +604,60 @@ try {
     await cards(count);
   };
   await cards(80);
+  assert.equal(
+    await button("Back to top").count(),
+    0,
+    "Shortcut stays hidden while controls are visible",
+  );
   await scrollMore(125);
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await button("Back to top").waitFor();
+  const shortcutBox = await button("Back to top").boundingBox();
+  assert.ok(shortcutBox.x + shortcutBox.width <= 390 - 16);
+  assert.ok(shortcutBox.y + shortcutBox.height <= 844 - 16);
+  assert.equal(shortcutBox.width, 44);
+  assert.equal(shortcutBox.height, 44);
+  assert.equal((await button("Back to top").textContent()).trim(), "");
+  await page.screenshot({
+    path: "/tmp/gifts-market-ui/mobile-back-to-top.png",
+  });
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await button("Back to top").waitFor({ state: "hidden" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await button("Back to top").waitFor();
+  const loadedBeforeShortcut = await page
+    .locator(".gift-grid")
+    .getAttribute("data-order-count");
+  await page.evaluate(() => {
+    const popup = document.createElement("dialog");
+    popup.id = "shortcut-popup-test";
+    document.body.append(popup);
+    popup.showModal();
+  });
+  assert.equal(
+    await button("Back to top").isVisible(),
+    false,
+    "Open popups hide the shortcut",
+  );
+  await page.evaluate(() => {
+    const popup = document.getElementById("shortcut-popup-test");
+    popup.close();
+    popup.remove();
+  });
+  await button("Back to top").click();
+  await page.waitForFunction(
+    () =>
+      document.activeElement?.id === "market-filters" &&
+      window.scrollY === 0 &&
+      document.querySelector(".market-sidebar").getBoundingClientRect().top >=
+        0,
+  );
+  await button("Back to top").waitFor({ state: "detached" });
+  assert.equal(await button("Back to top").count(), 0);
+  assert.equal(
+    await page.locator(".gift-grid").getAttribute("data-order-count"),
+    loadedBeforeShortcut,
+    "Returning to the top preserves loaded listings",
+  );
   await price("0.500000001");
   await page
     .getByRole("alert")
@@ -822,11 +881,11 @@ try {
   // Every selected trait must appear in the composition, not only the first three.
   await button("Model").click();
   await page.locator(".trait-option .floor-badge").first().waitFor();
-  const beforeTraitFloors = valueSubscriptions;
+  const beforeTraitFloors = floorRequests;
   for (const model of models) await button(model.name).click();
   await page.waitForTimeout(100);
   assert.equal(
-    valueSubscriptions,
+    floorRequests,
     beforeTraitFloors,
     "Trait selection reuses the existing batched floor watch",
   );
@@ -1018,6 +1077,74 @@ try {
   await currency("GRAM");
   await price("0.500000001");
   await button("Bids").click();
+  await cards(1);
+  const bidViewport = page.viewportSize();
+  for (const width of [320, 390, 1200]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.deepEqual(
+      await page.locator(".market-controls").evaluate((control) => {
+        const views = control.querySelector(".market-views");
+        const bid = views.querySelector("button.active");
+        const panel = control.querySelector(".bid-matching");
+        const bounds = panel.getBoundingClientRect();
+        return {
+          attached:
+            Math.abs(views.getBoundingClientRect().bottom - bounds.top) < 1,
+          sameBackground:
+            getComputedStyle(bid).backgroundColor ===
+            getComputedStyle(panel).backgroundColor,
+          linked: bid.getAttribute("aria-controls") === panel.id,
+          contained: [...panel.querySelectorAll("button")].every((button) => {
+            const box = button.getBoundingClientRect();
+            return box.left >= bounds.left && box.right <= bounds.right;
+          }),
+          overflow: document.documentElement.scrollWidth > innerWidth,
+        };
+      }),
+      {
+        attached: true,
+        sameBackground: true,
+        linked: true,
+        contained: true,
+        overflow: false,
+      },
+    );
+    await page.screenshot({
+      path: `/tmp/gifts-market-ui/bids-controls-${width}.png`,
+    });
+    assert.equal(
+      await page.locator(".sort-control").evaluate((control) => {
+        const picker = control
+          .querySelector(".picker-trigger")
+          .getBoundingClientRect();
+        const button = control.querySelector(":scope > button");
+        const direction = button.getBoundingClientRect();
+        const separator = getComputedStyle(button, "::before");
+        return (
+          Math.abs(picker.top - direction.top) < 1 &&
+          Math.abs(picker.height - direction.height) < 1 &&
+          Math.abs(picker.height - control.clientHeight) < 1 &&
+          separator.width === "1px" &&
+          parseFloat(separator.top) > 0 &&
+          parseFloat(separator.bottom) > 0
+        );
+      }),
+      true,
+      "Sort separator stays inset and both buttons share the same height",
+    );
+  }
+  await page.setViewportSize(bidViewport);
+  assert.equal(
+    await page
+      .getByRole("group", { name: "Bid matching", exact: true })
+      .getByRole("button", { name: "Exact", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  await page
+    .getByRole("group", { name: "Bid matching", exact: true })
+    .getByRole("button", { name: "Compatible", exact: true })
+    .click();
   await cards(4);
   await price("13");
   assert.equal(new URL(page.url()).searchParams.get("sort"), "price_desc");
@@ -1057,8 +1184,13 @@ try {
     .waitFor();
   assert.equal(await page.locator(".detail-market").count(), 0);
   assert.equal(
+    await page.locator(".detail .detail-venue").isVisible(),
+    true,
+    "Venue remains visible without a market URL",
+  );
+  assert.equal(
     await page
-      .locator(".detail dt")
+      .locator(".detail :is(dt, th)")
       .getByText("Model", { exact: true })
       .count(),
     0,
@@ -1066,12 +1198,12 @@ try {
   await page.keyboard.press("Escape");
   await page.locator('[data-order-id="order-1"]').click();
   await page
-    .locator(".detail dt")
-    .getByText("Quantity", { exact: true })
+    .locator(".detail")
+    .getByLabel("Quantity: 5", { exact: true })
     .waitFor();
   assert.equal(
-    await page.locator(".detail dd").getByText("5", { exact: true }).count(),
-    1,
+    await page.locator('.detail [data-condition="quantity"]').count(),
+    0,
   );
   await page.keyboard.press("Escape");
   const matching = page.getByRole("group", {
@@ -1085,7 +1217,7 @@ try {
 
   assert.equal(
     await matching
-      .getByRole("button", { name: "Any", exact: true })
+      .getByRole("button", { name: "Compatible", exact: true })
       .getAttribute("aria-pressed"),
     "true",
   );
@@ -1101,7 +1233,7 @@ try {
     .getByRole("button", { name: "Juicy Mint", exact: true })
     .click();
   await cards(3);
-  await matching.getByRole("button", { name: "All", exact: true }).click();
+  await matching.getByRole("button", { name: "Exact", exact: true }).click();
   await cards(1);
   assert.equal(new URL(page.url()).searchParams.get("bid_match"), "all");
   assert.equal([...connections].at(-1).query.bid_match, "all");
@@ -1116,16 +1248,27 @@ try {
   await cards(1);
   assert.equal(
     await matching
-      .getByRole("button", { name: "All", exact: true })
+      .getByRole("button", { name: "Exact", exact: true })
       .getAttribute("aria-pressed"),
     "true",
   );
   await button("Reset traits").click();
   await cards(1);
-  await matching.getByRole("button", { name: "Any", exact: true }).click();
+  await matching
+    .getByRole("button", { name: "Compatible", exact: true })
+    .click();
   await cards(4);
-  assert.equal(new URL(page.url()).searchParams.has("bid_match"), false);
+  assert.equal(new URL(page.url()).searchParams.get("bid_match"), "any");
+  await page.reload();
+  await cards(4);
+  assert.equal(
+    await matching
+      .getByRole("button", { name: "Compatible", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
   await button("History").click();
+  assert.equal(await page.locator(".bid-matching").count(), 0);
   await cards(75);
   assert.equal(new URL(page.url()).searchParams.get("sort"), "time_desc");
   assert.equal(await sortTrigger.innerText(), "Time");
@@ -1196,12 +1339,12 @@ try {
   );
   await page.locator(".card-open").first().click();
   await page
-    .locator(".detail dt")
+    .locator(".detail :is(dt, th)")
     .getByText("Model", { exact: true })
     .waitFor();
   assert.equal(
     await page
-      .locator(".detail dt")
+      .locator(".detail :is(dt, th)")
       .getByText("Last observed", { exact: true })
       .count(),
     0,
@@ -1218,10 +1361,10 @@ try {
   await opener.click();
   await page.getByRole("dialog", { name: "Order details" }).waitFor();
   await page
-    .locator(".detail dt")
+    .locator(".detail :is(dt, th)")
     .getByText("Model", { exact: true })
     .waitFor();
-  const labels = await page.locator(".detail dt").allTextContents();
+  const labels = await page.locator(".detail :is(dt, th)").allTextContents();
   for (const hidden of [
     "Order ID",
     "Gift ID",
@@ -1237,32 +1380,38 @@ try {
     assert.ok(!labels.includes(hidden), hidden);
   assert.equal(await page.locator(".source-details").count(), 0);
   await page.locator('[data-metric="final_mark"] .valuation-value').waitFor();
-  await page.getByLabel("Collection floor: 8 GRAM", { exact: true }).waitFor();
-  const beforeFloorUpdate = valueSubscriptions;
-  for (const peer of valuePeers) {
-    const data = floorReport(
-      peer.params,
-      models.map((row) => row.id),
-      backdrops.map((row) => row.id),
+  await page
+    .getByLabel("Collection floor: 8.00 GRAM", { exact: true })
+    .waitFor();
+  const beforeFloorUpdate = floorRequests;
+  floorPrice = "7";
+  for (const socket of openSockets) {
+    socket.send(
+      JSON.stringify({ type: "market.status", status: "unavailable" }),
     );
-    for (const row of data.results[0].data.collections) {
-      row.floor.price.value = "7";
-      row.floor.evidence = { gifts: 8, listings: 10 };
-    }
-    peer.socket.send(
-      JSON.stringify({ type: "valuation.snapshot", id: peer.id, data }),
-    );
+    socket.send(JSON.stringify({ type: "market.status", status: "available" }));
   }
-  await page.getByLabel("Collection floor: 7 GRAM", { exact: true }).waitFor();
+  await page
+    .getByLabel("Collection floor: 7.00 GRAM", { exact: true })
+    .waitFor();
   assert.equal(
-    await page.locator(".shared-floors .floor-evidence").first().textContent(),
-    "8 gifts · 10 listings",
+    await page
+      .locator('[data-attribute="collection"] .floor-evidence')
+      .first()
+      .textContent(),
+    "8 gifts",
   );
+  const countTooltip = await page
+    .locator('[data-attribute="collection"] .floor-evidence')
+    .first()
+    .getAttribute("title");
+  assert.match(countTooltip, /8 gifts · 10 listings/);
+  assert.match(countTooltip, /unique identifiable collectibles/);
+  assert.match(countTooltip, /same gift can appear on several markets/);
 
-  assert.equal(
-    valueSubscriptions,
-    beforeFloorUpdate,
-    "Live floor changes need no additional request",
+  assert.ok(
+    floorRequests > beforeFloorUpdate && floorRequests <= beforeFloorUpdate + 2,
+    "Reconnect refreshes collection summaries and selected traits with bounded finite queries",
   );
   await page.screenshot({
     path: "/tmp/gifts-market-ui/shared-values-details.png",
@@ -1287,17 +1436,17 @@ try {
     await page
       .locator('[data-attribute="model"] .floor-evidence')
       .textContent(),
-    "2 gifts · 4 listings",
+    "2 gifts",
   );
   assert.equal(
     await page
       .locator('[data-attribute="backdrop"] .floor-evidence')
       .textContent(),
-    "1 gift · 2 listings",
+    "1 gift",
   );
   assert.equal(
     await page.locator('[data-attribute="pattern"] .floor-summary').count(),
-    0,
+    1,
   );
   assert.equal(
     await page
@@ -1305,6 +1454,87 @@ try {
       .textContent(),
     "11.25",
   );
+  assert.deepEqual(
+    await page
+      .locator(".detail-attributes tbody > tr")
+      .evaluateAll((rows) => rows.map((row) => row.dataset.attribute)),
+    ["collection", "pair", "model", "backdrop", "pattern"],
+  );
+  assert.equal(
+    await page
+      .locator('[data-attribute="pattern"] .quote-amount')
+      .textContent(),
+    "8.50",
+  );
+  assert.equal(
+    await page
+      .locator('[data-attribute="pattern"] .floor-evidence')
+      .textContent(),
+    "3 gifts",
+  );
+  assert.equal(
+    await page
+      .locator(".detail-pricing")
+      .getByRole("heading", { name: "Asking price" })
+      .count(),
+    0,
+  );
+  const detailViewport = page.viewportSize();
+  for (const width of [320, 390, 1200]) {
+    await page.setViewportSize({ width, height: 844 });
+    const priceLayout = await page
+      .locator(".listing-price-row")
+      .evaluate((row) => {
+        const label = row.querySelector("h3").getBoundingClientRect();
+        const price = row
+          .querySelector(".detail-price")
+          .getBoundingClientRect();
+        return (
+          label.right <= price.left &&
+          Math.abs(price.right - row.getBoundingClientRect().right) < 1
+        );
+      });
+    assert.equal(priceLayout, true, "Ask price ends at the right edge");
+    const centered = await page.locator(".attribute-pair").evaluate((pair) => {
+      const backdrop = pair
+        .querySelector(":scope > .swatch")
+        .getBoundingClientRect();
+      const model = pair
+        .querySelector(".attribute-pair-model .gift-model-image")
+        .getBoundingClientRect();
+      return (
+        Math.abs(backdrop.x + backdrop.width / 2 - model.x - model.width / 2) <
+          0.5 &&
+        Math.abs(
+          backdrop.y + backdrop.height / 2 - model.y - model.height / 2,
+        ) < 0.5
+      );
+    });
+    assert.equal(centered, true, "The model is centered over its backdrop");
+    const attributeLayout = await page
+      .locator(".detail-attributes")
+      .evaluate((list) =>
+        [...list.querySelectorAll("tbody > tr")].map((row) => {
+          const bounds = row.getBoundingClientRect();
+          const label = row
+            .querySelector("th .attribute-identity")
+            .getBoundingClientRect();
+          const floor = row.querySelector("td").getBoundingClientRect();
+          return {
+            compact: bounds.height <= 54,
+            separate: label.right <= floor.left,
+            contained: floor.right <= bounds.right && label.left >= bounds.left,
+          };
+        }),
+      );
+    assert.ok(
+      attributeLayout.every(
+        (row) => row.compact && row.separate && row.contained,
+      ),
+      `Attribute names and floors fit at ${width}px: ${JSON.stringify(attributeLayout)}`,
+    );
+  }
+  await page.setViewportSize(detailViewport);
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".detail"));
   assert.equal(
@@ -1477,9 +1707,10 @@ try {
   // Direct links without a sort use the selected view's default. A linked
   // custom sort and clicking the already-active tab preserve the user's choice.
   for (const [search, count, expectedSort, label, direction] of [
-    ["mode=bid", 4, "price_desc", "Price", "↓"],
+    ["mode=bid", 1, "price_desc", "Price", "↓"],
     ["mode=executed", 75, "time_desc", "Time", "↓"],
-    ["mode=bid&sort=time_asc", 4, "time_asc", "Time", "↑"],
+    ["mode=bid&bid_match=any", 4, "price_desc", "Price", "↓"],
+    ["mode=bid&sort=time_asc", 1, "time_asc", "Time", "↑"],
   ]) {
     await page.goto(`${base}/?collection=bunny&currency=GRAM&${search}`);
     await cards(count);

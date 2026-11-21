@@ -119,4 +119,13 @@ impl ValuationSnapshot {
             })
             .collect()
     }
+    pub fn pattern_ids(&self, collection: &CollectionId) -> Result<BTreeSet<PatternId>> {
+        self.options(collection, CatalogTrait::Pattern)?
+            .into_iter()
+            .map(|id| {
+                id.try_into()
+                    .map_err(|e| Status::unavailable(format!("{e}")))
+            })
+            .collect()
+    }
 }

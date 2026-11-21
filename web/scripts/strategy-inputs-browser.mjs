@@ -38,12 +38,15 @@ try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   page.setDefaultTimeout(10000);
+  await page.clock.install({ time: new Date() });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let metadataRequests = 0,
     guideRequests = 0,
     failMetadata = false,
-    emptyMetadata = false;
+    emptyMetadata = false,
+    holdDiscovery = false,
+    releaseDiscovery;
   const rows = [
     {
       id: "future_selection",
@@ -70,8 +73,10 @@ try {
     documentation_url: "/guides/" + row.id,
     documentation_revision: "one",
   }));
-  await page.route("**/valuations/strategies", (route) => {
+  await page.route("**/valuations/strategies", async (route) => {
     metadataRequests++;
+    if (holdDiscovery)
+      await new Promise((resolve) => (releaseDiscovery = resolve));
     return route.fulfill(
       failMetadata
         ? { status: 503, json: { error: { message: "Discovery unavailable" } } }
@@ -100,7 +105,8 @@ try {
       if (command.type !== "request") return;
       assert.equal(command.method, "valuation.query");
       queries.push(command);
-      if (rejectRemoved && command.params.strategies.includes("future_gift")) {
+      if (rejectRemoved) {
+        rejectRemoved = false;
         ws.send(
           JSON.stringify({
             type: "error",
@@ -152,6 +158,21 @@ try {
           },
         })),
       };
+      if (n === 4) {
+        const failed = data.results.find(
+          (row) => row.strategy !== "future_selection",
+        );
+        delete failed.data;
+        failed.error = {
+          code: "not_enough_data",
+          message: "No comparable gifts",
+        };
+        failed.display.fields[0].value = {
+          kind: "unavailable",
+          label: "No data",
+          message: "No comparable gifts",
+        };
+      }
       const send = () =>
         ws.send(
           JSON.stringify({
@@ -169,20 +190,40 @@ try {
   await page.goto(url);
   assert.equal(metadataRequests, 0);
   await page.evaluate(() => window.choose(1));
-  const picker = page.getByRole("combobox", { name: "Valuation strategy" });
-  await picker.waitFor();
-  assert.equal(await picker.inputValue(), "future_gift");
+  const strategyRows = page.locator(".valuation-strategy-row");
+  const selectionRow = page.locator('[data-strategy="future_selection"]');
+  const info = () =>
+    selectionRow.getByRole("button", {
+      name: "How is future_selection calculated?",
+      exact: true,
+    });
+  const refresh = async () => {
+    await page.clock.fastForward(60_000);
+    await page.waitForTimeout(1);
+  };
+  await strategyRows.first().waitFor();
+  assert.equal(
+    await page.getByRole("combobox", { name: "Valuation strategy" }).count(),
+    0,
+  );
+  assert.deepEqual(
+    await strategyRows.evaluateAll((rows) =>
+      rows.map((row) => row.dataset.strategy),
+    ),
+    ["future_gift", "future_selection"],
+  );
   assert.deepEqual(queries[0].params.strategies, [
     "future_gift",
     "future_selection",
   ]);
   assert.equal(queries[0].params.period, undefined);
-  assert.equal(await page.locator(".quote-amount").textContent(), "20");
-  await picker.selectOption("future_selection");
-  assert.equal(await page.locator(".quote-amount").textContent(), "10");
+  assert.deepEqual(await page.locator(".quote-amount").allTextContents(), [
+    "20",
+    "10",
+  ]);
   assert.equal(queries.length, 1);
   assert.equal(guideRequests, 0);
-  await page.getByRole("button", { name: "How is this calculated?" }).click();
+  await info().click();
   await page
     .getByRole("article", { name: "future_selection calculation guide" })
     .waitFor();
@@ -198,9 +239,9 @@ try {
     "A scope change closes the previous gift's popup",
   );
   await page.evaluate(() => window.choose(1));
-  await picker.waitFor();
+  await selectionRow.waitFor();
   const beforePopup = queries.length;
-  await page.getByRole("button", { name: "How is this calculated?" }).click();
+  await info().click();
   await page
     .getByRole("article", { name: "future_selection calculation guide" })
     .waitFor();
@@ -216,22 +257,21 @@ try {
     "Guides survive gift changes in the shared cache",
   );
   await page.getByRole("button", { name: "Close calculation guide" }).click();
+  await page.locator(".valuation-popup").waitFor({ state: "detached" });
   rows[1] = { ...rows[1], id: "future_gift_v2", name: "New gift strategy" };
   rejectRemoved = true;
-  await page.getByRole("button", { name: "Refresh valuation" }).click();
+  await refresh();
   await page
     .getByRole("alert")
     .getByText("unknown valuation strategy", { exact: true })
     .waitFor();
-  assert.equal(metadataRequests, 1);
-  await page.getByRole("button", { name: "Refresh valuation" }).click();
-  await picker
-    .locator('option[value="future_gift_v2"]')
-    .waitFor({ state: "attached" });
+  const metadataBeforeRetry = metadataRequests;
+  await refresh();
+  await page.locator('[data-strategy="future_gift_v2"]').waitFor();
   assert.equal(
     metadataRequests,
-    2,
-    "Retry after a deployment refreshes obsolete capabilities",
+    metadataBeforeRetry + 1,
+    "The next minute discovers updated capabilities",
   );
   await page.evaluate(() => window.choose(2));
   for (let i = 0; !held && i < 100; i++)
@@ -244,13 +284,43 @@ try {
   held.send();
   assert.ok(cancelled.includes(held.id));
   assert.equal(await page.locator("output").textContent(), "3");
+  const beforePartial = queries.length;
+  await page.evaluate(() => window.choose(4));
+  await page.getByText("No data", { exact: true }).waitFor();
+  assert.equal(
+    await selectionRow.locator(".quote-amount").textContent(),
+    "10",
+    "One unavailable strategy does not hide another result",
+  );
+  assert.equal(
+    queries.length,
+    beforePartial + 1,
+    "All strategies share one request",
+  );
+  for (const width of [320, 390, 1200]) {
+    await page.setViewportSize({ width, height: 850 });
+    assert.ok(
+      await page.locator(".valuation-strategies").evaluate((list) => {
+        const rows = [...list.children].map((row) =>
+          row.getBoundingClientRect(),
+        );
+        return rows.every(
+          (row, i) =>
+            row.right <= innerWidth &&
+            row.left >= 0 &&
+            (!i || row.top >= rows[i - 1].bottom),
+        );
+      }),
+      `Strategy results form one bounded column at ${width}px`,
+    );
+  }
   await page.evaluate(() => window.choose("criteria"));
   await page.waitForFunction(
     () => document.querySelector("output")?.textContent === "criteria",
   );
   assert.deepEqual(queries.at(-1).params.strategies, ["future_selection"]);
-  assert.equal(await picker.count(), 0);
-  assert.equal(metadataRequests, 2);
+  assert.equal(await strategyRows.count(), 1);
+  assert.equal(metadataRequests, metadataBeforeRetry + 1);
   const before = queries.length;
   failMetadata = true;
   await page.goto(url);
@@ -261,8 +331,8 @@ try {
     .waitFor();
   assert.equal(queries.length, before);
   failMetadata = false;
-  await page.getByRole("button", { name: "Refresh valuation" }).click();
-  await picker.waitFor();
+  await refresh();
+  await selectionRow.waitFor();
   assert.equal(queries.length, before + 1);
   emptyMetadata = true;
   await page.goto(url);
@@ -274,9 +344,84 @@ try {
     })
     .waitFor();
   assert.equal(queries.length, before + 1);
+  emptyMetadata = false;
+  await page.goto(url);
+  await page.evaluate(() => window.choose(1));
+  await strategyRows.first().waitFor();
+  const initial = queries.length;
+  assert.equal(
+    await page.getByRole("button", { name: "Refresh valuation" }).count(),
+    0,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Recalculate valuation" }).count(),
+    0,
+  );
+  await page.clock.fastForward(59_999);
+  assert.equal(queries.length, initial, "No refresh before a minute");
+  await page.clock.fastForward(1);
+  for (let i = 0; queries.length === initial && i < 100; i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    queries.length,
+    initial + 1,
+    "One batched request at the minute boundary",
+  );
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.clock.fastForward(180_000);
+  assert.equal(
+    queries.length,
+    initial + 1,
+    "Hidden tabs do not poll valuations",
+  );
+  await page.evaluate(() => {
+    delete document.hidden;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  for (let i = 0; queries.length === initial + 1 && i < 100; i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    queries.length,
+    initial + 2,
+    "Visibility catches up once without replaying missed intervals",
+  );
+  await page.evaluate(() => window.choose(undefined));
+  await page.locator(".valuation-summary").waitFor({ state: "detached" });
+  await page.clock.fastForward(120_000);
+  assert.equal(queries.length, initial + 2, "Unmount clears the refresh timer");
+  holdDiscovery = true;
+  await page.goto(url);
+  await page.evaluate(() => window.choose(6));
+  for (let i = 0; !releaseDiscovery && i < 100; i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(releaseDiscovery);
+  const pendingDiscovery = metadataRequests;
+  await page.clock.fastForward(180_000);
+  assert.equal(
+    metadataRequests,
+    pendingDiscovery,
+    "An in-flight calculation cannot overlap another refresh",
+  );
+  await page.evaluate(() => window.choose(undefined));
+  holdDiscovery = false;
+  releaseDiscovery();
+  await page.evaluate(() => window.choose(7));
+  await page.waitForFunction(
+    () => document.querySelector("output")?.textContent === "7",
+  );
+  assert.equal(
+    await page.getByText("Estimate may be outdated", { exact: true }).count(),
+    0,
+  );
   assert.deepEqual(errors, []);
   console.log(
-    "Strategy input browser passed: capability selection, reversed results, cached switching, guide reuse, cancellation, target changes and discovery failure recovery.",
+    "Strategy input browser passed: capability selection, reversed results, stacked results, guide reuse, cancellation, target changes, discovery recovery and minute refresh/visibility cleanup.",
   );
 } finally {
   await browser?.close();

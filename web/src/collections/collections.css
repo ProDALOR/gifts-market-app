@@ -228,6 +228,10 @@
   font-size: 13px;
   font-weight: 650;
   padding: 0 10px;
+  transition:
+    background-color 140ms ease-out,
+    border-color 140ms ease-out,
+    color 140ms ease-out;
 }
 .pick-trigger::after {
   content: "";
@@ -236,6 +240,7 @@
   border-width: 0 1.5px 1.5px 0;
   padding: 2.5px;
   transform: translateY(-1px) rotate(45deg);
+  transition: transform 160ms ease-out;
 }
 .pick-trigger[aria-expanded="true"]::after {
   transform: translateY(1px) rotate(225deg);
@@ -252,6 +257,24 @@
   color: white;
   border-radius: 10px;
   padding: 2px 5px;
+  animation: trait-count-in 140ms ease-out;
+}
+@keyframes trait-count-in {
+  from {
+    opacity: 0.5;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.trait-panel-shell {
+  display: flow-root;
+  overflow: hidden;
+}
+.trait-panel-shell[inert] {
+  pointer-events: none;
 }
 .picker-panel {
   border: 1px solid var(--line);
@@ -267,14 +290,73 @@
   margin-bottom: 6px;
   background: var(--paper);
 }
+/* One scroll container keeps rarity groups and their wrapped choices together. */
 .trait-options {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   max-height: 220px;
   overflow: auto;
   overscroll-behavior: contain;
+}
+.trait-options > .trait-option {
+  width: 100%;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.trait-group {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
+.trait-group-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: start;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.trait-group-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 3px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--raised);
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+  transition:
+    background-color 140ms ease-out,
+    border-color 140ms ease-out,
+    color 140ms ease-out;
+}
+.trait-group-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  line-height: 1;
+}
+.trait-group-count {
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.trait-group-toggle[aria-pressed="true"],
+.trait-group-toggle[aria-pressed="mixed"] {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--tint);
+}
+.trait-group-toggle[aria-pressed="mixed"] {
+  border-style: dashed;
 }
 .trait-option {
   display: flex;
@@ -288,6 +370,10 @@
   padding: 3px 8px;
   min-width: 0;
   max-width: 100%;
+  transition:
+    background-color 140ms ease-out,
+    border-color 140ms ease-out,
+    color 140ms ease-out;
 }
 .trait-option-name {
   min-width: 0;

@@ -26,12 +26,17 @@ export function GiftPreview({
       appearance.palette?.pattern,
     ],
   );
+  const patternUrl = appearance.patternUrls[0];
+  const patternUrls = useMemo(
+    () => (patternUrl ? [patternUrl] : []),
+    [patternUrl],
+  );
   return (
     <GiftArtwork
       {...props}
       media={appearance.media}
       palette={palette}
-      patternUrls={appearance.patternUrls}
+      patternUrls={patternUrls}
       label={appearance.label}
     />
   );

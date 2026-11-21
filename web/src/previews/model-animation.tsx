@@ -3,12 +3,14 @@ import { animationRenderer, loadAnimationData } from "./animation-data";
 import { AnimationLifecycle } from "./animation-lifecycle";
 import { retryableMedia, retryMedia } from "./media-resource";
 import { playbackBudget } from "./playback-budget";
+import type { PlaybackGroup, PlaybackLease } from "./playback-budget";
 import { observePreviewSize } from "./preview-environment";
 export default function ModelAnimation({
   url,
   active,
   retain,
   priority,
+  group,
   vector = false,
   ready,
   onReady,
@@ -17,12 +19,16 @@ export default function ModelAnimation({
   active: boolean;
   retain: boolean;
   priority: number;
+  group: PlaybackGroup;
   vector?: boolean;
   ready: boolean;
   onReady: (ready: boolean) => void;
 }) {
   const container = useRef<HTMLSpanElement>(null);
   const lifecycle = useRef<AnimationLifecycle | null>(null);
+  const lease = useRef<PlaybackLease | undefined>(undefined);
+  const readyRef = useRef(ready);
+  readyRef.current = ready;
   const [failure, setFailure] = useState<{ error: unknown }>();
   const priorityRef = useRef(priority);
   priorityRef.current = priority;
@@ -50,6 +56,10 @@ export default function ModelAnimation({
     if (!host) return;
     const controller = new AnimationLifecycle(
       async (signal) => {
+        // A React cleanup can release several slots together. Let the commit finish
+        // before starting downloads for transient grants to other closing models.
+        await Promise.resolve();
+        signal.throwIfAborted();
         const data = await loadAnimationData(url, signal, priorityRef.current);
         const renderer = vector ? "svg" : animationRenderer(data);
         signal.throwIfAborted();
@@ -92,7 +102,11 @@ export default function ModelAnimation({
           },
         };
       },
-      onReady,
+      (value) => {
+        readyRef.current = value;
+        if (value) lease.current?.ready();
+        onReady(value);
+      },
       350,
       (error) => setFailure({ error }),
     );
@@ -109,10 +123,19 @@ export default function ModelAnimation({
       controller.setActive(false, failure ? false : retain);
       return;
     }
-    return playbackBudget.request(priority, (granted, preempted) =>
-      controller.setActive(granted, preempted ? false : retain),
+    const current = playbackBudget.request(
+      { priority, group },
+      (granted, preempted) =>
+        controller.setActive(granted, preempted ? false : retain),
     );
-  }, [url, active, retain, priority, failure, vector, onReady]);
+    lease.current = current;
+    // A retained renderer can resume synchronously before request() returns.
+    if (readyRef.current) current.ready();
+    return () => {
+      lease.current = undefined;
+      current.cancel();
+    };
+  }, [url, active, retain, priority, group, failure, vector, onReady]);
   return (
     <span
       ref={container}

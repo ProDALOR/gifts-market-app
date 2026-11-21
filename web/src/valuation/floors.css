@@ -90,8 +90,18 @@
 }
 .detail-attributes .floor-summary .floor-badge {
   display: flex;
-  justify-content: flex-start;
-  margin-top: 6px;
+  justify-content: flex-end;
+  margin-top: 0;
+}
+.detail-attributes .floor-summary {
+  display: inline-grid;
+  text-align: right;
+  max-width: 100%;
+  gap: 0;
+}
+.gift-attributes .shared-floors {
+  margin: 8px 0;
+  padding: 8px;
 }
 
 .floors-error {

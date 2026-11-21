@@ -1,11 +1,16 @@
-import type { OrderValuationState } from "../valuation/use-order-valuation";
+import type {
+  OrderValuationState,
+  OrderValuation,
+} from "../valuation/use-order-valuation";
 
 /** The popup and compact estimate describe the same report and refresh attempt. */
 export function ValuationStatus({
   state,
   detailed = false,
+  valuation,
 }: {
   state: OrderValuationState;
+  valuation?: OrderValuation;
   detailed?: boolean;
 }) {
   const { report, loading, error } = state;
@@ -23,11 +28,6 @@ export function ValuationStatus({
           <p>Previous estimate shown.</p>
         </div>
       )}
-      {state.stale && (
-        <p className="valuation-note valuation-stale">
-          Estimate may be outdated
-        </p>
-      )}
       {detailed && (
         <>
           <p className="valuation-note">
@@ -39,8 +39,8 @@ export function ValuationStatus({
               })}
             </time>
           </p>
-          {state.result?.display.note && (
-            <p className="valuation-note">{state.result.display.note}</p>
+          {valuation?.result.display.note && (
+            <p className="valuation-note">{valuation.result.display.note}</p>
           )}
         </>
       )}

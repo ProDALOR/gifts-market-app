@@ -15,6 +15,7 @@ pub struct AskQuote {
     pub price: Amount,
     pub model_id: Option<ModelId>,
     pub backdrop_id: Option<BackdropId>,
+    pub pattern_id: Option<PatternId>,
     pub expires_at: Option<Timestamp>,
 }
 

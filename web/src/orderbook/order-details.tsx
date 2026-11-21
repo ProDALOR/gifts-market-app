@@ -1,4 +1,4 @@
-import type { Order } from "../market";
+import type { Order, GiftMedia } from "../market";
 import type { CatalogOption } from "../orderbook";
 import { listingLink, modelName, serial } from "../orderbook";
 import { GiftPreview } from "../previews/gift-preview";
@@ -9,24 +9,27 @@ import { VenueIcon } from "../ui/icons";
 import { OrderAttributes } from "./order-attributes";
 import { BidPreview } from "./bid-preview";
 import { useOrderValuation } from "../valuation/use-order-valuation";
-import { priceComparison } from "../valuation/price-comparison";
+import { useBackgroundPlaybackSuspension } from "../previews/use-playback";
 export function OrderDetails({
   selected,
   options,
   names,
   collectionName,
   collectionSlug,
+  collectionPreview,
   removed = false,
   close,
 }: {
   selected: Order;
   options: ReadonlyMap<string, CatalogOption>;
-  names: Map<string, string>;
+  names: ReadonlyMap<string, string>;
   collectionName: string;
   collectionSlug?: string | null;
+  collectionPreview?: GiftMedia;
   removed?: boolean;
   close: () => void;
 }) {
+  useBackgroundPlaybackSuspension(true);
   const state = useOrderValuation(selected);
   const criteria = selected.target.kind === "criteria";
   const selectedSerial = serial(selected),
@@ -40,25 +43,50 @@ export function OrderDetails({
     /^[A-Za-z0-9]{1,128}$/.test(collectionSlug)
       ? `https://t.me/nft/${collectionSlug}-${selectedSerial}`
       : undefined;
-  const showMarketLink = marketLink && !removed && marketLink !== telegramLink;
+  const actions = [
+    ...(marketLink && !removed && marketLink !== telegramLink
+      ? [
+          {
+            kind: "market",
+            url: marketLink,
+            name: venue,
+            label: `Open on ${venue}`,
+          },
+        ]
+      : []),
+    ...(telegramLink
+      ? [
+          {
+            kind: "telegram",
+            url: telegramLink,
+            name: "Telegram",
+            label: "Open in Telegram",
+          },
+        ]
+      : []),
+  ];
   const priceLabel =
     selected.kind === "executed"
       ? "Execution price"
       : selected.kind === "bid"
         ? "Bid price"
         : "Asking price";
-  const primary = state.primaryFields;
-  const estimate = primary.length === 1 ? primary[0].value : undefined;
-  const comparison =
-    !removed &&
-    !state.loading &&
-    !state.error &&
-    selected.kind === "ask" &&
-    !state.stale &&
-    estimate?.kind === "currency" &&
-    estimate.currency_id === selected.book.currency_id
-      ? priceComparison(selected.price, estimate.amount)
-      : undefined;
+  const caption = (
+    <div className="detail-caption">
+      <h2 id="detail-title">
+        {names.get(selected.book.collection_id) || collectionName}
+        {selectedSerial && (
+          <>
+            {" "}
+            <span>
+              #{selectedSerial.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0")}
+            </span>
+          </>
+        )}
+      </h2>
+      {model && <p>{model}</p>}
+    </div>
+  );
   return (
     <Modal
       close={close}
@@ -69,6 +97,25 @@ export function OrderDetails({
       describedBy="detail-title"
     >
       <div className={`detail-art${criteria ? " detail-bid-art" : ""}`}>
+        <div className="detail-art-meta">
+          {(selected.kind === "bid" || selected.quantity !== 1) && (
+            <span
+              className="detail-quantity"
+              aria-label={`Quantity: ${selected.quantity.toLocaleString()}`}
+              title={`${selected.quantity.toLocaleString()} gift${selected.quantity === 1 ? "" : "s"}`}
+            >
+              ×{selected.quantity.toLocaleString()}
+            </span>
+          )}
+          <span
+            className="detail-venue"
+            role="img"
+            aria-label={`Venue: ${venue}`}
+            title={venue}
+          >
+            <VenueIcon name={venue} />
+          </span>
+        </div>
         {selected.target.kind === "criteria" ? (
           <div className="bid-detail-preview">
             <BidPreview
@@ -76,6 +123,7 @@ export function OrderDetails({
               options={options}
               names={names}
               compact={false}
+              caption={caption}
             />
           </div>
         ) : (
@@ -84,82 +132,73 @@ export function OrderDetails({
             options={options}
             fallback={collectionName[0] || "◇"}
             size="large"
-            playback={selected.kind === "bid" ? "static" : "detail"}
+            playback="detail"
           />
         )}
-        <div className="detail-caption">
-          <h2 id="detail-title">
-            {names.get(selected.book.collection_id) || collectionName}
-            {selectedSerial && (
-              <>
-                {" "}
-                <span>
-                  #{selectedSerial.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0")}
-                </span>
-              </>
-            )}
-          </h2>
-          {model && <p>{model}</p>}
-        </div>
+        {!criteria && caption}
       </div>
       <div className="detail-content">
         <div className="detail-body">
           <div className="detail-pricing">
             <section className="listing-price" aria-label={priceLabel}>
-              <h3>{priceLabel}</h3>
-              <div className="detail-price">
-                <Quote
-                  price={selected.price}
-                  currency={selected.book.currency_id}
-                />
-                {criteria && (
-                  <small className="detail-price-unit">/ gift</small>
-                )}
+              <div className="listing-price-row">
+                <h3>
+                  {selected.kind === "executed"
+                    ? "Paid"
+                    : selected.kind === "bid"
+                      ? "Bid price"
+                      : "Ask price"}
+                </h3>
+                <div className="detail-price">
+                  <Quote
+                    price={selected.price}
+                    currency={selected.book.currency_id}
+                  />
+                  {criteria && (
+                    <small className="detail-price-unit">/ gift</small>
+                  )}
+                </div>
               </div>
-              {comparison && <p className="price-comparison">{comparison}</p>}
             </section>
             <OrderValuationSummary
               state={state}
               criteria={criteria}
               history={selected.kind === "executed"}
+              price={
+                !removed && selected.kind === "ask" ? selected.price : undefined
+              }
+              currency={selected.book.currency_id}
             />
           </div>
-          <OrderAttributes order={selected} options={options} names={names} />
+          <OrderAttributes
+            order={selected}
+            options={options}
+            names={names}
+            collectionPreview={collectionPreview}
+          />
           {removed && (
             <p className="listing-gone" role="status">
               No longer in these results.
             </p>
           )}
         </div>
-        {(showMarketLink || telegramLink) && (
+        {actions.length > 0 && (
           <div className="detail-actions">
-            {showMarketLink && (
+            {actions.map((action) => (
               <a
-                className="detail-link detail-market"
-                href={marketLink}
+                key={action.kind}
+                className={`detail-link detail-${action.kind}`}
+                href={action.url}
                 target="_blank"
                 rel="noreferrer"
-                aria-label={`Open on ${venue}`}
-                title={`Open on ${venue}`}
+                aria-label={action.label}
+                title={action.label}
               >
-                <VenueIcon name={venue} />
-                <span className="detail-link-label">{venue}</span>
+                <VenueIcon name={action.name} />
+                <span className="detail-link-label">{action.name}</span>
                 <span aria-hidden="true">↗</span>
               </a>
-            )}
-            {telegramLink && (
-              <a
-                className="detail-link detail-telegram"
-                href={telegramLink}
-                target="_blank"
-                rel="noreferrer"
-                aria-label="Open in Telegram"
-              >
-                <VenueIcon name="Telegram" />
-                <span className="detail-link-label">Telegram</span>
-                <span aria-hidden="true">↗</span>
-              </a>
-            )}
+            ))}
           </div>
         )}
       </div>

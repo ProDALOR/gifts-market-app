@@ -58,9 +58,11 @@ pub(crate) struct Statistics {
     pub evaluated_at: jiff::Timestamp,
     pub known_models: BTreeSet<ModelId>,
     pub known_backdrops: BTreeSet<BackdropId>,
+    pub known_patterns: BTreeSet<PatternId>,
     pub collection: Floor,
     pub models: BTreeMap<ModelId, Floor>,
     pub backdrops: BTreeMap<BackdropId, Floor>,
+    pub patterns: BTreeMap<PatternId, Floor>,
     pub pairs: BTreeMap<(ModelId, BackdropId), Floor>,
     dependencies: ReadDependencies,
     created: Instant,
@@ -108,9 +110,11 @@ impl Statistics {
             evaluated_at: jiff::Timestamp::now(),
             known_models: snapshot.model_ids(&scope.collection)?,
             known_backdrops: snapshot.backdrop_ids(&scope.collection)?,
+            known_patterns: snapshot.pattern_ids(&scope.collection)?,
             collection: Floor::default(),
             models: BTreeMap::new(),
             backdrops: BTreeMap::new(),
+            patterns: BTreeMap::new(),
             pairs: BTreeMap::new(),
             dependencies: snapshot.dependencies(
                 [scope.clone()],
@@ -125,7 +129,9 @@ impl Statistics {
             created: Instant::now(),
             expires_at_ms: i64::MAX,
         };
-        if stats.known_models.len() + stats.known_backdrops.len() > STAT_LIMIT {
+        if stats.known_models.len() + stats.known_backdrops.len() + stats.known_patterns.len()
+            > STAT_LIMIT
+        {
             return Err(capacity());
         }
         let now = jiff::Timestamp::now().as_millisecond();
@@ -150,6 +156,17 @@ impl Statistics {
                     .backdrop_id
                     .as_ref()
                     .filter(|id| stats.known_backdrops.contains(*id));
+                if let Some(id) = quote
+                    .pattern_id
+                    .as_ref()
+                    .filter(|id| stats.known_patterns.contains(*id))
+                {
+                    memberships += stats
+                        .patterns
+                        .entry(id.clone())
+                        .or_default()
+                        .observe(&quote.price, gift.as_ref());
+                }
                 if let Some(id) = model {
                     memberships += stats
                         .models
@@ -174,9 +191,11 @@ impl Statistics {
                 if memberships > GIFT_MEMBERSHIP_LIMIT
                     || stats.models.len()
                         + stats.backdrops.len()
+                        + stats.patterns.len()
                         + stats.pairs.len()
                         + stats.known_models.len()
                         + stats.known_backdrops.len()
+                        + stats.known_patterns.len()
                         > STAT_LIMIT
                 {
                     return Err(capacity());
@@ -188,6 +207,7 @@ impl Statistics {
                 for floor in std::iter::once(&mut stats.collection)
                     .chain(stats.models.values_mut())
                     .chain(stats.backdrops.values_mut())
+                    .chain(stats.patterns.values_mut())
                     .chain(stats.pairs.values_mut())
                 {
                     floor.identities.clear();

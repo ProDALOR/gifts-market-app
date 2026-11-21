@@ -1,5 +1,9 @@
 import { ValuationFields } from "../valuation/display";
-import type { OrderValuationState } from "../valuation/use-order-valuation";
+import type {
+  OrderValuationState,
+  OrderValuation,
+} from "../valuation/use-order-valuation";
+import { priceComparison } from "../valuation/price-comparison";
 import { ValuationInfo } from "./valuation-info";
 import { ValuationStatus } from "./valuation-status";
 
@@ -7,72 +11,108 @@ export function OrderValuationSummary({
   state,
   criteria = false,
   history = false,
+  price,
+  currency,
 }: {
   state: OrderValuationState;
   criteria?: boolean;
   history?: boolean;
+  price?: string;
+  currency?: string;
 }) {
-  const { available, loading, error, report, retry } = state;
+  const { available, loading, error, report, valuations } = state;
   return (
     <section
       className={criteria ? "matching-floor" : "valuation-summary"}
-      aria-label={criteria ? "Matching current ask floor" : "Estimated value"}
+      aria-label={
+        criteria
+          ? "Matching current ask floor"
+          : history
+            ? "Current estimates"
+            : "Estimated value"
+      }
       aria-busy={loading}
     >
-      <div className="valuation-heading">
-        <h3>
-          {criteria ? "Ask floor" : history ? "Current estimate" : "Estimate"}
-        </h3>
-        <div className="valuation-controls">
-          <ValuationInfo key={state.key} state={state} />
-          {available && (
-            <button
-              onClick={retry}
-              disabled={loading}
-              aria-label="Refresh valuation"
-            >
-              ↻
-            </button>
+      {history && report && (
+        <h3 className="valuation-context">Current estimates</h3>
+      )}
+      {!report ? (
+        <div className="valuation-result-row">
+          <p
+            className="valuation-note"
+            role={error ? "alert" : loading ? "status" : undefined}
+          >
+            {!available ? "Unavailable" : error || "Calculating…"}
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="valuation-strategies">
+            {valuations.map((valuation) => (
+              <StrategyRow
+                key={`${state.key}:${valuation.strategy.id}`}
+                state={state}
+                valuation={valuation}
+                multiple={valuations.length > 1}
+                price={price}
+                currency={currency}
+              />
+            ))}
+          </div>
+          <ValuationStatus state={state} />
+        </>
+      )}
+    </section>
+  );
+}
+function StrategyRow({
+  state,
+  valuation,
+  multiple,
+  price,
+  currency,
+}: {
+  state: OrderValuationState;
+  valuation: OrderValuation;
+  multiple: boolean;
+  price?: string;
+  currency?: string;
+}) {
+  const { strategy, primaryFields, stale } = valuation;
+  const primary =
+    primaryFields.length === 1 ? primaryFields[0].value : undefined;
+  const comparison =
+    price &&
+    !state.loading &&
+    !state.error &&
+    !stale &&
+    primary?.kind === "currency" &&
+    primary.currency_id === currency
+      ? priceComparison(price, primary.amount)
+      : undefined;
+  return (
+    <section
+      className="valuation-strategy-row"
+      data-strategy={strategy.id}
+      aria-label={strategy.name}
+    >
+      <div className="valuation-result-row">
+        <div className="valuation-heading">
+          <h4>{strategy.name}</h4>
+          <ValuationInfo
+            state={state}
+            valuation={valuation}
+            label={multiple ? `How is ${strategy.name} calculated?` : undefined}
+          />
+        </div>
+        <div className="valuation-primary-result">
+          <ValuationFields fields={primaryFields} compact />
+          {!primaryFields.length && (
+            <p className="valuation-note">See calculation details</p>
           )}
+          {comparison && <p className="price-comparison">{comparison}</p>}
         </div>
       </div>
-      {state.strategies.length > 1 && (
-        <label className="valuation-strategy-picker">
-          <span className="sr">Valuation strategy</span>
-          <select
-            aria-label="Valuation strategy"
-            value={state.strategy?.id}
-            onChange={(event) => state.selectStrategy(event.target.value)}
-          >
-            {state.strategies.map((row) => (
-              <option key={row.id} value={row.id}>
-                {row.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      {!available ? (
-        <p className="valuation-note">Estimate unavailable</p>
-      ) : loading && !report ? (
-        <p className="valuation-note" role="status">
-          Calculating estimate…
-        </p>
-      ) : error && !report ? (
-        <p className="valuation-note" role="alert">
-          {error}
-        </p>
-      ) : (
-        report && (
-          <>
-            <ValuationFields fields={state.primaryFields} compact />
-            {!state.primaryFields.length && (
-              <p className="valuation-note">See calculation details</p>
-            )}
-            <ValuationStatus state={state} />
-          </>
-        )
-      )}
     </section>
   );
 }

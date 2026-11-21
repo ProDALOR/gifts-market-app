@@ -1,5 +1,6 @@
-// Bid alternatives use the picker composition, bounded static art and complete details.
+// Bid cards stay static; details share bounded playback with gift and filter previews.
 import assert from "node:assert/strict";
+import { gzipSync } from "node:zlib";
 import { criteriaReport } from "./valuation-fixture.mjs";
 import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,6 +12,53 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const output = fileURLToPath(new URL("../../.market/run", import.meta.url));
 const artwork = await readFile(
   new URL("../src/brand/liberty-figure.svg", import.meta.url),
+);
+const animation = gzipSync(
+  JSON.stringify({
+    v: "5.7.4",
+    w: 128,
+    h: 128,
+    fr: 30,
+    ip: 0,
+    op: 60,
+    assets: [],
+    layers: [
+      {
+        ddd: 0,
+        ind: 1,
+        ty: 1,
+        nm: "Moving square",
+        sr: 1,
+        ks: {
+          o: { a: 0, k: 100 },
+          r: { a: 0, k: 0 },
+          a: { a: 0, k: [8, 8, 0] },
+          s: { a: 0, k: [100, 100, 100] },
+          p: {
+            a: 1,
+            k: [
+              {
+                t: 0,
+                s: [32, 64, 0],
+                e: [96, 64, 0],
+                o: { x: 0.33, y: 0 },
+                i: { x: 0.67, y: 1 },
+              },
+              { t: 59, s: [96, 64, 0] },
+            ],
+          },
+        },
+        sw: 16,
+        sh: 16,
+        sc: "#ffffff",
+        ao: 0,
+        ip: 0,
+        op: 60,
+        st: 0,
+        bm: 0,
+      },
+    ],
+  }),
 );
 const cacheDir = await mkdtemp(join(tmpdir(), "market-bids-"));
 const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style.css"></head><body><div id="fixture"></div><script type="module">
@@ -32,7 +80,7 @@ const largeBackdrops=Array.from({length:10},(_,i)=>({...backdrops[i%3],id:'large
 const largePatterns=Array.from({length:10},(_,i)=>({...patterns[i%4],id:'large-pattern-'+i,name:'Large symbol '+i,media:{thumbnail_url:'/media/large-pattern-'+i+'/thumbnail'}}));
 for(const o of [...largeModels,...largeBackdrops,...largePatterns]){options.set(o.id,o);names.set(o.id,o.name);}names.set('known-missing','Remembered model');
 const large={...base,id:'large',target:{kind:'criteria',models:[...largeModels.map(o=>o.id),'known-missing'],backdrops:[...largeBackdrops.map(o=>o.id),'missing-backdrop'],patterns:[...largePatterns.map(o=>o.id),'missing-pattern'],number:base.target.number}};
-function App(){const[selected,select]=useState();const[catalog,setCatalog]=useState(options);const[largeMode,setLargeMode]=useState(false);window.selectBid=select;window.showLargeCard=()=>setLargeMode(true);window.restoreCatalog=()=>setCatalog(previous=>new Map([...previous,['known-missing',{kind:'model',id:'known-missing',name:'Restored model',media:{preview_url:'/media/restored-model/preview',thumbnail_url:'/media/restored-model/thumbnail'}}]]));return React.createElement('main',{className:'orderbook'},React.createElement('section',{className:'market-results'},React.createElement('h1',null,'Bids'),React.createElement(GiftGrid,{orders:largeMode?[large]:[base,any,missing,concrete,single,backdrop],busy:false,visible:()=>{},card:()=>({options:catalog,collectionName:'Liberty Figure',venueName:'MRKT',selected:false,open:select})})),selected&&React.createElement(OrderDetails,{selected,options:catalog,names,collectionName:'Liberty Figure',close:()=>select(undefined)}));}
+function App(){const[selected,select]=useState();const[catalog,setCatalog]=useState(options);const[largeMode,setLargeMode]=useState(false);window.selectBid=select;window.showLargeCard=()=>setLargeMode(true);window.showModelOnlyCard=()=>setLargeMode("models");window.restoreCatalog=()=>setCatalog(previous=>new Map([...previous,['known-missing',{kind:'model',id:'known-missing',name:'Restored model',media:{preview_url:'/media/restored-model/preview',thumbnail_url:'/media/restored-model/thumbnail'}}]]));return React.createElement('main',{className:'orderbook'},React.createElement('section',{className:'market-results'},React.createElement('h1',null,'Bids'),React.createElement(GiftGrid,{orders:largeMode==="models"?[{...base,id:"model-only",target:{...base.target,backdrops:[],patterns:[]}}]:largeMode?[large]:[base,any,missing,concrete,single,backdrop],busy:false,visible:()=>{},card:()=>({options:catalog,collectionName:'Liberty Figure',venueName:'MRKT',selected:false,open:select})})),selected&&React.createElement(OrderDetails,{selected,options:catalog,names,collectionName:'Liberty Figure',close:()=>select(undefined)}));}
 createRoot(document.getElementById('fixture')).render(React.createElement(App));
 </script></body></html>`;
 let symbol;
@@ -69,12 +117,20 @@ const server = await createServer({
             );
             return;
           }
+          if (req.url === "/guide") {
+            res.setHeader("Content-Type", "text/markdown");
+            res.end("# Matching asks\nCurrent asks for the accepted gifts.");
+            return;
+          }
           if (!req.url.startsWith("/media/")) return next();
           requests.push(req.url);
-          assert.ok(
-            !req.url.endsWith("/animation"),
-            "Bids must not load animations",
-          );
+          if (req.url.endsWith("/animation")) {
+            assert.ok(!req.url.includes("pattern-"), "Symbols remain static");
+            res.setHeader("Content-Type", "application/x-tgsticker");
+            res.setHeader("Cache-Control", "public,max-age=86400");
+            res.end(animation);
+            return;
+          }
           const pattern = req.url.includes("pattern-");
           res.setHeader(
             "Content-Type",
@@ -93,6 +149,16 @@ try {
   await mkdir(output, { recursive: true });
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "hardwareConcurrency", {
+      configurable: true,
+      get: () => 4,
+    });
+    Object.defineProperty(navigator, "deviceMemory", {
+      configurable: true,
+      get: () => 4,
+    });
+  });
   symbol = Buffer.from(
     await page.evaluate(() => {
       const canvas = document.createElement("canvas");
@@ -185,12 +251,25 @@ try {
     await card.locator("figure").getAttribute("aria-label"),
     /Model 7/,
   );
-  assert.equal(await card.locator(".serial").textContent(), "Bid · ×8");
+  assert.equal(await card.locator(".serial").textContent(), "×8");
   assert.match(await card.locator(".bid-number").textContent(), /#1 – 1000/);
   const any = page
     .locator(".gift-card")
     .filter({ has: page.locator('[data-order-id="any"]') });
-  await any.getByText("Any model", { exact: true }).waitFor();
+  await any.getByRole("img", { name: "Any model", exact: true }).waitFor();
+  await any.getByRole("img", { name: "Any backdrop", exact: true }).waitFor();
+  await any.getByRole("img", { name: "Any symbol", exact: true }).waitFor();
+  assert.equal(await any.locator(".unrestricted-trait").count(), 3);
+  assert.equal(
+    await any.locator(".unrestricted-trait defs").count(),
+    0,
+    "Static icons do not allocate clipping paths or shimmer gradients",
+  );
+  assert.equal(
+    await card.locator(".unrestricted-trait").count(),
+    0,
+    "Restricted traits do not show unrestricted icons",
+  );
   assert.equal(
     await any.locator(".preview-model,.preview-band,.preview-symbols").count(),
     0,
@@ -206,7 +285,7 @@ try {
   assert.equal(await missing.locator(".preview-model").count(), 0);
   await missing.getByText("2 unavailable models", { exact: true }).waitFor();
   assert.equal(
-    await missing.getByText("Any model", { exact: true }).count(),
+    await missing.getByRole("img", { name: "Any model", exact: true }).count(),
     0,
     "Missing catalog entries cannot turn a restricted bid into Any",
   );
@@ -219,9 +298,21 @@ try {
   const backdrop = page
     .locator(".gift-card")
     .filter({ has: page.locator('[data-order-id="backdrop"]') });
-  await backdrop.getByText("Any model", { exact: true }).waitFor();
+  await backdrop.getByRole("img", { name: "Any model", exact: true }).waitFor();
   assert.equal(await backdrop.locator(".preview-band").count(), 1);
   assert.equal(await backdrop.locator(".preview-symbols").count(), 1);
+  assert.equal(
+    await backdrop
+      .getByRole("img", { name: "Any backdrop", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await backdrop
+      .getByRole("img", { name: "Any symbol", exact: true })
+      .count(),
+    0,
+  );
   assert.equal(
     await card.evaluate((c) => c.scrollWidth <= c.clientWidth),
     true,
@@ -236,18 +327,104 @@ try {
   await checkLayout();
   await page.waitForTimeout(300);
   assert.equal(await page.locator(".model-animation").count(), 0);
+  assert.equal(
+    requests.filter((url) => url.endsWith("/animation")).length,
+    0,
+    "Bid cards never fetch TGS",
+  );
   await page.screenshot({ path: join(output, "bid-cards-mobile.png") });
   await card.locator(".card-open").focus();
   await page.keyboard.press("Enter");
   await page.locator(".detail-criteria").waitFor();
   const details = page.locator(".detail-criteria");
   const detailPreview = details.locator(".bid-detail-preview");
+  await details.getByLabel("Quantity: 8", { exact: true }).waitFor();
+  await details
+    .getByRole("img", { name: "Venue: MRKT", exact: true })
+    .waitFor();
+  assert.equal(await details.locator('[data-condition="quantity"]').count(), 0);
+  const checkModelSizing = async () => {
+    const sizes = await detailPreview
+      .locator(".preview-model")
+      .evaluateAll((models) =>
+        models.flatMap((model) => {
+          const artwork = model.querySelector(".gift-preview");
+          const image = artwork?.querySelector("img");
+          if (!image) return [];
+          const host = artwork.getBoundingClientRect();
+          const media = image.getBoundingClientRect();
+          const name = model
+            .querySelector("span[title]")
+            .getBoundingClientRect();
+          const title = model
+            .closest("figure")
+            .querySelector("#detail-title")
+            .getBoundingClientRect();
+          return [
+            {
+              expected: parseFloat(
+                getComputedStyle(artwork).getPropertyValue(
+                  "--preview-model-size",
+                ),
+              ),
+              width: media.width,
+              height: media.height,
+              fits:
+                Math.abs(media.width - host.width) < 1 &&
+                Math.abs(media.height - host.height) < 1,
+              nameBelow: name.top >= host.bottom - 1,
+              titleBelow: title.top >= name.bottom - 1,
+              clearsBadges:
+                host.top >=
+                model
+                  .closest(".detail-art")
+                  .querySelector(".detail-art-meta")
+                  .getBoundingClientRect().bottom,
+            },
+          ];
+        }),
+      );
+    assert.ok(
+      sizes.length &&
+        sizes.every(
+          (size) =>
+            size.fits &&
+            size.nameBelow &&
+            size.titleBelow &&
+            size.clearsBadges &&
+            Math.abs(size.width - size.expected) < 1 &&
+            Math.abs(size.height - size.expected) < 1,
+        ),
+      `Bid artwork fills the shared picker-sized media box: ${JSON.stringify(sizes)}`,
+    );
+  };
   await detailPreview.locator("img.loaded").first().waitFor();
+  assert.equal(
+    await detailPreview.locator("figure > figcaption #detail-title").count(),
+    1,
+    "The collection name belongs to the composition background",
+  );
+  assert.ok(
+    await detailPreview.locator("figure").evaluate((figure) => {
+      const title = figure
+        .querySelector("#detail-title")
+        .getBoundingClientRect();
+      const backdrop = figure
+        .querySelector(".preview-bands")
+        .getBoundingClientRect();
+      const symbols = figure
+        .querySelector(".preview-symbols")
+        .getBoundingClientRect();
+      return backdrop.bottom >= title.bottom && symbols.bottom >= title.bottom;
+    }),
+    "Backdrops and symbols extend behind the collection title",
+  );
   assert.equal(await detailPreview.locator(".preview-model").count(), 8);
+  await checkModelSizing();
   assert.equal(
     await detailPreview.locator(".preview-model > span[title]").count(),
-    0,
-    "The cover does not repeat names from the complete conditions",
+    8,
+    "Detail models use the same names and artwork layout as the filter preview",
   );
   assert.equal(await detailPreview.locator(".preview-band").count(), 3);
   assert.equal(
@@ -267,7 +444,91 @@ try {
     await details.locator(".detail-art #detail-title").isVisible(),
     true,
   );
-  assert.equal(await details.locator(".model-animation").count(), 0);
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".bid-detail-preview .model-animation.ready")
+        .length === 8,
+  );
+  assert.equal(
+    await page
+      .locator(".gift-card .model-animation, .condition-chip .model-animation")
+      .count(),
+    0,
+    "Cards and condition chips remain static",
+  );
+  const frame = await detailPreview
+    .locator(".model-animation.ready")
+    .first()
+    .innerHTML();
+  await page.waitForFunction(
+    (before) =>
+      document.querySelector(".bid-detail-preview .model-animation.ready")
+        ?.innerHTML !== before,
+    frame,
+  );
+  assert.equal(
+    await details.locator(".model-animation.ready").count(),
+    8,
+    "All eight opened bid models animate within the adaptive device budget",
+  );
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.waitForFunction(
+    () => !document.querySelector(".model-animation.ready"),
+  );
+  const reducedRequests = requests.length;
+  await page.waitForTimeout(150);
+  assert.equal(
+    requests.length,
+    reducedRequests,
+    "Reduced motion stops animation downloads and players",
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".bid-detail-preview .model-animation.ready")
+        .length === 8,
+  );
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.waitForFunction(
+    () => !document.querySelector(".model-animation.ready"),
+  );
+  await page.evaluate(() => {
+    delete document.hidden;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".bid-detail-preview .model-animation.ready")
+        .length === 8,
+  );
+  await details
+    .getByRole("button", { name: "How is this calculated?", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Calculation guide", exact: true })
+    .waitFor();
+  await page.waitForFunction(
+    () => !document.querySelector(".model-animation.ready"),
+  );
+  await page
+    .getByRole("dialog", { name: "Calculation guide", exact: true })
+    .getByText("Current asks for the accepted gifts.", { exact: true })
+    .waitFor();
+  await page
+    .getByRole("button", { name: "Close calculation guide", exact: true })
+    .click();
+  await page.locator(".valuation-popup").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".bid-detail-preview .model-animation.ready")
+        .length === 8,
+  );
   assert.equal(await details.locator(".condition-chip").count(), 15);
   assert.equal(await details.locator(".condition-overflow").count(), 0);
   assert.equal(await details.locator(".detail-art").count(), 1);
@@ -275,10 +536,7 @@ try {
   assert.equal(await details.locator(".detail-pricing > section").count(), 2);
   assert.equal(await details.locator(".matching-floor time").count(), 0);
   await details.locator(".matching-floor .valuation-value").waitFor();
-  assert.equal(
-    await details.locator('[data-condition="quantity"] dd').textContent(),
-    "8",
-  );
+  assert.equal(await details.locator(".detail-quantity").textContent(), "×8");
   assert.equal(
     await details.locator('[data-condition="model"] .condition-chip').count(),
     8,
@@ -301,6 +559,19 @@ try {
     .getByRole("button", { name: "Close details", exact: true })
     .click();
   await details.waitFor({ state: "detached" });
+  assert.equal(
+    await page.locator(".model-animation").count(),
+    0,
+    "Closing bid details releases all animation players",
+  );
+  const closedRequests = requests.length;
+  await card.hover();
+  await page.waitForTimeout(200);
+  assert.equal(
+    requests.length,
+    closedRequests,
+    "Hovering bid cards after closing details stays static",
+  );
   await page.setViewportSize({ width: 1200, height: 850 });
   await card.locator("img.loaded").first().waitFor();
   assert.equal(
@@ -359,6 +630,13 @@ try {
     [1200, 900],
   ]) {
     await page.setViewportSize({ width, height });
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    await checkModelSizing();
     const layout = await details.evaluate((dialog) => {
       dialog.scrollTop = 0;
       dialog.querySelector(".detail-content").scrollTop = 0;
@@ -369,23 +647,46 @@ try {
         .getBoundingClientRect();
       const close = dialog.querySelector(".modal-close");
       const button = close.getBoundingClientRect();
+      const glyph = close.querySelector("svg").getBoundingClientRect();
       return {
         contained:
           bounds.top >= 0 &&
           bounds.bottom <= innerHeight &&
           dialog.scrollWidth <= dialog.clientWidth,
         caption: caption.bottom <= art.bottom + 1,
-        close: close.contains(
-          document.elementFromPoint(
-            button.x + button.width / 2,
-            button.y + button.height / 2,
+        close:
+          Math.abs(glyph.x + glyph.width / 2 - button.x - button.width / 2) <
+            1 &&
+          Math.abs(glyph.y + glyph.height / 2 - button.y - button.height / 2) <
+            1 &&
+          close.contains(
+            document.elementFromPoint(
+              button.x + button.width / 2,
+              button.y + button.height / 2,
+            ),
           ),
-        ),
         artHeight: art.height,
+        badges: [...dialog.querySelectorAll(".detail-art-meta > span")].every(
+          (badge) => {
+            const box = badge.getBoundingClientRect();
+            return (
+              box.left >= art.left &&
+              box.top >= art.top &&
+              box.right <= art.right &&
+              box.bottom <= art.bottom &&
+              !(
+                box.right > button.left &&
+                box.left < button.right &&
+                box.bottom > button.top &&
+                box.top < button.bottom
+              )
+            );
+          },
+        ),
       };
     });
     assert.ok(
-      layout.contained && layout.caption && layout.close,
+      layout.contained && layout.caption && layout.close && layout.badges,
       `Bid at ${width}×${height}: ${JSON.stringify(layout)}`,
     );
     if (width === 390)
@@ -395,7 +696,7 @@ try {
       );
   }
   await page.setViewportSize({ width: 1200, height: 850 });
-  await details.locator('[data-condition="quantity"]').scrollIntoViewIfNeeded();
+  await details.locator('[data-condition="number"]').scrollIntoViewIfNeeded();
   await details.locator(".detail-actions").scrollIntoViewIfNeeded();
   const visibleDialog = await details.boundingBox();
   const visibleActions = await details.locator(".detail-actions").boundingBox();
@@ -424,6 +725,116 @@ try {
     .getByRole("button", { name: "Close details", exact: true })
     .click();
   await details.waitFor({ state: "detached" });
+  await page.locator('[data-order-id="any"]').click();
+  await details.waitFor();
+  await details.getByRole("img", { name: "Any model", exact: true }).waitFor();
+  assert.equal(await details.locator(".condition-any").count(), 3);
+  for (const [width, height] of [
+    [320, 568],
+    [390, 844],
+    [1200, 850],
+  ]) {
+    await page.setViewportSize({ width, height });
+    const closePosition = await details.locator(".modal-close").boundingBox();
+    assert.ok(
+      Math.abs(closePosition.y - 12) < 1 &&
+        Math.abs(closePosition.x + closePosition.width - (width - 12)) < 1,
+      "The close button stays at the viewport corner during opening and resizing",
+    );
+    assert.equal(
+      await details.evaluate((dialog) => {
+        dialog.scrollTop = 0;
+        const header = dialog.querySelector(".bid-preview-unrestricted");
+        const badges = [
+          ...dialog.querySelectorAll(".detail-art-meta > span"),
+        ].map((node) => node.getBoundingClientRect());
+        const art = dialog.querySelector(".detail-art").getBoundingClientRect();
+        return [...header.querySelectorAll(".unrestricted-trait")].every(
+          (node) => {
+            const box = node.getBoundingClientRect();
+            return (
+              box.left >= art.left &&
+              box.right <= art.right &&
+              box.top >= art.top &&
+              box.bottom <= art.bottom &&
+              badges.every(
+                (badge) =>
+                  box.right <= badge.left ||
+                  box.left >= badge.right ||
+                  box.bottom <= badge.top ||
+                  box.top >= badge.bottom,
+              )
+            );
+          },
+        );
+      }),
+      true,
+      "Unrestricted icons and quantity/venue badges stay separate at every viewport",
+    );
+    await page.screenshot({
+      path: join(output, `bid-unrestricted-${width}.png`),
+    });
+  }
+  await detailPreview
+    .getByRole("img", { name: "Any backdrop", exact: true })
+    .waitFor();
+  await detailPreview
+    .getByRole("img", { name: "Any symbol", exact: true })
+    .waitFor();
+  assert.equal(
+    await details
+      .locator(".unrestricted-trait .gift-placeholder-shimmer")
+      .count(),
+    0,
+  );
+  for (const kind of ["model", "backdrop", "pattern"]) {
+    const condition = details.locator(
+      `[data-condition="${kind}"] .condition-any`,
+    );
+    const label = kind === "pattern" ? "Any symbol" : `Any ${kind}`;
+    const toggle = condition.locator("summary");
+    assert.equal(await toggle.getAttribute("aria-label"), label);
+    assert.equal((await toggle.textContent()).trim(), "∞");
+    assert.equal(
+      await condition.locator(".condition-any-label").isVisible(),
+      false,
+    );
+    await toggle.click();
+    await condition.getByText(label, { exact: true }).waitFor();
+    await toggle.focus();
+    await page.keyboard.press("Space");
+    assert.equal(
+      await condition.locator(".condition-any-label").isVisible(),
+      false,
+    );
+  }
+  assert.equal(
+    await details.locator(".model-animation").count(),
+    0,
+    "An unrestricted preview needs no animation or remote artwork",
+  );
+  await page
+    .getByRole("button", { name: "Close details", exact: true })
+    .click();
+  await details.waitFor({ state: "detached" });
+  assert.equal(
+    await any.getByRole("img", { name: "Any model", exact: true }).isVisible(),
+    true,
+    "Cards reuse the unrestricted model artwork",
+  );
+  await page.locator('[data-order-id="concrete"]').click();
+  await page
+    .locator(".detail-art > .gift-preview-large .model-animation.ready")
+    .waitFor();
+  assert.equal(
+    await page.locator(".gift-card .model-animation").count(),
+    0,
+    "Numbered bid cards stay static while their opened artwork animates",
+  );
+  await page
+    .getByRole("button", { name: "Close details", exact: true })
+    .click();
+  await page.locator(".detail").waitFor({ state: "detached" });
   // A large bid must keep its summaries visible without downloading every condition icon.
   await page.evaluate(() => {
     window.showLargeCard();
@@ -482,6 +893,7 @@ try {
   assert.equal(await details.locator(".condition-chip").count(), 223);
   assert.equal(await detailPreview.locator(".preview-model").count(), 16);
   await detailPreview.locator("img.loaded").first().waitFor();
+  await checkModelSizing();
   await page.waitForTimeout(200);
   assert.equal(
     await details
@@ -524,6 +936,29 @@ try {
     true,
     "Expanded overflow follows the artwork in normal layout flow",
   );
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".bid-detail-preview .model-animation.ready")
+        .length === 10,
+  );
+  await page.evaluate(async () => {
+    const { playbackBudget } = await import("/src/previews/playback-budget.ts");
+    playbackBudget.setLimit(18);
+  });
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".bid-detail-preview .model-animation.ready")
+        .length === 16,
+  );
+  await page.evaluate(async () => {
+    const { playbackBudget } = await import("/src/previews/playback-budget.ts");
+    playbackBudget.setLimit(10);
+  });
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".bid-detail-preview .model-animation.ready")
+        .length === 10,
+  );
   const warmRequests = requests.length;
   await page.screenshot({ path: join(output, "bid-large-details-mobile.png") });
   await page
@@ -532,11 +967,16 @@ try {
   await details.waitFor({ state: "detached" });
   await largeCard.locator(".card-open").click();
   await detailPreview.locator("img.loaded").first().waitFor();
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".bid-detail-preview .model-animation.ready")
+        .length === 10,
+  );
   await page.waitForTimeout(200);
   assert.equal(
     requests.length,
     warmRequests,
-    "Reopening unchanged details reuses warm media",
+    `Reopening unchanged details reuses warm media: ${JSON.stringify(requests.slice(warmRequests))}`,
   );
   await details.evaluate((el) => {
     window.firstChipImage = el.querySelector(".condition-chip img");
@@ -575,6 +1015,42 @@ try {
     .getByRole("button", { name: "Close details", exact: true })
     .click();
   await details.waitFor({ state: "detached" });
+  await page.evaluate(() => {
+    window.showModelOnlyCard();
+    window.scrollTo(0, 0);
+  });
+  const modelOnly = page
+    .locator(".gift-card")
+    .filter({ has: page.locator('[data-order-id="model-only"]') });
+  await modelOnly
+    .getByRole("img", { name: "Any symbol", exact: true })
+    .waitFor();
+  await modelOnly
+    .getByRole("img", { name: "Any backdrop", exact: true })
+    .waitFor();
+  for (const width of [320, 390, 1200]) {
+    await page.setViewportSize({ width, height: 850 });
+    assert.equal(
+      await modelOnly.evaluate((card) => {
+        const header = card
+          .querySelector(".bid-preview-unrestricted")
+          .getBoundingClientRect();
+        const summary = card
+          .querySelector(".bid-preview-summary")
+          .getBoundingClientRect();
+        return (
+          [...card.querySelectorAll(".preview-model")].every((model) => {
+            const box = model.getBoundingClientRect();
+            return (
+              box.top >= header.bottom - 1 && box.bottom <= summary.top + 1
+            );
+          }) && card.scrollWidth <= card.clientWidth
+        );
+      }),
+      true,
+      "Unrestricted icons, four models and overflow fit inside a compact card",
+    );
+  }
   assert.ok(requests.some((url) => url.endsWith("/preview")));
   assert.ok(
     !requests.some((url) => /model-\d+\/thumbnail/.test(url)),
@@ -582,12 +1058,12 @@ try {
   );
   assert.deepEqual(
     unexpected,
-    ["/valuations/strategies"],
-    "All bid details share one strategy discovery request",
+    ["/valuations/strategies", "/guide"],
+    "Bid details share one strategy discovery request; the guide loads only on intent",
   );
   assert.deepEqual(errors, []);
   console.log(
-    `Bid browser passed: matching current floor, normal-flow summaries, partial catalog recovery, ${mountedChipImages}/210 chip images admitted on opening a large bid, scroll admission, warm reopening and no animation requests.`,
+    `Bid browser passed: matching current floor, normal-flow summaries, partial catalog recovery, ${mountedChipImages}/210 chip images admitted on opening a large bid, scroll admission, warm reopening and budgeted detail animations with static cards.`,
   );
 } finally {
   await browser?.close();

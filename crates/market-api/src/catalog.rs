@@ -25,12 +25,16 @@ pub struct GiftModel {
     pub id: gifts::ModelId,
     pub name: String,
     pub media: Option<GiftMedia>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rarity: Option<gifts::GiftRarity>,
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GiftPattern {
     pub id: gifts::PatternId,
     pub name: String,
     pub media: Option<GiftMedia>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rarity: Option<gifts::GiftRarity>,
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GiftCatalog {
@@ -107,6 +111,7 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
                     id: m.id.clone(),
                     name: m.name.clone(),
                     media: m.media.clone().map(Into::into),
+                    rarity: m.rarity,
                 })
                 .collect::<Vec<_>>()
                 .into(),
@@ -117,6 +122,7 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
                     id: p.id.clone(),
                     name: p.name.clone(),
                     media: p.media.clone().map(Into::into),
+                    rarity: p.rarity,
                 })
                 .collect::<Vec<_>>()
                 .into(),
@@ -125,7 +131,7 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
     }
 }
 /// Internal representation namespace; update if URL/JSON mapping changes.
-const REPRESENTATION: &[u8] = b"gift-catalog:svg-media\0";
+const REPRESENTATION: &[u8] = b"gift-catalog:rarity\0";
 /// A stable 128-bit cache validator; tokens are opaque and provide no authentication.
 pub(crate) fn revision(domain: &str) -> String {
     let mut hash = Sha256::new();
@@ -146,19 +152,58 @@ pub(crate) fn versions(mut value: gifts::CatalogVersions) -> gifts::CatalogVersi
 mod tests {
     use super::*;
     #[test]
-    fn revisions_are_short_stable_opaque_tokens_derived_from_the_full_content_version() {
-        assert_eq!(revision("content"), "1q9h6blJLu4xJrwFrNXKVg");
-        let old = Sha256::digest(
-            [
-                b"gift-catalog:media-variants-and-outlines\0".as_slice(),
-                b"content",
-            ]
-            .concat(),
+    fn catalog_presentation_preserves_numeric_and_craft_rarity_for_all_traits() {
+        let percentage = gifts::GiftRarity::Percentage {
+            permille: 5.try_into().unwrap(),
+        };
+        let data = GiftCollectionCatalog::from(gifts::GiftCollectionCatalog {
+            collection: gifts::GiftCollection {
+                id: "gift".into(),
+                name: "Gift".into(),
+                slug: None,
+                preview: None,
+            },
+            models: vec![gifts::GiftModel {
+                id: "model".into(),
+                name: "Model".into(),
+                media: None,
+                rarity: Some(percentage),
+            }]
+            .into(),
+            backdrops: vec![gifts::GiftBackdrop {
+                id: "backdrop".into(),
+                name: "Backdrop".into(),
+                palette: None,
+                rarity: Some(gifts::GiftRarity::Epic),
+            }]
+            .into(),
+            patterns: vec![gifts::GiftPattern {
+                id: "pattern".into(),
+                name: "Pattern".into(),
+                media: None,
+                rarity: None,
+            }]
+            .into(),
+        });
+        let json = serde_json::to_value(data).unwrap();
+        assert_eq!(
+            json["models"][0]["rarity"],
+            serde_json::json!({"kind":"percentage","permille":5})
         );
+        assert_eq!(
+            json["backdrops"][0]["rarity"],
+            serde_json::json!({"kind":"epic"})
+        );
+        assert!(json["patterns"][0].get("rarity").is_none());
+    }
+    #[test]
+    fn revisions_are_short_stable_opaque_tokens_derived_from_the_full_content_version() {
+        assert_eq!(revision("content"), "XXtBQfdU3H2Yg0031Mkh5w");
+        let old = Sha256::digest([b"gift-catalog:svg-media\0".as_slice(), b"content"].concat());
         assert_ne!(
             revision("content"),
             URL_SAFE_NO_PAD.encode(&old[..16]),
-            "Removing placeholder URLs must invalidate existing catalog ETags and watch tokens"
+            "Adding rarity must invalidate existing catalog ETags and watch tokens"
         );
         let original = "0".repeat(64);
         let mut changed = original.clone();

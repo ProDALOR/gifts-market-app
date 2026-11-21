@@ -1,4 +1,5 @@
 use super::*;
+use market_gifts::GiftRarity;
 use market_gifts_hub::{BACKDROP, MODEL, PATTERN};
 use market_hub_protocol::wire as w;
 use w::entity::Entity as E;
@@ -167,6 +168,39 @@ fn same_choices(before: &GiftCollectionCatalog, after: &GiftCollectionCatalog) {
     assert!(Arc::ptr_eq(&before.models, &after.models));
     assert!(Arc::ptr_eq(&before.backdrops, &after.backdrops));
     assert!(Arc::ptr_eq(&before.patterns, &after.patterns));
+}
+#[test]
+fn rarity_changes_invalidate_selected_choices_and_their_content_revision() {
+    let mut f = Fixture::new();
+    let directory = f.catalog();
+    let before = f.choices();
+    let old_revision = super::version::revision(&before).unwrap();
+    let E::AttributeOption(mut option) = model("Original") else {
+        unreachable!()
+    };
+    option.meta.insert("rarity.permille".into(), "5".into());
+    f.apply(vec![upsert(E::AttributeOption(option.clone()))]);
+    let after = f.choices();
+    assert_eq!(
+        after.models[0].rarity,
+        Some(GiftRarity::Percentage {
+            permille: 5.try_into().unwrap()
+        })
+    );
+    assert!(!Arc::ptr_eq(&before.models, &after.models));
+    assert_ne!(old_revision, super::version::revision(&after).unwrap());
+    assert_eq!(
+        directory,
+        f.catalog(),
+        "Rarity is absent from the directory payload"
+    );
+    option.meta.remove("rarity.permille");
+    f.apply(vec![upsert(E::AttributeOption(option))]);
+    assert!(f.choices().models[0].rarity.is_none());
+    assert_eq!(
+        old_revision,
+        super::version::revision(&f.choices()).unwrap()
+    );
 }
 #[test]
 fn prices_freshness_and_unused_attribute_definitions_reuse_every_projection() {

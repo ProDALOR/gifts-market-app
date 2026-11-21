@@ -1,19 +1,23 @@
 import type { CatalogOption } from "../market";
+import type { ReactNode } from "react";
 import type { BidCriteria } from "../orderbook";
 import { resolveTraits } from "../catalog/traits";
 import { TraitComposition } from "../previews/trait-composition";
+import { UnrestrictedTrait } from "../previews/unrestricted-trait";
 
-/** The picker's composition, bounded for static cards and expanded details. */
+/** Static cards and animated details share the picker's composition and playback budget. */
 export function BidPreview({
   criteria,
   options,
   names,
   compact = true,
+  caption,
 }: {
   criteria: BidCriteria;
   options: ReadonlyMap<string, CatalogOption>;
   names?: ReadonlyMap<string, string>;
   compact?: boolean;
+  caption?: ReactNode;
 }) {
   const groups = resolveTraits(criteria, options, names).map((group) => ({
     ...group,
@@ -75,29 +79,40 @@ export function BidPreview({
       backdrops={backdrops.shown}
       patterns={patterns.shown}
       compact={compact}
-      showModelNames={compact}
-      playback="static"
+      playback={compact ? "static" : "detail"}
       label={`Bid alternatives. ${label}`}
       header={
-        compact && !backdrops.entries.length ? (
-          <span className="bid-preview-backdrop">Any backdrop</span>
+        !backdrops.entries.length || !patterns.entries.length ? (
+          <div className="bid-preview-unrestricted">
+            {!backdrops.entries.length && <UnrestrictedTrait kind="backdrop" />}
+            {!patterns.entries.length && <UnrestrictedTrait kind="pattern" />}
+          </div>
         ) : undefined
       }
       footer={
-        badges.length ? (
-          <div className="bid-preview-summary">
-            {badges.map((badge) => (
-              <span key={badge.text} title={badge.title}>
-                {badge.text}
-              </span>
-            ))}
-          </div>
+        badges.length || caption ? (
+          <>
+            {badges.length > 0 && (
+              <div className="bid-preview-summary">
+                {badges.map((badge) => (
+                  <span key={badge.text} title={badge.title}>
+                    {badge.text}
+                  </span>
+                ))}
+              </div>
+            )}
+            {caption}
+          </>
         ) : undefined
       }
     >
       {!models.shown.length && (
         <span className="bid-preview-empty">
-          {models.entries.length ? "Unavailable model" : "Any model"}
+          {models.entries.length ? (
+            "Unavailable model"
+          ) : (
+            <UnrestrictedTrait kind="model" />
+          )}
         </span>
       )}
     </TraitComposition>

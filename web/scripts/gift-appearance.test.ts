@@ -104,3 +104,27 @@ test("typed catalog option kinds and unavailable palettes preserve the placehold
   });
   assert.equal(giftAppearance(order(), invalidPattern).patternUrls.length, 0);
 });
+
+test("ask and history appearance retain known backdrops and symbols without model media", () => {
+  for (const missing of ["model", "media"]) {
+    const catalog = options();
+    if (missing === "model") catalog.delete("model");
+    else
+      catalog.set("model", {
+        kind: "model",
+        id: "model",
+        name: "Model",
+        media: null,
+      });
+    const appearance = giftAppearance(order(), catalog);
+    assert.equal(appearance.media, undefined);
+    assert.deepEqual(appearance.palette, {
+      center: "#b789e4",
+      edge: "#8a5abc",
+      pattern: "#5b10ab",
+    });
+    assert.deepEqual(appearance.patternUrls, [
+      "/media/patterns/pattern/thumbnail",
+    ]);
+  }
+});

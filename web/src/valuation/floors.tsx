@@ -14,6 +14,7 @@ import type {
   SharedFloor,
 } from "./floors-controller";
 import type { Order } from "../market";
+import { roundedAmount } from "../market";
 import { Quote } from "../ui/market-controls";
 import "./floors.css";
 const empty: FloorsState = {
@@ -24,17 +25,18 @@ const empty: FloorsState = {
 };
 const Context = createContext<{
   state: FloorsState;
-  visible: (ids: string[]) => void;
   retry: () => void;
-}>({ state: empty, visible: () => {}, retry: () => {} });
+}>({ state: empty, retry: () => {} });
 export function FloorsProvider({
   currency,
   collection,
+  collections,
   order,
   children,
 }: {
   currency: string;
   collection: string;
+  collections?: readonly string[];
   order?: Order;
   children: ReactNode;
 }) {
@@ -51,13 +53,18 @@ export function FloorsProvider({
       : undefined;
   const model = traits?.model,
     backdrop = traits?.backdrop;
+  const ids = useMemo(
+    () => collections ?? (collection ? [collection] : []),
+    [collections, collection],
+  );
   useLayoutEffect(() => {
-    controller.select(
+    controller.configure(
       currency,
+      ids,
       collection,
       model && backdrop ? { model_id: model, backdrop_id: backdrop } : null,
     );
-  }, [controller, currency, collection, model, backdrop]);
+  }, [controller, currency, ids, collection, model, backdrop]);
   useEffect(() => () => controller.close(), [controller]);
   const view =
     state.currency === currency && state.selected === collection
@@ -66,7 +73,6 @@ export function FloorsProvider({
   const value = useMemo(
     () => ({
       state: view,
-      visible: controller.visibleCollections,
       retry: controller.retry,
     }),
     [view, controller],
@@ -98,33 +104,40 @@ export function FloorBadge({
   stale = false,
   label = "Current floor",
   compact = false,
+  rounded = false,
 }: {
   floor?: SharedFloor;
   currency: string;
   stale?: boolean;
   label?: string;
   compact?: boolean;
+  rounded?: boolean;
 }) {
   if (!floor) return null;
   const price = "value" in floor.price ? floor.price.value : undefined;
   const message =
     "error" in floor.price ? floor.price.error.message : undefined;
   const value = price ? `${price} ${currency}` : "unavailable";
+  const display = price && rounded ? roundedAmount(price) : price;
   return (
     <span
       className={`floor-badge${stale ? " stale" : ""}`}
-      title={`${label}: ${value} · ${evidenceText(floor)}${stale ? " · updates pending" : ""}${message ? `: ${message}` : ""}`}
-      aria-label={`${label}: ${value}${stale ? "; updates pending" : ""}`}
+      title={`${label}: ${value}${stale ? " · updates pending" : ""}${message ? `: ${message}` : ""}\n${evidenceTooltip(floor)}`}
+      aria-label={`${label}: ${display ? `${display} ${currency}` : "unavailable"}${stale ? "; updates pending" : ""}`}
     >
       {!compact && <span>{label}</span>}
-      {price ? <Quote price={price} currency={currency} /> : <span>—</span>}
+      {display ? <Quote price={display} currency={currency} /> : <span>—</span>}
     </span>
   );
 }
 const counts = new Intl.NumberFormat();
-function evidenceText(floor: SharedFloor) {
-  const { gifts, listings } = floor.evidence;
-  return `${counts.format(gifts)} ${gifts === 1 ? "gift" : "gifts"} · ${counts.format(listings)} ${listings === 1 ? "listing" : "listings"}`;
+function giftCount(floor: SharedFloor) {
+  const { gifts } = floor.evidence;
+  return `${counts.format(gifts)} ${gifts === 1 ? "gift" : "gifts"}`;
+}
+function evidenceTooltip(floor: SharedFloor) {
+  const { listings } = floor.evidence;
+  return `${giftCount(floor)} · ${counts.format(listings)} ${listings === 1 ? "listing" : "listings"}\nGifts are unique identifiable collectibles with current asks in this scope. Listings are sale offers; the same gift can appear on several markets. Offers without an identifiable gift contribute only to listings.`;
 }
 /** Each scope shows its own live valuation evidence, independently of gift estimates. */
 export function FloorSummary(props: ComponentProps<typeof FloorBadge>) {
@@ -132,13 +145,10 @@ export function FloorSummary(props: ComponentProps<typeof FloorBadge>) {
   return (
     <div className={`floor-summary${props.stale ? " stale" : ""}`}>
       <FloorBadge {...props} />
-      <small
-        className="floor-evidence"
-        title="Identifiable gifts and listings with eligible current asks"
-      >
-        {evidenceText(props.floor)}
+      <small className="floor-evidence" title={evidenceTooltip(props.floor)}>
+        {giftCount(props.floor)}
       </small>
-      {"error" in props.floor.price && (
+      {!props.compact && "error" in props.floor.price && (
         <small className="floor-evidence">
           {props.floor.price.error.message}
         </small>
@@ -155,6 +165,7 @@ export function CollectionFloor({ id }: { id: string }) {
       stale={entry?.stale}
       currency={state.currency}
       compact
+      rounded
     />
   );
 }
@@ -163,11 +174,13 @@ export function TraitFloor({
   id,
   kind,
   currency,
+  rounded = false,
 }: {
   collection?: string;
   currency?: string;
   id: string;
   kind: "model" | "backdrop" | "pattern";
+  rounded?: boolean;
 }) {
   const { state } = useFloorReport();
   if (currency && currency !== state.currency) return null;
@@ -179,6 +192,7 @@ export function TraitFloor({
       stale={entry?.stale}
       currency={state.currency}
       compact
+      rounded={rounded}
     />
   );
 }

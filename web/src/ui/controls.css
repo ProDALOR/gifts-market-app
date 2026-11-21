@@ -3,9 +3,46 @@
 }
 .market-controls {
   display: flex;
-  gap: 6px;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   margin-top: var(--control-gap);
+}
+.back-to-top {
+  position: fixed;
+  right: calc(
+    16px + max(env(safe-area-inset-right), var(--tg-safe-right, 0px))
+  );
+  bottom: calc(
+    16px + max(env(safe-area-inset-bottom), var(--tg-safe-bottom, 0px))
+  );
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--accent-line);
+  border-radius: 50%;
+  background: var(--plum);
+  color: white;
+  box-shadow: 0 4px 18px #0005;
+}
+.back-to-top svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+body:has(dialog[open], [role="listbox"]) .back-to-top {
+  display: none;
+}
+@media (min-width: 960px) {
+  .back-to-top {
+    display: none;
+  }
 }
 .segments {
   display: flex;
@@ -102,15 +139,29 @@
   border-radius: 10px;
 }
 .sort-control .picker-trigger {
+  height: 100%;
   border: 0;
   background: transparent;
   border-radius: 9px 0 0 9px;
 }
 .sort-control > button {
+  position: relative;
+  display: grid;
+  place-items: center;
   color: var(--accent);
-  border-left: 1px solid var(--line);
+  border-radius: 0 9px 9px 0;
   font-size: 20px;
   padding: 0;
+}
+.sort-control > button::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 0;
+  width: 1px;
+  background: var(--line);
+  pointer-events: none;
 }
 .quote {
   text-align: center;
@@ -236,6 +287,9 @@
   background: var(--plum);
   color: white;
 }
+.picker-options button + button {
+  margin-top: 4px;
+}
 .picker-options button:hover,
 .picker-options button:focus-visible {
   background: var(--tint);
@@ -315,84 +369,106 @@
 body:has(.detail[open]) {
   overflow: hidden;
 }
+.attribute-floor-table {
+  margin-top: 12px;
+}
 .detail-attributes {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-  margin: 16px 0 0;
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
   font-size: 12px;
 }
-.detail-attributes > div {
-  display: grid;
-  grid-template-columns: minmax(90px, 0.75fr) minmax(0, 1.5fr);
-  align-items: start;
-  gap: 12px;
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
+.detail-attributes caption {
+  text-align: right;
+  font-size: 10px;
+  color: var(--muted);
+  padding: 0 8px 5px;
 }
-.detail-attributes dt {
+.detail-attributes th,
+.detail-attributes td {
+  vertical-align: middle;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.detail-attributes tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.detail-attributes th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 400;
+}
+.detail-attributes td {
+  width: 100px;
+  text-align: right;
+  font-weight: 500;
+}
+.attribute-identity {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--muted);
-  font-size: 10px;
-}
-.detail-attributes dd {
   min-width: 0;
-  margin: 0;
-  font-weight: 600;
-  overflow-wrap: anywhere;
 }
-
-.attribute-visual .gift-preview {
-  width: 36px;
-  height: 36px;
-  border: 0;
-  background: var(--raised);
+.attribute-visual .option-art {
+  display: block;
+  width: 26px;
+  height: 26px;
+}
+.attribute-visual {
+  flex: none;
+  color: var(--accent);
+}
+.attribute-visual > svg {
+  width: 26px;
+  height: 26px;
+}
+.attribute-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+.attribute-name {
+  color: var(--ink);
+}
+.attribute-floor-missing {
+  color: var(--muted);
+  font-size: 12px;
 }
 .attribute-pattern .gift-model-image {
-  padding: 5px;
+  padding: 3px;
   filter: brightness(0) invert(0.9);
 }
 .telegram[data-telegram-theme="light"] .attribute-pattern .gift-model-image {
   filter: brightness(0) invert(0.3);
 }
 
-.detail-attributes .valuation-metrics {
-  margin-top: 8px;
-}
-.detail-attributes .valuation-metrics > li {
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  background: none;
-}
-.detail-attributes .valuation-metrics > :only-child {
-  grid-column: 1 / -1;
-}
-.detail-attributes .valuation-metrics h4 {
-  font-size: 9px;
-  margin-bottom: 4px;
-}
-.detail-attributes .valuation-value {
-  font-size: 13px;
-}
 .attribute-name {
-  font-size: 12px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 14px;
 }
 
 .modal-close {
+  display: grid;
+  place-items: center;
+  padding: 0;
   width: 38px;
   height: 38px;
   flex: none;
   border-radius: 50%;
   background: var(--surface);
   color: var(--ink);
-  font-size: 22px;
   line-height: 1;
+}
+.modal-close svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
 }
 .modal > .modal-close {
   position: absolute;
@@ -403,8 +479,6 @@ body:has(.detail[open]) {
 /* Keep preview dismissal outside its scrolling content and artwork pane.
    These dialogs fade without transforms, preserving the viewport containing block. */
 .modal-viewport-close > .modal-close {
-  display: grid;
-  place-items: center;
   width: 42px;
   height: 42px;
   border: 1px solid var(--line);

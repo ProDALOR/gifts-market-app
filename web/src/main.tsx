@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   Order,
@@ -22,6 +22,7 @@ import { GiftGrid } from "./orderbook/gift-grid";
 import { CurrencyPicker, SortPicker } from "./ui/pickers";
 import { ScrollLoader } from "./orderbook/scroll-loader";
 import { BrandMark } from "./brand/brand-mark";
+import { BackToTop } from "./ui/back-to-top";
 import { initializeTelegram, launchSelection } from "./telegram";
 import type { TelegramContext } from "./telegram";
 import { useTelegram, useTelegramBack, TelegramAccount } from "./telegram-ui";
@@ -72,7 +73,7 @@ function saved(context: TelegramContext): Choice {
     currency: p.get("currency") || "",
     venue: p.get("venue") || "",
     mode,
-    bid_match: p.get("bid_match") === "all" ? "all" : "any",
+    bid_match: p.get("bid_match") === "any" ? "any" : "all",
     sort:
       (
         [
@@ -92,6 +93,7 @@ function saved(context: TelegramContext): Choice {
   };
 }
 function App({ context }: { context: TelegramContext }) {
+  const controls = useRef<HTMLElement>(null);
   const telegram = useTelegram(context);
   const [accountOpen, setAccountOpen] = useState(false);
   const [choice, setChoice] = useState(() => saved(context)),
@@ -110,7 +112,7 @@ function App({ context }: { context: TelegramContext }) {
     retryOptions,
     retryCatalog,
   } = useCatalog(reloadKey, choice.collection);
-  useBackgroundPlaybackSuspension(!!selected || accountOpen);
+  useBackgroundPlaybackSuspension(accountOpen);
   useEffect(() => {
     if (!directory[0]) return;
     setChoice((old) => {
@@ -145,7 +147,7 @@ function App({ context }: { context: TelegramContext }) {
         if (Object.keys(value as object).length)
           p.set(key, JSON.stringify(value));
       } else if (key === "bid_match") {
-        if (choice.mode === "bid" && value === "all") p.set(key, value);
+        if (choice.mode === "bid") p.set(key, String(value));
       } else if (value) p.set(key, String(value));
     }
     history.replaceState(null, "", `${location.pathname}?${p}`);
@@ -246,6 +248,10 @@ function App({ context }: { context: TelegramContext }) {
     () => types.filter((t) => directory.some((b) => b.collection_id === t.id)),
     [types, directory],
   );
+  const floorCollections = useMemo(
+    () => availableTypes.map((row) => row.id),
+    [availableTypes],
+  );
   const currencies = [
     ...new Set(
       directory
@@ -277,15 +283,23 @@ function App({ context }: { context: TelegramContext }) {
     [],
   );
 
+  const selectedCollection = selected
+    ? types.find((collection) => collection.id === selected.book.collection_id)
+    : undefined;
+
   return (
     <FloorsProvider
       currency={choice.currency}
       collection={choice.collection}
+      collections={floorCollections}
       order={selected}
     >
       <div className="workspace">
         <main className="orderbook market-shell">
           <aside
+            ref={controls}
+            id="market-filters"
+            tabIndex={-1}
             className="market-sidebar"
             aria-label="Market controls"
             data-scroll-container
@@ -348,11 +362,20 @@ function App({ context }: { context: TelegramContext }) {
               reset={resetTraits}
             />
             <div className="market-controls">
-              <div className="segments" role="group" aria-label="Market view">
+              <div
+                className="segments market-views"
+                role="group"
+                aria-label="Market view"
+              >
                 {(["ask", "bid", "executed"] as const).map((mode) => (
                   <button
                     key={mode}
                     aria-pressed={choice.mode === mode}
+                    aria-controls={
+                      mode === "bid" && choice.mode === "bid"
+                        ? "bid-matching"
+                        : undefined
+                    }
                     className={choice.mode === mode ? "active" : ""}
                     onClick={() => {
                       if (mode !== choice.mode)
@@ -371,32 +394,32 @@ function App({ context }: { context: TelegramContext }) {
                   </button>
                 ))}
               </div>
-            </div>
-            {choice.mode === "bid" && (
-              <div className="bid-matching">
-                <div
-                  className="segments"
-                  role="group"
-                  aria-label="Bid matching"
-                >
-                  {(["any", "all"] as const).map((match) => (
-                    <button
-                      key={match}
-                      aria-pressed={choice.bid_match === match}
-                      className={choice.bid_match === match ? "active" : ""}
-                      onClick={() => set({ ...choice, bid_match: match })}
-                      title={
-                        match === "any"
-                          ? "Accepts any selected value in each trait; no selection shows all bids"
-                          : "Exact bid conditions; unselected traits must be unrestricted"
-                      }
-                    >
-                      {match === "any" ? "Any" : "All"}
-                    </button>
-                  ))}
+              {choice.mode === "bid" && (
+                <div className="bid-matching" id="bid-matching">
+                  <div
+                    className="segments"
+                    role="group"
+                    aria-label="Bid matching"
+                  >
+                    {(["all", "any"] as const).map((match) => (
+                      <button
+                        key={match}
+                        aria-pressed={choice.bid_match === match}
+                        className={choice.bid_match === match ? "active" : ""}
+                        onClick={() => set({ ...choice, bid_match: match })}
+                        title={
+                          match === "any"
+                            ? "Accepts any selected value in each trait; no selection shows all bids"
+                            : "Exact bid conditions; unselected traits must be unrestricted"
+                        }
+                      >
+                        {match === "any" ? "Compatible" : "Exact"}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
             {(choice.min || choice.max || choice.from || choice.until) && (
               <div className="selection-note">
                 <span>
@@ -550,17 +573,15 @@ function App({ context }: { context: TelegramContext }) {
             </footer>
           </div>
         </main>
+        <BackToTop target={controls} blocked={!!selected || accountOpen} />
         {selected && (
           <OrderDetails
+            collectionPreview={selectedCollection?.preview ?? undefined}
             selected={selected}
             options={options}
             names={names}
             collectionName={item?.name || ""}
-            collectionSlug={
-              types.find(
-                (collection) => collection.id === selected.book.collection_id,
-              )?.slug
-            }
+            collectionSlug={selectedCollection?.slug}
             removed={activity.get(orderKey(selected))?.state === "removed"}
             close={() => setSelected(undefined)}
           />

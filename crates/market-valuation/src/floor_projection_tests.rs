@@ -67,6 +67,15 @@ async fn batch_reuses_gift_statistics_and_status_changes_do_not_rebuild_price_da
         .as_ref()
         .unwrap();
     assert_eq!(
+        serde_json::to_value(&traits.patterns[&PatternId::from("symbol")].price).unwrap()["error"]
+            ["code"],
+        "not_enough_data"
+    );
+    assert_eq!(
+        traits.patterns[&PatternId::from("symbol")].evidence.gifts,
+        0
+    );
+    assert_eq!(
         traits.models[&ModelId::from("m")]
             .price
             .value()
@@ -332,5 +341,103 @@ async fn a_batch_refresh_keeps_other_collections_calculation_times() {
             > catalog(&first.report).collections[1].evaluated_at
     );
     assert!(Arc::ptr_eq(&first.statistics()[0], &next.statistics()[0]));
+    reads.shutdown().await;
+}
+
+#[tokio::test]
+async fn symbol_floors_deduplicate_gifts_and_follow_catalog_and_order_changes() {
+    let (_dir, mut writer) = book();
+    fn symbolic(id: &str, price: &str) -> w::Change {
+        let mut change = ask(id, "m", "b", price, 700, None);
+        let Some(w::change::Change::Upsert(w::Entity {
+            entity: Some(w::entity::Entity::Order(order)),
+        })) = &mut change.change
+        else {
+            panic!()
+        };
+        order.item_id = Some("same-symbol-gift".into());
+        order.attributes.insert(
+            "tg.pattern".into(),
+            w::AttributePredicate {
+                predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                    value: Some(w::attribute_value::Value::OptionId("symbol".into())),
+                })),
+            },
+        );
+        change
+    }
+    writer
+        .apply(w::Batch {
+            cursor: "symbols".into(),
+            changes: vec![symbolic("symbol-one", "6"), symbolic("symbol-two", "5")],
+        })
+        .unwrap();
+    let reads =
+        market_replica::ReadRuntime::new(writer.reader(), 2, CancellationToken::new()).unwrap();
+    let source = source::ValuationSource::new(reads.handle());
+    let cache = Arc::new(BookCache::default());
+    let read = || {
+        let cache = cache.clone();
+        source.prepare(move |snapshot| {
+            ValuationRead::read(&snapshot, &request().prepare()?, &cache, None)
+        })
+    };
+    let first = read().await.unwrap().unwrap();
+    let symbol = &catalog(&first.report).collections[0]
+        .traits
+        .as_ref()
+        .unwrap()
+        .patterns[&PatternId::from("symbol")];
+    assert_eq!(symbol.price.value().unwrap().as_str(), "5");
+    assert_eq!(symbol.evidence.gifts, 1);
+    assert_eq!(symbol.evidence.listings, 2);
+    writer
+        .apply(w::Batch {
+            cursor: "symbol-repriced".into(),
+            changes: vec![symbolic("symbol-one", "4")],
+        })
+        .unwrap();
+    let next = read().await.unwrap().unwrap();
+    assert_eq!(
+        catalog(&next.report).collections[0]
+            .traits
+            .as_ref()
+            .unwrap()
+            .patterns[&PatternId::from("symbol")]
+            .price
+            .value()
+            .unwrap()
+            .as_str(),
+        "4"
+    );
+    assert_eq!(
+        symbol.price.value().unwrap().as_str(),
+        "5",
+        "the prior snapshot remains unchanged"
+    );
+    writer
+        .apply(w::Batch {
+            cursor: "symbol-removed".into(),
+            changes: vec![w::Change {
+                change: Some(w::change::Change::Remove(w::Removal {
+                    key: Some(w::Key {
+                        kind: w::EntityKind::AttributeOption as i32,
+                        id: "symbol".into(),
+                        venue_id: String::new(),
+                    }),
+                    observed_at_ms: None,
+                })),
+            }],
+        })
+        .unwrap();
+    let removed = read().await.unwrap().unwrap();
+    assert!(
+        catalog(&removed.report).collections[0]
+            .traits
+            .as_ref()
+            .unwrap()
+            .patterns
+            .is_empty()
+    );
     reads.shutdown().await;
 }

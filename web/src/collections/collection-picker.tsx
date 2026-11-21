@@ -13,7 +13,7 @@ import {
 } from "../previews/preview-environment";
 import { SearchIcon } from "../ui/icons";
 import type { Collection } from "../orderbook";
-import { CollectionFloor, useFloorReport } from "../valuation/floors";
+import { CollectionFloor } from "../valuation/floors";
 export const CollectionRail = memo(function CollectionRail({
   collections,
   selected,
@@ -23,7 +23,6 @@ export const CollectionRail = memo(function CollectionRail({
   selected: string;
   select: (id: string) => void;
 }) {
-  const { visible } = useFloorReport();
   const [searching, setSearching] = useState(false),
     [query, setQuery] = useState("");
   const { reducedMotion } = usePreviewEnvironment();
@@ -136,30 +135,6 @@ export const CollectionRail = memo(function CollectionRail({
     setSearching(false);
     setQuery("");
   }
-  const visibleSignature = JSON.stringify(matches.map((item) => item.id));
-  useEffect(() => {
-    const element = rail.current;
-    if (!element) return;
-    const shown = new Set<string>();
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const id = (entry.target as HTMLElement).dataset.collectionId!;
-          if (entry.isIntersecting) shown.add(id);
-          else shown.delete(id);
-        }
-        visible([...shown]);
-      },
-      { root: element, rootMargin: "80px" },
-    );
-    element
-      .querySelectorAll("[data-collection-id]")
-      .forEach((node) => observer.observe(node));
-    return () => {
-      observer.disconnect();
-      visible([]);
-    };
-  }, [visibleSignature, searching, visible]);
   return (
     <nav
       ref={host}

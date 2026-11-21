@@ -44,8 +44,14 @@ export function Modal({
     element.dataset.closing = "true";
     const exit = element.animate(
       [
-        { opacity: 1, transform: viewportClose ? "none" : "translateY(0)" },
-        { opacity: 0, transform: viewportClose ? "none" : "translateY(8px)" },
+        {
+          opacity: 1,
+          ...(viewportClose ? {} : { transform: "translateY(0)" }),
+        },
+        {
+          opacity: 0,
+          ...(viewportClose ? {} : { transform: "translateY(8px)" }),
+        },
       ],
       { duration: 140, easing: "ease-in", fill: "forwards" },
     );
@@ -63,9 +69,12 @@ export function Modal({
         [
           {
             opacity: 0,
-            transform: viewportClose ? "none" : "translateY(12px)",
+            ...(viewportClose ? {} : { transform: "translateY(12px)" }),
           },
-          { opacity: 1, transform: viewportClose ? "none" : "translateY(0)" },
+          {
+            opacity: 1,
+            ...(viewportClose ? {} : { transform: "translateY(0)" }),
+          },
         ],
         { duration: 180, easing: "cubic-bezier(.2,.7,.2,1)" },
       );
@@ -93,7 +102,9 @@ export function Modal({
       onClick={dismiss}
       autoFocus
     >
-      ×
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="m6 6 12 12M18 6 6 18" />
+      </svg>
     </button>
   );
   return (

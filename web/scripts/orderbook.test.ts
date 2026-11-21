@@ -118,9 +118,10 @@ test("gift details show traits and bid constraints without listing metadata", as
     },
   };
   const bidRows = giftDetails(bid, names);
-  assert.deepEqual(
-    bidRows.find(({ label }) => label === "Quantity"),
-    { label: "Quantity", value: "5" },
+  assert.equal(
+    bidRows.some(({ label }) => label === "Quantity"),
+    false,
+    "Quantity belongs to the artwork badge",
   );
   assert.deepEqual(
     bidRows.find(({ label }) => label === "Model"),
@@ -216,4 +217,39 @@ test("detail visuals resolve with their labels and only for a single matching tr
     giftDetails(bid, names, options).every((row) => row.option === undefined),
     "Multiple choices, wrong trait kinds and unrestricted bids have no invented preview",
   );
+});
+
+test("ask and history details share catalog-first labels and reject mismatched trait kinds", async () => {
+  const { giftDetails } = await import("../src/orderbook.ts");
+  const options = new Map<string, CatalogOption>([
+    [
+      "model",
+      { id: "model", name: "Updated model", kind: "model", media: null },
+    ],
+    [
+      "wrong",
+      { id: "wrong", name: "Not a model", kind: "backdrop", palette: null },
+    ],
+  ]);
+  const names = new Map([
+    ["model", "Stale model"],
+    ["wrong", "Stale alias"],
+  ]);
+  for (const kind of ["ask", "executed"] as const) {
+    const gift = {
+      kind,
+      target: { kind: "gift", traits: { model: "model" } },
+    } as Order;
+    assert.equal(giftDetails(gift, names, options)[0].value, "Updated model");
+    const invalid = {
+      ...gift,
+      target: { ...gift.target, kind: "gift", traits: { model: "wrong" } },
+    } as Order;
+    assert.equal(
+      giftDetails(invalid, names, options)[0].value,
+      "Unavailable model",
+    );
+    assert.equal(giftDetails(invalid, names, options)[0].option, undefined);
+    assert.equal(modelName(invalid, options, "Missing"), "Missing");
+  }
 });

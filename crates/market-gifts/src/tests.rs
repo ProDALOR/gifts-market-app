@@ -1,6 +1,48 @@
 use crate::*;
 
 #[test]
+fn catalog_rarity_is_an_optional_exact_bounded_integer() {
+    for value in [0_u16, 1, 5, 10, 999, 1000] {
+        let rarity = RarityPermille::try_from(value).unwrap();
+        let json = serde_json::to_value(rarity).unwrap();
+        assert_eq!(json, serde_json::json!(value));
+        assert_eq!(
+            serde_json::from_value::<RarityPermille>(json).unwrap(),
+            rarity
+        );
+    }
+    for invalid in [
+        serde_json::json!(-1),
+        serde_json::json!(1001),
+        serde_json::json!(1.5),
+        serde_json::json!("5"),
+    ] {
+        assert!(serde_json::from_value::<RarityPermille>(invalid).is_err());
+    }
+    let legacy = serde_json::json!({"id":"model","name":"Model","media":null});
+    let model: GiftModel = serde_json::from_value(legacy.clone()).unwrap();
+    assert!(model.rarity.is_none());
+    assert_eq!(serde_json::to_value(model).unwrap(), legacy);
+    for json in [
+        serde_json::json!({"kind":"percentage","permille":5}),
+        serde_json::json!({"kind":"uncommon"}),
+        serde_json::json!({"kind":"rare"}),
+        serde_json::json!({"kind":"epic"}),
+        serde_json::json!({"kind":"legendary"}),
+    ] {
+        let rarity: GiftRarity = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(rarity).unwrap(), json);
+    }
+    for invalid in [
+        serde_json::json!({"kind":"percentage"}),
+        serde_json::json!({"kind":"percentage","permille":1001}),
+        serde_json::json!({"kind":"unknown"}),
+    ] {
+        assert!(serde_json::from_value::<GiftRarity>(invalid).is_err());
+    }
+}
+
+#[test]
 fn standalone_gifts_keep_collection_identity_and_omit_unknown_description() {
     let value = serde_json::json!({"id":"gift","collection_id":"collection","traits":{}});
     let gift: CollectibleGift = serde_json::from_value(value.clone()).unwrap();

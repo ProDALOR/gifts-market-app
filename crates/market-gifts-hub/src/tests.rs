@@ -16,6 +16,48 @@ fn option(namespace: &str, document: &str) -> w::AttributeOption {
     }
 }
 #[test]
+fn choice_rarity_uses_numeric_metadata_for_every_trait_kind() {
+    for kind in [MODEL, BACKDROP, PATTERN] {
+        for value in ["0", "5", "10", "1000", "-1", "1001", "5.5", "rare", ""] {
+            let mut option = option("tg", "1");
+            option.attribute_id = kind.into();
+            option.meta.insert("rarity.permille".into(), value.into());
+            let rarity = match choice(option).unwrap().unwrap() {
+                Choice::Model(value) => value.rarity,
+                Choice::Backdrop(value) => value.rarity,
+                Choice::Pattern(value) => value.rarity,
+            };
+            let expected = value.parse::<u16>().ok().filter(|v| *v <= 1000);
+            assert_eq!(
+                rarity,
+                expected.map(|v| market_gifts::GiftRarity::Percentage {
+                    permille: v.try_into().unwrap()
+                }),
+                "{kind}: {value}"
+            );
+        }
+    }
+    for (label, expected) in [
+        ("uncommon", Some(market_gifts::GiftRarity::Uncommon)),
+        ("rare", Some(market_gifts::GiftRarity::Rare)),
+        ("epic", Some(market_gifts::GiftRarity::Epic)),
+        ("legendary", Some(market_gifts::GiftRarity::Legendary)),
+        ("unknown", None),
+    ] {
+        for kind in [MODEL, BACKDROP, PATTERN] {
+            let mut label_only = option("tg", "1");
+            label_only.attribute_id = kind.into();
+            label_only.meta.insert("rarity.label".into(), label.into());
+            let rarity = match choice(label_only).unwrap().unwrap() {
+                Choice::Model(value) => value.rarity,
+                Choice::Backdrop(value) => value.rarity,
+                Choice::Pattern(value) => value.rarity,
+            };
+            assert_eq!(rarity, expected, "{kind}: {label}");
+        }
+    }
+}
+#[test]
 fn telegram_aliases_and_logical_media_are_domain_rules_not_http_routes() {
     let model = option("tg", "9007199254740993");
     assert_eq!(document(&model).unwrap().get(), 9007199254740993);

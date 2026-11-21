@@ -87,6 +87,15 @@ export const collectionCatalog = (
     undefined,
     revision,
   );
+/** Round a nonnegative exact amount to two decimals without floating-point conversion. */
+export function roundedAmount(value: string) {
+  const [whole, fraction = ""] = value.split(".");
+  const rounded =
+    BigInt(whole) * 100n +
+    BigInt((fraction + "00").slice(0, 2)) +
+    ((fraction[2] ?? "0") >= "5" ? 1n : 0n);
+  return `${rounded / 100n}.${String(rounded % 100n).padStart(2, "0")}`;
+}
 /** Exact string formatting; no conversion to JavaScript floating point. */
 export function amount(value: string) {
   const [whole, fraction] = value.split(".");

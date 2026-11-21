@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { amount, modelMedia } from "../src/market.ts";
+import { amount, roundedAmount, modelMedia } from "../src/market.ts";
 import type { Order, CatalogOption } from "../src/market.ts";
 test("amount formatting preserves precision beyond JavaScript numeric range", () => {
   assert.equal(
@@ -8,6 +8,19 @@ test("amount formatting preserves precision beyond JavaScript numeric range", ()
     "10,000,000,000,000,000.000000001",
   );
   assert.equal(amount("0.500000001"), "0.500000001");
+});
+test("picker floor rounding uses exact half-up decimals and carries across whole amounts", () => {
+  for (const [input, expected] of [
+    ["0", "0.00"],
+    ["8", "8.00"],
+    ["1.2", "1.20"],
+    ["1.234999999", "1.23"],
+    ["1.235", "1.24"],
+    ["9.999", "10.00"],
+    ["0.005", "0.01"],
+    ["9007199254740993.995", "9007199254740994.00"],
+  ])
+    assert.equal(roundedAmount(input), expected);
 });
 test("concrete previews use supplied media, never guessed paths or hypothetical targets", () => {
   const gift: Pick<Order, "target"> = {

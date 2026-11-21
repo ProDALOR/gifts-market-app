@@ -6,10 +6,23 @@ test("nested info popups pause detail playback and restore the remaining modal b
   const budget = new PlaybackBudget();
   const active = new Set<string>();
   const subscribe = (id: string, priority: number) =>
-    budget.request(priority, (granted) => {
-      if (granted) active.add(id);
-      else active.delete(id);
-    });
+    budget.request(
+      {
+        priority,
+        group:
+          priority >= 100
+            ? "detail"
+            : priority >= 30
+              ? "interaction"
+              : priority >= 20
+                ? "selection"
+                : "collection",
+      },
+      (granted) => {
+        if (granted) active.add(id);
+        else active.delete(id);
+      },
+    ).cancel;
   subscribe("grid", 10);
   subscribe("detail", 100);
   const closeDetails = budget.suspendBackground();
