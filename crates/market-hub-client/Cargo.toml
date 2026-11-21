@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+tracing.workspace = true
 market-hub-protocol.workspace = true
 tonic.workspace = true
 tokio.workspace = true

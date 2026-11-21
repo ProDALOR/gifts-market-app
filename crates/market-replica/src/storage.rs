@@ -7,7 +7,7 @@ use market_hub_protocol::wire as w;
 use prost::Message;
 use redb::{
     Database, Durability, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata,
-    TableDefinition,
+    TableDefinition, WriteTransaction,
 };
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 use tonic::Status;
@@ -123,7 +123,11 @@ impl Store {
         }
         Ok(state)
     }
-    pub fn apply(&self, changes: &[w::Change], cursor: Option<&str>) -> Result<(), Status> {
+    pub fn apply<'a>(
+        &self,
+        changes: impl IntoIterator<Item = &'a w::Change>,
+        cursor: Option<&str>,
+    ) -> Result<(), Status> {
         let mut tx = self.0.begin_write().map_err(failure)?;
         tx.set_durability(if cursor.is_some() {
             Durability::Immediate
@@ -209,13 +213,7 @@ impl Store {
                 }
             }
             if let Some(cursor) = cursor {
-                if cursor.is_empty() {
-                    return Err(Status::data_loss("empty durable checkpoint"));
-                }
-                let mut meta = tx.open_table(META).map_err(failure)?;
-                meta.insert("cursor", cursor.as_bytes()).map_err(failure)?;
-                meta.insert("updated_at", crate::now().to_string().as_bytes())
-                    .map_err(failure)?;
+                checkpoint(&tx, cursor)?;
             }
         }
         tx.commit().map_err(failure)
@@ -232,22 +230,53 @@ impl Store {
         }
         tx.commit().map_err(failure)
     }
-    pub fn journal_at(&self, position: u64) -> Result<Option<w::Batch>, Status> {
+    pub fn journal_range(
+        &self,
+        position: u64,
+        max_batches: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<w::Batch>, Status> {
         let snap = self.snapshot()?;
         let table = snap.read.open_table(JOURNAL).map_err(failure)?;
-        table
-            .get(position)
-            .map_err(failure)?
-            .map(|raw| w::Batch::decode(raw.value()).map_err(failure))
-            .transpose()
+        let mut batches = Vec::new();
+        let mut bytes: usize = 0;
+        for row in table.range(position..).map_err(failure)? {
+            let (key, raw) = row.map_err(failure)?;
+            if batches.len() == max_batches
+                || (!batches.is_empty() && raw.value().len() > max_bytes.saturating_sub(bytes))
+            {
+                break;
+            }
+            if key.value() != position + batches.len() as u64 {
+                return Err(Status::data_loss("snapshot journal has a gap"));
+            }
+            if raw.value().len() > max_bytes.saturating_sub(bytes) {
+                return Err(Status::resource_exhausted(
+                    "snapshot journal delivery exceeds replay budget",
+                ));
+            }
+            bytes += raw.value().len();
+            batches.push(w::Batch::decode(raw.value()).map_err(failure)?);
+        }
+        Ok(batches)
     }
     pub fn finish(&self, cursor: &str) -> Result<(), Status> {
-        self.apply(&[], Some(cursor))?;
         let tx = self.0.begin_write().map_err(failure)?;
+        checkpoint(&tx, cursor)?;
         tx.delete_table(JOURNAL).map_err(failure)?;
         tx.open_table(JOURNAL).map_err(failure)?;
         tx.commit().map_err(failure)
     }
+}
+fn checkpoint(tx: &WriteTransaction, cursor: &str) -> Result<(), Status> {
+    if cursor.is_empty() {
+        return Err(Status::data_loss("empty durable checkpoint"));
+    }
+    let mut meta = tx.open_table(META).map_err(failure)?;
+    meta.insert("cursor", cursor.as_bytes()).map_err(failure)?;
+    meta.insert("updated_at", crate::now().to_string().as_bytes())
+        .map_err(failure)?;
+    Ok(())
 }
 fn insert_ranks(
     table: &mut redb::Table<'_, RankedExecution<'static>, ()>,

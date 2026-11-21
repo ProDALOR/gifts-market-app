@@ -12,6 +12,7 @@ const TOKEN: &str = "reader.private-test-secret";
 #[derive(Clone, Default)]
 struct Peer {
     retries: Arc<AtomicUsize>,
+    attempts: Arc<std::sync::Mutex<std::collections::BTreeMap<String, usize>>>,
 }
 
 fn authenticated<T>(request: &Request<T>) {
@@ -40,6 +41,37 @@ impl w::market_read_server::MarketRead for Peer {
         assert!(query.selection.is_none());
         assert_eq!(query.mode, w::ReadMode::Snapshot as i32);
         assert_eq!(query.limit, 500);
+        let attempt = {
+            let mut attempts = self.attempts.lock().unwrap();
+            let count = attempts.entry(query.page_token.clone()).or_default();
+            *count += 1;
+            *count
+        };
+        match query.page_token.as_str() {
+            "unavailable" if attempt == 1 => {
+                return Err(Status::unavailable("retry this continuation"));
+            }
+            "deadline" if attempt == 1 => {
+                return Err(Status::deadline_exceeded("retry this continuation"));
+            }
+            "exhausted" => return Err(Status::unavailable("still unavailable")),
+            "expired" => return Err(Status::failed_precondition("expired snapshot")),
+            "stream-unavailable" if attempt == 1 => {
+                return Ok(Response::new(tokio_stream::iter(vec![Err(
+                    Status::unavailable("stream failed"),
+                )])));
+            }
+            "after-page" if attempt == 1 => {
+                return Ok(Response::new(tokio_stream::iter(vec![
+                    Ok(w::Page {
+                        cursor: "incomplete".into(),
+                        ..Default::default()
+                    }),
+                    Err(Status::unavailable("stream ended incorrectly")),
+                ])));
+            }
+            _ => {}
+        }
         let count = match query.page_token.as_str() {
             "empty" => 0,
             "extra" => 2,
@@ -91,6 +123,7 @@ async fn snapshot_and_watch_keep_authentication_and_continuations_inside_the_cli
     .unwrap();
     let peer = Peer::default();
     let retries = peer.retries.clone();
+    let attempts = peer.attempts.clone();
     let stop = CancellationToken::new();
     let cancel = stop.clone();
     let server = tokio::spawn(async move {
@@ -118,6 +151,42 @@ async fn snapshot_and_watch_keep_authentication_and_continuations_inside_the_cli
             code
         );
     }
+    for token in [
+        "unavailable",
+        "deadline",
+        "stream-unavailable",
+        "after-page",
+    ] {
+        let result = client.snapshot_page(token.into()).await.unwrap();
+        assert_eq!(
+            result.cursor, "checkpoint",
+            "A partial delivery cannot escape a retry"
+        );
+        assert_eq!(
+            attempts.lock().unwrap()[token],
+            2,
+            "Retries preserve the exact continuation"
+        );
+    }
+    assert_eq!(
+        client
+            .snapshot_page("exhausted".into())
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::Unavailable
+    );
+    assert_eq!(attempts.lock().unwrap()["exhausted"], 6);
+    assert_eq!(
+        client
+            .snapshot_page("expired".into())
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::FailedPrecondition
+    );
+    assert_eq!(attempts.lock().unwrap()["expired"], 1);
+    assert_eq!(attempts.lock().unwrap()["denied"], 1);
     let mut stream = client.watch(page.cursor).await.unwrap();
     assert_eq!(
         stream.message().await.unwrap().unwrap().cursor,

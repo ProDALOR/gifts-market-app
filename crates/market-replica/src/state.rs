@@ -5,6 +5,7 @@ use im::OrdMap;
 use market_hub_protocol::wire as w;
 use rust_decimal::Decimal;
 use std::{
+    borrow::Cow,
     ops::Bound::{Excluded, Included, Unbounded},
     sync::Arc,
 };
@@ -59,10 +60,15 @@ pub struct State {
     books: BookIndex,
 }
 impl State {
-    pub fn apply(&mut self, changes: &[w::Change]) -> Result<(), Status> {
+    pub fn apply<'a>(
+        &mut self,
+        changes: impl IntoIterator<Item = &'a w::Change>,
+    ) -> Result<(), Status> {
         for change in changes {
             match &change.change {
-                Some(w::change::Change::Upsert(entity)) => self.upsert(entity.clone())?,
+                Some(w::change::Change::Upsert(entity)) => {
+                    self.upsert_entity(Cow::Borrowed(entity))?
+                }
                 Some(w::change::Change::Remove(remove)) => self.remove(&Key::try_from(
                     remove
                         .key
@@ -120,6 +126,9 @@ impl State {
         .as_ref()
     }
     pub fn upsert(&mut self, entity: w::Entity) -> Result<(), Status> {
+        self.upsert_entity(Cow::Owned(entity))
+    }
+    fn upsert_entity(&mut self, entity: Cow<'_, w::Entity>) -> Result<(), Status> {
         let key = entity_key(&entity)?;
         if order(&entity)
             .map(|order| OrderMode::try_from(order.mode))
@@ -128,7 +137,7 @@ impl State {
         {
             return self.remove(&key);
         }
-        let entity = Arc::new(entity);
+        let entity = Arc::new(entity.into_owned());
         if key.kind == EntityKind::Order {
             return self.books.upsert_order(&key, &entity);
         }

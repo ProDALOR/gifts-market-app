@@ -335,3 +335,6 @@ impl ReplicaReader {
         self.0.status.subscribe()
     }
 }
+
+#[cfg(test)]
+mod bootstrap_benchmark;

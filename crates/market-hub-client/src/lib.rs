@@ -70,32 +70,50 @@ impl HubClient {
         w::market_read_client::MarketReadClient::new(self.channel.clone())
             .max_decoding_message_size(1024 * 1024)
     }
-    /// One complete, unfiltered snapshot page. Capacity retries reuse the same continuation.
+    /// One complete snapshot page. Transient failures retry the same continuation.
     pub async fn snapshot_page(&self, page_token: String) -> Result<w::Page, Status> {
         for attempt in 0..6 {
-            let mut request = self.request(w::ReadRequest {
-                limit: 500,
-                page_token: page_token.clone(),
-                ..Default::default()
-            });
-            request.set_timeout(Duration::from_secs(10));
-            let mut stream = match self.rpc().read(request).await {
-                Err(error) if error.code() == tonic::Code::ResourceExhausted && attempt < 5 => {
-                    tokio::time::sleep(Duration::from_millis(25 << attempt)).await;
-                    continue;
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                self.snapshot_page_once(page_token.clone()),
+            )
+            .await
+            .unwrap_or_else(|_| Err(Status::deadline_exceeded("snapshot page timed out")));
+            match result {
+                Err(error)
+                    if attempt < 5
+                        && matches!(
+                            error.code(),
+                            tonic::Code::ResourceExhausted
+                                | tonic::Code::Unavailable
+                                | tonic::Code::DeadlineExceeded
+                        ) =>
+                {
+                    let delay = Duration::from_millis(25 << attempt);
+                    tracing::debug!(attempt = attempt + 1, code = ?error.code(), retry_ms = delay.as_millis(), "retrying snapshot page");
+                    tokio::time::sleep(delay).await;
                 }
-                result => result?.into_inner(),
-            };
-            let page = stream
-                .message()
-                .await?
-                .ok_or_else(|| Status::data_loss("missing snapshot page"))?;
-            if stream.message().await?.is_some() {
-                return Err(Status::data_loss("extra snapshot page"));
+                result => return result,
             }
-            return Ok(page);
         }
         unreachable!()
+    }
+    async fn snapshot_page_once(&self, page_token: String) -> Result<w::Page, Status> {
+        let mut request = self.request(w::ReadRequest {
+            limit: 500,
+            page_token,
+            ..Default::default()
+        });
+        request.set_timeout(Duration::from_secs(10));
+        let mut stream = self.rpc().read(request).await?.into_inner();
+        let page = stream
+            .message()
+            .await?
+            .ok_or_else(|| Status::data_loss("missing snapshot page"))?;
+        if stream.message().await?.is_some() {
+            return Err(Status::data_loss("extra snapshot page"));
+        }
+        Ok(page)
     }
     /// Resume the full replication stream. The timeout covers connection setup only.
     pub async fn watch(&self, after_cursor: String) -> Result<tonic::Streaming<w::Batch>, Status> {

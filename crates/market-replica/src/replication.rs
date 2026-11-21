@@ -4,7 +4,7 @@ use futures_util::FutureExt;
 use market_hub_client::HubClient;
 use market_hub_protocol::wire as w;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tonic::Status;
 
@@ -31,7 +31,7 @@ impl ReplicationWorker {
     pub async fn run(self, hub: HubClient, stop: CancellationToken) -> Result<(), Status> {
         let jobs = TaskTracker::new();
         let result = std::panic::AssertUnwindSafe(async {
-            let work=run_replication(&self,hub,stop.clone(),jobs.clone());
+            let work=run_replication(&self,hub,jobs.clone());
             tokio::pin!(work);
             let mut maintenance=tokio::time::interval(Duration::from_secs(1));
             loop {
@@ -45,8 +45,7 @@ impl ReplicationWorker {
         })
         .catch_unwind()
         .await;
-        jobs.close();
-        jobs.wait().await;
+        drain(&jobs).await;
         self.writer
             .lock()
             .map_err(|_| Status::unavailable("Replica writer lock poisoned"))?
@@ -62,9 +61,18 @@ async fn blocking<T: Send + 'static>(
     jobs: &TaskTracker,
     work: impl FnOnce() -> Result<T, Status> + Send + 'static,
 ) -> Result<T, Status> {
-    jobs.spawn_blocking(work)
+    // Track the result's ownership too: cancellation may abandon a returned
+    // builder before the blocking task's output is destroyed. Tuple fields drop
+    // in order, so draining waits until that output has released its build lease.
+    let token = jobs.token();
+    let (result, _token) = tokio::task::spawn_blocking(move || (work(), token))
         .await
-        .map_err(|_| Status::unavailable("Replica storage worker stopped"))?
+        .map_err(|_| Status::unavailable("Replica storage worker stopped"))?;
+    result
+}
+async fn drain(jobs: &TaskTracker) {
+    jobs.close();
+    jobs.wait().await;
 }
 async fn collecting<T>(
     work: impl std::future::Future<Output = Result<T, Status>>,
@@ -84,18 +92,62 @@ async fn collecting<T>(
         }
     }
 }
+struct BootstrapProgress {
+    started: Instant,
+    logged: Instant,
+    pages: u64,
+    rows: u64,
+    download: Duration,
+    staging: Duration,
+    replay: Duration,
+}
+impl BootstrapProgress {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            logged: Instant::now(),
+            pages: 0,
+            rows: 0,
+            download: Duration::ZERO,
+            staging: Duration::ZERO,
+            replay: Duration::ZERO,
+        }
+    }
+    fn log(&mut self, queued: u64, replayed: u64) {
+        if self.logged.elapsed() >= Duration::from_secs(5) {
+            tracing::info!(
+                pages = self.pages,
+                rows = self.rows,
+                queued,
+                replayed,
+                backlog = queued.saturating_sub(replayed),
+                elapsed_ms = self.started.elapsed().as_millis(),
+                "replica snapshot bootstrap progress"
+            );
+            self.logged = Instant::now();
+        }
+    }
+}
+async fn snapshot_page(hub: &HubClient, token: String) -> Result<(w::Page, Duration), Status> {
+    let start = Instant::now();
+    let page = hub.snapshot_page(token).await?;
+    Ok((page, start.elapsed()))
+}
 async fn bootstrap(
     replication: &ReplicationWorker,
     hub: &HubClient,
     jobs: &TaskTracker,
 ) -> Result<tonic::Streaming<w::Batch>, Status> {
+    let mut progress = BootstrapProgress::new();
     replication
         .mutate(jobs, |writer| {
             writer.mark(SyncState::Syncing);
             Ok(())
         })
         .await?;
-    let mut next = hub.snapshot_page(String::new()).await?;
+    tracing::info!("replica snapshot bootstrap started");
+    let (mut next, download) = snapshot_page(hub, String::new()).await?;
+    progress.download += download;
     let baseline = next.cursor.clone();
     if baseline.is_empty() {
         return Err(Status::data_loss("missing snapshot checkpoint"));
@@ -111,44 +163,65 @@ async fn bootstrap(
             return Err(Status::data_loss("snapshot checkpoint changed"));
         }
         let token = next.next_page_token;
-        let rows = next
-            .entities
-            .into_iter()
-            .map(|entity| w::Change {
-                change: Some(w::change::Change::Upsert(entity)),
-            })
-            .collect::<Vec<_>>();
-        builder = collecting(
-            blocking(jobs, move || {
-                builder.append(&rows)?;
-                Ok(builder)
-            }),
+        progress.rows += next.entities.len() as u64;
+        let entities = next.entities;
+        let stage = blocking(jobs, move || {
+            let start = Instant::now();
+            let rows = entities
+                .into_iter()
+                .map(|entity| w::Change {
+                    change: Some(w::change::Change::Upsert(entity)),
+                })
+                .collect::<Vec<_>>();
+            builder.append(&rows)?;
+            Ok((builder, start.elapsed()))
+        });
+        // Continuations remain sequential, but one next page may download while
+        // this page builds indexes and commits to the unpublished staging store.
+        let fetch = async {
+            if token.is_empty() {
+                Ok(None)
+            } else {
+                snapshot_page(hub, token).await.map(Some)
+            }
+        };
+        let ((prepared, staging), fetched) = collecting(
+            async { tokio::try_join!(stage, fetch) },
             &mut changes,
             &journal,
             &mut queued,
             jobs,
         )
         .await?;
-        if token.is_empty() {
-            break;
+        builder = prepared;
+        progress.pages += 1;
+        progress.staging += staging;
+        progress.log(queued, 0);
+        match fetched {
+            Some((page, download)) => {
+                next = page;
+                progress.download += download;
+            }
+            None => break,
         }
-        next = collecting(
-            hub.snapshot_page(token),
-            &mut changes,
-            &journal,
-            &mut queued,
-            jobs,
-        )
-        .await?;
     }
-    // Replay one bounded delivery at a time while continuing to drain Watch to disk.
+    tracing::info!(
+        pages = progress.pages,
+        rows = progress.rows,
+        queued,
+        download_ms = progress.download.as_millis(),
+        staging_ms = progress.staging.as_millis(),
+        elapsed_ms = progress.started.elapsed().as_millis(),
+        "replica snapshot download completed"
+    );
     let mut position = 0;
     let mut cursor = baseline;
-    loop {
-        let (next_builder, checkpoint) = collecting(
+    while position < queued {
+        let (prepared, replayed, elapsed) = collecting(
             blocking(jobs, move || {
-                let checkpoint = builder.replay(position)?;
-                Ok((builder, checkpoint))
+                let start = Instant::now();
+                let replayed = builder.replay_chunk(position)?;
+                Ok((builder, replayed, start.elapsed()))
             }),
             &mut changes,
             &journal,
@@ -156,18 +229,33 @@ async fn bootstrap(
             jobs,
         )
         .await?;
-        builder = next_builder;
-        if let Some(checkpoint) = checkpoint {
-            cursor = checkpoint;
-            position += 1;
-        } else if position == queued {
-            break;
-        }
+        builder = prepared;
+        progress.replay += elapsed;
+        let replayed =
+            replayed.ok_or_else(|| Status::data_loss("missing snapshot journal delivery"))?;
+        cursor = replayed.cursor;
+        position = replayed.next_position;
+        progress.log(queued, position);
     }
+    let finalizing = Instant::now();
     let snapshot = blocking(jobs, move || builder.finish(&cursor)).await?;
+    let finalized = finalizing.elapsed();
+    let publishing = Instant::now();
     replication
         .mutate(jobs, move |writer| writer.install_snapshot(snapshot))
         .await?;
+    tracing::info!(
+        pages = progress.pages,
+        rows = progress.rows,
+        replayed = position,
+        download_ms = progress.download.as_millis(),
+        staging_ms = progress.staging.as_millis(),
+        replay_ms = progress.replay.as_millis(),
+        finalize_ms = finalized.as_millis(),
+        publish_ms = publishing.elapsed().as_millis(),
+        elapsed_ms = progress.started.elapsed().as_millis(),
+        "replica snapshot bootstrap completed"
+    );
     Ok(changes)
 }
 #[derive(Clone, Copy, Debug)]
@@ -184,7 +272,11 @@ async fn session(
     backoff: &mut u64,
 ) -> Result<(), Status> {
     let mut stream = match recovery {
-        Recovery::Bootstrap => bootstrap(replication, hub, jobs).await?,
+        Recovery::Bootstrap => {
+            let stream = bootstrap(replication, hub, jobs).await?;
+            *backoff = 1;
+            stream
+        }
         Recovery::Resume => {
             let cursor = replication.mutate(jobs, |writer| writer.cursor()).await?;
             hub.watch(cursor).await?
@@ -205,7 +297,6 @@ async fn session(
 async fn run_replication(
     replication: &ReplicationWorker,
     hub: HubClient,
-    stop: CancellationToken,
     jobs: TaskTracker,
 ) -> Result<(), Status> {
     let needs_snapshot = replication
@@ -219,10 +310,15 @@ async fn run_replication(
     };
     let mut backoff = 1;
     loop {
-        let error = tokio::select! {
-            _=stop.cancelled()=>break,
-            result=session(replication,&hub,&jobs,&mut recovery,&mut backoff)=>match result{Ok(())=>break,Err(error)=>error},
+        let error = match session(replication, &hub, &jobs, &mut recovery, &mut backoff).await {
+            Ok(()) => break,
+            Err(error) => error,
         };
+        // A failed network future can leave blocking staging/replay work behind.
+        // Release its builder/results before another session can acquire a lease
+        // or mutate the published replica. Shutdown drains the same tracker.
+        drain(&jobs).await;
+        jobs.reopen();
         if matches!(
             error.code(),
             tonic::Code::FailedPrecondition
@@ -240,7 +336,7 @@ async fn run_replication(
             .await?;
         let delay =
             Duration::from_millis(backoff * 1000 + (uuid::Uuid::new_v4().as_u128() % 251) as u64);
-        tokio::select! {_=stop.cancelled()=>break,_=tokio::time::sleep(delay)=>{}}
+        tokio::time::sleep(delay).await;
         backoff = (backoff * 2).min(30);
     }
     Ok(())

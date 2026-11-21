@@ -19,6 +19,10 @@ pub struct SnapshotBuilder {
     lease: SnapshotLease,
     owner: Arc<()>,
 }
+pub(crate) struct Replayed {
+    pub next_position: u64,
+    pub cursor: String,
+}
 /// An opaque, finalized snapshot that only `ReplicaWriter` can publish.
 pub struct PreparedSnapshot {
     pub(crate) store: Store,
@@ -79,19 +83,49 @@ impl SnapshotBuilder {
         self.journal.clone()
     }
     pub fn append(&mut self, changes: &[w::Change]) -> Result<(), Status> {
+        self.append_changes(changes)
+    }
+    fn append_changes<'a>(
+        &mut self,
+        changes: impl IntoIterator<Item = &'a w::Change> + Clone,
+    ) -> Result<(), Status> {
         let mut state = self.state.clone();
-        state.apply(changes)?;
+        state.apply(changes.clone())?;
         self.store.apply(changes, None)?;
         self.state = state;
         Ok(())
     }
     pub fn replay(&mut self, position: u64) -> Result<Option<String>, Status> {
-        if let Some(batch) = self.store.journal_at(position)? {
-            self.append(&batch.changes)?;
-            Ok(Some(batch.cursor))
-        } else {
-            Ok(None)
+        Ok(self
+            .replay_up_to(position, 1, usize::MAX)?
+            .map(|replayed| replayed.cursor))
+    }
+    pub(crate) fn replay_chunk(&mut self, position: u64) -> Result<Option<Replayed>, Status> {
+        self.replay_up_to(position, 64, 1024 * 1024)
+    }
+    fn replay_up_to(
+        &mut self,
+        position: u64,
+        deliveries: usize,
+        bytes: usize,
+    ) -> Result<Option<Replayed>, Status> {
+        let mut batches = self.store.journal_range(position, deliveries, bytes)?;
+        if batches.is_empty() {
+            return Ok(None);
         }
+        if batches.iter().any(|batch| batch.cursor.is_empty()) {
+            return Err(Status::data_loss("empty snapshot journal checkpoint"));
+        }
+        let next_position = position + batches.len() as u64;
+        if batches.iter().any(|batch| !batch.changes.is_empty()) {
+            // Borrow decoded changes directly for both passes. Flattening into
+            // a second Vec copied every large Change wrapper during catch-up.
+            self.append_changes(batches.iter().flat_map(|batch| &batch.changes))?;
+        }
+        Ok(Some(Replayed {
+            next_position,
+            cursor: batches.pop().unwrap().cursor,
+        }))
     }
     pub fn finish(self, cursor: &str) -> Result<PreparedSnapshot, Status> {
         if cursor.is_empty() {
@@ -197,5 +231,139 @@ mod tests {
             writer.reader().read(read(1, false)).unwrap().page.cursor,
             "current"
         );
+    }
+    #[test]
+    fn grouped_replay_is_ordered_bounded_atomic_and_durable() {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let mut writer = ReplicaWriter::open(directory.path(), "grouped-replay").unwrap();
+            let reader = writer.reader();
+            let mut builder = writer.begin_snapshot().unwrap();
+            builder.append(&catalog()).unwrap();
+            builder
+                .append(&[upsert(entity(w::entity::Entity::Order(order(
+                    "listing", "999", None,
+                ))))])
+                .unwrap();
+            let journal = builder.journal();
+            for index in 0..130 {
+                let mut changes = if index % 3 == 0 {
+                    vec![]
+                } else {
+                    vec![upsert(entity(w::entity::Entity::Order(order(
+                        "listing",
+                        &index.to_string(),
+                        None,
+                    ))))]
+                };
+                if index == 65 {
+                    changes.push(upsert(entity(w::entity::Entity::Order(order(
+                        "sale",
+                        "2",
+                        Some(1),
+                    )))));
+                }
+                journal
+                    .push(&w::Batch {
+                        cursor: format!("c{index}"),
+                        changes,
+                    })
+                    .unwrap();
+            }
+            let mut position = 0;
+            let mut cursor = String::new();
+            for expected in [64, 128, 130] {
+                let replayed = builder.replay_chunk(position).unwrap().unwrap();
+                assert_eq!(replayed.next_position, expected);
+                assert_eq!(replayed.cursor, format!("c{}", expected - 1));
+                position = replayed.next_position;
+                cursor = replayed.cursor;
+                assert!(
+                    !reader.status().ready,
+                    "Staged replay must remain unpublished"
+                );
+            }
+            assert!(builder.replay_chunk(position).unwrap().is_none());
+            let prepared = builder.finish(&cursor).unwrap();
+            assert!(
+                prepared
+                    .store
+                    .journal_range(0, 1, usize::MAX)
+                    .unwrap()
+                    .is_empty()
+            );
+            writer.install_snapshot(prepared).unwrap();
+            assert_eq!(reader.cursor().unwrap(), "c129");
+            assert_eq!(
+                state::order(&reader.read(read(1, false)).unwrap().page.entities[0])
+                    .unwrap()
+                    .price,
+                "128"
+            );
+            assert_eq!(reader.read(read(0, true)).unwrap().page.entities.len(), 1);
+        }
+        let restored = ReplicaWriter::open(directory.path(), "grouped-replay").unwrap();
+        assert_eq!(restored.cursor().unwrap(), "c129");
+        assert_eq!(
+            state::order(
+                &restored
+                    .reader()
+                    .read(read(1, false))
+                    .unwrap()
+                    .page
+                    .entities[0]
+            )
+            .unwrap()
+            .price,
+            "128"
+        );
+        assert_eq!(
+            restored
+                .reader()
+                .read(read(0, true))
+                .unwrap()
+                .page
+                .entities
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn replay_respects_byte_budget_and_rejects_a_whole_invalid_chunk() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = ReplicaWriter::open(directory.path(), "bounded-replay").unwrap();
+        let mut builder = writer.begin_snapshot().unwrap();
+        builder.append(&catalog()).unwrap();
+        let journal = builder.journal();
+        for index in 0..2 {
+            let mut row = order(&format!("large-{index}"), "1", None);
+            row.meta.insert("payload".into(), "x".repeat(600 * 1024));
+            journal
+                .push(&w::Batch {
+                    cursor: format!("c{index}"),
+                    changes: vec![upsert(entity(w::entity::Entity::Order(row)))],
+                })
+                .unwrap();
+        }
+        assert_eq!(builder.replay_chunk(0).unwrap().unwrap().next_position, 1);
+        assert_eq!(builder.replay_chunk(1).unwrap().unwrap().next_position, 2);
+        let valid = entity(w::entity::Entity::Order(order("rejected", "1", None)));
+        let key = state::entity_key(&valid).unwrap();
+        journal
+            .push(&w::Batch {
+                cursor: "valid-prefix".into(),
+                changes: vec![upsert(valid)],
+            })
+            .unwrap();
+        journal
+            .push(&w::Batch {
+                cursor: "invalid-tail".into(),
+                changes: vec![w::Change { change: None }],
+            })
+            .unwrap();
+        assert!(builder.replay_chunk(2).is_err());
+        assert!(builder.state.entity(&key).is_none());
+        assert!(builder.store.state().unwrap().entity(&key).is_none());
+        assert!(!writer.reader().status().ready);
     }
 }
