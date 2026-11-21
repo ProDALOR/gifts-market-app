@@ -6,10 +6,13 @@ use crate::{
 };
 use im::OrdMap;
 use market_hub_protocol::wire as w;
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use tonic::Status;
 
-type Book = (String, String, String);
+type Book<'a> = (&'a str, &'a str, &'a str);
 type Scope = (String, String, Option<String>);
 #[derive(Clone, Default)]
 pub(crate) struct Revisions {
@@ -81,21 +84,21 @@ fn option_group(entity: &w::Entity) -> Option<&str> {
     }
 }
 
-fn book(value: &w::BookKey) -> Book {
-    (
-        value.item_type_id.clone(),
-        value.currency_id.clone(),
-        value.venue_id.clone(),
-    )
+fn book(value: &w::BookKey) -> Book<'_> {
+    (&value.item_type_id, &value.currency_id, &value.venue_id)
 }
-fn affected(entity: &w::Entity, books: &mut BTreeSet<Book>) {
+fn affected<'a>(entity: &'a w::Entity, books: &mut BTreeMap<Book<'a>, bool>) {
     match &entity.entity {
         Some(w::entity::Entity::Order(order)) => {
             if let Some(key) = &order.book {
-                books.insert(book(key));
+                books.insert(book(key), true);
             }
         }
-        Some(w::entity::Entity::Feed(feed)) => books.extend(feed.books.iter().map(book)),
+        Some(w::entity::Entity::Feed(feed)) => {
+            for key in &feed.books {
+                books.entry(book(key)).or_insert(false);
+            }
+        }
         _ => {}
     }
 }
@@ -126,22 +129,21 @@ impl Revisions {
             books: OrdMap::new(),
         }
     }
-    pub fn updated(
+    pub fn updated<'a>(
         &self,
         before: &State,
         after: &State,
-        changes: &[w::Change],
+        changes: impl IntoIterator<Item = &'a w::Change>,
+        history_changed: bool,
     ) -> Result<Self, Status> {
         let mut next = self.clone();
         next.sequence += 1;
-        let mut touched = BTreeSet::new();
-        let mut orders = BTreeSet::new();
+        if history_changed {
+            next.history = next.sequence;
+        }
+        let mut touched = BTreeMap::new();
         let mut changed_options = BTreeSet::new();
         for change in changes {
-            if matches!(&change.change, Some(w::change::Change::Upsert(entity)) if matches!(&entity.entity, Some(w::entity::Entity::Order(order)) if order.mode == w::OrderMode::Executed as i32))
-            {
-                next.history = next.sequence;
-            }
             let key = match &change.change {
                 Some(w::change::Change::Upsert(value)) => state::entity_key(value)?,
                 Some(w::change::Change::Remove(value)) => Key::try_from(
@@ -194,32 +196,27 @@ impl Revisions {
             if let Some(entity) = new {
                 affected(entity, &mut touched);
             }
-            if key.kind == EntityKind::Order {
-                for entity in old.into_iter().chain(new) {
-                    affected(entity, &mut orders);
-                }
-            }
         }
-        for (item, currency, venue) in touched {
+        for ((item, currency, venue), orders_changed) in touched {
             let key = w::BookKey {
-                item_type_id: item.clone(),
-                currency_id: currency.clone(),
-                venue_id: venue.clone(),
+                item_type_id: item.to_owned(),
+                currency_id: currency.to_owned(),
+                venue_id: venue.to_owned(),
             };
             if before.books().contains(&key) != after.books().contains(&key) {
                 next.directory = next.sequence;
             }
-            if !orders.contains(&(item.clone(), currency.clone(), venue.clone())) {
+            if !orders_changed {
                 continue;
             }
-            let specific = (item.clone(), currency.clone(), Some(venue));
+            let specific = (item.to_owned(), currency.to_owned(), Some(venue.to_owned()));
             if after.books().has_orders(&key) {
                 next.books.insert(specific, next.sequence);
             } else {
                 next.books.remove(&specific);
             }
-            let group = (item.clone(), currency.clone(), None);
-            if after.books().has_group(&item, &currency) {
+            let group = (item.to_owned(), currency.to_owned(), None);
+            if after.books().has_group(item, currency) {
                 next.books.insert(group, next.sequence);
             } else {
                 next.books.remove(&group);
@@ -461,7 +458,7 @@ mod tests {
         ];
         let mut after = state.clone();
         after.apply(&changes).unwrap();
-        revisions = revisions.updated(&state, &after, &changes).unwrap();
+        revisions = revisions.updated(&state, &after, &changes, false).unwrap();
         assert_eq!(revisions.option_groups.get("one").unwrap().count, 1);
         assert_eq!(revisions.option_groups.get("two").unwrap().count, 1);
         assert_eq!(
@@ -472,14 +469,14 @@ mod tests {
         let changes = [remove("a"), remove("a"), remove("b")];
         let mut after = state.clone();
         after.apply(&changes).unwrap();
-        revisions = revisions.updated(&state, &after, &changes).unwrap();
+        revisions = revisions.updated(&state, &after, &changes, false).unwrap();
         assert!(revisions.option_groups.is_empty());
         state = after;
         for i in 0..100 {
             let changes = [option("a", &format!("group.{i}"), "A")];
             let mut after = state.clone();
             after.apply(&changes).unwrap();
-            revisions = revisions.updated(&state, &after, &changes).unwrap();
+            revisions = revisions.updated(&state, &after, &changes, false).unwrap();
             assert_eq!(revisions.option_groups.len(), 1);
             assert_eq!(
                 revisions

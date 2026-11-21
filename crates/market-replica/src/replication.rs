@@ -1,8 +1,9 @@
 //! Snapshot bootstrap, Watch recovery and staged-storage draining.
 use crate::{ReplicaWriter, SnapshotJournal, SyncState};
-use futures_util::FutureExt;
+use futures_util::{FutureExt, Stream, StreamExt};
 use market_hub_client::HubClient;
 use market_hub_protocol::wire as w;
+use prost::Message;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -137,14 +138,24 @@ async fn bootstrap(
     replication: &ReplicationWorker,
     hub: &HubClient,
     jobs: &TaskTracker,
+    recovery: &mut Recovery,
 ) -> Result<tonic::Streaming<w::Batch>, Status> {
     let mut progress = BootstrapProgress::new();
-    replication
+    let prepared = replication
         .mutate(jobs, |writer| {
+            if matches!(writer.publication, crate::PublicationState::Prepared { .. }) {
+                return writer.resume_cursor().map(Some);
+            }
             writer.mark(SyncState::Syncing);
-            Ok(())
+            Ok(None)
         })
         .await?;
+    if let Some(cursor) = prepared {
+        // Publication has completed. A transient Watch setup failure must
+        // resume this checkpoint rather than download another full snapshot.
+        *recovery = Recovery::Resume;
+        return hub.watch(cursor).await;
+    }
     tracing::info!("replica snapshot bootstrap started");
     let (mut next, download) = snapshot_page(hub, String::new()).await?;
     progress.download += download;
@@ -264,6 +275,62 @@ enum Recovery {
     Resume,
 }
 
+struct Deliveries {
+    batches: Vec<w::Batch>,
+    disconnected: Option<Status>,
+}
+async fn live_deliveries(
+    stream: &mut (impl Stream<Item = Result<w::Batch, Status>> + Unpin),
+    pending: &mut Option<w::Batch>,
+    mut batches: Vec<w::Batch>,
+) -> Result<Deliveries, Status> {
+    use crate::limits::{MAX_APPLY_BATCHES, MAX_APPLY_BYTES};
+    let first = match pending.take() {
+        Some(batch) => batch,
+        None => stream
+            .next()
+            .await
+            .transpose()?
+            .ok_or_else(|| Status::unavailable("replication stream closed"))?,
+    };
+    let mut bytes = first.encoded_len();
+    if bytes > MAX_APPLY_BYTES {
+        return Err(Status::resource_exhausted(
+            "replication delivery exceeds apply budget",
+        ));
+    }
+    debug_assert!(batches.is_empty());
+    batches.push(first);
+    let mut deliveries = Deliveries {
+        batches,
+        disconnected: None,
+    };
+    // Drain only frames already ready: no timer, collection delay or background
+    // reader. Keep one over-budget frame for the following transaction.
+    while deliveries.batches.len() < MAX_APPLY_BATCHES && bytes < MAX_APPLY_BYTES {
+        match stream.next().now_or_never() {
+            Some(Some(Ok(batch))) => {
+                let size = batch.encoded_len();
+                if size > MAX_APPLY_BYTES - bytes {
+                    *pending = Some(batch);
+                    break;
+                }
+                bytes += size;
+                deliveries.batches.push(batch);
+            }
+            Some(ended) => {
+                deliveries.disconnected = Some(match ended {
+                    Some(Err(error)) => error,
+                    _ => Status::unavailable("replication stream closed"),
+                });
+                break;
+            }
+            None => break,
+        }
+    }
+    Ok(deliveries)
+}
+
 async fn session(
     replication: &ReplicationWorker,
     hub: &HubClient,
@@ -273,25 +340,38 @@ async fn session(
 ) -> Result<(), Status> {
     let mut stream = match recovery {
         Recovery::Bootstrap => {
-            let stream = bootstrap(replication, hub, jobs).await?;
+            let stream = bootstrap(replication, hub, jobs, recovery).await?;
             *backoff = 1;
             stream
         }
         Recovery::Resume => {
-            let cursor = replication.mutate(jobs, |writer| writer.cursor()).await?;
+            // Reconcile a committed-but-unpublished view before requesting the
+            // next delivery, including history/cache invalidation after repair.
+            let cursor = replication
+                .mutate(jobs, |writer| writer.resume_cursor())
+                .await?;
             hub.watch(cursor).await?
         }
     };
     *recovery = Recovery::Resume;
+    let mut pending = None;
+    let mut batches = Vec::new();
     loop {
-        let batch = stream
-            .message()
-            .await?
-            .ok_or_else(|| Status::unavailable("replication stream closed"))?;
-        replication
-            .mutate(jobs, move |writer| writer.apply(batch))
+        let deliveries = live_deliveries(&mut stream, &mut pending, batches).await?;
+        batches = replication
+            .mutate(jobs, move |writer| {
+                let mut batches = deliveries.batches;
+                writer.apply_deliveries(&batches)?;
+                // Drop decoded payloads on the storage worker, then return just
+                // the empty allocation. Cancellation still tracks its ownership.
+                batches.clear();
+                Ok(batches)
+            })
             .await?;
         *backoff = 1;
+        if let Some(error) = deliveries.disconnected {
+            return Err(error);
+        }
     }
 }
 async fn run_replication(

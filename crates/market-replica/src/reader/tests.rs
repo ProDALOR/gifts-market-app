@@ -8,6 +8,7 @@ fn view(state: State, writer: &ReplicaWriter) -> ReplicaView {
         state,
         history: writer.store.snapshot().unwrap(),
         cursor: "test".into(),
+        updated_at: None,
     }
 }
 

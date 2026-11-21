@@ -291,6 +291,478 @@ fn rejected_batches_persist_neither_current_changes_nor_checkpoint() {
         "1"
     );
 }
+
+#[test]
+fn repeated_heartbeats_preserve_views_revisions_and_notification_quietness() {
+    let (_dir, replica) = setup();
+    let before = replica.view().unwrap();
+    let updated_at = replica.writer.lock().unwrap().store.updated_at().unwrap();
+    let changes = replica.changes();
+    let statuses = replica.status_updates();
+    for _ in 0..10 {
+        apply(&replica, vec![], "c0");
+        replica.writer.lock().unwrap().mark(SyncState::Live);
+    }
+    assert!(Arc::ptr_eq(&before, &replica.view().unwrap()));
+    assert_eq!(
+        replica.writer.lock().unwrap().store.updated_at().unwrap(),
+        updated_at
+    );
+    assert!(!changes.has_changed().unwrap());
+    assert!(!statuses.has_changed().unwrap());
+
+    replica.writer.lock().unwrap().mark(SyncState::Stale);
+    let mut changes = replica.changes();
+    apply(&replica, vec![], "c0");
+    assert_eq!(replica.status().state, SyncState::Live);
+    assert!(
+        changes.has_changed().unwrap(),
+        "reconnect ACK must restore availability"
+    );
+    changes.borrow_and_update();
+    replica.writer.lock().unwrap().mark(SyncState::Live);
+    assert!(!changes.has_changed().unwrap());
+}
+
+#[test]
+fn checkpoint_only_and_identical_updates_do_not_invalidate_data_but_remain_durable() {
+    let (dir, replica) = setup();
+    let listing = entity(E::Order(order("listing", "1", None)));
+    let execution = entity(E::Order(order("sale", "2", Some(10))));
+    apply(
+        &replica,
+        vec![upsert(listing.clone()), upsert(execution)],
+        "facts",
+    );
+    let view = replica.view().unwrap();
+    let reference = view
+        .state
+        .entity(&state::entity_key(&listing).unwrap())
+        .unwrap()
+        .clone();
+    let all = replica.read_revision(&w::ReadRequest::default()).unwrap();
+    let history = replica.read_revision(&read(0, true)).unwrap();
+    let changes = replica.changes();
+    let mut retry = order("sale", "2", Some(10));
+    retry.observed_at_ms += 1;
+    apply(
+        &replica,
+        vec![upsert(listing), upsert(entity(E::Order(retry)))],
+        "identical",
+    );
+    apply(&replica, vec![], "checkpoint");
+    assert_eq!(
+        all,
+        replica.read_revision(&w::ReadRequest::default()).unwrap()
+    );
+    assert_eq!(history, replica.read_revision(&read(0, true)).unwrap());
+    assert!(!changes.has_changed().unwrap());
+    assert!(Arc::ptr_eq(
+        &reference,
+        replica
+            .view()
+            .unwrap()
+            .state
+            .entity(&state::entity_key(&reference).unwrap())
+            .unwrap()
+    ));
+    drop(view);
+    drop(replica);
+    let restored = Fixture::open(dir.path(), "test-source").unwrap();
+    assert_eq!(restored.cursor().unwrap(), "checkpoint");
+    assert_eq!(
+        ids(&restored.read(read(1, false)).unwrap().page),
+        ["listing"]
+    );
+    assert_eq!(ids(&restored.read(read(0, true)).unwrap().page), ["sale"]);
+}
+
+#[test]
+fn grouped_deliveries_publish_once_and_reject_invalid_later_deliveries_atomically() {
+    let (dir, replica) = setup();
+    let mut changes = replica.changes();
+    let deliveries = [
+        w::Batch {
+            cursor: "one".into(),
+            changes: vec![upsert(entity(E::Order(order("a", "1", None))))],
+        },
+        w::Batch {
+            cursor: "two".into(),
+            changes: vec![upsert(entity(E::Order(order("a", "2", None))))],
+        },
+    ];
+    let sequence = *changes.borrow_and_update();
+    replica
+        .writer
+        .lock()
+        .unwrap()
+        .apply_deliveries(&deliveries)
+        .unwrap();
+    assert_eq!(*changes.borrow_and_update(), sequence + 1);
+    assert_eq!(replica.cursor().unwrap(), "two");
+    assert_eq!(
+        state::order(&replica.read(read(1, false)).unwrap().page.entities[0])
+            .unwrap()
+            .price,
+        "2"
+    );
+    let reference = replica.view().unwrap();
+    let bad = [
+        w::Batch {
+            cursor: "rejected".into(),
+            changes: vec![upsert(entity(E::Order(order("a", "9", None))))],
+        },
+        w::Batch {
+            cursor: "bad".into(),
+            changes: vec![w::Change { change: None }],
+        },
+    ];
+    assert!(
+        replica
+            .writer
+            .lock()
+            .unwrap()
+            .apply_deliveries(&bad)
+            .is_err()
+    );
+    assert!(Arc::ptr_eq(&reference, &replica.view().unwrap()));
+    assert!(!changes.has_changed().unwrap());
+    drop(reference);
+    drop(replica);
+    let restored = Fixture::open(dir.path(), "test-source").unwrap();
+    assert_eq!(restored.cursor().unwrap(), "two");
+    assert_eq!(
+        state::order(&restored.read(read(1, false)).unwrap().page.entities[0])
+            .unwrap()
+            .price,
+        "2"
+    );
+}
+
+#[test]
+fn resume_repairs_committed_but_unpublished_current_and_history_without_marking_live() {
+    let (_dir, replica) = setup();
+    let mut writer = replica.writer.lock().unwrap();
+    writer.mark(SyncState::Stale);
+    let all = replica.read_revision(&w::ReadRequest::default()).unwrap();
+    let history = replica.read_revision(&read(0, true)).unwrap();
+    // Simulate a successful durable commit followed by a failed read-view creation.
+    writer
+        .store
+        .apply(
+            &[
+                upsert(entity(E::Order(order("listing", "3", None)))),
+                upsert(entity(E::Order(order("sale", "2", Some(10))))),
+            ],
+            Some("committed"),
+        )
+        .unwrap();
+    assert_eq!(replica.cursor().unwrap(), "c0");
+    assert_eq!(writer.resume_cursor().unwrap(), "committed");
+    assert_eq!(replica.cursor().unwrap(), "committed");
+    assert_eq!(replica.status().state, SyncState::Stale);
+    assert_ne!(
+        all,
+        replica.read_revision(&w::ReadRequest::default()).unwrap()
+    );
+    assert_ne!(history, replica.read_revision(&read(0, true)).unwrap());
+    assert_eq!(
+        ids(&replica.read(read(1, false)).unwrap().page),
+        ["listing"]
+    );
+    assert_eq!(ids(&replica.read(read(0, true)).unwrap().page), ["sale"]);
+    let before = replica.view().unwrap();
+    assert_eq!(writer.resume_cursor().unwrap(), "committed");
+    assert!(
+        Arc::ptr_eq(&before, &replica.view().unwrap()),
+        "ordinary reconnects must not rebuild state"
+    );
+    writer
+        .apply(w::Batch {
+            cursor: "committed".into(),
+            changes: vec![],
+        })
+        .unwrap();
+    assert_eq!(replica.status().state, SyncState::Live);
+}
+
+#[test]
+fn publication_failure_recovery_does_not_depend_on_cursor_inequality() {
+    for cursor in ["c0", "next"] {
+        let (_dir, replica) = setup();
+        let mut writer = replica.writer.lock().unwrap();
+        writer.mark(SyncState::Stale);
+        let before = replica.view().unwrap();
+        let revision = replica.read_revision(&read(0, true)).unwrap();
+        writer.fail_publish_once = true;
+        let error = writer
+            .apply(w::Batch {
+                cursor: cursor.into(),
+                changes: vec![
+                    upsert(entity(E::Order(order("listing", "1", None)))),
+                    upsert(entity(E::Order(order("sale", "2", Some(10))))),
+                ],
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::Unavailable);
+        assert!(matches!(
+            writer.publication,
+            PublicationState::Prepared { .. }
+        ));
+        assert_eq!(writer.cursor().unwrap(), cursor);
+        assert!(Arc::ptr_eq(&before, &replica.view().unwrap()));
+        let prepared = match &writer.publication {
+            PublicationState::Prepared { view, .. } => view.clone(),
+            _ => unreachable!(),
+        };
+        let revision_before_retry = prepared.revisions.sequence;
+        writer.fail_publish_once = true;
+        assert!(writer.resume_cursor().is_err());
+        assert_eq!(writer.resume_cursor().unwrap(), cursor);
+        assert!(Arc::ptr_eq(&prepared, &replica.view().unwrap()));
+        assert_eq!(
+            replica.view().unwrap().revisions.sequence,
+            revision_before_retry
+        );
+        assert!(matches!(writer.publication, PublicationState::Current));
+        assert_eq!(replica.status().state, SyncState::Stale);
+        assert_eq!(
+            ids(&replica.read(read(1, false)).unwrap().page),
+            ["listing"]
+        );
+        assert_eq!(ids(&replica.read(read(0, true)).unwrap().page), ["sale"]);
+        assert_ne!(revision, replica.read_revision(&read(0, true)).unwrap());
+        let repaired = replica.view().unwrap();
+        writer
+            .apply(w::Batch {
+                cursor: cursor.into(),
+                changes: vec![],
+            })
+            .unwrap();
+        assert_eq!(replica.status().state, SyncState::Live);
+        assert!(Arc::ptr_eq(&repaired, &replica.view().unwrap()));
+    }
+}
+
+#[test]
+fn an_ack_or_next_delivery_repairs_a_failed_publication_before_applying() {
+    for heartbeat in [true, false] {
+        let (_dir, replica) = setup();
+        let mut writer = replica.writer.lock().unwrap();
+        writer.fail_publish_once = true;
+        assert!(
+            writer
+                .apply(w::Batch {
+                    cursor: "c0".into(),
+                    changes: vec![upsert(entity(E::Order(order("sale", "2", Some(10)))))],
+                })
+                .is_err()
+        );
+        writer
+            .apply(w::Batch {
+                cursor: if heartbeat { "c0" } else { "next" }.into(),
+                changes: if heartbeat {
+                    vec![]
+                } else {
+                    vec![upsert(entity(E::Order(order("listing", "1", None))))]
+                },
+            })
+            .unwrap();
+        assert!(matches!(writer.publication, PublicationState::Current));
+        assert_eq!(ids(&replica.read(read(0, true)).unwrap().page), ["sale"]);
+        assert_eq!(
+            replica.read(read(1, false)).unwrap().page.entities.len(),
+            usize::from(!heartbeat)
+        );
+    }
+}
+
+#[test]
+fn rejected_storage_writes_do_not_rebuild_state_on_resume() {
+    let (_dir, replica) = setup();
+    apply(
+        &replica,
+        vec![upsert(entity(E::Order(order("sale", "2", Some(10)))))],
+        "saved",
+    );
+    let before = replica.view().unwrap();
+    let changes = replica.changes();
+    let mut writer = replica.writer.lock().unwrap();
+    for _ in 0..3 {
+        assert!(
+            writer
+                .apply(w::Batch {
+                    cursor: "rejected".into(),
+                    changes: vec![
+                        upsert(entity(E::Order(order("listing", "1", None)))),
+                        upsert(entity(E::Order(order("sale", "99", Some(10)))))
+                    ],
+                })
+                .is_err()
+        );
+        assert!(matches!(writer.publication, PublicationState::Current));
+        assert_eq!(writer.resume_cursor().unwrap(), "saved");
+        assert!(Arc::ptr_eq(&before, &replica.view().unwrap()));
+        assert!(!changes.has_changed().unwrap());
+    }
+}
+
+#[test]
+fn checkpoint_only_publication_retry_keeps_revisions_and_data_notifications_quiet() {
+    let (_dir, replica) = setup();
+    let mut writer = replica.writer.lock().unwrap();
+    writer.mark(SyncState::Stale);
+    let changes = replica.changes();
+    let revision = replica.read_revision(&w::ReadRequest::default()).unwrap();
+    writer.fail_publish_once = true;
+    assert!(
+        writer
+            .apply(w::Batch {
+                cursor: "checkpoint".into(),
+                changes: vec![]
+            })
+            .is_err()
+    );
+    assert_eq!(writer.resume_cursor().unwrap(), "checkpoint");
+    assert_eq!(replica.status().state, SyncState::Stale);
+    assert_eq!(
+        revision,
+        replica.read_revision(&w::ReadRequest::default()).unwrap()
+    );
+    assert!(!changes.has_changed().unwrap());
+}
+
+#[test]
+fn uncertain_commits_restore_a_consistent_snapshot_even_with_a_repeated_cursor() {
+    for committed in [false, true] {
+        let (_dir, replica) = setup();
+        let mut writer = replica.writer.lock().unwrap();
+        writer.mark(SyncState::Stale);
+        writer.store.fail_commit_once(committed);
+        assert!(
+            writer
+                .apply(w::Batch {
+                    cursor: "c0".into(),
+                    changes: vec![
+                        upsert(entity(E::Order(order("listing", "1", None)))),
+                        upsert(entity(E::Order(order("sale", "2", Some(10)))))
+                    ],
+                })
+                .is_err()
+        );
+        assert!(matches!(writer.publication, PublicationState::Uncertain));
+        assert!(
+            replica
+                .read(read(1, false))
+                .unwrap()
+                .page
+                .entities
+                .is_empty()
+        );
+        assert_eq!(writer.resume_cursor().unwrap(), "c0");
+        assert!(matches!(writer.publication, PublicationState::Current));
+        assert_eq!(replica.status().state, SyncState::Stale);
+        assert_eq!(
+            replica.read(read(1, false)).unwrap().page.entities.len(),
+            usize::from(committed)
+        );
+        assert_eq!(
+            replica.read(read(0, true)).unwrap().page.entities.len(),
+            usize::from(committed)
+        );
+        let view = replica.view().unwrap();
+        let checkpoint = view.history.checkpoint().unwrap();
+        assert_eq!(view.cursor, checkpoint.cursor);
+        assert_eq!(view.updated_at, checkpoint.updated_at);
+        writer.resume_cursor().unwrap();
+        assert!(Arc::ptr_eq(&view, &replica.view().unwrap()));
+    }
+}
+
+#[test]
+fn failed_snapshot_publication_reuses_the_prepared_database_and_persists_future_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut writer = ReplicaWriter::open(directory.path(), "snapshot-retry").unwrap();
+    let reader = writer.reader();
+    for (name, failed) in [("old", false), ("new", true)] {
+        let mut builder = writer.begin_snapshot().unwrap();
+        builder.append(&catalog()).unwrap();
+        builder
+            .append(&[
+                upsert(entity(E::Order(order(name, "1", None)))),
+                upsert(entity(E::Order(order(
+                    &format!("{name}-sale"),
+                    "2",
+                    Some(10),
+                )))),
+            ])
+            .unwrap();
+        writer.fail_publish_once = failed;
+        let result = writer.install_snapshot(builder.finish(name).unwrap());
+        assert_eq!(result.is_err(), failed);
+    }
+    assert_eq!(reader.cursor().unwrap(), "old");
+    let prepared = match &writer.publication {
+        PublicationState::Prepared { view, .. } => view.clone(),
+        _ => unreachable!(),
+    };
+    writer.mark(SyncState::Stale);
+    assert_eq!(writer.resume_cursor().unwrap(), "new");
+    assert!(Arc::ptr_eq(&prepared, &reader.view().unwrap()));
+    assert_eq!(ids(&reader.read(read(1, false)).unwrap().page), ["new"]);
+    assert_eq!(ids(&reader.read(read(0, true)).unwrap().page), ["new-sale"]);
+    writer
+        .apply(w::Batch {
+            cursor: "updated".into(),
+            changes: vec![upsert(entity(E::Order(order("new", "7", None))))],
+        })
+        .unwrap();
+    drop(prepared);
+    drop(reader);
+    drop(writer);
+    let restored = ReplicaWriter::open(directory.path(), "snapshot-retry")
+        .unwrap()
+        .reader();
+    assert_eq!(restored.cursor().unwrap(), "updated");
+    assert_eq!(
+        state::order(&restored.read(read(1, false)).unwrap().page.entities[0])
+            .unwrap()
+            .price,
+        "7"
+    );
+    assert_eq!(
+        ids(&restored.read(read(0, true)).unwrap().page),
+        ["new-sale"]
+    );
+}
+
+#[test]
+fn pinned_and_retained_reads_keep_the_selected_views_checkpoint_time() {
+    let (_dir, replica) = setup();
+    apply(
+        &replica,
+        vec![
+            upsert(entity(E::Order(order("a", "1", None)))),
+            upsert(entity(E::Order(order("b", "2", None)))),
+        ],
+        "facts",
+    );
+    let selected = replica.view().unwrap();
+    let first = replica.read(read(1, false)).unwrap();
+    // Model the interleaving where a read selected an old view, then publication
+    // advanced status before the read pinned it or completed a retained page.
+    let mut status = replica.status();
+    status.updated_at = Some(selected.updated_at.unwrap() + 1000);
+    replica.reader.0.status.send_replace(status);
+    let pinned = replica.pin(selected.clone());
+    assert_eq!(pinned.status().updated_at, selected.updated_at);
+    assert_eq!(pinned.cursor().unwrap(), selected.cursor);
+    let mut continuation = read(1, false);
+    continuation.page_token = first.page.next_page_token;
+    let result = replica.read(continuation).unwrap();
+    assert_eq!(result.sync.updated_at, selected.updated_at);
+    assert_eq!(ids(&result.page), ["b"]);
+}
 fn text(value: &str) -> w::AttributeValue {
     w::AttributeValue {
         value: Some(w::attribute_value::Value::Text(value.into())),

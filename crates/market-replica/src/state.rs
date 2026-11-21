@@ -137,6 +137,12 @@ impl State {
         {
             return self.remove(&key);
         }
+        if self
+            .entity(&key)
+            .is_some_and(|old| old.as_ref() == entity.as_ref())
+        {
+            return Ok(());
+        }
         let entity = Arc::new(entity.into_owned());
         if key.kind == EntityKind::Order {
             return self.books.upsert_order(&key, &entity);

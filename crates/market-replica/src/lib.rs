@@ -65,6 +65,7 @@ struct ReplicaView {
     state: State,
     history: Snapshot,
     cursor: String,
+    updated_at: Option<i64>,
 }
 struct RetainedView {
     view: Arc<ReplicaView>,
@@ -75,6 +76,16 @@ struct ReadState {
     status: watch::Sender<SyncStatus>,
     changed: watch::Sender<u64>,
     views: Mutex<BTreeMap<String, RetainedView>>,
+}
+#[derive(Default)]
+enum PublicationState {
+    #[default]
+    Current,
+    Uncertain,
+    Prepared {
+        view: Arc<ReplicaView>,
+        data_changed: bool,
+    },
 }
 /// Read-only access to immutable views published by synchronization.
 #[derive(Clone)]
@@ -88,6 +99,9 @@ pub struct ReplicaWriter {
     owner: Arc<()>,
     store: Store,
     reader: ReplicaReader,
+    publication: PublicationState,
+    #[cfg(test)]
+    fail_publish_once: bool,
 }
 impl ReplicaWriter {
     pub fn open(directory: &Path, source: &str) -> Result<Self, Status> {
@@ -97,17 +111,18 @@ impl ReplicaWriter {
         if building.exists() {
             std::fs::remove_file(building).map_err(storage::failure)?;
         }
-        let cursor = store.cursor()?;
-        let updated_at = store.updated_at()?;
+        let history = store.snapshot()?;
+        let storage::Checkpoint { cursor, updated_at } = history.checkpoint()?;
         let published = if cursor.is_empty() {
             None
         } else {
-            let state = store.state()?;
+            let state = history.state()?;
             Some(Arc::new(ReplicaView {
                 revisions: revisions::Revisions::replaced(None, &state),
                 state,
-                history: store.snapshot()?,
+                history,
                 cursor,
+                updated_at,
             }))
         };
         let ready = published.is_some();
@@ -137,6 +152,9 @@ impl ReplicaWriter {
             owner: Arc::new(()),
             store,
             reader: replica,
+            publication: PublicationState::Current,
+            #[cfg(test)]
+            fail_publish_once: false,
         })
     }
 }
@@ -160,7 +178,7 @@ impl ReplicaReader {
         Ok(self.pin(self.view()?))
     }
     fn pin(&self, view: Arc<ReplicaView>) -> Self {
-        let (status, _) = watch::channel(self.status());
+        let (status, _) = watch::channel(self.status_for(&view));
         let (changed, _) = watch::channel(0);
         Self(
             Arc::new(ReadState {
@@ -174,6 +192,12 @@ impl ReplicaReader {
     }
     pub fn status(&self) -> SyncStatus {
         self.0.status.borrow().clone()
+    }
+    fn status_for(&self, view: &ReplicaView) -> SyncStatus {
+        let mut status = self.status();
+        status.ready = true;
+        status.updated_at = view.updated_at;
+        status
     }
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.0.changed.subscribe()
@@ -206,6 +230,30 @@ impl ReplicaWriter {
     }
     pub fn cursor(&self) -> Result<String, Status> {
         self.store.cursor()
+    }
+    fn resume_cursor(&mut self) -> Result<String, Status> {
+        if let PublicationState::Prepared { view, data_changed } = &self.publication {
+            let view = view.clone();
+            let data_changed = *data_changed;
+            let cursor = view.cursor.clone();
+            let availability = self.reader.status().state;
+            self.publish(view, availability, data_changed)?;
+            return Ok(cursor);
+        }
+        let history = self.store.snapshot()?;
+        let checkpoint = history.checkpoint()?;
+        let previous = self.reader.view()?;
+        if matches!(self.publication, PublicationState::Uncertain)
+            || previous.cursor != checkpoint.cursor
+            || previous.updated_at != checkpoint.updated_at
+        {
+            let cursor = checkpoint.cursor.clone();
+            let state = history.state()?;
+            let availability = self.reader.status().state;
+            self.install_state(history, state, checkpoint, availability)?;
+            return Ok(cursor);
+        }
+        Ok(checkpoint.cursor)
     }
     pub fn expire_views(&self) {
         self.reader.expire();
@@ -241,15 +289,25 @@ impl ReplicaWriter {
         .map_err(storage::failure)?
         .sync_all()
         .map_err(storage::failure)?;
-        self.install_state(snapshot.store, snapshot.state)
+        let history = snapshot.store.snapshot()?;
+        let checkpoint = history.checkpoint()?;
+        self.install_state(history, snapshot.state, checkpoint, SyncState::Live)
     }
 }
 
 impl ReplicaWriter {
     pub fn mark(&self, state: SyncState) {
-        let mut status = self.reader.status();
-        status.state = state;
-        self.reader.0.status.send_replace(status);
+        if self.reader.0.status.send_if_modified(|status| {
+            if status.state == state {
+                return false;
+            }
+            status.state = state;
+            true
+        }) {
+            self.notify_changed();
+        }
+    }
+    fn notify_changed(&self) {
         self.reader
             .0
             .changed
@@ -257,60 +315,128 @@ impl ReplicaWriter {
     }
     #[cfg(test)]
     fn install(&mut self, store: Store) -> Result<(), Status> {
-        let state = store.state()?;
-        self.install_state(store, state)
+        let history = store.snapshot()?;
+        let checkpoint = history.checkpoint()?;
+        let state = history.state()?;
+        self.install_state(history, state, checkpoint, SyncState::Live)
     }
-    fn install_state(&mut self, store: Store, state: State) -> Result<(), Status> {
+    fn install_state(
+        &mut self,
+        history: Snapshot,
+        state: State,
+        checkpoint: storage::Checkpoint,
+        availability: SyncState,
+    ) -> Result<(), Status> {
         self.reader.expire();
         let revisions = revisions::Revisions::replaced(self.reader.view().ok().as_deref(), &state);
         let view = Arc::new(ReplicaView {
             revisions,
             state,
-            history: store.snapshot()?,
-            cursor: store.cursor()?,
+            history,
+            cursor: checkpoint.cursor,
+            updated_at: checkpoint.updated_at,
         });
-        self.store = store.clone();
-        *self.reader.0.published.write().map_err(storage::failure)? = Some(view);
-        self.reader.0.status.send_replace(SyncStatus {
-            ready: true,
-            state: SyncState::Live,
-            updated_at: store.updated_at()?,
-        });
-        self.reader
-            .0
-            .changed
-            .send_modify(|v| *v = v.wrapping_add(1));
+        self.publish(view, availability, true)?;
         Ok(())
     }
     pub fn apply(&mut self, batch: w::Batch) -> Result<(), Status> {
-        if batch.cursor.is_empty() {
+        self.apply_deliveries(std::slice::from_ref(&batch))
+    }
+    fn apply_deliveries(&mut self, batches: &[w::Batch]) -> Result<(), Status> {
+        let last = batches
+            .last()
+            .ok_or_else(|| Status::data_loss("missing replication delivery"))?;
+        if batches.iter().any(|batch| batch.cursor.is_empty()) {
             return Err(Status::data_loss("empty replication checkpoint"));
+        }
+        if !matches!(self.publication, PublicationState::Current) {
+            self.resume_cursor()?;
         }
         self.reader.expire();
         let previous = self.reader.view()?;
+        if last.cursor == previous.cursor && batches.iter().all(|batch| batch.changes.is_empty()) {
+            // A reconnect ACK confirms availability but has nothing to persist.
+            self.mark(SyncState::Live);
+            return Ok(());
+        }
+        let changes = || batches.iter().flat_map(|batch| &batch.changes);
         let mut state = previous.state.clone();
-        state.apply(&batch.changes)?;
-        let revisions = previous
-            .revisions
-            .updated(&previous.state, &state, &batch.changes)?;
+        state.apply(changes())?;
         let store = &self.store;
-        store.apply(&batch.changes, Some(&batch.cursor))?;
+        let applied = match store.apply(changes(), Some(&last.cursor)) {
+            Ok(applied) => applied,
+            Err(error) => {
+                if error.commit_attempted {
+                    self.publication = PublicationState::Uncertain;
+                }
+                return Err(error.status);
+            }
+        };
+        // Snapshot/revision construction may still fail after the commit. Keep
+        // that obligation until a prepared view can be retained for publication.
+        self.publication = PublicationState::Uncertain;
+        let revisions = if applied.data_changed {
+            previous.revisions.updated(
+                &previous.state,
+                &state,
+                changes(),
+                applied.history_changed,
+            )?
+        } else {
+            previous.revisions.clone()
+        };
         let view = Arc::new(ReplicaView {
             revisions,
             state,
             history: store.snapshot()?,
-            cursor: batch.cursor,
+            cursor: last.cursor.clone(),
+            updated_at: applied.updated_at,
         });
-        *self.reader.0.published.write().map_err(storage::failure)? = Some(view);
-        self.reader.0.status.send_replace(SyncStatus {
+        self.publish(view, SyncState::Live, applied.data_changed)
+    }
+    fn publish(
+        &mut self,
+        view: Arc<ReplicaView>,
+        availability: SyncState,
+        data_changed: bool,
+    ) -> Result<(), Status> {
+        // Arc retention does not copy state. Retry this exact view and its scoped
+        // revisions if publication fails, instead of rebuilding the dataset.
+        self.publication = PublicationState::Prepared {
+            view: view.clone(),
+            data_changed,
+        };
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_publish_once) {
+            return Err(Status::unavailable("test publication failure"));
+        }
+        let updated_at = view.updated_at;
+        let old = {
+            let mut published = self.reader.0.published.write().map_err(storage::failure)?;
+            let old_store = std::mem::replace(&mut self.store, view.history._store.clone());
+            (published.replace(view), old_store)
+        };
+        let status = SyncStatus {
             ready: true,
-            state: SyncState::Live,
-            updated_at: store.updated_at()?,
+            state: availability,
+            updated_at,
+        };
+        let mut availability_changed = false;
+        self.reader.0.status.send_if_modified(|old| {
+            availability_changed = old.ready != status.ready || old.state != status.state;
+            if *old == status {
+                return false;
+            }
+            *old = status;
+            true
         });
-        self.reader
-            .0
-            .changed
-            .send_modify(|v| *v = v.wrapping_add(1));
+        if data_changed || availability_changed {
+            self.notify_changed();
+        }
+        self.publication = PublicationState::Current;
+        // Old roots/database handles can be expensive to release after a full
+        // replacement. Readers must not wait on that destruction under the lock.
+        drop(old);
         Ok(())
     }
 }
@@ -338,3 +464,6 @@ impl ReplicaReader {
 
 #[cfg(test)]
 mod bootstrap_benchmark;
+
+#[cfg(test)]
+mod live_update_benchmark;

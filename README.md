@@ -41,7 +41,7 @@ A new replica reads one consistent, unfiltered `Read(SNAPSHOT)` view, including 
 
 Bootstrap overlaps one page download with staging, replays journal deliveries in bounded groups, and logs progress and phase timings. See [bootstrap performance and recovery](docs/replica-bootstrap.md) for bottlenecks, measurements and troubleshooting.
 
-Normal operation needs one authenticated Watch stream through a reusable gRPC channel. Each delivery commits its changes, execution indexes and checkpoint in one redb transaction before publishing the new RAM/history view. Execution upserts remove the same identity from active orders. Immutable execution retries are idempotent. Execution timestamps determine history order; the opaque Watch cursor determines replication progress, so late backfills are retained.
+Normal operation needs one authenticated Watch stream through a reusable gRPC channel. Ready deliveries share bounded redb transactions before publishing the new RAM/history view; grouping adds no collection delay. Repeated empty acknowledgements at the published checkpoint need no disk write. New checkpoints remain durable even without data changes, while identical observations and immutable execution retries avoid data invalidation. Execution upserts remove the same identity from active orders. Execution timestamps determine history order; the opaque Watch cursor determines replication progress, so late backfills are retained.
 
 Internal entity kinds, order modes, sort order and index tags use validated enums. Entity and execution keys have named fields; numeric codes and tuple layouts are converted at the protocol, database and continuation boundaries. Existing databases and valid pagination tokens keep their original format.
 

@@ -18,7 +18,40 @@ The production warning `cursor expired or hub restarted; restart Read` explains 
 - Retry transient capacity, unavailable and deadline errors on the same page continuation, including errors after receiving a partial stream. Each attempt has a ten-second timeout, with at most six attempts. Expired continuations and other errors return immediately to session recovery.
 - Reset reconnect backoff after a completed bootstrap, as well as after successfully applying a live batch.
 
-Staging transactions remain non-durable until finalization. Normal live deliveries still durably commit changes and their checkpoint together. No protocol, configuration or public API changes are needed.
+Staging transactions remain non-durable until finalization. Live updates still durably commit changes and their checkpoint together. No protocol, configuration or public API changes are needed.
+
+## Live updates
+
+After receiving a Watch delivery, the worker drains only additional frames already ready, up to 64 deliveries or 1 MiB of encoded data per transaction. It does not wait on a timer or delay a lone frame to fill a group. A frame exceeding the remaining group budget is kept for the next transaction, so the worker may hold one additional decoded delivery. Changes retain their original order. A stream error or EOF after collected frames is handled after committing and publishing those frames; cancellation discards uncommitted buffered frames, which are replayed from the published checkpoint on reconnect.
+
+An empty acknowledgement at the published cursor confirms live availability without a transaction, new view or data notification. A changed cursor still commits durably, even when no entities changed. Checkpoint-only writes open only metadata. Identical active entities retain their shared references and skip row replacement; execution retries still validate immutable contents but do not invalidate history. Actual writes reuse one serialization buffer per transaction. Revision invalidation groups affected books with borrowed keys rather than allocating two separate sets of book identities. Data-change notifications are independent of checkpoint/observation timestamps; availability transitions still wake consumers.
+
+Publication recovery has three internal states: current, uncertain, and prepared. A prepared publication retains one shared immutable view, including its database snapshot and scoped revisions. Retrying publication reuses that exact view; it does not scan entities or invalidate the whole dataset. A repeated cursor cannot bypass a pending publication. An acknowledgement or another direct writer call completes pending recovery before applying more data. Delayed availability is preserved until Watch acknowledges the connection.
+
+| Outcome | Recovery | Entity scan |
+| --- | --- | --- |
+| Ordinary reconnect | Compare the durable and published checkpoints | No |
+| Validation/storage error before commit is attempted | Keep the published view; the transaction was rolled back | No |
+| Committed update with a prepared view, publication fails | Retry the retained view and its original scoped revisions | No |
+| Commit result is uncertain, or view preparation fails after commit | Rebuild from one consistent database snapshot and invalidate dependencies | Yes |
+
+The fallback reads state, checkpoint metadata and history through the same read transaction. It remains necessary for uncertain commits, even when cursor and timestamp happen to equal the old values. Successful prepared retries adopt the view's backing database together with the view, so a failed snapshot publication cannot leave later writes targeting the old database. A fully prepared bootstrap publication is retried without downloading another snapshot; subsequent transient Watch setup failures resume its checkpoint. Old roots and database handles are released outside the published-view lock. The persisted format and hub protocol are unchanged.
+
+The outer batch vector is reused within each connection. The storage job drops decoded payloads and returns the empty allocation after publication; cancellation continues to track that returned ownership. Pending read-ahead frames belong only to their connection. No read-ahead checkpoint is saved until its group is admitted and committed. Tests cancel both before admission and while an admitted write is blocked, then verify replay begins after the last committed group. A separate transport regression injects a publication failure with a buffered tail and checks that reconnect restores history and receives the remaining frames without a hub snapshot.
+
+Checkpoint timestamps live in immutable views. Pinned and retained reads report the time of the selected view, even if a newer view advances the status channel while the read completes. Availability remains a connection status.
+
+An isolated benchmark compares 256 individual update commits with four groups of 64 and measures repeated acknowledgements. It uses a 10,000-order fixture and no hub:
+
+```sh
+cargo test -p market-replica live_update_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p market-replica --features profile-allocations live_update_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p market-replica --features profile-allocations live_group_buffer_allocation_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+One local debug run with allocation instrumentation reported zero allocations for 1,000 repeated acknowledgements, taking about 0.33 ms inside the writer. Applying 256 real updates individually took 1.53 s; applying them in four groups took 31.7 ms. This is an isolated storage/writer measurement, not end-to-end network processing. These synthetic measurements do not predict production grouping: a sparse stream still commits each changed delivery immediately.
+
+The reusable collector separately measured zero allocations and reallocations while grouping 1,024 already-decoded frames into 16 groups with preallocated capacity. This excludes decoding, initial buffer allocation and storage-task scheduling; frame payloads are still released as groups complete.
 
 ## Cancellation and memory ownership
 

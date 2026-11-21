@@ -101,7 +101,11 @@ impl SnapshotBuilder {
             .map(|replayed| replayed.cursor))
     }
     pub(crate) fn replay_chunk(&mut self, position: u64) -> Result<Option<Replayed>, Status> {
-        self.replay_up_to(position, 64, 1024 * 1024)
+        self.replay_up_to(
+            position,
+            crate::limits::MAX_APPLY_BATCHES,
+            crate::limits::MAX_APPLY_BYTES,
+        )
     }
     fn replay_up_to(
         &mut self,

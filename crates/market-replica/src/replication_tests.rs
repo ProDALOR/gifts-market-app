@@ -7,6 +7,378 @@ use tonic::Status;
 use w::entity::Entity as E;
 
 #[tokio::test]
+async fn live_grouping_preserves_bounds_pending_frames_and_terminal_errors() {
+    use super::live_deliveries;
+    use crate::limits::{MAX_APPLY_BATCHES, MAX_APPLY_BYTES};
+    use prost::Message;
+
+    let frame = |index| w::Batch {
+        cursor: format!("c{index}"),
+        changes: vec![],
+    };
+    let mut stream = futures_util::stream::iter((0..130).map(|index| Ok(frame(index))));
+    let mut pending = None;
+    let mut batches = Vec::with_capacity(MAX_APPLY_BATCHES);
+    let allocation = batches.as_ptr();
+    let mut count = 0;
+    for expected in [64, 64, 2] {
+        let deliveries = live_deliveries(&mut stream, &mut pending, batches)
+            .await
+            .unwrap();
+        assert_eq!(deliveries.batches.len(), expected);
+        for batch in &deliveries.batches {
+            assert_eq!(batch.cursor, format!("c{count}"));
+            count += 1;
+        }
+        assert_eq!(deliveries.disconnected.is_some(), count == 130);
+        assert!(pending.is_none());
+        batches = deliveries.batches;
+        assert_eq!(batches.as_ptr(), allocation, "group storage must be reused");
+        batches.clear();
+    }
+    assert_eq!(MAX_APPLY_BATCHES, 64);
+    let mut large = order("large", "1", None);
+    large.meta.insert("payload".into(), "x".repeat(600 * 1024));
+    let mut stream = futures_util::stream::iter((0..3).map(|index| {
+        Ok(w::Batch {
+            cursor: format!("large{index}"),
+            changes: vec![upsert(entity(E::Order(large.clone())))],
+        })
+    }));
+    for index in 0..3 {
+        let deliveries = live_deliveries(&mut stream, &mut pending, Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(deliveries.batches.len(), 1);
+        assert_eq!(deliveries.batches[0].cursor, format!("large{index}"));
+        assert!(deliveries.batches[0].encoded_len() <= MAX_APPLY_BYTES);
+        assert_eq!(pending.is_some(), index < 2);
+    }
+    let mut stream =
+        futures_util::stream::iter([Ok(frame(0)), Err(Status::out_of_range("expired"))]);
+    let deliveries = live_deliveries(&mut stream, &mut pending, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(deliveries.batches[0].cursor, "c0");
+    assert_eq!(
+        deliveries.disconnected.unwrap().code(),
+        tonic::Code::OutOfRange
+    );
+}
+
+#[tokio::test]
+async fn live_grouping_does_not_wait_for_another_delivery() {
+    use super::live_deliveries;
+    use futures_util::FutureExt;
+    use tokio_stream::StreamExt;
+    let mut stream = tokio_stream::once(Ok(w::Batch {
+        cursor: "ready".into(),
+        changes: vec![],
+    }))
+    .chain(tokio_stream::pending());
+    let mut pending = None;
+    let deliveries = live_deliveries(&mut stream, &mut pending, Vec::new())
+        .now_or_never()
+        .unwrap()
+        .unwrap();
+    assert_eq!(deliveries.batches.len(), 1);
+    assert_eq!(deliveries.batches[0].cursor, "ready");
+    assert!(deliveries.disconnected.is_none());
+}
+
+#[cfg(feature = "profile-allocations")]
+#[tokio::test]
+#[ignore = "isolated allocation benchmark; use --test-threads=1"]
+async fn live_group_buffer_allocation_benchmark() {
+    use super::live_deliveries;
+    use crate::limits::MAX_APPLY_BATCHES;
+    let frames: Vec<_> = (0..1024)
+        .map(|index| {
+            Ok(w::Batch {
+                cursor: format!("c{index}"),
+                changes: vec![],
+            })
+        })
+        .collect();
+    let mut stream = futures_util::stream::iter(frames);
+    let mut pending = None;
+    let mut batches = Vec::with_capacity(MAX_APPLY_BATCHES);
+    let allocation = batches.as_ptr();
+    let region = stats_alloc::Region::new(&stats_alloc::INSTRUMENTED_SYSTEM);
+    for _ in 0..16 {
+        let deliveries = live_deliveries(&mut stream, &mut pending, batches)
+            .await
+            .unwrap();
+        assert_eq!(deliveries.batches.len(), MAX_APPLY_BATCHES);
+        assert!(deliveries.disconnected.is_none());
+        batches = deliveries.batches;
+        assert_eq!(batches.as_ptr(), allocation);
+        batches.clear();
+    }
+    println!(
+        "grouping 1,024 decoded frames into 16 groups: {:?}",
+        region.change()
+    );
+}
+
+#[tokio::test]
+async fn cancellation_replays_buffered_frames_after_the_last_admitted_group() {
+    use super::{drain, live_deliveries};
+    use futures_util::StreamExt;
+    use tokio_util::task::TaskTracker;
+
+    for admitted in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let market = ReplicaRuntime::open(directory.path(), "buffered-cancellation")
+            .await
+            .unwrap();
+        {
+            let mut writer = market.replication.writer.lock().unwrap();
+            let mut builder = writer.begin_snapshot().unwrap();
+            builder.append(&catalog()).unwrap();
+            writer
+                .install_snapshot(builder.finish("baseline").unwrap())
+                .unwrap();
+        }
+        let frames: Vec<_> = (0..3)
+            .map(|index| {
+                let mut row = order(&format!("o{index}"), "1", None);
+                row.meta.insert("payload".into(), "x".repeat(600 * 1024));
+                w::Batch {
+                    cursor: format!("c{index}"),
+                    changes: vec![upsert(entity(E::Order(row)))],
+                }
+            })
+            .collect();
+        let mut stream = futures_util::stream::iter(frames.iter().cloned().map(Ok))
+            .chain(futures_util::stream::pending());
+        let mut pending = None;
+        let deliveries = live_deliveries(&mut stream, &mut pending, Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(deliveries.batches.len(), 1);
+        assert_eq!(pending.as_ref().unwrap().cursor, "c1");
+        let jobs = TaskTracker::new();
+        if admitted {
+            let (started, running) = tokio::sync::oneshot::channel();
+            let (release, blocked) = std::sync::mpsc::channel();
+            let mut work = Box::pin(market.replication.mutate(&jobs, move |writer| {
+                let _ = started.send(());
+                let _ = blocked.recv();
+                writer.apply_deliveries(&deliveries.batches)
+            }));
+            tokio::select! {
+                _ = running => {},
+                _ = &mut work => panic!("admitted write must be blocked"),
+            }
+            drop(work);
+            drop(pending);
+            drop(stream);
+            release.send(()).unwrap();
+        } else {
+            drop(deliveries);
+            drop(pending);
+            drop(stream);
+        }
+        drain(&jobs).await;
+        let first = usize::from(admitted);
+        {
+            let mut writer = market.replication.writer.lock().unwrap();
+            writer.mark(SyncState::Stale);
+            assert_eq!(
+                writer.resume_cursor().unwrap(),
+                if admitted { "c0" } else { "baseline" }
+            );
+        }
+        // A new connection owns a new buffer. Its replay starts strictly after
+        // the committed group, not after the frame read ahead by the old one.
+        let replay = futures_util::stream::iter(frames.into_iter().skip(first).map(Ok)).chain(
+            futures_util::stream::once(async {
+                Err(Status::unavailable("closed after complete frames"))
+            }),
+        );
+        tokio::pin!(replay);
+        let mut pending = None;
+        let mut batches = Vec::new();
+        for index in first..3 {
+            let mut deliveries = live_deliveries(&mut replay, &mut pending, batches)
+                .await
+                .unwrap();
+            assert_eq!(deliveries.batches[0].cursor, format!("c{index}"));
+            market
+                .replication
+                .writer
+                .lock()
+                .unwrap()
+                .apply_deliveries(&deliveries.batches)
+                .unwrap();
+            assert_eq!(market.reader.cursor().unwrap(), format!("c{index}"));
+            assert_eq!(deliveries.disconnected.is_some(), index == 2);
+            deliveries.batches.clear();
+            batches = deliveries.batches;
+        }
+        // These deliberately large transport fixtures exceed the separate
+        // public page budget; inspect the replicated state directly.
+        assert_eq!(
+            market
+                .reader
+                .view()
+                .unwrap()
+                .state
+                .range(None, Some(crate::types::EntityKind::Order))
+                .count(),
+            3
+        );
+    }
+}
+
+#[tokio::test]
+async fn reconnect_after_failed_publication_repairs_history_and_replays_remaining_frames() {
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::{Request, Response, transport::Server};
+    type Stream<T> = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<T, Status>> + Send>>;
+    #[derive(Clone)]
+    struct Peer {
+        cursors: tokio::sync::mpsc::UnboundedSender<String>,
+        fail_watch_setup: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[tonic::async_trait]
+    impl w::market_read_server::MarketRead for Peer {
+        async fn books(
+            &self,
+            _: Request<w::BooksRequest>,
+        ) -> Result<Response<w::BooksPage>, Status> {
+            Err(Status::unimplemented("unused"))
+        }
+        type ReadStream = Stream<w::Page>;
+        async fn read(
+            &self,
+            _: Request<w::ReadRequest>,
+        ) -> Result<Response<Self::ReadStream>, Status> {
+            panic!("ordinary publication recovery must not request a hub snapshot");
+        }
+        type WatchStream = Stream<w::Batch>;
+        async fn watch(
+            &self,
+            request: Request<w::WatchRequest>,
+        ) -> Result<Response<Self::WatchStream>, Status> {
+            use futures_util::StreamExt;
+            let cursor = request.into_inner().after_cursor;
+            let first = match cursor.as_str() {
+                "baseline" => 0,
+                "c0" => 1,
+                _ => panic!("unexpected resume cursor: {cursor}"),
+            };
+            let _ = self.cursors.send(cursor);
+            if self
+                .fail_watch_setup
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(Status::unavailable("test transient Watch setup failure"));
+            }
+            let frames = (first..3).map(|index| {
+                let mut row = order(&format!("o{index}"), "1", (index == 0).then_some(42));
+                row.meta.insert("payload".into(), "x".repeat(600 * 1024));
+                Ok(w::Batch {
+                    cursor: format!("c{index}"),
+                    changes: vec![upsert(entity(E::Order(row)))],
+                })
+            });
+            Ok(Response::new(Box::pin(
+                futures_util::stream::iter(frames).chain(futures_util::stream::pending()),
+            )))
+        }
+    }
+    for snapshot_publication in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let market = ReplicaRuntime::open(directory.path(), "publication-reconnect")
+            .await
+            .unwrap();
+        {
+            let mut writer = market.replication.writer.lock().unwrap();
+            let mut builder = writer.begin_snapshot().unwrap();
+            builder.append(&catalog()).unwrap();
+            writer.fail_publish_once = snapshot_publication;
+            let result = writer.install_snapshot(builder.finish("baseline").unwrap());
+            assert_eq!(result.is_err(), snapshot_publication);
+            writer.mark(SyncState::Stale);
+            if !snapshot_publication {
+                writer.fail_publish_once = true;
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let hub = market_hub_client::HubClient::new(
+            format!("http://{}", listener.local_addr().unwrap()),
+            "test.private-test-token".into(),
+        )
+        .unwrap();
+        let (cursors, mut resumes) = tokio::sync::mpsc::unbounded_channel();
+        let server_stop = tokio_util::sync::CancellationToken::new();
+        let server = tokio::spawn(
+            Server::builder()
+                .add_service(w::market_read_server::MarketReadServer::new(Peer {
+                    cursors,
+                    fail_watch_setup: Arc::new(std::sync::atomic::AtomicBool::new(
+                        snapshot_publication,
+                    )),
+                }))
+                .serve_with_incoming_shutdown(
+                    TcpListenerStream::new(listener),
+                    server_stop.clone().cancelled_owned(),
+                ),
+        );
+        let stop = tokio_util::sync::CancellationToken::new();
+        let reader = market.reader;
+        let history = reader.read_revision(&read(0, true)).ok();
+        let worker = tokio::spawn(market.replication.run(hub, stop.clone()));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while reader.cursor().unwrap_or_default() != "c2" {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(resumes.recv().await.unwrap(), "baseline");
+        if snapshot_publication {
+            assert_eq!(
+                resumes.recv().await.unwrap(),
+                "baseline",
+                "a failed Watch setup must resume the prepared snapshot without a Read"
+            );
+        } else {
+            assert_eq!(resumes.recv().await.unwrap(), "c0");
+        }
+        let view = reader.view().unwrap();
+        assert_eq!(
+            view.state
+                .range(None, Some(crate::types::EntityKind::Order))
+                .count(),
+            2
+        );
+        let sale = view
+            .history
+            .execution(&crate::types::Position {
+                executed_at_ms: 42,
+                venue_id: "venue".into(),
+                order_id: "o0".into(),
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(order_entity(&sale).unwrap().id, "o0");
+        assert_ne!(history, Some(reader.read_revision(&read(0, true)).unwrap()));
+        assert_eq!(reader.status().state, SyncState::Live);
+        stop.cancel();
+        worker.await.unwrap().unwrap();
+        server_stop.cancel();
+        tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn draining_cancelled_storage_work_waits_for_returned_builder_cleanup() {
     use super::{blocking, drain};
     use tokio::sync::oneshot;
@@ -64,6 +436,60 @@ async fn draining_cancelled_storage_work_waits_for_returned_builder_cleanup() {
     assert!(writer.begin_snapshot().is_ok());
     assert_eq!(blocking(&jobs, || Ok(42)).await.unwrap(), 42);
     drain(&jobs).await;
+}
+
+#[tokio::test]
+async fn cancellation_drains_an_admitted_prepared_publication_retry_without_rebuilding() {
+    use super::drain;
+    use tokio_util::task::TaskTracker;
+    let directory = tempfile::tempdir().unwrap();
+    let market = ReplicaRuntime::open(directory.path(), "cancelled-publication")
+        .await
+        .unwrap();
+    let prepared = {
+        let mut writer = market.replication.writer.lock().unwrap();
+        let mut builder = writer.begin_snapshot().unwrap();
+        builder.append(&catalog()).unwrap();
+        writer
+            .install_snapshot(builder.finish("baseline").unwrap())
+            .unwrap();
+        writer.mark(SyncState::Stale);
+        writer.fail_publish_once = true;
+        assert!(
+            writer
+                .apply(w::Batch {
+                    cursor: "next".into(),
+                    changes: vec![upsert(entity(E::Order(order("listing", "1", None))))]
+                })
+                .is_err()
+        );
+        match &writer.publication {
+            crate::PublicationState::Prepared { view, .. } => view.clone(),
+            _ => unreachable!(),
+        }
+    };
+    let jobs = TaskTracker::new();
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let mut work = Box::pin(market.replication.mutate(&jobs, move |writer| {
+        let _ = started.send(());
+        let _ = blocked.recv();
+        writer.resume_cursor()
+    }));
+    tokio::select! { _ = running => {}, _ = &mut work => panic!("retry must be blocked") }
+    drop(work);
+    release.send(()).unwrap();
+    drain(&jobs).await;
+    assert!(Arc::ptr_eq(&prepared, &market.reader.view().unwrap()));
+    assert_eq!(market.reader.cursor().unwrap(), "next");
+    assert_eq!(market.reader.status().state, SyncState::Stale);
+    let mut writer = market.replication.writer.lock().unwrap();
+    assert!(matches!(
+        writer.publication,
+        crate::PublicationState::Current
+    ));
+    writer.resume_cursor().unwrap();
+    assert!(Arc::ptr_eq(&prepared, &market.reader.view().unwrap()));
 }
 
 #[tokio::test]

@@ -27,11 +27,38 @@ const SORTED: TableDefinition<RankedExecution<'static>, ()> =
     TableDefinition::new("execution_ranks_v1");
 const JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("bootstrap_journal");
 #[derive(Clone)]
-pub struct Store(Arc<Database>);
+pub struct Store(Arc<Database>, #[cfg(test)] Arc<std::sync::atomic::AtomicU8>);
 #[derive(Clone)]
 pub struct Snapshot {
     pub read: Arc<ReadTransaction>,
     pub _store: Store,
+}
+pub(crate) struct Applied {
+    pub updated_at: Option<i64>,
+    pub data_changed: bool,
+    pub history_changed: bool,
+}
+#[derive(Debug)]
+pub(crate) struct ApplyError {
+    pub status: Status,
+    pub commit_attempted: bool,
+}
+impl From<Status> for ApplyError {
+    fn from(status: Status) -> Self {
+        Self {
+            status,
+            commit_attempted: false,
+        }
+    }
+}
+impl From<ApplyError> for Status {
+    fn from(error: ApplyError) -> Self {
+        error.status
+    }
+}
+pub(crate) struct Checkpoint {
+    pub cursor: String,
+    pub updated_at: Option<i64>,
 }
 pub fn failure(error: impl std::fmt::Display) -> Status {
     tracing::error!(%error,"replica storage failed");
@@ -86,7 +113,11 @@ impl Store {
             }
         }
         tx.commit().map_err(failure)?;
-        Ok(Self(Arc::new(database)))
+        Ok(Self(
+            Arc::new(database),
+            #[cfg(test)]
+            Arc::default(),
+        ))
     }
     pub fn snapshot(&self) -> Result<Snapshot, Status> {
         Ok(Snapshot {
@@ -94,40 +125,29 @@ impl Store {
             _store: self.clone(),
         })
     }
+    #[cfg(test)]
+    pub fn fail_commit_once(&self, committed: bool) {
+        self.1.store(
+            if committed { 2 } else { 1 },
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
     pub fn cursor(&self) -> Result<String, Status> {
-        let snap = self.snapshot()?;
-        let meta = snap.read.open_table(META).map_err(failure)?;
-        String::from_utf8(value(&meta, "cursor")?).map_err(failure)
+        Ok(self.snapshot()?.checkpoint()?.cursor)
     }
+    #[cfg(test)]
     pub fn updated_at(&self) -> Result<Option<i64>, Status> {
-        let snap = self.snapshot()?;
-        let meta = snap.read.open_table(META).map_err(failure)?;
-        let raw = value(&meta, "updated_at")?;
-        if raw.is_empty() {
-            Ok(None)
-        } else {
-            String::from_utf8(raw)
-                .map_err(failure)?
-                .parse()
-                .map(Some)
-                .map_err(failure)
-        }
+        Ok(self.snapshot()?.checkpoint()?.updated_at)
     }
+    #[cfg(test)]
     pub fn state(&self) -> Result<State, Status> {
-        let snap = self.snapshot()?;
-        let table = snap.read.open_table(CURRENT).map_err(failure)?;
-        let mut state = State::default();
-        for row in table.iter().map_err(failure)? {
-            let (_, payload) = row.map_err(failure)?;
-            state.upsert(w::Entity::decode(payload.value()).map_err(failure)?)?;
-        }
-        Ok(state)
+        self.snapshot()?.state()
     }
     pub fn apply<'a>(
         &self,
         changes: impl IntoIterator<Item = &'a w::Change>,
         cursor: Option<&str>,
-    ) -> Result<(), Status> {
+    ) -> Result<Applied, ApplyError> {
         let mut tx = self.0.begin_write().map_err(failure)?;
         tx.set_durability(if cursor.is_some() {
             Durability::Immediate
@@ -135,12 +155,19 @@ impl Store {
             Durability::None
         })
         .map_err(failure)?;
-        {
+        let mut applied = Applied {
+            updated_at: None,
+            data_changed: false,
+            history_changed: false,
+        };
+        let mut changes = changes.into_iter().peekable();
+        if changes.peek().is_some() {
             let mut current = tx.open_table(CURRENT).map_err(failure)?;
             let mut executions = tx.open_table(EXECUTIONS).map_err(failure)?;
             let mut identities = tx.open_table(IDENTITIES).map_err(failure)?;
             let mut index = tx.open_table(INDEX).map_err(failure)?;
             let mut ranked = tx.open_table(SORTED).map_err(failure)?;
+            let mut encoded = Vec::new();
             for change in changes {
                 match change
                     .change
@@ -152,9 +179,10 @@ impl Store {
                             .key
                             .as_ref()
                             .ok_or_else(|| Status::data_loss("missing removal key"))?;
-                        current
+                        applied.data_changed |= current
                             .remove(Key::try_from(k)?.stored())
-                            .map_err(failure)?;
+                            .map_err(failure)?
+                            .is_some();
                     }
                     w::change::Change::Upsert(entity) => {
                         let key = state::entity_key(entity)?;
@@ -170,7 +198,8 @@ impl Store {
                             let time = order
                                 .executed_at_ms
                                 .ok_or_else(|| Status::data_loss("missing execution time"))?;
-                            current.remove(key.stored()).map_err(failure)?;
+                            applied.data_changed |=
+                                current.remove(key.stored()).map_err(failure)?.is_some();
                             if let Some(old) = identities.get((venue, id)).map_err(failure)? {
                                 let payload = executions
                                     .get((old.value(), venue, id))
@@ -182,13 +211,19 @@ impl Store {
                                 if stored != *order {
                                     return Err(Status::data_loss(
                                         "executed identity changed contents",
-                                    ));
+                                    )
+                                    .into());
                                 }
                                 continue;
                             }
+                            encoded.clear();
+                            encoded.reserve(order.encoded_len());
+                            order.encode(&mut encoded).map_err(failure)?;
                             executions
-                                .insert((time, venue, id), order.encode_to_vec().as_slice())
+                                .insert((time, venue, id), encoded.as_slice())
                                 .map_err(failure)?;
+                            applied.data_changed = true;
+                            applied.history_changed = true;
                             identities.insert((venue, id), time).map_err(failure)?;
                             insert_ranks(&mut ranked, order)?;
                             for IndexTerm { kind, path, value } in execution_indexes(order)? {
@@ -205,18 +240,48 @@ impl Store {
                                     .map_err(failure)?;
                             }
                         } else {
-                            current
-                                .insert(key.stored(), entity.encode_to_vec().as_slice())
-                                .map_err(failure)?;
+                            encoded.clear();
+                            encoded.reserve(entity.encoded_len());
+                            entity.encode(&mut encoded).map_err(failure)?;
+                            let identical = current
+                                .get(key.stored())
+                                .map_err(failure)?
+                                .is_some_and(|old| old.value() == encoded.as_slice());
+                            if !identical {
+                                current
+                                    .insert(key.stored(), encoded.as_slice())
+                                    .map_err(failure)?;
+                                applied.data_changed = true;
+                            }
                         }
                     }
                 }
             }
-            if let Some(cursor) = cursor {
-                checkpoint(&tx, cursor)?;
-            }
         }
-        tx.commit().map_err(failure)
+        if let Some(cursor) = cursor {
+            applied.updated_at = Some(checkpoint(&tx, cursor)?);
+        }
+        #[cfg(test)]
+        let fault = self.1.swap(0, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(test)]
+        if fault == 1 {
+            return Err(ApplyError {
+                status: Status::unavailable("test uncertain commit"),
+                commit_attempted: true,
+            });
+        }
+        tx.commit().map_err(|error| ApplyError {
+            status: failure(error),
+            commit_attempted: true,
+        })?;
+        #[cfg(test)]
+        if fault == 2 {
+            return Err(ApplyError {
+                status: Status::unavailable("test uncertain commit"),
+                commit_attempted: true,
+            });
+        }
+        Ok(applied)
     }
     pub fn journal(&self, batch: &w::Batch) -> Result<(), Status> {
         let mut tx = self.0.begin_write().map_err(failure)?;
@@ -268,15 +333,16 @@ impl Store {
         tx.commit().map_err(failure)
     }
 }
-fn checkpoint(tx: &WriteTransaction, cursor: &str) -> Result<(), Status> {
+fn checkpoint(tx: &WriteTransaction, cursor: &str) -> Result<i64, Status> {
     if cursor.is_empty() {
         return Err(Status::data_loss("empty durable checkpoint"));
     }
     let mut meta = tx.open_table(META).map_err(failure)?;
     meta.insert("cursor", cursor.as_bytes()).map_err(failure)?;
-    meta.insert("updated_at", crate::now().to_string().as_bytes())
+    let updated_at = crate::now();
+    meta.insert("updated_at", updated_at.to_string().as_bytes())
         .map_err(failure)?;
-    Ok(())
+    Ok(updated_at)
 }
 fn insert_ranks(
     table: &mut redb::Table<'_, RankedExecution<'static>, ()>,
@@ -379,6 +445,30 @@ fn execution_indexes(order: &w::Order) -> Result<BTreeSet<IndexTerm>, Status> {
     Ok(rows)
 }
 impl Snapshot {
+    pub fn checkpoint(&self) -> Result<Checkpoint, Status> {
+        let meta = self.read.open_table(META).map_err(failure)?;
+        let cursor = String::from_utf8(value(&meta, "cursor")?).map_err(failure)?;
+        let raw = meta.get("updated_at").map_err(failure)?;
+        let updated_at = match raw {
+            Some(raw) if !raw.value().is_empty() => Some(
+                std::str::from_utf8(raw.value())
+                    .map_err(failure)?
+                    .parse()
+                    .map_err(failure)?,
+            ),
+            _ => None,
+        };
+        Ok(Checkpoint { cursor, updated_at })
+    }
+    pub fn state(&self) -> Result<State, Status> {
+        let table = self.read.open_table(CURRENT).map_err(failure)?;
+        let mut state = State::default();
+        for row in table.iter().map_err(failure)? {
+            let (_, payload) = row.map_err(failure)?;
+            state.upsert(w::Entity::decode(payload.value()).map_err(failure)?)?;
+        }
+        Ok(state)
+    }
     pub fn ranked_history(
         &self,
         filter: &Filter,

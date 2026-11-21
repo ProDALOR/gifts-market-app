@@ -1,4 +1,7 @@
-//! Shared budgets for bounded replica reads and retained views.
+//! Shared budgets for bounded replica reads, updates and retained views.
+pub(crate) const MAX_APPLY_BATCHES: usize = 64;
+pub(crate) const MAX_APPLY_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ReadLimits {
     /// Maximum slice size; public actors apply this bound before read admission.

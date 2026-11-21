@@ -177,7 +177,7 @@ impl ReplicaReader {
                 next_page_token,
                 cursor: view.cursor.clone(),
             },
-            sync: self.status(),
+            sync: self.status_for(&view),
         })
     }
 }
