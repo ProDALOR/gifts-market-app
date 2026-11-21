@@ -30,7 +30,7 @@ import {useBackgroundPlaybackSuspension} from '/src/previews/use-playback.ts';
 import {ValuationInfo} from '/src/orderbook/valuation-info.tsx';
 import {OrderDetails} from '/src/orderbook/order-details.tsx';
 import {playbackBudget} from '/src/previews/playback-budget.ts';
-const previewStrategy={id:'preview',name:'Preview strategy',description:'Fixture strategy',input:'resolved_gift',targets:['gift'],requires_period:false,documentation_url:'/__preview_guide.md',documentation_revision:'one',revision:'r1',display:{fields:[],evidence:[],note:'Fixture estimate'}};
+const previewStrategy={id:'preview',name:'Preview strategy',description:'Fixture strategy',input:{targets:['gift'],period:'unsupported'},documentation_url:'/__preview_guide.md',documentation_revision:'one',revision:'r1',display:{fields:[],evidence:[],note:'Fixture estimate'}};
 const previewResult={strategy:'preview',revision:'r1',data:{}};
 const valuationState={key:'preview',strategy:previewStrategy,result:previewResult,strategies:[previewStrategy],fields:[],evidence:[],primaryFields:[],loading:false,
  report:{target:{kind:'gift',gift:{id:'gift',collection_id:'gift',traits:{}}},currency_id:'GRAM',stale:false,evaluated_at:'2026-11-18T12:00:00Z',results:[previewResult]}};
@@ -362,8 +362,8 @@ try {
           documentation_url: "/__preview_guide.md",
           documentation_revision: "one",
           revision: "r1",
-          input: "resolved_gift", targets: ["gift"], requires_period: false,
-          display: {fields: [], evidence: [], note: "Fixture estimate"},
+          input: { targets: ["gift"], period: "unsupported" },
+          display: { fields: [], evidence: [], note: "Fixture estimate" },
         },
       ],
     });

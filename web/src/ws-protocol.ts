@@ -51,7 +51,7 @@ const valuationTarget = (value: unknown) => {
       !text(value.collection_id))
   )
     return false;
-  if (value.kind !== "criteria" && value.criteria != null) return false;
+  if (value.kind !== "selection" && value.criteria != null) return false;
   switch (value.kind) {
     case "catalog":
       return (
@@ -68,24 +68,6 @@ const valuationTarget = (value: unknown) => {
                 text(value.details.pair.model_id) &&
                 text(value.details.pair.backdrop_id)))))
       );
-    case "collection":
-      return (
-        value.model_id == null &&
-        value.backdrop_id == null &&
-        value.gift == null
-      );
-    case "model":
-      return (
-        text(value.model_id) && value.backdrop_id == null && value.gift == null
-      );
-    case "backdrop":
-      return (
-        text(value.backdrop_id) && value.model_id == null && value.gift == null
-      );
-    case "model_backdrop":
-      return (
-        text(value.model_id) && text(value.backdrop_id) && value.gift == null
-      );
     case "gift":
       return (
         gift(value.gift) &&
@@ -94,7 +76,7 @@ const valuationTarget = (value: unknown) => {
         value.model_id == null &&
         value.backdrop_id == null
       );
-    case "criteria":
+    case "selection":
       return (
         value.model_id == null &&
         value.backdrop_id == null &&
@@ -265,7 +247,7 @@ export function parseFrame(raw: unknown): LiveFrame {
         record(value.error) &&
         text(value.error.code) &&
         text(value.error.message) &&
-        (value.error.details == null || record(value.error.details));
+        !Object.hasOwn(value.error, "details");
       break;
     case "market.status":
       valid = value.id === undefined && marketStatus(value.status);

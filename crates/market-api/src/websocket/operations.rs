@@ -47,10 +47,19 @@ pub(super) async fn run(
         };
         let mut value = watch.current();
         loop {
+            let encoded = tokio::select! { biased; _=cancel.cancelled()=>return End::Cancelled, result=market.encode_valuation(value, crate::encoding::ValuationEnvelope::Snapshot(key.id.as_str().into()))=>result };
+            let encoded = match encoded {
+                Ok(value) => value,
+                Err(error) => {
+                    return end(tx
+                        .send(Scope::Operation(key), Payload::Error(error), true, &cancel)
+                        .await);
+                }
+            };
             if let Err(error) = tx
                 .send(
                     Scope::Operation(key.clone()),
-                    Payload::ValuationSnapshot(value),
+                    Payload::Encoded(encoded),
                     false,
                     &cancel,
                 )
@@ -77,8 +86,12 @@ pub(super) async fn run(
     if let Operation::Request(request) = query {
         let work = async {
             match request {
-                crate::models::ApiRequest::Valuation { params, .. } => {
-                    market.valuation(*params).await.map(Payload::Valuation)
+                crate::models::ApiRequest::Valuation { id, params } => {
+                    let report = market.valuation(*params).await?;
+                    market
+                        .encode_valuation(report, crate::encoding::ValuationEnvelope::Query(id))
+                        .await
+                        .map(Payload::Encoded)
                 }
                 crate::models::ApiRequest::Orders { id, params } => {
                     let read = market.query_orders(*params).await?;
@@ -88,7 +101,7 @@ pub(super) async fn run(
                             read: Box::new(read),
                         })
                         .await
-                        .map(Payload::Orders)
+                        .map(Payload::Encoded)
                 }
             }
         };
@@ -183,7 +196,7 @@ pub(super) async fn run(
                             previous = Some(result);
                             epoch = Some(next_epoch);
                             sequence = next_sequence;
-                            Some((Payload::Orders(encoded), false))
+                            Some((Payload::Encoded(encoded), false))
                         }
                         Err(error) => Some((Payload::Error(error), true)),
                     }

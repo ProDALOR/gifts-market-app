@@ -6,7 +6,6 @@ pub struct WebSocketLimits {
     pub subscriptions: usize,
     pub requests: usize,
     pub frame_bytes: usize,
-    pub order_bytes: usize,
     pub queue_messages: usize,
     pub queue_bytes: usize,
     pub setup_timeout: Duration,
@@ -22,7 +21,6 @@ impl Default for WebSocketLimits {
             subscriptions: 16,
             requests: 8,
             frame_bytes: 64 * 1024,
-            order_bytes: 4 * 1024 * 1024,
             queue_messages: 8,
             queue_bytes: 8 * 1024 * 1024,
             setup_timeout: Duration::from_secs(10),
@@ -35,6 +33,7 @@ impl Default for WebSocketLimits {
 }
 #[derive(Clone, Debug)]
 pub struct ApiLimits {
+    pub response_bytes: usize,
     pub json_bytes: usize,
     pub http_connections: usize,
     /// Request-head receive timeout and extraction/handler deadline; excludes streaming bodies.
@@ -44,6 +43,7 @@ pub struct ApiLimits {
 impl Default for ApiLimits {
     fn default() -> Self {
         Self {
+            response_bytes: 4 * 1024 * 1024,
             json_bytes: 64 * 1024,
             http_connections: 2048,
             request_timeout: Duration::from_secs(10),
@@ -61,13 +61,13 @@ impl ApiLimits {
                 && ws.subscriptions > 0
                 && ws.requests > 0
                 && ws.frame_bytes > 0
-                && ws.order_bytes > 0
+                && self.response_bytes > 0
                 && ws.queue_messages > 0,
             "API limits must be positive"
         );
         anyhow::ensure!(
-            ws.queue_bytes >= ws.order_bytes && ws.queue_bytes <= u32::MAX as usize,
-            "WebSocket queue must hold an encoded order response and fit in u32"
+            ws.queue_bytes >= self.response_bytes && ws.queue_bytes <= u32::MAX as usize,
+            "WebSocket queue must hold an encoded response and fit in u32"
         );
         anyhow::ensure!(
             !self.request_timeout.is_zero()

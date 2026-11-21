@@ -34,6 +34,29 @@ impl<'a> From<&'a market_valuation::ValuationReport> for ValuationResponse<'a> {
         }
     }
 }
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InputRequirements {
+    pub targets: &'static [market_valuation::ValuationTargetKind],
+    pub period: PeriodRequirement,
+}
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PeriodRequirement {
+    Required,
+    Unsupported,
+}
+impl From<market_valuation::InputContract> for InputRequirements {
+    fn from(input: market_valuation::InputContract) -> Self {
+        Self {
+            targets: input.targets(),
+            period: if input.requires_period() {
+                PeriodRequirement::Required
+            } else {
+                PeriodRequirement::Unsupported
+            },
+        }
+    }
+}
 /// Public presentation adds HTTP links to transport-independent strategy metadata.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct StrategyResponse {
@@ -44,9 +67,7 @@ pub struct StrategyResponse {
     pub display: market_valuation::DisplayDefinition,
     pub documentation_url: String,
     pub documentation_revision: String,
-    pub input: market_valuation::InputContract,
-    pub targets: &'static [market_valuation::ValuationTargetKind],
-    pub requires_period: bool,
+    pub input: InputRequirements,
 }
 impl From<&market_valuation::StrategyMetadata> for StrategyResponse {
     fn from(metadata: &market_valuation::StrategyMetadata) -> Self {
@@ -55,13 +76,11 @@ impl From<&market_valuation::StrategyMetadata> for StrategyResponse {
             name: metadata.name,
             description: metadata.description,
             revision: content_revision(
-                &serde_json::to_vec(&(metadata.input, metadata.display))
+                &serde_json::to_vec(&(InputRequirements::from(metadata.input), metadata.display))
                     .expect("static strategy contract serializes"),
             ),
             display: metadata.display,
-            input: metadata.input,
-            targets: metadata.input.targets(),
-            requires_period: metadata.input.requires_period(),
+            input: metadata.input.into(),
             documentation_revision: content_revision(metadata.documentation.as_bytes()),
             documentation_url: format!("/valuations/strategies/{}/documentation", metadata.id),
         }
@@ -142,7 +161,7 @@ fn catalog() -> &'static StrategyCatalog {
     static CATALOG: std::sync::OnceLock<StrategyCatalog> = std::sync::OnceLock::new();
     CATALOG.get_or_init(|| StrategyCatalog::new(market_valuation::strategies()))
 }
-#[utoipa::path(get,path="/valuations/strategies",tag="Valuations",summary="Discover valuation strategies and supported targets",description="IDs match strategy fields in valuation responses. Each entry advertises its typed input contract. Supported targets and execution-period requirements are derived from that contract. Each strategy owns its display name, description, static display definition and Markdown documentation with LaTeX math. Display field IDs select top-level typed metrics. Field formats define decimal precision (midpoint-to-even), currency or numeric suffix and primary emphasis. Evidence paths are RFC 6901 JSON pointers into strategy data; absent evidence is omitted. revision identifies the input/display contract and matches each query/watch result. Follow documentation_url to fetch the guide. documentation_revision changes with guide content. Both discovery and documentation support ETag revalidation.",responses((status=200,body=Vec<StrategyResponse>,headers(("ETag"=String,description="Strategy catalog content revision"))),(status=304,description="Strategy catalog is unchanged")))]
+#[utoipa::path(get,path="/valuations/strategies",tag="Valuations",summary="Discover valuation strategies and supported targets",description="IDs match strategy fields in valuation responses. Each entry advertises one input descriptor with targets and a required or unsupported period. These capabilities are derived from the internal typed input contract. Each strategy owns its display name, description, static display definition and Markdown documentation with LaTeX math. Display field IDs select top-level typed metrics. Field formats define decimal precision (midpoint-to-even), currency or numeric suffix and primary emphasis. Evidence paths are RFC 6901 JSON pointers into strategy data; absent evidence is omitted. revision identifies the input/display contract and matches each query/watch result. Follow documentation_url to fetch the guide. documentation_revision changes with guide content. Both discovery and documentation support ETag revalidation.",responses((status=200,body=Vec<StrategyResponse>,headers(("ETag"=String,description="Strategy catalog content revision"))),(status=304,description="Strategy catalog is unchanged")))]
 pub(crate) async fn strategies(req: actix_web::HttpRequest) -> actix_web::HttpResponse {
     catalog().index.response(&req)
 }
@@ -159,7 +178,6 @@ pub(crate) async fn documentation(
         .ok_or_else(|| crate::error::ApiError {
             code: crate::error::ErrorCode::NotFound,
             message: "Strategy documentation is unavailable".into(),
-            details: None,
         })?;
     Ok(guide.response(&req))
 }
@@ -293,12 +311,12 @@ mod tests {
             let metadata = market_valuation::strategy(row["id"].as_str().unwrap()).unwrap();
             assert_eq!(row["name"], metadata.name);
             assert_eq!(row["description"], metadata.description);
-            assert_eq!(row["input"], serde_json::to_value(metadata.input).unwrap());
             assert_eq!(
-                row["targets"],
-                serde_json::to_value(metadata.input.targets()).unwrap()
+                row["input"],
+                serde_json::to_value(super::InputRequirements::from(metadata.input)).unwrap()
             );
-            assert_eq!(row["requires_period"], metadata.input.requires_period());
+            assert!(row.get("targets").is_none());
+            assert!(row.get("requires_period").is_none());
             let response = test::call_service(
                 &app,
                 test::TestRequest::get()

@@ -64,30 +64,40 @@ async fn targets_share_floor_statistics_and_execution_periods_without_requiring_
         .unwrap();
     for (target, floor) in [
         (
-            ValuationTarget::Collection {
+            ValuationTarget::Selection {
                 collection_id: "gift".into(),
+                criteria: market_gifts::GiftCriteria::default(),
             },
             "3",
         ),
         (
-            ValuationTarget::Model {
+            ValuationTarget::Selection {
                 collection_id: "gift".into(),
-                model_id: "m".into(),
+                criteria: market_gifts::GiftCriteria {
+                    models: vec!["m".into()],
+                    ..Default::default()
+                },
             },
             "10",
         ),
         (
-            ValuationTarget::Backdrop {
+            ValuationTarget::Selection {
                 collection_id: "gift".into(),
-                backdrop_id: "b".into(),
+                criteria: market_gifts::GiftCriteria {
+                    backdrops: vec!["b".into()],
+                    ..Default::default()
+                },
             },
             "11",
         ),
         (
-            ValuationTarget::ModelBackdrop {
+            ValuationTarget::Selection {
                 collection_id: "gift".into(),
-                model_id: "m".into(),
-                backdrop_id: "b".into(),
+                criteria: market_gifts::GiftCriteria {
+                    models: vec!["m".into()],
+                    backdrops: vec!["b".into()],
+                    ..Default::default()
+                },
             },
             "100",
         ),
@@ -108,8 +118,9 @@ async fn targets_share_floor_statistics_and_execution_periods_without_requiring_
         assert_eq!(mean.evidence.gifts, 3);
         assert_eq!(
             mean.evidence.first_execution,
-            request(ValuationTarget::Collection {
-                collection_id: "gift".into()
+            request(ValuationTarget::Selection {
+                collection_id: "gift".into(),
+                criteria: market_gifts::GiftCriteria::default()
             })
             .period
             .unwrap()
@@ -117,28 +128,35 @@ async fn targets_share_floor_statistics_and_execution_periods_without_requiring_
         );
         assert!(!report.stale);
     }
-    let mut mixed = request(ValuationTarget::Collection {
+    let mut mixed = request(ValuationTarget::Selection {
         collection_id: "gift".into(),
+        criteria: market_gifts::GiftCriteria::default(),
     });
     mixed
         .strategies
         .push(StrategyId::new("gift_floor").unwrap());
     let report = handle.query(mixed).await.unwrap();
     assert!(
-        matches!(&report.results[3],StrategyOutcome::Error{error,..} if error.code==ValuationErrorCode::UnsupportedTarget)
+        matches!(&report.results[3],StrategyOutcome::Error{error,..} if error.code==StrategyFailureCode::UnsupportedTarget)
     );
     assert!(matches!(&report.results[0], StrategyOutcome::Value(_)));
     // Metadata membership errors are not treated as empty evidence.
-    let invalid = request(ValuationTarget::Model {
+    let invalid = request(ValuationTarget::Selection {
         collection_id: "gift".into(),
-        model_id: "unknown".into(),
+        criteria: market_gifts::GiftCriteria {
+            models: vec!["unknown".into()],
+            ..Default::default()
+        },
     });
     assert!(handle.query(invalid).await.is_err());
     assert!(
         handle
-            .query(request(ValuationTarget::Model {
+            .query(request(ValuationTarget::Selection {
                 collection_id: "gift".into(),
-                model_id: "b".into()
+                criteria: market_gifts::GiftCriteria {
+                    models: vec!["b".into()],
+                    ..Default::default()
+                }
             }))
             .await
             .is_err()
@@ -185,8 +203,9 @@ async fn sparse_history_preserves_ask_results_and_individual_gifts_can_use_their
         .await
         .unwrap();
     let collection = handle
-        .query(request(ValuationTarget::Collection {
+        .query(request(ValuationTarget::Selection {
             collection_id: "gift".into(),
+            criteria: market_gifts::GiftCriteria::default(),
         }))
         .await
         .unwrap();
@@ -216,8 +235,9 @@ async fn sparse_history_preserves_ask_results_and_individual_gifts_can_use_their
     writer.mark(market_replica::SyncState::Stale);
     assert!(
         handle
-            .query(request(ValuationTarget::Collection {
-                collection_id: "gift".into()
+            .query(request(ValuationTarget::Selection {
+                collection_id: "gift".into(),
+                criteria: market_gifts::GiftCriteria::default()
             }))
             .await
             .unwrap()
@@ -230,8 +250,9 @@ async fn sparse_history_preserves_ask_results_and_individual_gifts_can_use_their
 }
 #[test]
 fn strategies_and_execution_periods_are_explicit_and_validated() {
-    let mut q = request(ValuationTarget::Collection {
+    let mut q = request(ValuationTarget::Selection {
         collection_id: "gift".into(),
+        criteria: market_gifts::GiftCriteria::default(),
     });
     assert!(q.validate().is_ok());
     q.period = None;
@@ -248,8 +269,9 @@ fn strategies_and_execution_periods_are_explicit_and_validated() {
 
 #[test]
 fn preparation_preserves_strategy_order_and_shares_one_checked_period() {
-    let mut query = request(ValuationTarget::Collection {
+    let mut query = request(ValuationTarget::Selection {
         collection_id: "gift".into(),
+        criteria: market_gifts::GiftCriteria::default(),
     });
     query.strategies.reverse();
     let ids = query.strategies.clone();
@@ -257,8 +279,9 @@ fn preparation_preserves_strategy_order_and_shares_one_checked_period() {
     let prepared = query.prepare().unwrap();
     assert_eq!(prepared.strategies.len(), ids.len());
     assert_eq!(prepared.period.unwrap().as_period(), expected_period);
-    let target = Arc::new(ResolvedTarget::Collection {
+    let target = Arc::new(ResolvedTarget::Selection {
         collection_id: "gift".into(),
+        criteria: market_gifts::GiftCriteria::default(),
     });
     for (entry, id) in prepared.strategies.iter().zip(&ids) {
         assert_eq!(entry.metadata().id, id.as_str());
@@ -274,16 +297,17 @@ fn preparation_preserves_strategy_order_and_shares_one_checked_period() {
 }
 
 #[test]
-fn preparation_checks_unused_periods_without_requiring_execution_bounds() {
-    let mut query = request(ValuationTarget::Collection {
+fn preparation_rejects_periods_unused_by_all_selected_strategies() {
+    let mut query = request(ValuationTarget::Selection {
         collection_id: "gift".into(),
+        criteria: Default::default(),
     });
     query.strategies = vec![StrategyId::new("ask_floor").unwrap()];
+    assert!(query.clone().prepare().is_err());
     query.period.as_mut().unwrap().until = None;
-    assert!(query.clone().prepare().unwrap().period.is_none());
-    let from = query.period.as_ref().unwrap().from.unwrap();
-    query.period.as_mut().unwrap().until = Some(from - jiff::SignedDuration::from_secs(1));
-    assert!(query.prepare().is_err());
+    assert!(query.clone().prepare().is_err());
+    query.period = None;
+    assert!(query.prepare().is_ok());
 }
 
 #[tokio::test]
@@ -363,7 +387,7 @@ async fn bid_criteria_value_the_joint_selection_including_symbols_and_numbers() 
             None,
         ),
     ] {
-        let mut query = request(ValuationTarget::Criteria {
+        let mut query = request(ValuationTarget::Selection {
             collection_id: "gift".into(),
             criteria,
         });
@@ -448,4 +472,19 @@ async fn every_registered_strategy_runs_through_its_typed_input_for_the_same_gif
     let stop = CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();
+}
+
+#[test]
+fn computation_failures_exclude_storage_retry_codes_and_internal_messages() {
+    for error in [
+        tonic::Status::failed_precondition("replica checkpoint changed"),
+        tonic::Status::unavailable("internal reader failure"),
+    ] {
+        let failure = StrategyFailure::from(ValuationError::from(error));
+        assert_eq!(failure.code, StrategyFailureCode::Unavailable);
+        assert_eq!(failure.message, "Valuation data is temporarily unavailable");
+    }
+    let failure = StrategyFailure::from(ValuationError::unsupported_target("Requires a gift"));
+    assert_eq!(failure.code, StrategyFailureCode::UnsupportedTarget);
+    assert_eq!(failure.message, "Requires a gift");
 }

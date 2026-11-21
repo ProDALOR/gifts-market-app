@@ -151,7 +151,7 @@ mod tests {
         mark.results.push(StrategyOutcome::Error {
             strategy: StrategyId::new("external_strategy").unwrap(),
             error: StrategyFailure {
-                code: ValuationErrorCode::NotEnoughData,
+                code: StrategyFailureCode::NotEnoughData,
                 message: "History unavailable".into(),
             },
         });

@@ -31,7 +31,6 @@ pub struct TraitFloors {
     pub models: BTreeMap<ModelId, AskFloorValuation>,
     pub backdrops: BTreeMap<BackdropId, AskFloorValuation>,
     /// Current ask floors for symbols, independent of the gift-floor estimate formula.
-    #[serde(default)]
     pub patterns: BTreeMap<PatternId, AskFloorValuation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pair: Option<PairFloor>,

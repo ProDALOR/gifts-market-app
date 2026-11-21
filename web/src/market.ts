@@ -63,7 +63,6 @@ export async function request<T>(
     throw new ApiFailure(
       value.error?.code || "unavailable",
       value.error?.message || "Market data is unavailable",
-      value.error?.details,
     );
   // Catalog manifests carry the same opaque token without HTTP's ETag quotes.
   const etag = response.headers.get("etag")?.match(/^(?:W\/)?"([^"]*)"$/);

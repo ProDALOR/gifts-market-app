@@ -132,7 +132,7 @@ mod tests {
                 .any(|metadata| metadata.input == InputContract::ResolvedGift)
         );
         assert!(
-            strategies_for(ValuationTargetKind::Criteria, true)
+            strategies_for(ValuationTargetKind::Selection, true)
                 .all(|metadata| metadata.input != InputContract::ResolvedGift)
         );
     }

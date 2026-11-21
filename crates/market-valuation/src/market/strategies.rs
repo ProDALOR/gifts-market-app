@@ -35,7 +35,7 @@ impl Strategy for AskFloor {
         context: &ValuationContext<'_>,
     ) -> Result<Self::Output, ValuationError> {
         let target = input.target();
-        if target.gift().is_none() && target.criteria().is_none() {
+        if target.simple_floor() {
             let stats = context.floor_statistics(target.collection().expect("single selection"))?;
             let (price, evidence) = stats.selection(target.model(), target.backdrop());
             return Ok(AskFloorValuation { price, evidence });

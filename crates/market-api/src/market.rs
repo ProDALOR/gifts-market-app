@@ -8,7 +8,7 @@ use tokio::sync::watch;
 pub struct MarketApi {
     data: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
-    encoder: Arc<crate::encoding::OrderEncoder>,
+    encoder: Arc<crate::encoding::ResponseEncoder>,
 }
 impl MarketApi {
     pub(crate) async fn watch_valuation(
@@ -27,13 +27,13 @@ impl MarketApi {
         self.data.status_updates()
     }
     pub fn new(data: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
-        Self::with_order_limit(
+        Self::with_response_limit(
             data,
             valuation,
-            crate::config::WebSocketLimits::default().order_bytes,
+            crate::config::ApiLimits::default().response_bytes,
         )
     }
-    pub(crate) fn with_order_limit(
+    pub(crate) fn with_response_limit(
         data: MarketDataHandle,
         valuation: market_valuation::ValuationHandle,
         limit: usize,
@@ -41,7 +41,7 @@ impl MarketApi {
         Self {
             data,
             valuation,
-            encoder: Arc::new(crate::encoding::OrderEncoder::new(limit)),
+            encoder: Arc::new(crate::encoding::ResponseEncoder::new(limit)),
         }
     }
     pub(crate) async fn encode_orders(
@@ -49,6 +49,13 @@ impl MarketApi {
         event: crate::encoding::OrderEvent,
     ) -> Result<Arc<str>> {
         self.encoder.encode(event).await
+    }
+    pub(crate) async fn encode_valuation(
+        &self,
+        report: Arc<market_valuation::ValuationReport>,
+        envelope: crate::encoding::ValuationEnvelope,
+    ) -> Result<Arc<str>> {
+        self.encoder.valuation(report, envelope).await
     }
     pub(crate) async fn watch_orders(
         &self,

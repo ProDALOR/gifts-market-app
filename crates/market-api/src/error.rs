@@ -15,38 +15,12 @@ pub enum ErrorCode {
     CapacityExceeded,
     Unavailable,
     NotFound,
-    NotEnoughData,
-    InvalidBaseline,
-    UnsupportedStrategy,
     TimedOut,
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<std::sync::Arc<ValuationErrorDetails>>,
-}
-/// Gift API failure metadata. Portfolio-only evidence stays with portfolio operations.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct ValuationErrorDetails {
-    pub strategy: market_valuation::StrategyId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub currency_id: Option<market_gifts::CurrencyId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_samples: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub available_samples: Option<u32>,
-}
-impl From<&market_valuation::ValuationErrorDetails> for ValuationErrorDetails {
-    fn from(value: &market_valuation::ValuationErrorDetails) -> Self {
-        Self {
-            strategy: value.strategy.clone(),
-            currency_id: value.currency_id.clone(),
-            required_samples: value.required_samples,
-            available_samples: value.available_samples,
-        }
-    }
 }
 pub type Result<T> = std::result::Result<T, ApiError>;
 impl ApiError {
@@ -54,14 +28,12 @@ impl ApiError {
         Self {
             code: ErrorCode::TimedOut,
             message: message.into(),
-            details: None,
         }
     }
     pub fn invalid(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::InvalidQuery,
             message: message.into(),
-            details: None,
         }
     }
 }
@@ -81,11 +53,7 @@ impl From<market_actors::error::DataError> for ApiError {
         } else {
             error.message().to_owned()
         };
-        Self {
-            code,
-            message,
-            details: None,
-        }
+        Self { code, message }
     }
 }
 impl From<market_valuation::ValuationError> for ApiError {
@@ -94,13 +62,12 @@ impl From<market_valuation::ValuationError> for ApiError {
         let code = match error.code() {
             V::InvalidQuery => ErrorCode::InvalidQuery,
             V::NotFound => ErrorCode::NotFound,
-            V::RestartRead => ErrorCode::RestartRead,
+            V::RestartRead => ErrorCode::Unavailable,
             V::CapacityExceeded => ErrorCode::CapacityExceeded,
             V::Unavailable => ErrorCode::Unavailable,
             V::TimedOut => ErrorCode::TimedOut,
-            V::NotEnoughData => ErrorCode::NotEnoughData,
-            V::InvalidBaseline => ErrorCode::InvalidBaseline,
-            V::UnsupportedStrategy => ErrorCode::UnsupportedStrategy,
+            V::NotEnoughData | V::InvalidBaseline => ErrorCode::Unavailable,
+            V::UnsupportedStrategy => ErrorCode::InvalidQuery,
             V::UnsupportedTarget => ErrorCode::InvalidQuery,
         };
         let message = if matches!(code, ErrorCode::Unavailable) {
@@ -108,13 +75,7 @@ impl From<market_valuation::ValuationError> for ApiError {
         } else {
             error.message().into()
         };
-        Self {
-            code,
-            message,
-            details: error
-                .details()
-                .map(|details| std::sync::Arc::new(details.as_ref().into())),
-        }
+        Self { code, message }
     }
 }
 impl std::fmt::Display for ApiError {
@@ -137,10 +98,6 @@ impl ResponseError for ApiError {
             ErrorCode::CapacityExceeded => StatusCode::TOO_MANY_REQUESTS,
             ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
-            ErrorCode::NotEnoughData | ErrorCode::InvalidBaseline => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
-            ErrorCode::UnsupportedStrategy => StatusCode::BAD_REQUEST,
             ErrorCode::TimedOut => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -160,7 +117,6 @@ pub struct ErrorResponse {
 impl From<market_miniapp::auth::AuthError> for ApiError {
     fn from(error: market_miniapp::auth::AuthError) -> Self {
         Self {
-            details: None,
             code: ErrorCode::Unauthorized,
             message: error.to_string(),
         }
@@ -172,26 +128,22 @@ impl ApiError {
         Self {
             code: ErrorCode::Unavailable,
             message: message.into(),
-            details: None,
         }
     }
     pub fn capacity(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::CapacityExceeded,
             message: message.into(),
-            details: None,
         }
     }
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::Forbidden,
             message: message.into(),
-            details: None,
         }
     }
     pub fn not_found() -> Self {
         Self {
-            details: None,
             code: ErrorCode::NotFound,
             message: "Route not found".into(),
         }
@@ -206,12 +158,10 @@ pub(crate) fn configure_extractors(cfg: &mut actix_web::web::ServiceConfig, limi
                 match error {
                     JsonPayloadError::Overflow { .. }
                     | JsonPayloadError::OverflowKnownLength { .. } => ApiError {
-                        details: None,
                         code: ErrorCode::PayloadTooLarge,
                         message: "JSON payload exceeds the request limit".into(),
                     },
                     JsonPayloadError::ContentType => ApiError {
-                        details: None,
                         code: ErrorCode::UnsupportedMediaType,
                         message: "Expected application/json".into(),
                     },
@@ -258,7 +208,6 @@ pub(crate) fn normalize<B: 'static>(
         _ => ErrorCode::InvalidQuery,
     };
     let error = ApiError {
-        details: None,
         code,
         message: status.canonical_reason().unwrap_or("Request failed").into(),
     };
@@ -281,27 +230,17 @@ pub(crate) fn normalize<B: 'static>(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn public_valuation_errors_keep_gift_metadata_without_portfolio_evidence() {
-        // Works with both valuation feature sets, including workspace feature unification.
-        let details: market_valuation::ValuationErrorDetails =
-            serde_json::from_value(serde_json::json!({
-                "strategy":"gift_floor", "currency_id":"GRAM", "revision":"r1",
-                "required_samples":3, "available_samples":1,
-                "context":{"kind":"portfolio","unpriced":[]}
-            }))
-            .unwrap();
-        let error: super::ApiError = market_valuation::ValuationError::with_details(
-            market_valuation::ValuationErrorCode::NotEnoughData,
-            "Not enough data",
-            details,
-        )
-        .into();
+    fn batch_errors_do_not_expose_strategy_or_storage_context() {
+        let error: super::ApiError =
+            market_valuation::ValuationError::unavailable("internal storage failure")
+                .with_context(
+                    market_valuation::StrategyId::new("valuation").unwrap(),
+                    "GRAM".into(),
+                )
+                .into();
         assert_eq!(
             serde_json::to_value(error).unwrap(),
-            serde_json::json!({
-                "code":"not_enough_data", "message":"Not enough data",
-                "details":{"strategy":"gift_floor", "currency_id":"GRAM", "required_samples":3, "available_samples":1}
-            })
+            serde_json::json!({"code":"unavailable", "message":"Market data service is unavailable"})
         );
     }
 }

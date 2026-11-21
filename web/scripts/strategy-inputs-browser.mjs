@@ -50,21 +50,15 @@ try {
   const rows = [
     {
       id: "future_selection",
-      input: "selection",
-      targets: ["gift", "criteria"],
-      requires_period: false,
+      input: { targets: ["gift", "selection"], period: "unsupported" },
     },
     {
       id: "future_gift",
-      input: "resolved_gift",
-      targets: ["gift"],
-      requires_period: false,
+      input: { targets: ["gift"], period: "unsupported" },
     },
     {
       id: "future_history",
-      input: "selection_with_execution_period",
-      targets: ["gift"],
-      requires_period: true,
+      input: { targets: ["gift"], period: "required" },
     },
   ].map((row) => ({
     ...row,
@@ -109,7 +103,9 @@ try {
     rejectRemoved = false,
     deployAfterDiscovery = false,
     incompatibleDefinition = false;
+  const peers = [];
   await page.routeWebSocket("**/ws", (ws) => {
+    peers.push(ws);
     ws.send(JSON.stringify({ type: "market.status", status: "available" }));
     ws.onMessage((raw) => {
       const command = JSON.parse(String(raw));
@@ -247,7 +243,7 @@ try {
   assert.equal(guideRequests, 1);
   await page.evaluate(() => window.choose("criteria"));
   await page.waitForFunction(
-    () => document.querySelector("output")?.textContent === "criteria",
+    () => document.querySelector("output")?.textContent === "selection",
   );
   assert.equal(
     await page.locator(".valuation-popup").count(),
@@ -332,7 +328,7 @@ try {
   }
   await page.evaluate(() => window.choose("criteria"));
   await page.waitForFunction(
-    () => document.querySelector("output")?.textContent === "criteria",
+    () => document.querySelector("output")?.textContent === "selection",
   );
   assert.deepEqual(queries.at(-1).params.strategies, ["future_selection"]);
   assert.equal(await strategyRows.count(), 1);
@@ -477,6 +473,133 @@ try {
     "Never render values against mismatched definitions",
   );
   incompatibleDefinition = false;
+  await page.evaluate(() => window.choose(undefined));
+  // Recovery is a new request with a fresh operation ID, not a replay of old work.
+  await page.evaluate(() => window.choose(10));
+  await page.waitForFunction(
+    () => document.querySelector("output")?.textContent === "10",
+  );
+  const beforeRecovery = queries.length;
+  peers.at(-1).close();
+  await page.waitForFunction(
+    async () =>
+      (await import("/src/live-socket.ts")).liveSocket.statusSnapshot()
+        .status === "unavailable",
+  );
+  await page.clock.fastForward(2_000);
+  await page.waitForFunction(
+    async () =>
+      (await import("/src/live-socket.ts")).liveSocket.statusSnapshot()
+        .status === "available",
+  );
+  for (let i = 0; queries.length === beforeRecovery && i < 100; i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    queries.length,
+    beforeRecovery + 1,
+    "Reconnect refreshes once before the minute timer",
+  );
+  assert.notEqual(queries.at(-1).id, queries.at(-2).id);
+  await page.clock.fastForward(1_000);
+  assert.equal(
+    queries.length,
+    beforeRecovery + 1,
+    "Recovery does not duplicate the request",
+  );
+  const connectionsBeforeDelay = peers.length;
+  peers
+    .at(-1)
+    .send(JSON.stringify({ type: "market.status", status: "delayed" }));
+  await page.waitForFunction(
+    async () =>
+      (await import("/src/live-socket.ts")).liveSocket.statusSnapshot()
+        .status === "delayed",
+  );
+  peers
+    .at(-1)
+    .send(JSON.stringify({ type: "market.status", status: "available" }));
+  for (let i = 0; queries.length === beforeRecovery + 1 && i < 100; i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    queries.length,
+    beforeRecovery + 2,
+    "Recovered market data refreshes once without a socket reconnect",
+  );
+  assert.equal(peers.length, connectionsBeforeDelay);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  peers.at(-1).close();
+  await page.waitForFunction(
+    async () =>
+      (await import("/src/live-socket.ts")).liveSocket.statusSnapshot()
+        .status === "unavailable",
+  );
+  await page.clock.fastForward(2_000);
+  await page.waitForFunction(
+    async () =>
+      (await import("/src/live-socket.ts")).liveSocket.statusSnapshot()
+        .status === "available",
+  );
+  await page.waitForTimeout(30);
+  assert.equal(
+    queries.length,
+    beforeRecovery + 2,
+    "Hidden reconnect does not issue valuation reads",
+  );
+  await page.evaluate(() => {
+    delete document.hidden;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  for (let i = 0; queries.length === beforeRecovery + 2 && i < 100; i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    queries.length,
+    beforeRecovery + 3,
+    "Visibility catches up to the recovered generation once",
+  );
+  const beforePreparing = queries.length;
+  holdDiscovery = true;
+  releaseDiscovery = undefined;
+  await page.evaluate(async () =>
+    (await import("/src/valuation/strategies.ts")).strategyClient.invalidate(),
+  );
+  await page.evaluate(() => window.choose(11));
+  for (let i = 0; !releaseDiscovery && i < 100; i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(releaseDiscovery);
+  peers.at(-1).close();
+  await page.waitForFunction(
+    async () =>
+      (await import("/src/live-socket.ts")).liveSocket.statusSnapshot()
+        .status === "unavailable",
+  );
+  await page.clock.fastForward(2_000);
+  await page.waitForFunction(
+    async () =>
+      (await import("/src/live-socket.ts")).liveSocket.statusSnapshot()
+        .status === "available",
+  );
+  assert.equal(
+    queries.length,
+    beforePreparing,
+    "Recovery shares in-flight metadata discovery",
+  );
+  holdDiscovery = false;
+  releaseDiscovery();
+  await page.waitForFunction(
+    () => document.querySelector("output")?.textContent === "11",
+  );
+  await page.clock.fastForward(1_000);
+  assert.equal(
+    queries.length,
+    beforePreparing + 1,
+    "Work prepared for the recovered generation needs no follow-up query",
+  );
   await page.evaluate(() => window.choose(undefined));
   assert.deepEqual(errors, []);
   console.log(

@@ -348,11 +348,7 @@ export class LiveSocket {
       if (operation.kind === "request") {
         if (value.type === "error")
           operation.finish(
-            new ApiFailure(
-              value.error.code,
-              value.error.message,
-              value.error.details ?? undefined,
-            ),
+            new ApiFailure(value.error.code, value.error.message),
           );
         else if (
           value.type === "result" &&

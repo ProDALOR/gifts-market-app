@@ -51,7 +51,7 @@ async fn connect(
             }
             if query.limit==4 {return End::SlowConsumer;}
             let label=if query.limit==3 {"😀".repeat(20_000)} else {"ready".into()};
-            let payload = queue::Payload::Orders(serde_json::json!({"type":"orders.snapshot","id":key.id.as_str(),"sequence":0,"data":[],"range":{"start":null,"end":null},"label":label}).to_string().into());
+            let payload = queue::Payload::Encoded(serde_json::json!({"type":"orders.snapshot","id":key.id.as_str(),"sequence":0,"data":[],"range":{"start":null,"end":null},"label":label}).to_string().into());
             if tx.send(Scope::Operation(key),payload,false,&cancel).await.is_err() {return End::SlowConsumer;}
             cancel.cancelled().await;scenario.cancelled.notify_one();End::Cancelled
         }.boxed_local()

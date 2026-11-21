@@ -56,9 +56,8 @@ export function catalogFloors(value: unknown): value is CatalogFloors {
         Object.values(traits.models).every(floor) &&
         record(traits.backdrops) &&
         Object.values(traits.backdrops).every(floor) &&
-        (traits.patterns === undefined ||
-          (record(traits.patterns) &&
-            Object.values(traits.patterns).every(floor))) &&
+        record(traits.patterns) &&
+        Object.values(traits.patterns).every(floor) &&
         (traits.pair == null ||
           (record(traits.pair) &&
             text(traits.pair.model_id) &&

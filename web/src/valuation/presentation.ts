@@ -35,8 +35,15 @@ export function validateDefinitions(rows: ValuationStrategy[]) {
       !text(row.revision) ||
       !row.revision ||
       row.revision.length > 64 ||
-      !Array.isArray(row.targets) ||
-      typeof row.requires_period !== "boolean" ||
+      !record(row.input) ||
+      !Array.isArray(row.input.targets) ||
+      !row.input.targets.length ||
+      !row.input.targets.every((target) =>
+        ["catalog", "selection", "gift"].includes(target),
+      ) ||
+      !["required", "unsupported"].includes(row.input.period) ||
+      Object.hasOwn(row, "targets") ||
+      Object.hasOwn(row, "requires_period") ||
       !record(display) ||
       !text(display.note) ||
       !Array.isArray(display.fields) ||

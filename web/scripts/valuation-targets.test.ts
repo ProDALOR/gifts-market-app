@@ -61,3 +61,20 @@ test("criteria scope identity ignores omission and field order but retains every
     true,
   );
 });
+
+test("canonical selection alternatives tolerate server sorting and deduplication", () => {
+  assert.equal(
+    sameCriteria(
+      { models: ["a", "b"], backdrops: [], patterns: ["p"] },
+      { models: ["b", "a", "b"], backdrops: [], patterns: ["p", "p"] },
+    ),
+    true,
+  );
+  assert.equal(
+    sameCriteria(
+      { models: ["a"], backdrops: [], patterns: [] },
+      { models: ["a", "b"], backdrops: [], patterns: [] },
+    ),
+    false,
+  );
+});

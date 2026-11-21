@@ -31,7 +31,7 @@ export function traitFloor(
     ? entry?.traits?.models[id]
     : kind === "backdrop"
       ? entry?.traits?.backdrops[id]
-      : entry?.traits?.patterns?.[id];
+      : entry?.traits?.patterns[id];
 }
 export type FloorsState = {
   currency: string;

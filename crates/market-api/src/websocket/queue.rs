@@ -5,9 +5,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(super) enum Payload {
-    ValuationSnapshot(Arc<market_valuation::ValuationReport>),
-    Valuation(Arc<market_valuation::ValuationReport>),
-    Orders(Arc<str>),
+    Encoded(Arc<str>),
     MarketStatus(crate::models::MarketStatus),
     Catalog(market_gifts::CatalogVersions),
     Error(ApiError),
@@ -16,25 +14,11 @@ pub(super) enum Payload {
 impl Payload {
     #[cfg(test)]
     pub fn test_orders(result: Arc<str>) -> Self {
-        Self::Orders(serde_json::json!({"type":"orders.snapshot","id":"offers","sequence":0,"data":[],"range":{"start":null,"end":null},"padding":&*result}).to_string().into())
+        Self::Encoded(serde_json::json!({"type":"orders.snapshot","id":"offers","sequence":0,"data":[],"range":{"start":null,"end":null},"padding":&*result}).to_string().into())
     }
-    pub fn text(&self, id: &str) -> String {
-        match self {
-            Self::ValuationSnapshot(data) => {
-                serde_json::to_string(&ServerFrame::ValuationSnapshot {
-                    id: id.into(),
-                    data: crate::valuation::ValuationResponse::from(data.as_ref()),
-                })
-                .expect("market values serialize")
-            }
-            Self::Valuation(report) => {
-                serde_json::to_string(&ServerFrame::Result(crate::models::ApiResult::Valuation {
-                    id: id.into(),
-                    data: crate::valuation::ValuationResponse::from(&**report),
-                }))
-                .expect("target valuation serializes")
-            }
-            Self::Orders(encoded) => encoded.to_string(),
+    pub fn bytes(&self, id: &str) -> actix_web::web::Bytes {
+        let text = match self {
+            Self::Encoded(encoded) => return crate::encoding::body(encoded.clone()),
             Self::MarketStatus(status) => {
                 serde_json::to_string(&ServerFrame::MarketStatus { status: *status })
                     .expect("market status serializes")
@@ -54,7 +38,8 @@ impl Payload {
                 error: error.clone(),
             })
             .expect("public error serializes"),
-        }
+        };
+        text.into()
     }
 }
 #[derive(Clone)]
@@ -118,7 +103,10 @@ impl Sender {
         terminal: bool,
         cancel: &CancellationToken,
     ) -> Result<(), QueueError> {
-        let text: actix_web::web::Bytes = payload.text(scope.id()).into();
+        if cancel.is_cancelled() {
+            return Err(QueueError::Cancelled);
+        }
+        let text: actix_web::web::Bytes = payload.bytes(scope.id());
         let size = text.len();
         if size > self.limits.queue_bytes {
             return Err(QueueError::SlowConsumer);
@@ -149,7 +137,7 @@ impl Sender {
         self.try_payload(scope, Payload::CommandError(error))
     }
     fn try_payload(&self, scope: Scope, payload: Payload) -> Result<(), QueueError> {
-        let text: actix_web::web::Bytes = payload.text(scope.id()).into();
+        let text: actix_web::web::Bytes = payload.bytes(scope.id());
         let size = text.len();
         let permit = self
             .bytes

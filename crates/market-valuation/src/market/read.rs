@@ -53,10 +53,7 @@ impl ValuationRead {
                     Err(error) => StrategyOutcome::Error {
                         strategy: StrategyId::new(entry.metadata().id)
                             .expect("registered strategy ID"),
-                        error: StrategyFailure {
-                            code: error.code(),
-                            message: error.message().to_owned(),
-                        },
+                        error: error.into(),
                     },
                 },
             );
@@ -72,6 +69,7 @@ impl ValuationRead {
                 _ => None,
             },
         )?;
+        reads.deadline = retry_deadline(&results, reads.deadline);
         let deadline = reads.deadline;
         if deadline <= tokio::time::Instant::now() {
             return Err(ValuationError::unavailable(
@@ -89,5 +87,57 @@ impl ValuationRead {
             }),
             reads,
         }))
+    }
+}
+
+// Missing samples and invalid baselines are domain facts; only transient service failures retry.
+fn retry_deadline(
+    results: &[StrategyOutcome],
+    deadline: tokio::time::Instant,
+) -> tokio::time::Instant {
+    if results.iter().any(|result| matches!(result, StrategyOutcome::Error {error,..} if matches!(error.code, StrategyFailureCode::Unavailable | StrategyFailureCode::TimedOut))) {
+        deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+    } else { deadline }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn temporary_failures_retry_without_extending_expiry_or_polling_sparse_markets() {
+        let now = tokio::time::Instant::now();
+        let normal = now + std::time::Duration::from_secs(300);
+        for code in [
+            StrategyFailureCode::Unavailable,
+            StrategyFailureCode::TimedOut,
+        ] {
+            let outcomes = [StrategyOutcome::Error {
+                strategy: StrategyId::new("ask_floor").unwrap(),
+                error: StrategyFailure {
+                    code,
+                    message: "Try later".into(),
+                },
+            }];
+            assert_eq!(
+                retry_deadline(&outcomes, normal),
+                now + std::time::Duration::from_secs(5)
+            );
+            let expiry = now + std::time::Duration::from_secs(1);
+            assert_eq!(retry_deadline(&outcomes, expiry), expiry);
+        }
+        for code in [
+            StrategyFailureCode::NotEnoughData,
+            StrategyFailureCode::InvalidBaseline,
+            StrategyFailureCode::CapacityExceeded,
+            StrategyFailureCode::UnsupportedTarget,
+        ] {
+            let outcomes = [StrategyOutcome::Error {
+                strategy: StrategyId::new("ask_floor").unwrap(),
+                error: StrategyFailure {
+                    code,
+                    message: "Unavailable calculation".into(),
+                },
+            }];
+            assert_eq!(retry_deadline(&outcomes, normal), normal);
+        }
     }
 }

@@ -315,9 +315,7 @@ try {
           id: "gift_floor",
           revision: "r1",
           display: fixtureDisplay("gift_floor"),
-          input: "resolved_gift",
-          targets: ["gift"],
-          requires_period: false,
+          input: { targets: ["gift"], period: "unsupported" },
           name: "Gift floor",
           description: "Gift floor estimate",
           documentation_url: "/valuations/strategies/gift_floor/documentation",
@@ -327,9 +325,7 @@ try {
           id: "ask_floor",
           revision: "r1",
           display: fixtureDisplay("ask_floor"),
-          input: "selection",
-          targets: ["criteria"],
-          requires_period: false,
+          input: { targets: ["selection"], period: "unsupported" },
           name: "Matching asks",
           description: "Matching selection",
           documentation_url: "/guide/ask_floor",
@@ -441,7 +437,7 @@ try {
                 )
               : {
                   data:
-                    frame.params.target?.kind === "criteria"
+                    frame.params.target?.kind === "selection"
                       ? criteriaReport(frame.params)
                       : giftReport(
                           frame.params,

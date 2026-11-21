@@ -234,13 +234,12 @@ test("requests resolve out of order and cancellation ignores late results withou
     error: {
       code: "not_found",
       message: "Missing",
-      details: { strategy: "gift_floor" },
     },
   });
   await assert.rejects(three, (e: unknown) => {
     assert.ok(e instanceof ApiFailure);
     assert.equal(e.code, "not_found");
-    assert.deepEqual(e.details, { strategy: "gift_floor" });
+    assert.equal(Object.hasOwn(e, "details"), false);
     return true;
   });
   assert.equal(Socket.all.length, 1);

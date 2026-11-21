@@ -16,14 +16,8 @@ pub enum InputContract {
     SelectionWithExecutionPeriod,
     ResolvedGift,
 }
-const SELECTION_TARGETS: &[ValuationTargetKind] = &[
-    ValuationTargetKind::Collection,
-    ValuationTargetKind::Model,
-    ValuationTargetKind::Backdrop,
-    ValuationTargetKind::ModelBackdrop,
-    ValuationTargetKind::Gift,
-    ValuationTargetKind::Criteria,
-];
+const SELECTION_TARGETS: &[ValuationTargetKind] =
+    &[ValuationTargetKind::Selection, ValuationTargetKind::Gift];
 impl InputContract {
     pub const fn targets(self) -> &'static [ValuationTargetKind] {
         match self {

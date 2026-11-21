@@ -3,23 +3,33 @@ use market_gifts::*;
 
 fn subjects() -> Vec<Arc<ResolvedTarget>> {
     vec![
-        ResolvedTarget::Collection {
+        ResolvedTarget::Selection {
             collection_id: "gift".into(),
+            criteria: market_gifts::GiftCriteria::default(),
         },
-        ResolvedTarget::Model {
+        ResolvedTarget::Selection {
             collection_id: "gift".into(),
-            model_id: "model".into(),
+            criteria: market_gifts::GiftCriteria {
+                models: vec!["model".into()],
+                ..Default::default()
+            },
         },
-        ResolvedTarget::Backdrop {
+        ResolvedTarget::Selection {
             collection_id: "gift".into(),
-            backdrop_id: "backdrop".into(),
+            criteria: market_gifts::GiftCriteria {
+                backdrops: vec!["backdrop".into()],
+                ..Default::default()
+            },
         },
-        ResolvedTarget::ModelBackdrop {
+        ResolvedTarget::Selection {
             collection_id: "gift".into(),
-            model_id: "model".into(),
-            backdrop_id: "backdrop".into(),
+            criteria: market_gifts::GiftCriteria {
+                models: vec!["model".into()],
+                backdrops: vec!["backdrop".into()],
+                ..Default::default()
+            },
         },
-        ResolvedTarget::Criteria {
+        ResolvedTarget::Selection {
             collection_id: "gift".into(),
             criteria: GiftCriteria {
                 models: vec!["m1".into(), "m2".into()],

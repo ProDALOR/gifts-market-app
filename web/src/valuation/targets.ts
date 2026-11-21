@@ -2,7 +2,7 @@ import type { ValuationQuery, ValuationResponse } from "../market.ts";
 type Catalog = Extract<ValuationQuery["target"], { kind: "catalog" }>;
 type Criteria = Extract<
   ValuationQuery["target"],
-  { kind: "criteria" }
+  { kind: "selection" }
 >["criteria"];
 
 /** Resolved responses omit absent options; requests may explicitly send null. */
@@ -12,8 +12,8 @@ export function sameCatalogTarget(
 ) {
   return (
     actual.kind === "catalog" &&
-    JSON.stringify(actual.collection_ids) ===
-      JSON.stringify(expected.collection_ids) &&
+    JSON.stringify([...actual.collection_ids].sort()) ===
+      JSON.stringify([...expected.collection_ids].sort()) &&
     actual.details?.collection_id === expected.details?.collection_id &&
     actual.details?.pair?.model_id === expected.details?.pair?.model_id &&
     actual.details?.pair?.backdrop_id === expected.details?.pair?.backdrop_id
@@ -22,9 +22,9 @@ export function sameCatalogTarget(
 export function sameCriteria(actual: Criteria, expected: Criteria) {
   const key = (value: Criteria) =>
     JSON.stringify([
-      value.models,
-      value.backdrops,
-      value.patterns,
+      [...new Set(value.models)].sort(),
+      [...new Set(value.backdrops)].sort(),
+      [...new Set(value.patterns)].sort(),
       value.number?.min ?? null,
       value.number?.max ?? null,
     ]);

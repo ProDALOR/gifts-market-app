@@ -41,9 +41,10 @@ impl ValuationQuery {
     /// Checks request options without reading the market. Target and currency facts
     /// are checked against the admitted snapshot by `ValuationHandle::query`.
     pub fn validate(&self) -> Result<(), ValuationError> {
-        self.resolve_options().map(|_| ())
+        self.clone().prepare().map(|_| ())
     }
-    pub(crate) fn prepare(self) -> Result<PreparedQuery, ValuationError> {
+    pub(crate) fn prepare(mut self) -> Result<PreparedQuery, ValuationError> {
+        self.target.normalize()?;
         let (strategies, period) = self.resolve_options()?;
         Ok(PreparedQuery {
             target: self.target,
@@ -83,10 +84,10 @@ impl ValuationQuery {
         {
             Some(ExecutionPeriod::resolve(self.period.as_ref())?)
         } else {
-            if let Some(period) = &self.period {
-                period
-                    .validate()
-                    .map_err(|error| ValuationError::invalid(error.to_string()))?;
+            if self.period.is_some() {
+                return Err(ValuationError::invalid(
+                    "period is not supported by the selected strategies",
+                ));
             }
             None
         };
@@ -112,9 +113,6 @@ impl PreparedQuery {
                 .iter()
                 .zip(&other.strategies)
                 .all(|(left, right)| std::ptr::eq(*left, *right))
-    }
-    pub(crate) fn currency(&self) -> &CurrencyId {
-        &self.currency_id
     }
 }
 
@@ -174,10 +172,55 @@ impl StrategyValuation {
         }
     }
 }
+/// Public computation failures; storage retries and actor identities stay internal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum StrategyFailureCode {
+    InvalidQuery,
+    NotFound,
+    CapacityExceeded,
+    Unavailable,
+    TimedOut,
+    NotEnoughData,
+    InvalidBaseline,
+    UnsupportedTarget,
+}
+impl From<ValuationErrorCode> for StrategyFailureCode {
+    fn from(code: ValuationErrorCode) -> Self {
+        match code {
+            ValuationErrorCode::InvalidQuery | ValuationErrorCode::UnsupportedStrategy => {
+                Self::InvalidQuery
+            }
+            ValuationErrorCode::RestartRead | ValuationErrorCode::Unavailable => Self::Unavailable,
+            ValuationErrorCode::NotFound => Self::NotFound,
+            ValuationErrorCode::CapacityExceeded => Self::CapacityExceeded,
+            ValuationErrorCode::TimedOut => Self::TimedOut,
+            ValuationErrorCode::NotEnoughData => Self::NotEnoughData,
+            ValuationErrorCode::InvalidBaseline => Self::InvalidBaseline,
+            ValuationErrorCode::UnsupportedTarget => Self::UnsupportedTarget,
+        }
+    }
+}
+impl From<ValuationError> for StrategyFailure {
+    fn from(error: ValuationError) -> Self {
+        let code = StrategyFailureCode::from(error.code());
+        let message = if code == StrategyFailureCode::Unavailable {
+            tracing::debug!(
+                reason = error.message(),
+                "valuation computation unavailable"
+            );
+            "Valuation data is temporarily unavailable".into()
+        } else {
+            error.message().to_owned()
+        };
+        Self { code, message }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct StrategyFailure {
-    pub code: ValuationErrorCode,
+    pub code: StrategyFailureCode,
     pub message: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -60,6 +60,7 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
     traits: {
       models: { model: floor },
       backdrops: { backdrop: floor },
+      patterns: {},
       pair: { model_id: "model", backdrop_id: "backdrop", floor },
     },
   };
@@ -157,6 +158,7 @@ function report(
                   traits: {
                     models: { model: floor },
                     backdrops: { backdrop: floor },
+                    patterns: {},
                     ...(scope.details.pair
                       ? { pair: { ...scope.details.pair, floor } }
                       : {}),
@@ -476,8 +478,8 @@ test("catalog validation rejects duplicate scopes and impossible gift evidence",
   delete data.collections[0].traits.patterns;
   assert.equal(
     catalogFloors(data),
-    true,
-    "A rolling deployment may still omit symbol floors",
+    false,
+    "The current API always supplies symbol floors",
   );
   const traits = {
     models: {},

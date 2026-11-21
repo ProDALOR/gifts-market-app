@@ -131,7 +131,7 @@ async fn target_strategies_share_rest_and_websocket_results_and_keep_partial_fai
             .configure(configure),
     )
     .await;
-    let q = serde_json::json!({"target":{"kind":"collection","collection_id":"tg.gift.123"},"currency_id":"GRAM","strategies":["ask_floor","execution_mean","execution_median","gift_floor"],"period":{"from":"2026-01-01T00:00:00Z","until":"2026-02-01T00:00:00Z"}});
+    let q = serde_json::json!({"target":{"kind":"selection","collection_id":"tg.gift.123","criteria":{}},"currency_id":"GRAM","strategies":["ask_floor","execution_mean","execution_median","gift_floor"],"period":{"from":"2026-01-01T00:00:00Z","until":"2026-02-01T00:00:00Z"}});
     let response = test::call_service(
         &app,
         test::TestRequest::post()

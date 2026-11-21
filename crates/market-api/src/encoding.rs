@@ -1,4 +1,4 @@
-//! Tracked, bounded encoding of order snapshots and atomic range changes.
+//! Tracked, cancellable and bounded response encoding shared by HTTP and WebSocket.
 use crate::{
     error::{ApiError, Result},
     models::{ApiResult, ServerFrame},
@@ -12,6 +12,15 @@ use std::{
 };
 use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
+struct SharedJson(Arc<str>);
+impl AsRef<[u8]> for SharedJson {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+pub(crate) fn body(value: Arc<str>) -> actix_web::web::Bytes {
+    actix_web::web::Bytes::from_owner(SharedJson(value))
+}
 pub(crate) enum OrderEvent {
     Read {
         id: String,
@@ -25,37 +34,83 @@ pub(crate) enum OrderEvent {
         reset: bool,
     },
 }
-pub(crate) struct OrderEncoder {
+pub(crate) enum ValuationEnvelope {
+    Rest,
+    Query(String),
+    Snapshot(String),
+}
+enum ResponseEvent {
+    Orders(OrderEvent),
+    Valuation {
+        report: Arc<market_valuation::ValuationReport>,
+        envelope: ValuationEnvelope,
+    },
+}
+pub(crate) struct ResponseEncoder {
     slots: Arc<Semaphore>,
     jobs: TaskTracker,
     limit: usize,
+    stop: tokio_util::sync::CancellationToken,
+    registration: std::sync::Mutex<()>,
 }
-impl OrderEncoder {
+impl ResponseEncoder {
     pub fn new(limit: usize) -> Self {
         Self {
             slots: Arc::new(Semaphore::new(4)),
             jobs: TaskTracker::new(),
             limit,
+            stop: tokio_util::sync::CancellationToken::new(),
+            registration: std::sync::Mutex::new(()),
         }
     }
     pub async fn encode(&self, event: OrderEvent) -> Result<Arc<str>> {
+        self.encode_response(ResponseEvent::Orders(event)).await
+    }
+    pub async fn valuation(
+        &self,
+        report: Arc<market_valuation::ValuationReport>,
+        envelope: ValuationEnvelope,
+    ) -> Result<Arc<str>> {
+        self.encode_response(ResponseEvent::Valuation { report, envelope })
+            .await
+    }
+    async fn encode_response(&self, event: ResponseEvent) -> Result<Arc<str>> {
+        let stop = self.stop.child_token();
+        let _cancel = stop.clone().drop_guard();
         let permit = self
             .slots
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| ApiError::unavailable("Order encoding stopped"))?;
+            .map_err(|_| ApiError::unavailable("Response encoding stopped"))?;
         let limit = self.limit;
-        self.jobs
-            .spawn_blocking(move || {
+        // Shutdown and job registration share a gate; no job can appear after drain.
+        let job = {
+            let _registration = self
+                .registration
+                .lock()
+                .expect("encoding registration lock");
+            if self.stop.is_cancelled() {
+                return Err(ApiError::unavailable("Response encoding stopped"));
+            }
+            self.jobs.spawn_blocking(move || {
                 let _permit = permit;
-                encode(event, limit)
+                encode_response(event, limit, stop)
             })
-            .await
-            .map_err(|_| ApiError::unavailable("Order encoding failed"))?
+        };
+        job.await
+            .map_err(|_| ApiError::unavailable("Response encoding failed"))?
     }
     pub async fn shutdown(&self) {
-        self.jobs.close();
+        {
+            let _registration = self
+                .registration
+                .lock()
+                .expect("encoding registration lock");
+            self.stop.cancel();
+            self.slots.close();
+            self.jobs.close();
+        }
         self.jobs.wait().await;
     }
 }
@@ -63,9 +118,13 @@ struct Limited {
     bytes: Vec<u8>,
     limit: usize,
     overflow: bool,
+    stop: tokio_util::sync::CancellationToken,
 }
 impl Write for Limited {
     fn write(&mut self, value: &[u8]) -> io::Result<usize> {
+        if self.stop.is_cancelled() {
+            return Err(io::Error::other("response encoding cancelled"));
+        }
         if value.len() > self.limit.saturating_sub(self.bytes.len()) {
             self.overflow = true;
             return Err(io::Error::other("response byte budget exceeded"));
@@ -77,27 +136,45 @@ impl Write for Limited {
         Ok(())
     }
 }
-fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
+fn encode_response(
+    event: ResponseEvent,
+    limit: usize,
+    stop: tokio_util::sync::CancellationToken,
+) -> Result<Arc<str>> {
     let mut writer = Limited {
         bytes: vec![],
         limit,
         overflow: false,
+        stop,
     };
     let encoded = match event {
-        OrderEvent::Read { id, read } => serde_json::to_writer(
+        ResponseEvent::Valuation { report, envelope } => {
+            let data = crate::valuation::ValuationResponse::from(report.as_ref());
+            match envelope {
+                ValuationEnvelope::Rest => serde_json::to_writer(&mut writer, &data),
+                ValuationEnvelope::Query(id) => serde_json::to_writer(
+                    &mut writer,
+                    &ServerFrame::Result(ApiResult::Valuation { id, data }),
+                ),
+                ValuationEnvelope::Snapshot(id) => {
+                    serde_json::to_writer(&mut writer, &ServerFrame::ValuationSnapshot { id, data })
+                }
+            }
+        }
+        ResponseEvent::Orders(OrderEvent::Read { id, read }) => serde_json::to_writer(
             &mut writer,
             &ServerFrame::Result(ApiResult::Orders {
                 id,
                 data: read.as_ref().into(),
             }),
         ),
-        OrderEvent::Update {
+        ResponseEvent::Orders(OrderEvent::Update {
             id,
             previous,
             current,
             sequence,
             reset,
-        } => {
+        }) => {
             if let Some(previous) = previous.filter(|_| !reset) {
                 fn key(
                     row: &market_actors::OrderedEntry,
@@ -144,18 +221,104 @@ fn encode(event: OrderEvent, limit: usize) -> Result<Arc<str>> {
     };
     if encoded.is_err() {
         return Err(if writer.overflow {
-            ApiError::capacity("Order response exceeds byte budget; narrow the range")
+            ApiError::capacity("Response exceeds byte budget; narrow the query")
         } else {
-            ApiError::unavailable("Order encoding failed")
+            ApiError::unavailable("Response encoding failed")
         });
     }
     String::from_utf8(writer.bytes)
         .map(Arc::from)
-        .map_err(|_| ApiError::unavailable("Invalid encoded order response"))
+        .map_err(|_| ApiError::unavailable("Invalid encoded response"))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn valuation_report() -> Arc<market_valuation::ValuationReport> {
+        Arc::new(serde_json::from_value(serde_json::json!({"target":{"kind":"selection","collection_id":"gift","criteria":{}},"currency_id":"GRAM","evaluated_at":"2026-01-01T00:00:00Z","stale":false,"results":[{"strategy":"ask_floor","data":{"price":{"value":"123.456789"},"evidence":{"gifts":2,"listings":3}}}]})).unwrap())
+    }
+    #[tokio::test]
+    async fn valuation_encoding_is_bounded_and_shared_by_rest_requests_and_watches() {
+        let encoder = ResponseEncoder::new(4096);
+        let rest = encoder
+            .valuation(valuation_report(), ValuationEnvelope::Rest)
+            .await
+            .unwrap();
+        let rest: serde_json::Value = serde_json::from_str(&rest).unwrap();
+        for envelope in [
+            ValuationEnvelope::Query("read".into()),
+            ValuationEnvelope::Snapshot("watch".into()),
+        ] {
+            let encoded = encoder
+                .valuation(valuation_report(), envelope)
+                .await
+                .unwrap();
+            let frame: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(frame["data"], rest);
+        }
+        let small = ResponseEncoder::new(64);
+        for envelope in [
+            ValuationEnvelope::Rest,
+            ValuationEnvelope::Query("read".into()),
+            ValuationEnvelope::Snapshot("watch".into()),
+        ] {
+            let error = small
+                .valuation(valuation_report(), envelope)
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error.code,
+                crate::error::ErrorCode::CapacityExceeded
+            ));
+        }
+        small.shutdown().await;
+        assert!(
+            small
+                .valuation(valuation_report(), ValuationEnvelope::Rest)
+                .await
+                .is_err()
+        );
+        encoder.shutdown().await;
+    }
+    #[test]
+    fn cancelled_encoding_stops_writing_without_consuming_the_byte_budget() {
+        let stop = tokio_util::sync::CancellationToken::new();
+        let mut writer = Limited {
+            bytes: vec![],
+            limit: 10,
+            overflow: false,
+            stop: stop.clone(),
+        };
+        writer.write_all(b"123").unwrap();
+        stop.cancel();
+        assert!(writer.write_all(b"456").is_err());
+        assert_eq!(writer.bytes, b"123");
+        assert!(!writer.overflow);
+    }
+    #[tokio::test]
+    async fn shutdown_rejects_queued_encoders_and_cannot_register_jobs_after_draining() {
+        let encoder = Arc::new(ResponseEncoder::new(4096));
+        let held = encoder.slots.clone().acquire_many_owned(4).await.unwrap();
+        let waiting = {
+            let encoder = encoder.clone();
+            tokio::spawn(async move {
+                encoder
+                    .valuation(valuation_report(), ValuationEnvelope::Rest)
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        encoder.shutdown().await;
+        assert!(waiting.await.unwrap().is_err());
+        drop(held);
+        assert!(encoder.jobs.is_empty());
+        assert!(
+            encoder
+                .valuation(valuation_report(), ValuationEnvelope::Rest)
+                .await
+                .is_err()
+        );
+        assert!(encoder.jobs.is_empty());
+    }
     fn empty() -> OrderResult {
         OrderResult {
             data: vec![],
@@ -167,7 +330,7 @@ mod tests {
     }
     #[tokio::test]
     async fn order_encoding_enforces_bytes_and_keeps_the_shared_read_contract() {
-        let encoder = OrderEncoder::new(1024);
+        let encoder = ResponseEncoder::new(1024);
         let read = OrderRead {
             result: empty(),
             snapshot: None,
@@ -215,7 +378,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&delta).unwrap(),
             serde_json::json!({"type":"orders.changed","id":"x","sequence":1,"upserts":[],"removed":[]})
         );
-        let small = OrderEncoder::new(8);
+        let small = ResponseEncoder::new(8);
         assert!(
             small
                 .encode(OrderEvent::Update {

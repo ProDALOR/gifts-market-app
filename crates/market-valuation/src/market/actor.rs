@@ -1,6 +1,6 @@
 use super::*;
 use crate::{floors::BookCache, source::ValuationSource};
-use actix::{Actor, Context, Handler, ResponseFuture};
+use actix::{Actor, AsyncContext, Context, Handler, ResponseFuture};
 use std::{sync::Arc, time::Duration};
 pub(crate) struct MarketValuationActor {
     source: ValuationSource,
@@ -22,6 +22,7 @@ impl Actor for MarketValuationActor {
     type Context = Context<Self>;
     fn started(&mut self, ctx: &mut Self::Context) {
         self.life.started(ctx);
+        ctx.run_interval(Duration::from_secs(15), |actor, _| actor.reads.prune());
     }
 }
 impl Handler<Evaluate<crate::service::Work, Arc<ValuationRead>, ValuationError>>

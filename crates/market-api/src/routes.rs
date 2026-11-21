@@ -54,15 +54,19 @@ fn catalog_response<T, U: serde::Serialize>(
         response.json(present(snapshot.data))
     }
 }
-#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Evaluate explicit valuation strategies",description="Choose explicit strategy IDs from /valuations/strategies using their input contracts, supported targets and period requirements. Send a catalog selection, collection/trait selection or gift lookup; the service resolves domain facts once in one pinned read. The same query can be subscribed with valuation.watch. Unknown or repeated IDs and invalid request options fail the request. Unsupported targets and calculation failures are reported independently per strategy; missing evidence remains a typed metric issue. Each result contains typed data or an independent strategy error and a definition revision. Static display fields, formatting and notes are discovered once from /valuations/strategies; evidence stays in the typed data. Follow discovery documentation links for formulas and sample requirements. HTTP and WebSocket use the same handler, read budgets and cancellation.",request_body=market_valuation::ValuationQuery,responses((status=200,body=crate::valuation::ValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/valuations/query",tag="Valuations",summary="Evaluate explicit valuation strategies",description="Choose explicit strategy IDs from /valuations/strategies using their input contracts, supported targets and period requirements. Send a batched catalog target, unified selection with collection_id and criteria, or gift lookup; the service resolves domain facts once in one pinned read. The same query can be subscribed with valuation.watch. Unknown or repeated IDs, legacy targets and periods unused by every selected strategy fail the request. Unsupported targets and calculation failures are reported independently per strategy; missing evidence remains a typed metric issue. Each result contains typed data or an independent strategy error and a definition revision. Static display fields, formatting and notes are discovered once from /valuations/strategies; evidence stays in the typed data. Follow discovery documentation links for formulas and sample requirements. HTTP and WebSocket use the same handler, read budgets and cancellation.",request_body=market_valuation::ValuationQuery,responses((status=200,body=crate::valuation::ValuationResponse),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn valuation(
     state: web::Data<MarketApi>,
     query: web::Json<market_valuation::ValuationQuery>,
 ) -> Result<HttpResponse> {
     let report = state.valuation(query.into_inner()).await?;
+    let body = state
+        .encode_valuation(report, crate::encoding::ValuationEnvelope::Rest)
+        .await?;
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(crate::valuation::ValuationResponse::from(report.as_ref())))
+        .content_type("application/json")
+        .body(crate::encoding::body(body)))
 }
 #[utoipa::path(post,path="/orders/query",tag="Orders",summary="Read a latest or frozen ordered slice",description="Latest is the default and retains no view. Set view.kind to snapshot to open or reuse a snapshot lease. Ordering keys are portable across latest, frozen and WebSocket reads. The server enforces read budgets. Expired leases return restart_read.",request_body=GiftOrderQuery,responses((status=200,body=crate::orders::OrderReadResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn read_orders(

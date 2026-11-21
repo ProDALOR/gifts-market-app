@@ -9,18 +9,22 @@ use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 fn query(strategies: &[&str]) -> ValuationQuery {
     ValuationQuery {
-        target: ValuationTarget::Collection {
+        target: ValuationTarget::Selection {
             collection_id: "gift".into(),
+            criteria: market_gifts::GiftCriteria::default(),
         },
         currency_id: "GRAM".into(),
         strategies: strategies
             .iter()
             .map(|id| StrategyId::new(*id).unwrap())
             .collect(),
-        period: Some(market_gifts::Period {
-            from: Some("2026-01-01T00:00:00Z".parse().unwrap()),
-            until: Some("2026-02-01T00:00:00Z".parse().unwrap()),
-        }),
+        period: strategies
+            .iter()
+            .any(|strategy| strategy.starts_with("execution_"))
+            .then(|| market_gifts::Period {
+                from: Some("2026-01-01T00:00:00Z".parse().unwrap()),
+                until: Some("2026-02-01T00:00:00Z".parse().unwrap()),
+            }),
     }
 }
 #[tokio::test]
@@ -51,9 +55,12 @@ async fn identical_consumers_share_reads_without_sharing_their_lifecycle() {
     let later = handle.watch(different).await.unwrap();
     assert!(!Arc::ptr_eq(&first.current(), &later.current()));
     let mut different = request;
-    different.target = ValuationTarget::Model {
+    different.target = ValuationTarget::Selection {
         collection_id: "gift".into(),
-        model_id: "otherm".into(),
+        criteria: market_gifts::GiftCriteria {
+            models: vec!["otherm".into()],
+            ..Default::default()
+        },
     };
     let model = handle.watch(different).await.unwrap();
     assert!(!Arc::ptr_eq(&first.current(), &model.current()));
@@ -117,7 +124,7 @@ async fn history_watches_follow_backfills_ignore_asks_and_share_one_scan_per_rep
         .await
         .unwrap();
     assert!(
-        matches!(&watch.current().results[2],StrategyOutcome::Error{error,..} if error.code == ValuationErrorCode::UnsupportedTarget)
+        matches!(&watch.current().results[2],StrategyOutcome::Error{error,..} if error.code == StrategyFailureCode::UnsupportedTarget)
     );
     writer
         .apply(w::Batch {
@@ -234,4 +241,46 @@ async fn mixed_strategy_reads_skip_unrelated_changes_and_observe_gift_listing_ex
         matches!(&changed.report.results[0],StrategyOutcome::Value(StrategyValuation::AskFloor(value)) if value.price.value().unwrap().as_str() == "100")
     );
     reads.shutdown().await;
+}
+
+#[tokio::test]
+async fn finite_queries_reuse_canonical_reads_and_invalidate_after_market_changes() {
+    let (_dir, mut writer) = book();
+    let data = MarketDataService::start(writer.reader(), 4, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let mut first = query(&["ask_floor"]);
+    first.target = ValuationTarget::Selection {
+        collection_id: "gift".into(),
+        criteria: market_gifts::GiftCriteria {
+            models: vec!["m".into(), "otherm".into(), "m".into()],
+            ..Default::default()
+        },
+    };
+    let report = handle.query(first.clone()).await.unwrap();
+    let ValuationTarget::Selection { criteria, .. } = &mut first.target else {
+        panic!()
+    };
+    criteria.models = vec!["otherm".into(), "m".into()];
+    let reused = handle.query(first.clone()).await.unwrap();
+    assert!(Arc::ptr_eq(&report, &reused));
+    writer
+        .apply(w::Batch {
+            cursor: "new-price".into(),
+            changes: vec![ask("new-price", "m", "b", "1", 999, None)],
+        })
+        .unwrap();
+    let updated = handle.query(first).await.unwrap();
+    assert!(!Arc::ptr_eq(&report, &updated));
+    let StrategyOutcome::Value(StrategyValuation::AskFloor(value)) = &updated.results[0] else {
+        panic!()
+    };
+    assert_eq!(value.price.value().unwrap().as_str(), "1");
+    task.shutdown().await.unwrap();
+    let stop = CancellationToken::new();
+    stop.cancel();
+    data.task.run(stop).await.unwrap();
 }

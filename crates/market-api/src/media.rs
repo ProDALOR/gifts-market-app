@@ -144,7 +144,6 @@ fn failure(error: MediaError) -> HttpResponse {
     };
     error_response(
         ApiError {
-            details: None,
             code,
             message: message.into(),
         },

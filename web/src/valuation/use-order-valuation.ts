@@ -52,7 +52,7 @@ export function useOrderValuation(order: Order) {
     const stop = new AbortController();
     const target: ValuationQuery["target"] = criteria
       ? {
-          kind: "criteria",
+          kind: "selection",
           collection_id: order.book.collection_id,
           criteria: {
             models: criteria.models,
@@ -69,11 +69,16 @@ export function useOrderValuation(order: Order) {
           },
         };
     let running = false;
+    let refreshGeneration = liveSocket.statusSnapshot().generation;
     let nextRefresh = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
       clearTimeout(timer);
-      if (!stop.signal.aborted && !document.hidden)
+      if (
+        !stop.signal.aborted &&
+        !document.hidden &&
+        liveSocket.statusSnapshot().status !== "unavailable"
+      )
         timer = setTimeout(refresh, Math.max(0, nextRefresh - Date.now()));
     };
     const refresh = async () => {
@@ -83,6 +88,7 @@ export function useOrderValuation(order: Order) {
         return;
       }
       running = true;
+      refreshGeneration = liveSocket.statusSnapshot().generation;
       nextRefresh = Date.now() + 60_000;
       pending();
       try {
@@ -90,13 +96,18 @@ export function useOrderValuation(order: Order) {
         stop.signal.throwIfAborted();
         let strategies = compatibleStrategies(rows, target.kind).sort(
           (a, b) =>
-            Number(b.input === "resolved_gift") -
-            Number(a.input === "resolved_gift"),
+            Number(
+              b.input.targets.length === 1 && b.input.targets[0] === "gift",
+            ) -
+            Number(
+              a.input.targets.length === 1 && a.input.targets[0] === "gift",
+            ),
         );
         if (!strategies.length)
           throw new Error("No compatible valuation strategies are available.");
         const ids = strategies.map((row) => row.id);
         const generation = liveSocket.statusSnapshot().generation;
+        refreshGeneration = generation;
         const report = await valuation(
           {
             target,
@@ -113,8 +124,8 @@ export function useOrderValuation(order: Order) {
             ? resolved.gift.collection_id
             : resolved.collection_id) === order.book.collection_id &&
           (criteria
-            ? resolved.kind === "criteria" &&
-              target.kind === "criteria" &&
+            ? resolved.kind === "selection" &&
+              target.kind === "selection" &&
               sameCriteria(resolved.criteria, target.criteria)
             : resolved.kind === "gift" &&
               resolved.gift.id === gift?.id &&
@@ -180,6 +191,12 @@ export function useOrderValuation(order: Order) {
         }
       } finally {
         running = false;
+        const connection = liveSocket.statusSnapshot();
+        if (
+          connection.status === "available" &&
+          connection.generation !== refreshGeneration
+        )
+          nextRefresh = 0;
         schedule();
       }
     };
@@ -188,9 +205,24 @@ export function useOrderValuation(order: Order) {
       if (!document.hidden) void refresh();
     };
     document.addEventListener("visibilitychange", visibility);
+    const unsubscribe = liveSocket.watchStatus((status) => {
+      if (stop.signal.aborted) return;
+      if (status === "unavailable") {
+        clearTimeout(timer);
+        return;
+      }
+      if (
+        status === "available" &&
+        !running &&
+        liveSocket.statusSnapshot().generation !== refreshGeneration
+      )
+        nextRefresh = 0;
+      void refresh();
+    });
     void refresh();
     return () => {
       stop.abort();
+      unsubscribe();
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", visibility);
     };

@@ -294,7 +294,11 @@ test("target valuations validate scope identity, independent outcomes and unique
     id: "targets.1",
     method: "valuation.query",
     data: {
-      target: { kind: "model", collection_id: "gift", model_id: "gold" },
+      target: {
+        kind: "selection",
+        collection_id: "gift",
+        criteria: { models: ["gold"], backdrops: [], patterns: [] },
+      },
       currency_id: "GRAM",
       evaluated_at: "2026-11-20T00:00:00Z",
       stale: false,
@@ -364,4 +368,42 @@ test("target valuations validate scope identity, independent outcomes and unique
       parseFrame(JSON.stringify({ ...snapshot, data: invalid.data })),
     );
   }
+});
+
+test("valuation reports reject legacy targets and request errors reject actor details", () => {
+  for (const kind of [
+    "collection",
+    "model",
+    "backdrop",
+    "model_backdrop",
+    "criteria",
+  ]) {
+    const frame = {
+      ...result,
+      data: {
+        ...result.data,
+        target: {
+          kind,
+          collection_id: "gift",
+          model_id: "m",
+          backdrop_id: "b",
+          criteria: { models: [], backdrops: [], patterns: [] },
+        },
+      },
+    };
+    assert.throws(() => parseFrame(JSON.stringify(frame)));
+  }
+  assert.throws(() =>
+    parseFrame(
+      JSON.stringify({
+        type: "error",
+        id: "request.1",
+        error: {
+          code: "unavailable",
+          message: "Unavailable",
+          details: { strategy: "valuation" },
+        },
+      }),
+    ),
+  );
 });

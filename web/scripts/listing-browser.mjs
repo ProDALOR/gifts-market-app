@@ -241,9 +241,7 @@ try {
     releaseMetadata;
   const strategyMetadata = {
     id: "fixture_floor",
-    input: "resolved_gift",
-    targets: ["gift"],
-    requires_period: false,
+    input: { targets: ["gift"], period: "unsupported" },
     name: "Fixture floor",
     description: "Discovered strategy description.",
     documentation_url: "/__fixture_strategy.md",
@@ -298,8 +296,7 @@ try {
                 ...strategyMetadata,
                 id: "ask_floor",
                 display: fixtureDisplay("ask_floor"),
-                input: "selection",
-                targets: ["criteria"],
+                input: { targets: ["selection"], period: "unsupported" },
               },
             ],
           },
@@ -380,7 +377,7 @@ try {
       }
       if (
         command.method === "valuation.query" &&
-        command.params.target?.kind === "criteria"
+        command.params.target?.kind === "selection"
       ) {
         peer.send(
           JSON.stringify({
@@ -1138,14 +1135,19 @@ try {
     0,
   );
   socket.send(JSON.stringify({ type: "market.status", status: "available" }));
-  mode = "success";
-  release();
-  await settled();
-  assert.equal(await page.locator(".price-comparison").count(), 0);
   assert.equal(
     requests.length,
     pendingRequests,
-    "recovery must not duplicate in-flight requests",
+    "Recovery cannot overlap an in-flight request",
+  );
+  mode = "success";
+  release();
+  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
+  await settled();
+  assert.equal(
+    requests.length,
+    pendingRequests + 1,
+    "One follow-up replaces the result calculated before recovery",
   );
   assert.equal(
     await page.getByText("Estimate may be outdated", { exact: true }).count(),
@@ -1163,15 +1165,11 @@ try {
   assert.equal(await page.locator(".price-comparison").count(), 0);
   socket.send(JSON.stringify({ type: "market.status", status: "available" }));
   await page.waitForTimeout(50);
-  assert.equal(
-    await page.locator(".price-comparison").count(),
-    0,
-    "recovery must not mark an old estimate current",
-  );
+  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
   assert.equal(
     requests.length,
-    requestsBeforeDelay,
-    "availability changes must not trigger valuation requests",
+    requestsBeforeDelay + 1,
+    "A fresh request restores the comparison after market recovery",
   );
   await refreshValuation();
   await page.getByText("About 20% below estimate", { exact: true }).waitFor();

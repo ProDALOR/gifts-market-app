@@ -144,8 +144,9 @@ mod tests {
                 let books = BookCache::default();
                 let currency = "GRAM".into();
                 let context = ValuationContext::new(&snapshot, &currency, &books);
-                let target = Arc::new(ResolvedTarget::Collection {
+                let target = Arc::new(ResolvedTarget::Selection {
                     collection_id: "gift".into(),
+                    criteria: market_gifts::GiftCriteria::default(),
                 });
                 let january = Period {
                     from: Some("2026-01-01T00:00:00Z".parse().unwrap()),
@@ -171,9 +172,12 @@ mod tests {
                 let later = context.executions(&other_period)?;
                 assert!(!Arc::ptr_eq(&first, &later));
                 assert_eq!(later.evidence.executions, 0);
-                let other_target = Arc::new(ResolvedTarget::Model {
+                let other_target = Arc::new(ResolvedTarget::Selection {
                     collection_id: "gift".into(),
-                    model_id: "otherm".into(),
+                    criteria: market_gifts::GiftCriteria {
+                        models: vec!["otherm".into()],
+                        ..Default::default()
+                    },
                 });
                 let other_selection = ExecutionInput::resolve(
                     other_target,

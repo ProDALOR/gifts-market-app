@@ -8,13 +8,11 @@ const row = (id: string, revision = "r1"): ValuationStrategy => ({
   id,
   name: id,
   description: "description",
-  input: "selection",
-  targets: ["collection"],
-  requires_period: false,
+  input: { targets: ["selection"], period: "unsupported" },
   documentation_url: `/guides/${id}`,
   documentation_revision: revision,
   revision,
-  display: {fields: [], evidence: [], note: ""},
+  display: { fields: [], evidence: [], note: "" },
 });
 
 test("strategy metadata shares requests, survives one cancelled consumer and expires on use", async () => {
@@ -90,13 +88,17 @@ test("strategy compatibility uses discovered capabilities rather than strategy I
   const { compatibleStrategies } =
     await import("../src/valuation/strategies.ts");
   const rows: ValuationStrategy[] = [
-    { ...row("renamed_floor"), targets: ["gift", "criteria"] },
-    { ...row("renamed_composite"), input: "resolved_gift", targets: ["gift"] },
+    {
+      ...row("renamed_floor"),
+      input: { targets: ["gift", "selection"], period: "unsupported" },
+    },
+    {
+      ...row("renamed_composite"),
+      input: { targets: ["gift"], period: "unsupported" },
+    },
     {
       ...row("renamed_history"),
-      input: "selection_with_execution_period",
-      targets: ["gift", "criteria"],
-      requires_period: true,
+      input: { targets: ["gift", "selection"], period: "required" },
     },
   ];
   assert.deepEqual(
@@ -104,12 +106,12 @@ test("strategy compatibility uses discovered capabilities rather than strategy I
     ["renamed_floor", "renamed_composite"],
   );
   assert.deepEqual(
-    compatibleStrategies(rows, "criteria").map((row) => row.id),
+    compatibleStrategies(rows, "selection").map((row) => row.id),
     ["renamed_floor"],
   );
   assert.deepEqual(
-    compatibleStrategies(rows, "criteria", true).map((row) => row.id),
+    compatibleStrategies(rows, "selection", true).map((row) => row.id),
     ["renamed_floor", "renamed_history"],
   );
-  assert.deepEqual(compatibleStrategies(rows, "backdrop", true), []);
+  assert.deepEqual(compatibleStrategies(rows, "catalog", true), []);
 });

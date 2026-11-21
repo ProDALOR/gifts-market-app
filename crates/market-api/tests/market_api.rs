@@ -1030,10 +1030,7 @@ async fn oversized_order_batches_report_terminal_errors_and_release_the_id() {
             bind: "127.0.0.1:0".parse().unwrap(),
             workers: 1,
             limits: market_api::ApiLimits {
-                websocket: market_api::WebSocketLimits {
-                    order_bytes: 64,
-                    ..Default::default()
-                },
+                response_bytes: 64,
                 ..Default::default()
             },
             ..Default::default()
@@ -1080,6 +1077,27 @@ async fn oversized_order_batches_report_terminal_errors_and_release_the_id() {
                 .contains("byte budget")
         );
     }
+    let valuation = serde_json::json!({"target":{"kind":"selection","collection_id":"tg.gift.123","criteria":{}},"currency_id":"GRAM","strategies":["ask_floor"]});
+    for method in ["valuation.query", "valuation.watch"] {
+        let command = if method == "valuation.query" {
+            serde_json::json!({"type":"request","method":method,"id":"value","params":valuation})
+        } else {
+            serde_json::json!({"type":method,"id":"value","params":valuation})
+        };
+        bid_filters::send(&mut socket, command).await;
+        let error = bid_filters::frame(&mut socket, "value", "error").await;
+        assert_eq!(error["error"]["code"], "capacity_exceeded");
+    }
+    let (status, _, body) = http(
+        address,
+        "POST",
+        "/valuations/query",
+        &valuation.to_string(),
+        "Content-Type: application/json\r\n",
+    )
+    .await;
+    assert_eq!(status, 429);
+    assert_eq!(body["error"]["code"], "capacity_exceeded");
     // The server must be able to cancel and drain while the socket is still open.
     api_stop.cancel();
     tokio::time::timeout(Duration::from_secs(3), job)

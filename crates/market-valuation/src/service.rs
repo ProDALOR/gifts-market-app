@@ -12,19 +12,6 @@ pub struct ValuationHandle {
     watch_slots: Arc<tokio::sync::Semaphore>,
 }
 impl ValuationHandle {
-    async fn invoke(
-        &self,
-        work: Work,
-        currency: market_gifts::CurrencyId,
-    ) -> Result<Arc<Mark<Arc<crate::market::ValuationRead>>>, ValuationError> {
-        crate::client::invoke(
-            &self.native,
-            work,
-            StrategyId::new("valuation").unwrap(),
-            currency,
-        )
-        .await
-    }
     pub async fn query(
         &self,
         request: ValuationQuery,
@@ -36,13 +23,14 @@ impl ValuationHandle {
         request: crate::market::PreparedQuery,
         previous: Option<Arc<crate::market::ValuationRead>>,
     ) -> Result<Arc<crate::market::ValuationRead>, ValuationError> {
-        let currency = request.currency().clone();
-        Ok(self
-            .invoke(Work { request, previous }, currency)
-            .await?
-            .data
-            .clone())
+        let mark = self
+            .native
+            .evaluate(Work { request, previous })
+            .await
+            .map_err(crate::client::actor_error)?;
+        Ok(mark.data.clone())
     }
+
     pub async fn watch(&self, request: ValuationQuery) -> Result<ValuationWatch, ValuationError> {
         let request = request.prepare()?;
         let permit = self
@@ -51,7 +39,8 @@ impl ValuationHandle {
             .try_acquire_owned()
             .map_err(|_| ValuationError::capacity("Valuation watch capacity reached"))?;
         // Listen before the initial admitted read, retaining changes during initialization.
-        let changes = self.changes.clone();
+        let mut changes = self.changes.clone();
+        changes.borrow_and_update();
         let current = self.read(request.clone(), None).await?;
         Ok(ValuationWatch {
             handle: self.clone(),
@@ -132,5 +121,79 @@ impl ValuationWatch {
             self.current = next;
             return Ok(self.current());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        gift_floor::tests::{ask, book},
+        test_support::MarketDataService,
+    };
+    use market_hub_protocol::wire as w;
+    #[tokio::test]
+    async fn watch_baseline_ignores_past_changes_but_retains_updates_during_setup() {
+        let (_dir, mut writer) = book();
+        let data = MarketDataService::start(writer.reader(), 2, 1)
+            .await
+            .unwrap();
+        let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+            .await
+            .unwrap();
+        let query = ValuationQuery {
+            target: ValuationTarget::Selection {
+                collection_id: "gift".into(),
+                criteria: Default::default(),
+            },
+            currency_id: "GRAM".into(),
+            strategies: vec![StrategyId::new("ask_floor").unwrap()],
+            period: None,
+        };
+        writer
+            .apply(w::Batch {
+                cursor: "before-watch".into(),
+                changes: vec![ask("before", "m", "b", "2", 999, None)],
+            })
+            .unwrap();
+        let watch = handle.watch(query.clone()).await.unwrap();
+        assert!(
+            !watch.changes.has_changed().unwrap(),
+            "Historical notifications do not trigger another read"
+        );
+        drop(watch);
+        let executor = data.reader.executor();
+        let held = executor.budget().wait().await.unwrap();
+        let held2 = executor.budget().wait().await.unwrap();
+        let mut setup = Box::pin(handle.watch(query));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut setup)
+                .await
+                .is_err()
+        );
+        writer
+            .apply(w::Batch {
+                cursor: "during-watch".into(),
+                changes: vec![ask("during", "m", "b", "1", 998, None)],
+            })
+            .unwrap();
+        drop(held);
+        drop(held2);
+        let watch = setup.await.unwrap();
+        assert!(
+            watch.changes.has_changed().unwrap(),
+            "Updates during initialization remain observable"
+        );
+        let StrategyOutcome::Value(StrategyValuation::AskFloor(value)) =
+            &watch.current.report.results[0]
+        else {
+            panic!()
+        };
+        assert_eq!(value.price.value().unwrap().as_str(), "1");
+        drop(watch);
+        task.shutdown().await.unwrap();
+        let stop = tokio_util::sync::CancellationToken::new();
+        stop.cancel();
+        data.task.run(stop).await.unwrap();
     }
 }

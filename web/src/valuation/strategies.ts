@@ -35,7 +35,8 @@ export function compatibleStrategies(
 ) {
   return rows.filter(
     (row) =>
-      row.targets.includes(target) && (hasPeriod || !row.requires_period),
+      row.input.targets.includes(target) &&
+      (hasPeriod || row.input.period !== "required"),
   );
 }
 export const guideKey = (strategy: ValuationStrategy) =>
