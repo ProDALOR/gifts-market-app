@@ -3,7 +3,13 @@ import { giftNumberRange } from "../orderbook";
 import { resolveTraits } from "../catalog/traits";
 import type { BidCriteria } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
-import { TraitFloor } from "../valuation/floors";
+import {
+  useCollectionFloors,
+  useCollectionFloorDetails,
+  FloorBadge,
+} from "../valuation/floors";
+import { traitFloor } from "../valuation/floors-controller";
+import { FloorDetails } from "./floor-details";
 import { UnrestrictedTrait } from "../previews/unrestricted-trait";
 
 /** Complete accepted alternatives for bid details. */
@@ -20,6 +26,8 @@ export function BidConditions({
   collection?: string;
   currency?: string;
 }) {
+  const shared = useCollectionFloors(collection || "", currency);
+  const detail = useCollectionFloorDetails(collection || "", currency);
   const number = giftNumberRange(criteria.number);
   return (
     <dl className="bid-conditions" aria-label="Bid conditions">
@@ -44,20 +52,28 @@ export function BidConditions({
               )}
               {trait.entries.map(({ id, name, option }) => {
                 return (
-                  <span
-                    className="condition-chip"
-                    key={id}
+                  <FloorDetails
+                    label={`${trait.label} floor`}
+                    name={name}
                     title={option ? name : `${name} — unavailable`}
+                    floor={traitFloor(shared, trait.kind, id)}
+                    currency={currency || ""}
+                    stale={shared?.stale}
+                    evaluatedAt={shared?.evaluatedAt}
+                    loading={detail.pending}
+                    error={detail.error}
+                    className="condition-chip condition-floor"
+                    key={id}
                   >
                     {option && <OptionArt option={option} />}
                     <span className="condition-name">{name}</span>
-                    <TraitFloor
-                      collection={collection}
-                      currency={currency}
-                      id={id}
-                      kind={trait.kind}
+                    <FloorBadge
+                      compact
+                      floor={traitFloor(shared, trait.kind, id)}
+                      currency={currency || ""}
+                      stale={shared?.stale}
                     />
-                  </span>
+                  </FloorDetails>
                 );
               })}
             </dd>

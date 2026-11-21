@@ -512,3 +512,62 @@ body:has(.detail[open]) {
 .quote-amount {
   border-radius: 4px;
 }
+
+.floor-inspect {
+  display: inline-grid;
+  align-items: center;
+  justify-items: end;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  text-align: right;
+}
+.floor-inspect > .floor-summary {
+  pointer-events: none;
+}
+.floor-inspect:hover:not(:disabled) {
+  background: var(--surface);
+}
+.condition-floor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: auto;
+}
+.floor-loading {
+  display: grid;
+  gap: 4px;
+  width: 44px;
+  min-height: 26px;
+  align-content: center;
+  justify-items: end;
+}
+.floor-loading > span {
+  height: 7px;
+  width: 100%;
+  background: var(--line);
+  border-radius: 3px;
+}
+.floor-loading > span:last-child {
+  width: 65%;
+}
+.floor-load-error {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+}
+
+@media (pointer: coarse) {
+  .floor-inspect {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

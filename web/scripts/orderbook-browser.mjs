@@ -1479,6 +1479,38 @@ try {
       .count(),
     0,
   );
+  const inspect = page.locator('[data-attribute="model"] .floor-inspect');
+  const beforeInspect = floorRequests;
+  await inspect.click();
+  const floorInfo = page.getByRole("dialog", {
+    name: "Floor details",
+    exact: true,
+  });
+  await floorInfo.waitFor();
+  assert.equal(
+    await floorInfo.locator(".detail-fact-price .quote-amount").textContent(),
+    "10.000000001",
+  );
+  assert.deepEqual(
+    await floorInfo.locator(".detail-fact-values dd").allTextContents(),
+    ["10.000000001", "2", "4"],
+  );
+  assert.equal(
+    floorRequests,
+    beforeInspect,
+    "Inspecting exact floor evidence reuses the loaded projection",
+  );
+  await page.keyboard.press("Escape");
+  await floorInfo.waitFor({ state: "detached" });
+  assert.equal(
+    await page.locator(".detail").count(),
+    1,
+    "Closing floor details keeps the gift open",
+  );
+  assert.equal(
+    await inspect.evaluate((el) => el === document.activeElement),
+    true,
+  );
   const detailViewport = page.viewportSize();
   for (const width of [320, 390, 1200]) {
     await page.setViewportSize({ width, height: 844 });

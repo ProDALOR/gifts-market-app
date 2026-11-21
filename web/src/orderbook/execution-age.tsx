@@ -34,18 +34,27 @@ function subscribe(listener: () => void) {
 }
 const snapshot = () => now;
 
-export function ExecutionAge({ at }: { at: string }) {
+export function ExecutionAge({
+  at,
+  className = "execution-age",
+  ago = false,
+}: {
+  at: string;
+  className?: string;
+  ago?: boolean;
+}) {
   const current = useSyncExternalStore(subscribe, snapshot);
   const timestamp = Date.parse(at);
   if (!Number.isFinite(timestamp)) return null;
   const age = compactAge(timestamp, current);
   return (
     <time
-      className="execution-age"
+      className={className}
       dateTime={at}
       aria-label={`Executed ${age} ago`}
     >
       {age}
+      {ago && " ago"}
     </time>
   );
 }

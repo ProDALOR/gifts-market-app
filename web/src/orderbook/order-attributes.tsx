@@ -3,8 +3,12 @@ import { BidConditions } from "./bid-conditions";
 import { giftDetails } from "../orderbook";
 import { AttributeArt } from "./attribute-art";
 import type { AttributeArtKind } from "./attribute-art";
-import { useCollectionFloors, FloorSummary } from "../valuation/floors";
+import {
+  useCollectionFloors,
+  useCollectionFloorDetails,
+} from "../valuation/floors";
 import { traitFloor } from "../valuation/floors-controller";
+import { FloorDetails } from "./floor-details";
 import type { SharedFloor } from "../valuation/floors-controller";
 
 export function OrderAttributes({
@@ -22,6 +26,10 @@ export function OrderAttributes({
     order.book.collection_id,
     order.book.currency_id,
   );
+  const detail = useCollectionFloorDetails(
+    order.book.collection_id,
+    order.book.currency_id,
+  );
   if (order.target.kind === "criteria")
     return (
       <>
@@ -31,11 +39,12 @@ export function OrderAttributes({
             aria-label="Current market ask values"
           >
             <div>
-              <FloorSummary
+              <FloorDetails
                 floor={shared.floor}
                 currency={order.book.currency_id}
                 stale={shared.stale}
                 label="Collection floor"
+                evaluatedAt={shared.evaluatedAt}
               />
             </div>
           </section>
@@ -135,23 +144,16 @@ export function OrderAttributes({
                   </span>
                 </th>
                 <td>
-                  {floor ? (
-                    <FloorSummary
-                      compact
-                      rounded
-                      currency={order.book.currency_id}
-                      stale={shared?.stale}
-                      label={`${label} floor`}
-                      floor={floor}
-                    />
-                  ) : (
-                    <span
-                      className="attribute-floor-missing"
-                      aria-label={`${label} floor unavailable`}
-                    >
-                      —
-                    </span>
-                  )}
+                  <FloorDetails
+                    label={`${label} floor`}
+                    name={value}
+                    floor={floor}
+                    currency={order.book.currency_id}
+                    stale={shared?.stale}
+                    evaluatedAt={shared?.evaluatedAt}
+                    loading={detail.pending}
+                    error={detail.error}
+                  />
                 </td>
               </tr>
             ))}

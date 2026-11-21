@@ -22,6 +22,7 @@ const empty: FloorsState = {
   selected: "",
   entries: new Map(),
   error: "",
+  detail: { pending: false, error: "" },
 };
 const Context = createContext<{
   state: FloorsState;
@@ -98,6 +99,12 @@ export function useCollectionFloors(
     ? undefined
     : state.entries.get(id);
 }
+export function useCollectionFloorDetails(id: string, currency?: string) {
+  const { state } = useFloorReport();
+  return state.selected === id && (!currency || state.currency === currency)
+    ? state.detail
+    : empty.detail;
+}
 export function FloorBadge({
   floor,
   currency,
@@ -143,7 +150,7 @@ function evidenceTooltip(floor: SharedFloor) {
 export function FloorSummary(props: ComponentProps<typeof FloorBadge>) {
   if (!props.floor) return null;
   return (
-    <div className={`floor-summary${props.stale ? " stale" : ""}`}>
+    <span className={`floor-summary${props.stale ? " stale" : ""}`}>
       <FloorBadge {...props} />
       <small className="floor-evidence" title={evidenceTooltip(props.floor)}>
         {giftCount(props.floor)}
@@ -153,7 +160,7 @@ export function FloorSummary(props: ComponentProps<typeof FloorBadge>) {
           {props.floor.price.error.message}
         </small>
       )}
-    </div>
+    </span>
   );
 }
 export function CollectionFloor({ id }: { id: string }) {

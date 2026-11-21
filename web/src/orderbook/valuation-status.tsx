@@ -17,7 +17,7 @@ export function ValuationStatus({
   if (!report) return null;
   return (
     <>
-      {loading && (
+      {loading && detailed && (
         <p className="valuation-note" role="status">
           Refreshing estimate…
         </p>

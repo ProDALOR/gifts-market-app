@@ -513,3 +513,43 @@ test("catalog validation rejects duplicate scopes and impossible gift evidence",
   data.collections[0].floor.evidence.gifts = 5;
   assert.equal(catalogFloors(data), false);
 });
+
+test("selected floor loading and failure state remains scoped through retries and switching", async (t) => {
+  const f = fixture(t);
+  let release!: () => void;
+  f.load((q) =>
+    target(q).details
+      ? new Promise((resolve) => (release = () => resolve(report(q))))
+      : Promise.reject(new Error("Other collection failed")),
+  );
+  f.controller.configure("GRAM", ["a", "b"], "a", null);
+  await flush(t);
+  assert.deepEqual(f.controller.getSnapshot().detail, {
+    pending: true,
+    error: "",
+  });
+  release();
+  await flush(t);
+  assert.deepEqual(
+    f.controller.getSnapshot().detail,
+    { pending: false, error: "" },
+    "A background collection error does not turn selected floors into failures",
+  );
+  f.load(async () => {
+    throw new Error("Selected floors failed");
+  });
+  f.controller.retry();
+  await flush(t);
+  assert.deepEqual(f.controller.getSnapshot().detail, {
+    pending: false,
+    error: "Selected floors failed",
+  });
+  f.load(async (q) => report(q));
+  f.controller.configure("GRAM", ["a", "b"], "b", null);
+  await flush(t);
+  assert.deepEqual(
+    f.controller.getSnapshot().detail,
+    { pending: false, error: "" },
+    "Switching scopes clears the former error",
+  );
+});

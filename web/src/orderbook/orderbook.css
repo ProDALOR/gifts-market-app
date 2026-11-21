@@ -250,7 +250,7 @@
   position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
-  height: clamp(320px, 94vw, 400px);
+  height: clamp(180px, min(78vw, 40dvh), 400px);
   background: var(--raised);
   color: white;
 }
@@ -438,7 +438,7 @@
   align-items: center;
   flex-wrap: nowrap;
   gap: 5px;
-  margin: 10px 0 0;
+  margin: 0;
   color: var(--accent);
   font-size: 22px;
   line-height: 1.2;
@@ -1128,4 +1128,151 @@
   margin-left: auto;
   justify-content: flex-end;
   min-width: 0;
+}
+
+.listing-price-label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.execution-time-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 8px;
+  min-height: 28px;
+  width: auto;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--tint);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.execution-time-trigger svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.execution-time-age {
+  white-space: nowrap;
+}
+.execution-time-exact {
+  display: block;
+  font-size: 15px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.valuation-comparison-space {
+  min-height: 19px;
+}
+.detail-fact-popup {
+  width: min(420px, calc(100% - 24px));
+  max-height: calc(100dvh - 48px);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--ink);
+  background: var(--paper);
+}
+.detail-fact-popup::backdrop {
+  background: #08070bb3;
+}
+.detail-fact-popup .modal-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--paper);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.detail-fact-popup .modal-heading h3 {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.detail-fact-content {
+  padding: 16px;
+}
+.detail-fact-name {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  overflow-wrap: anywhere;
+}
+.detail-fact-values {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+.detail-fact-values > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.detail-fact-values dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.detail-fact-values dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.detail-fact-price {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  font-size: 15px;
+}
+.detail-fact-price .currency-symbol {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.detail-fact-note,
+.detail-fact-reason {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 959px) and (max-height: 720px) {
+  .detail-caption {
+    padding-bottom: 16px;
+  }
+  .detail-caption p {
+    margin-top: 8px;
+  }
+}
+@media (pointer: coarse) {
+  .valuation-heading .valuation-info-button,
+  .floor-inspect,
+  .execution-time-trigger {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .detail-fact-popup .modal-close {
+    width: 44px;
+    height: 44px;
+  }
 }

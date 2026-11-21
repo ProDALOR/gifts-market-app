@@ -10,6 +10,7 @@ import { OrderAttributes } from "./order-attributes";
 import { BidPreview } from "./bid-preview";
 import { useOrderValuation } from "../valuation/use-order-valuation";
 import { useBackgroundPlaybackSuspension } from "../previews/use-playback";
+import { ExecutionTime } from "./execution-time";
 export function OrderDetails({
   selected,
   options,
@@ -142,13 +143,21 @@ export function OrderDetails({
           <div className="detail-pricing">
             <section className="listing-price" aria-label={priceLabel}>
               <div className="listing-price-row">
-                <h3>
-                  {selected.kind === "executed"
-                    ? "Paid"
-                    : selected.kind === "bid"
-                      ? "Bid price"
-                      : "Ask price"}
-                </h3>
+                <div className="listing-price-label">
+                  <h3>
+                    {selected.kind === "executed"
+                      ? "Paid"
+                      : selected.kind === "bid"
+                        ? "Bid price"
+                        : "Ask price"}
+                  </h3>
+                  {selected.kind === "executed" && selected.executed_at && (
+                    <ExecutionTime
+                      key={`${state.key}:${selected.executed_at}`}
+                      at={selected.executed_at}
+                    />
+                  )}
+                </div>
                 <div className="detail-price">
                   <Quote
                     price={selected.price}
@@ -171,6 +180,7 @@ export function OrderDetails({
             />
           </div>
           <OrderAttributes
+            key={state.key}
             order={selected}
             options={options}
             names={names}

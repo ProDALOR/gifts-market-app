@@ -38,6 +38,7 @@ export type FloorsState = {
   selected: string;
   entries: ReadonlyMap<string, FloorsEntry>;
   error: string;
+  detail: { pending: boolean; error: string };
 };
 const REFRESH_MS = 60_000;
 const BATCH_SIZE = 8;
@@ -72,6 +73,7 @@ export class FloorsController {
     selected: "",
     entries: new Map(),
     error: "",
+    detail: { pending: false, error: "" },
   };
   constructor(deps: Partial<Dependencies> = {}) {
     this.deps = {
@@ -93,6 +95,13 @@ export class FloorsController {
       selected: this.selected,
       entries: new Map(this.cache),
       error: this.detailError || this.errors.values().next().value || "",
+      detail: {
+        pending:
+          !!this.selected &&
+          this.available &&
+          (!!this.detail || this.detailsDirty),
+        error: this.detailError,
+      },
     };
     for (const listener of this.listeners) listener();
   }
@@ -359,6 +368,7 @@ export class FloorsController {
     const work = { stop: new AbortController() };
     this.detail = work;
     this.detailsDirty = false;
+    this.publish();
     void this.read(this.currency, target, work.stop)
       .then((value) => {
         if (!work.stop.signal.aborted && this.detail === work) {
@@ -380,6 +390,7 @@ export class FloorsController {
         if (this.detail !== work) return;
         this.detail = undefined;
         if (!work.stop.signal.aborted) this.pump();
+        this.publish();
       });
   }
   private trim() {

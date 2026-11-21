@@ -1102,6 +1102,9 @@ try {
   await page.getByText("About 20% below estimate", { exact: true }).waitFor();
 
   // A response started before an interruption stays outdated even if it arrives after recovery.
+  const beforeBackgroundRefresh = await page
+    .locator(".detail-pricing")
+    .evaluate((el) => el.getBoundingClientRect().height);
   mode = "hold";
   release = undefined;
   await refreshValuation();
@@ -1112,6 +1115,21 @@ try {
         ?.getAttribute("aria-busy") === "true",
   );
   assert.ok(release);
+  assert.equal(
+    await page
+      .locator(".valuation-summary")
+      .getByText("Refreshing estimate…", { exact: true })
+      .count(),
+    0,
+    "Background refresh has no visible loading row",
+  );
+  assert.equal(
+    await page
+      .locator(".detail-pricing")
+      .evaluate((el) => el.getBoundingClientRect().height),
+    beforeBackgroundRefresh,
+    "Refreshing preserves price-panel geometry",
+  );
   const pendingRequests = requests.length;
   socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
   assert.equal(
@@ -1559,6 +1577,57 @@ try {
     0,
     "Unmount cancels an outstanding exit callback",
   );
+  const history = {
+    ...a,
+    kind: "executed",
+    executed_at: await page.evaluate(() =>
+      new Date(Date.now() - 3 * 3600_000).toISOString(),
+    ),
+  };
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.evaluate((order) => window.renderDetails(order), history);
+  await settled();
+  const badge = page.getByRole("button", {
+    name: "View execution time",
+    exact: true,
+  });
+  await badge.waitFor();
+  assert.equal(await badge.locator("time").textContent(), "3h ago");
+  const beforeTimePopup = requests.length;
+  await badge.click();
+  const timePopup = page.getByRole("dialog", {
+    name: "Execution time",
+    exact: true,
+  });
+  await timePopup.waitFor();
+  assert.equal(
+    await timePopup.locator("time").getAttribute("datetime"),
+    history.executed_at,
+  );
+  assert.equal(
+    requests.length,
+    beforeTimePopup,
+    "Execution time is local data, never another valuation request",
+  );
+  await page.keyboard.press("Escape");
+  await timePopup.waitFor({ state: "detached" });
+  assert.equal(
+    await badge.evaluate((el) => el === document.activeElement),
+    true,
+  );
+  await page.clock.fastForward(60_000);
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".execution-time-age")?.textContent === "3h ago",
+  );
+  await page.screenshot({
+    path: "/tmp/gifts-market-ui/history-time-details.png",
+  });
+  await page.evaluate(
+    (order) => window.renderDetails({ ...order, executed_at: undefined }),
+    history,
+  );
+  await badge.waitFor({ state: "detached" });
   const execution = await page.evaluate((order) => {
     const executed = {
       ...order,

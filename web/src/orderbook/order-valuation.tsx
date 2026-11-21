@@ -83,7 +83,6 @@ function StrategyRow({
     primaryFields.length === 1 ? primaryFields[0].value : undefined;
   const comparison =
     price &&
-    !state.loading &&
     !state.error &&
     !stale &&
     primary?.kind === "currency" &&
@@ -110,7 +109,13 @@ function StrategyRow({
           {!primaryFields.length && (
             <p className="valuation-note">See calculation details</p>
           )}
-          {comparison && <p className="price-comparison">{comparison}</p>}
+          {price &&
+            primary?.kind === "currency" &&
+            primary.currency_id === currency && (
+              <div className="valuation-comparison-space">
+                {comparison && <p className="price-comparison">{comparison}</p>}
+              </div>
+            )}
         </div>
       </div>
     </section>

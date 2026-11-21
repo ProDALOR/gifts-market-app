@@ -6,3 +6,12 @@ export function compactAge(timestamp: number, now = Date.now()): string {
   if (minutes < 1440) return `${Math.floor(minutes / 60)}h`;
   return `${Math.floor(minutes / 1440)}d`;
 }
+
+export function fullTimestamp(value: string): string | undefined {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return;
+  return new Date(timestamp).toLocaleString([], {
+    dateStyle: "long",
+    timeStyle: "long",
+  });
+}
