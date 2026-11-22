@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 /// An algorithm declares the argument contract it consumes and owns its result type.
 /// ```compile_fail
-/// use market_valuation::{AskFloor, ResolvedGiftInput, Strategy, ValuationContext};
-/// fn wrong_input(input: &ResolvedGiftInput, context: &ValuationContext<'_>) {
+/// use market_valuation::{AskFloor, GiftAttributes, Strategy, ValuationContext};
+/// fn wrong_input(input: &GiftAttributes, context: &ValuationContext<'_>) {
 ///     let _ = AskFloor.evaluate(input, context);
 /// }
 /// ```
@@ -21,11 +21,19 @@ pub trait Strategy {
     const DESCRIPTION: &'static str;
     const DOCUMENTATION: &'static str;
     const DISPLAY: crate::DisplayDefinition;
+    const PURPOSE: StrategyPurpose = StrategyPurpose::Estimate;
     fn evaluate(
         &self,
         input: &Self::Input,
         context: &ValuationContext<'_>,
     ) -> Result<Self::Output, ValuationError>;
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum StrategyPurpose {
+    Estimate,
+    Reference,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct StrategyMetadata {
@@ -36,6 +44,7 @@ pub struct StrategyMetadata {
     pub documentation: &'static str,
     pub input: InputContract,
     pub display: crate::DisplayDefinition,
+    pub purpose: StrategyPurpose,
 }
 impl StrategyMetadata {
     const fn of<S: Strategy>() -> Self {
@@ -46,6 +55,7 @@ impl StrategyMetadata {
             documentation: S::DOCUMENTATION,
             input: S::Input::CONTRACT,
             display: S::DISPLAY,
+            purpose: S::PURPOSE,
         }
     }
 }
@@ -129,11 +139,30 @@ mod tests {
         }
         assert!(
             strategies_for(ValuationTargetKind::Gift, false)
-                .any(|metadata| metadata.input == InputContract::ResolvedGift)
+                .any(|metadata| metadata.input == InputContract::GiftAttributes)
         );
         assert!(
             strategies_for(ValuationTargetKind::Selection, true)
-                .all(|metadata| metadata.input != InputContract::ResolvedGift)
+                .all(|metadata| metadata.input != InputContract::GiftAttributes)
+        );
+    }
+    #[test]
+    fn gift_reports_select_estimates_while_reference_floors_remain_queryable() {
+        let gift = strategies_for(crate::ValuationTargetKind::GiftAttributes, false)
+            .filter(|metadata| metadata.purpose == StrategyPurpose::Estimate)
+            .map(|metadata| metadata.id)
+            .collect::<Vec<_>>();
+        assert!(gift.contains(&GiftFloor::ID));
+        assert!(!gift.contains(&AskFloor::ID));
+        let ask = strategy(AskFloor::ID).unwrap();
+        assert_eq!(ask.purpose, StrategyPurpose::Reference);
+        assert!(
+            ask.input
+                .accepts(crate::ValuationTargetKind::GiftAttributes, false)
+        );
+        assert!(
+            ask.input
+                .accepts(crate::ValuationTargetKind::Selection, false)
         );
     }
     #[test]

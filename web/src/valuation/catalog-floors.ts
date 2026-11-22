@@ -8,14 +8,13 @@ const count = (value: unknown): value is number =>
 function floor(value: unknown) {
   if (
     !record(value) ||
-    !record(value.price) ||
-    !record(value.evidence) ||
-    !count(value.evidence.listings) ||
-    !count(value.evidence.gifts) ||
-    value.evidence.gifts > value.evidence.listings
+    !count(value.count) ||
+    ["price", "evidence", "gifts", "listings"].some((key) =>
+      Object.hasOwn(value, key),
+    )
   )
     return false;
-  const price = value.price;
+  const price = value;
   return (
     (typeof price.value === "string" &&
       price.value.length <= 128 &&

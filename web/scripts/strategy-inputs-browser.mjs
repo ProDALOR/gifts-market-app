@@ -11,8 +11,8 @@ const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style
 import React,{useState}from'react';import{createRoot}from'react-dom/client';
 import{useOrderValuation}from'/src/valuation/use-order-valuation.ts';import{OrderValuationSummary}from'/src/orderbook/order-valuation.tsx';
 const gift=n=>({id:'order-'+n,kind:'ask',book:{collection_id:'collection',currency_id:'GRAM',venue_id:'venue'},price:'12',quantity:1,observed_at:'2026-01-01T00:00:00Z',target:{kind:'gift',id:'gift-'+n,number:n,traits:{}}});
-function Details({order}){const state=useOrderValuation(order);return React.createElement('div',null,React.createElement('output',null,state.report?.target.kind==='gift'?state.report.target.gift.number:state.report?.target.kind),React.createElement(OrderValuationSummary,{state}));}
-function App(){const[order,select]=useState();window.choose=n=>select(n==='criteria'?{...gift(1),kind:'bid',target:{kind:'criteria',models:[],backdrops:[],patterns:[]}}:n?gift(n):undefined);return order?React.createElement(Details,{order}):null;}
+function Details({order}){const state=useOrderValuation(order);return React.createElement('div',null,React.createElement('output',null,state.report?.target.kind==='gift_attributes'?(state.report.target.number??'attributes'):state.report?.target.kind),React.createElement(OrderValuationSummary,{state}));}
+function App(){const[order,select]=useState();window.choose=n=>select(n==='criteria'||n==='executed_criteria'?{...gift(1),kind:n==='criteria'?'bid':'executed',target:{kind:'criteria',models:[],backdrops:[],patterns:[]}}:n==='unnumbered'?{...gift(1),target:{...gift(1).target,number:undefined}}:n?gift(n):undefined);return order?React.createElement(Details,{order}):null;}
 createRoot(document.getElementById('fixture')).render(React.createElement(App));
 </script></body></html>`;
 const server = await createServer({
@@ -50,18 +50,27 @@ try {
   const rows = [
     {
       id: "future_selection",
-      input: { targets: ["gift", "selection"], period: "unsupported" },
+      input: {
+        targets: ["gift", "gift_attributes", "selection"],
+        period: "unsupported",
+      },
     },
     {
       id: "future_gift",
-      input: { targets: ["gift"], period: "unsupported" },
+      input: { targets: ["gift", "gift_attributes"], period: "unsupported" },
     },
     {
       id: "future_history",
-      input: { targets: ["gift"], period: "required" },
+      input: { targets: ["gift", "gift_attributes"], period: "required" },
+    },
+    {
+      id: "future_reference",
+      purpose: "reference",
+      input: { targets: ["gift", "gift_attributes"], period: "unsupported" },
     },
   ].map((row) => ({
     ...row,
+    purpose: row.purpose ?? "estimate",
     name: row.id,
     description: row.id,
     documentation_url: "/guides/" + row.id,
@@ -146,7 +155,7 @@ try {
         };
       }
       const params = command.params,
-        n = params.target.gift?.number;
+        n = params.target.number ?? params.target.gift?.number ?? 1;
       const data = {
         target:
           params.target.kind === "gift"
@@ -235,6 +244,29 @@ try {
   ]);
   assert.equal(queries.length, 1);
   assert.equal(guideRequests, 0);
+  await page.evaluate(() => window.choose("executed_criteria"));
+  await page.waitForFunction(
+    () => document.querySelector("output")?.textContent === "attributes",
+  );
+  assert.equal(queries.at(-1).params.target.kind, "gift_attributes");
+  assert.deepEqual(queries.at(-1).params.strategies, [
+    "future_gift",
+    "future_selection",
+  ]);
+  await page.evaluate(() => window.choose("unnumbered"));
+  await page.waitForFunction(
+    () => document.querySelector("output")?.textContent === "attributes",
+  );
+  const attributeTarget = queries.at(-1).params.target;
+  assert.equal(attributeTarget.kind, "gift_attributes");
+  assert.equal(attributeTarget.id, undefined);
+  assert.equal(attributeTarget.number, undefined);
+  assert.equal(attributeTarget.gift, undefined);
+  await page.evaluate(() => window.choose(1));
+  await page.waitForFunction(
+    () => document.querySelector("output")?.textContent === "1",
+  );
+
   await info().click();
   await page
     .getByRole("article", { name: "future_selection calculation guide" })
@@ -333,6 +365,20 @@ try {
   assert.deepEqual(queries.at(-1).params.strategies, ["future_selection"]);
   assert.equal(await strategyRows.count(), 1);
   assert.equal(metadataRequests, metadataBeforeRetry + 1);
+  // The same criteria payload changes meaning when a bid becomes a historical gift.
+  await page.evaluate(() => window.choose("executed_criteria"));
+  await page.waitForFunction(
+    () => document.querySelector("output")?.textContent === "attributes",
+  );
+  assert.equal(queries.at(-1).params.target.kind, "gift_attributes");
+  assert.equal(await strategyRows.count(), 2);
+  assert.ok(
+    queries
+      .at(-1)
+      .params.strategies.every(
+        (id) => rows.find((row) => row.id === id).purpose === "estimate",
+      ),
+  );
   const before = queries.length;
   failMetadata = true;
   await page.goto(url);

@@ -216,12 +216,12 @@ async fn unified_report_uses_combination_floor_and_full_precision_then_reacts_to
     assert_eq!(first.model_backdrop_floor.value().unwrap().as_str(), "100");
     assert_eq!(first.model_multiplier.value().unwrap().as_str(), "3.33");
     assert_eq!(first.backdrop_multiplier.value().unwrap().as_str(), "3.67");
-    assert_eq!(first.final_mark.value().unwrap().as_str(), "36.67");
-    assert_eq!(first.evidence.collection.listings, 12);
+    assert_eq!(first.final_mark.value().unwrap().as_str(), "18");
+    assert_eq!(first.collection_floor.count, 12);
     writer
         .apply(w::Batch {
             cursor: "replaced".into(),
-            changes: vec![ask("pair0", "m", "b", "20.125", 123, None)],
+            changes: vec![ask("pair0", "m", "b", "15.125", 123, None)],
         })
         .unwrap();
     assert_eq!(
@@ -236,10 +236,10 @@ async fn unified_report_uses_combination_floor_and_full_precision_then_reacts_to
     let next = evaluate(&handle).await.unwrap();
     assert_eq!(
         next.model_backdrop_floor.value().unwrap().as_str(),
-        "20.125"
+        "15.125"
     );
-    assert_eq!(next.final_mark.value().unwrap().as_str(), "20.12");
-    assert_eq!(first.final_mark.value().unwrap().as_str(), "36.67");
+    assert_eq!(next.final_mark.value().unwrap().as_str(), "15.12");
+    assert_eq!(first.final_mark.value().unwrap().as_str(), "18");
     stop(data, task).await;
 }
 
@@ -340,7 +340,7 @@ async fn unchanged_statistics_reuse_prices_across_periodic_rechecks() {
 }
 
 #[tokio::test]
-async fn cross_venue_listings_and_broad_criteria_cannot_satisfy_distinct_gift_requirements() {
+async fn cross_venue_counts_remain_deduplicated_without_blocking_sparse_floor_estimates() {
     let (_dir, mut writer) = book();
     // All pair listings identify the same collectible, despite different venues and prices.
     let mut changes = vec![entity(w::entity::Entity::Venue(w::Venue {
@@ -408,35 +408,13 @@ async fn cross_venue_listings_and_broad_criteria_cannot_satisfy_distinct_gift_re
         .await
         .unwrap();
     let mark = evaluate(&handle).await.unwrap();
-    assert_eq!(
-        mark.evidence.collection,
-        FloorEvidence {
-            listings: 13,
-            gifts: 1
-        }
-    );
-    assert_eq!(
-        mark.evidence.model,
-        FloorEvidence {
-            listings: 7,
-            gifts: 1
-        }
-    );
-    assert_eq!(
-        mark.evidence.model_backdrop,
-        FloorEvidence {
-            listings: 4,
-            gifts: 1
-        }
-    );
+    assert_eq!(mark.collection_floor.count, 1);
+    assert_eq!(mark.model_floor.count, 1);
+    assert_eq!(mark.model_backdrop_floor.count, 1);
     assert_eq!(mark.model_backdrop_floor.value().unwrap().as_str(), "95");
-    let ValuationMetric::Unavailable { error } = &mark.final_mark else {
-        panic!("duplicate listings cannot produce a mark")
-    };
-    assert_eq!(error.code, ValuationIssueCode::NotEnoughData);
-    assert_eq!(error.available_samples, Some(1));
-    assert_eq!(error.required_samples, Some(3));
-    assert_eq!(error.dependency, Some(ValuationDependency::ModelMultiplier));
+    assert_eq!(mark.final_mark.value().unwrap().as_str(), "10");
+    assert_eq!(mark.model_multiplier.value().unwrap().as_str(), "1");
+    assert_eq!(mark.basis, Some(GiftFloorBasis::PairCapped));
     stop(data, task).await;
 }
 
@@ -483,7 +461,7 @@ async fn cached_statistics_apply_ask_expiry_at_the_next_refresh_without_a_replic
     crate::test_support::refresh_interval().await;
     let refreshed = evaluate(&handle).await.unwrap();
     assert_eq!(refreshed.collection_floor.value().unwrap().as_str(), "3");
-    assert_eq!(refreshed.final_mark.value().unwrap().as_str(), "36.67");
+    assert_eq!(refreshed.final_mark.value().unwrap().as_str(), "18");
     stop(data, task).await;
 }
 
@@ -513,7 +491,7 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
     writer
         .apply(w::Batch {
             cursor: "presentation".into(),
-            changes: vec![ask("pair0", "m", "b", "20.125", 123, None)],
+            changes: vec![ask("pair0", "m", "b", "15.125", 123, None)],
         })
         .unwrap();
     let data = MarketDataService::start(writer.reader(), 2, 1)
@@ -524,7 +502,7 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
         .unwrap();
     let result = evaluate(&handle).await.unwrap();
     let mut output = result.data.clone();
-    output.model_floor = ValuationMetric::Value {
+    output.model_floor.price = ValuationMetric::Value {
         value: Amount::new("10000000000000000.000000001").unwrap(),
     };
     output.backdrop_multiplier = ValuationMetric::Unavailable {
@@ -554,7 +532,7 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
     let crate::DisplayValue::Currency { amount, .. } = &field("final_mark").value else {
         panic!("money");
     };
-    assert_eq!(amount, "20.12");
+    assert_eq!(amount, "15.12");
     let crate::DisplayValue::Currency { amount, .. } = &field("model_floor").value else {
         panic!("money");
     };
@@ -600,6 +578,196 @@ async fn mark_freshness_tracks_delayed_data_without_putting_sync_in_calculations
     assert!(
         delayed.stale,
         "a previously prepared mark stays marked as delayed"
+    );
+    stop(data, task).await;
+}
+
+#[tokio::test]
+async fn missing_pair_asks_preserve_the_additive_estimate_and_expose_its_basis() {
+    let (_dir, mut writer) = book();
+    writer
+        .apply(w::Batch {
+            cursor: "no-pair".into(),
+            changes: (0..3)
+                .map(|i| w::Change {
+                    change: Some(w::change::Change::Remove(w::Removal {
+                        key: Some(w::Key {
+                            kind: w::EntityKind::Order as i32,
+                            venue_id: "venue".into(),
+                            id: format!("pair{i}"),
+                        }),
+                        ..Default::default()
+                    })),
+                })
+                .collect(),
+        })
+        .unwrap();
+    let reads =
+        market_replica::ReadRuntime::new(writer.reader(), 2, CancellationToken::new()).unwrap();
+    let source = ValuationSource::new(reads.handle());
+    source
+        .prepare(|snapshot| {
+            let cache = BookCache::default();
+            let currency = "GRAM".into();
+            let context = ValuationContext::new(&snapshot, &currency, &cache);
+            let stats = context.floor_statistics(&"gift".into()).unwrap();
+            let pair = context
+                .pair_floor(&"gift".into(), &"m".into(), &"b".into())
+                .unwrap();
+            let gift = CollectibleGift {
+                id: "unlisted".into(),
+                collection_id: "gift".into(),
+                number: None,
+                traits: GiftTraits {
+                    model: Some("m".into()),
+                    backdrop: Some("b".into()),
+                    pattern: Some("symbol".into()),
+                },
+            };
+            let output = stats.report(&gift.traits, &crate::floors::Floor::from_valuation(&pair));
+            assert_eq!(output.final_mark.value().unwrap().as_str(), "18");
+            assert_eq!(output.basis, Some(GiftFloorBasis::Additive));
+            assert_eq!(output.model_backdrop_floor.count, 0);
+            assert!(output.model_backdrop_floor.value().is_none());
+            let json = serde_json::to_value(output).unwrap();
+            assert_eq!(json["basis"], "additive");
+            assert_eq!(json["additive_estimate"]["value"], "18");
+            assert!(
+                json.get("symbol_floor").is_none(),
+                "Symbol floors remain outside the gift estimator"
+            );
+            assert!(json.get("evidence").is_none());
+            assert_eq!(json["model_backdrop_floor"]["count"], 0);
+        })
+        .await
+        .unwrap();
+    reads.shutdown().await;
+}
+
+#[tokio::test]
+async fn explicit_attributes_value_unlisted_and_unnumbered_gifts_without_identity_lookups() {
+    let (_dir, writer) = book();
+    let data = MarketDataService::start(writer.reader(), 2, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    for number in [None, Some(GiftNumber::new(999_999).unwrap())] {
+        let attributes = GiftAttributes {
+            collection_id: "gift".into(),
+            traits: GiftTraits {
+                model: Some("m".into()),
+                backdrop: Some("b".into()),
+                pattern: None,
+            },
+            number,
+        };
+        let request = ValuationQuery {
+            target: ValuationTarget::GiftAttributes(attributes.clone()),
+            currency_id: "GRAM".into(),
+            strategies: vec![
+                StrategyId::new("gift_floor").unwrap(),
+                StrategyId::new("ask_floor").unwrap(),
+            ],
+            period: None,
+        };
+        let report = handle.query(request.clone()).await.unwrap();
+        assert_eq!(report.target, ResolvedTarget::GiftAttributes(attributes));
+        let StrategyOutcome::Value(StrategyValuation::GiftFloor(output)) = &report.results[0]
+        else {
+            panic!("gift estimate")
+        };
+        assert_eq!(output.final_mark.value().unwrap().as_str(), "18");
+        let StrategyOutcome::Value(StrategyValuation::AskFloor(output)) = &report.results[1] else {
+            panic!("ask floor")
+        };
+        if number.is_some() {
+            assert!(output.price.value().is_none());
+        } else {
+            assert_eq!(output.price.value().unwrap().as_str(), "100");
+        }
+        assert!(Arc::ptr_eq(&report, &handle.query(request).await.unwrap()));
+    }
+    let invalid = serde_json::from_value::<ValuationQuery>(serde_json::json!({"target":{"kind":"gift_attributes","collection_id":"gift","traits":{"model":"b","backdrop":"b"}},"currency_id":"GRAM","strategies":["gift_floor"]})).unwrap();
+    assert_eq!(
+        handle.query(invalid).await.unwrap_err().code(),
+        ValuationErrorCode::InvalidQuery
+    );
+    stop(data, task).await;
+}
+
+#[tokio::test]
+async fn gift_slug_lookup_resolves_unlisted_executions_and_tracks_their_dependencies() {
+    let execution = |i: i64, price: &str, time: &str| {
+        let mut change = ask(&format!("execution{i}"), "m", "b", price, 3000 + i, None);
+        let Some(w::change::Change::Upsert(entity)) = &mut change.change else {
+            unreachable!()
+        };
+        let Some(w::entity::Entity::Order(order)) = &mut entity.entity else {
+            unreachable!()
+        };
+        order.mode = w::OrderMode::Executed as i32;
+        order.executed_at_ms = Some(time.parse::<jiff::Timestamp>().unwrap().as_millisecond());
+        change
+    };
+    let (_dir, mut writer) = book();
+    writer
+        .apply(w::Batch {
+            cursor: "historic-only".into(),
+            changes: vec![execution(0, "50", "2026-01-10T00:00:00Z")],
+        })
+        .unwrap();
+    let data = MarketDataService::start(writer.reader(), 2, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let query = ValuationQuery {
+        target: ValuationTarget::Gift {
+            gift: GiftLookup::Slug(GiftSlug::new("Gift-3000").unwrap()),
+        },
+        currency_id: "GRAM".into(),
+        strategies: vec![StrategyId::new("gift_floor").unwrap()],
+        period: None,
+    };
+    let first = handle.query(query.clone()).await.unwrap();
+    assert_eq!(first.target.gift().unwrap().id.as_str(), "gift-execution0");
+    let StrategyOutcome::Value(StrategyValuation::GiftFloor(output)) = &first.results[0] else {
+        panic!("history estimate")
+    };
+    assert_eq!(output.final_mark.value().unwrap().as_str(), "18");
+    assert!(Arc::ptr_eq(
+        &first,
+        &handle.query(query.clone()).await.unwrap()
+    ));
+    // Same historical identity/number with conflicting trait evidence must not reuse a cached report.
+    let mut conflicting = execution(1, "40", "2026-01-11T00:00:00Z");
+    if let Some(w::change::Change::Upsert(entity)) = &mut conflicting.change {
+        let Some(w::entity::Entity::Order(order)) = &mut entity.entity else {
+            unreachable!()
+        };
+        order.item_id = Some("different-identity".into());
+        order.attributes.insert(
+            "tg.number".into(),
+            w::AttributePredicate {
+                predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                    value: Some(w::attribute_value::Value::Integer(3000)),
+                })),
+            },
+        );
+    }
+    writer
+        .apply(w::Batch {
+            cursor: "history-conflict".into(),
+            changes: vec![conflicting],
+        })
+        .unwrap();
+    crate::test_support::refresh_interval().await;
+    assert_eq!(
+        handle.query(query).await.unwrap_err().code(),
+        ValuationErrorCode::Unavailable
     );
     stop(data, task).await;
 }

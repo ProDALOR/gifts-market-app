@@ -8,18 +8,15 @@ use market_gifts::{GiftTarget, OrderSource};
 use std::collections::BTreeSet;
 pub struct AskFloor;
 impl Strategy for AskFloor {
+    const PURPOSE: crate::StrategyPurpose = crate::StrategyPurpose::Reference;
     const DISPLAY: crate::DisplayDefinition = crate::DisplayDefinition {
-        fields: &[crate::FieldDefinition::currency("price", "Value", None).primary()],
-        evidence: &[
-            crate::EvidenceDefinition {
-                path: "/evidence/gifts",
-                label: "gifts",
-            },
-            crate::EvidenceDefinition {
-                path: "/evidence/listings",
-                label: "listings",
-            },
-        ],
+        fields: &[crate::FieldDefinition::currency("price", "Value", None)
+            .at("")
+            .primary()],
+        evidence: &[crate::EvidenceDefinition {
+            path: "/count",
+            label: "gifts",
+        }],
         note: "Lowest eligible ask, before fees.",
     };
     type Input = SelectionInput;
@@ -28,7 +25,7 @@ impl Strategy for AskFloor {
     const DESCRIPTION: &'static str =
         "Lowest eligible ask for a collection, trait selection or individual gift.";
     const DOCUMENTATION: &'static str = include_str!("ask_floor.md");
-    type Output = AskFloorValuation;
+    type Output = FloorValuation;
     fn evaluate(
         &self,
         input: &Self::Input,
@@ -55,7 +52,7 @@ impl Strategy for AskFloor {
 pub(crate) fn matching_ask_floor(
     context: &ValuationContext<'_>,
     target: &ResolvedTarget,
-) -> Result<AskFloorValuation, ValuationError> {
+) -> Result<FloorValuation, ValuationError> {
     let query = target.query(context.currency().clone(), OrderSource::Asks, None);
     let mut token = String::new();
     let mut floor: Option<Amount> = None;
@@ -93,7 +90,7 @@ pub(crate) fn matching_ask_floor(
         }
         token = page.next_page_token;
     }
-    Ok(AskFloorValuation {
+    Ok(FloorValuation {
         price: floor.map_or_else(
             || {
                 unavailable(
@@ -105,10 +102,7 @@ pub(crate) fn matching_ask_floor(
             },
             |value| ValuationMetric::Value { value },
         ),
-        evidence: FloorEvidence {
-            listings: count as u32,
-            gifts: gifts.len() as u32,
-        },
+        count: gifts.len() as u32,
     })
 }
 pub struct ExecutionMean;

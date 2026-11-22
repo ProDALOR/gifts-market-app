@@ -317,16 +317,21 @@ try {
     route.fulfill({
       json: [
         {
+          purpose: "estimate",
           id: "gift_floor",
           revision: "r1",
           display: fixtureDisplay("gift_floor"),
-          input: { targets: ["gift"], period: "unsupported" },
+          input: {
+            targets: ["gift", "gift_attributes"],
+            period: "unsupported",
+          },
           name: "Gift floor",
           description: "Gift floor estimate",
           documentation_url: "/valuations/strategies/gift_floor/documentation",
           documentation_revision: "r1",
         },
         {
+          purpose: "reference",
           id: "ask_floor",
           revision: "r1",
           display: fixtureDisplay("ask_floor"),
@@ -354,21 +359,13 @@ try {
         traits: { model: "barbie", backdrop: "raspberry", pattern: "stars" },
       },
       currency_id: body.currency_id,
-      collection_floor: { value: "8" },
-      model_floor: { value: "10.000000001" },
-      backdrop_floor: { value: "9" },
-      model_backdrop_floor: { value: "12.5" },
+      collection_floor: { ...{ value: "8" }, count: 5 },
+      model_floor: { ...{ value: "10.000000001" }, count: 3 },
+      backdrop_floor: { ...{ value: "9" }, count: 3 },
+      model_backdrop_floor: { ...{ value: "12.5" }, count: 1 },
       model_multiplier: { value: "1.25" },
       backdrop_multiplier: { value: "1.13" },
       final_mark: { value: "11.25" },
-
-      evidence: {
-        collection: { listings: 5, gifts: 5 },
-        model: { listings: 3, gifts: 3 },
-        backdrop: { listings: 3, gifts: 3 },
-        model_backdrop: { listings: 1, gifts: 1 },
-        minimum_multiplier_gifts: 3,
-      },
     };
   };
   await page.route("**/valuations/query", () =>
@@ -416,9 +413,8 @@ try {
             patterns.map((row) => row.id),
           );
           for (const row of data.results[0].data.collections) {
-            row.floor.price.value = floorPrice;
-            if (floorPrice === "7")
-              row.floor.evidence = { gifts: 8, listings: 10 };
+            row.floor.value = floorPrice;
+            if (floorPrice === "7") row.floor.count = 8;
           }
           socket.send(
             JSON.stringify({
@@ -447,7 +443,8 @@ try {
                       : giftReport(
                           frame.params,
                           valuationReport({
-                            gift: frame.params.target.gift,
+                            gift:
+                              frame.params.target.gift ?? frame.params.target,
                             currency_id: frame.params.currency_id,
                           }),
                         ),
@@ -1395,9 +1392,10 @@ try {
     .locator('[data-attribute="collection"] .floor-evidence')
     .first()
     .getAttribute("title");
-  assert.match(countTooltip, /8 gifts · 10 listings/);
-  assert.match(countTooltip, /unique identifiable collectibles/);
-  assert.match(countTooltip, /same gift can appear on several markets/);
+  assert.match(countTooltip, /^8 gifts\n/);
+  assert.match(countTooltip, /Unique identifiable gifts/);
+  assert.match(countTooltip, /same gift counts once across markets/);
+  assert.doesNotMatch(countTooltip, /listings/);
 
   assert.ok(
     floorRequests > beforeFloorUpdate && floorRequests <= beforeFloorUpdate + 2,

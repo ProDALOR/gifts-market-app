@@ -109,13 +109,15 @@ function StrategyRow({
           {!primaryFields.length && (
             <p className="valuation-note">See calculation details</p>
           )}
-          {price &&
-            primary?.kind === "currency" &&
-            primary.currency_id === currency && (
-              <div className="valuation-comparison-space">
-                {comparison && <p className="price-comparison">{comparison}</p>}
-              </div>
-            )}
+          {comparison && (
+            <span
+              className="price-comparison"
+              title={comparison.description}
+              aria-label={comparison.description}
+            >
+              {comparison.label}
+            </span>
+          )}
         </div>
       </div>
     </section>

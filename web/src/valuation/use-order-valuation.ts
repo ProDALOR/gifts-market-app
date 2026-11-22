@@ -16,19 +16,22 @@ import type {
 import { useCollectionFloors } from "./floors";
 import { compatibleStrategies, strategyClient } from "./strategies";
 import { presentResult, type PresentedField } from "./presentation.ts";
-import { sameCriteria } from "./targets.ts";
+import { sameCriteria, sameGiftAttributes } from "./targets.ts";
+import { criteriaPresentation, giftPresentation } from "../order-target.ts";
 
 /** One request/response model for concrete gifts and complete bid conditions. */
 export function useOrderValuation(order: Order) {
-  const gift = order.target.kind === "gift" ? order.target : undefined;
-  const criteria = order.target.kind === "criteria" ? order.target : undefined;
+  const gift = giftPresentation(order);
+  const criteria = criteriaPresentation(order);
   const shared = useCollectionFloors(
     order.book.collection_id,
     order.book.currency_id,
   );
-  const available = !!criteria || !!(gift?.number && gift.id);
+  const available = !!criteria || !!gift;
   const availability = useMarketStatus(available);
   const key = JSON.stringify([
+    order.kind === "bid",
+    !!criteria,
     order.target,
     order.book.collection_id,
     order.book.currency_id,
@@ -62,11 +65,10 @@ export function useOrderValuation(order: Order) {
           },
         }
       : {
-          kind: "gift",
-          gift: {
-            collection_id: order.book.collection_id,
-            number: gift!.number!,
-          },
+          kind: "gift_attributes",
+          collection_id: order.book.collection_id,
+          traits: gift!.traits,
+          number: gift!.number,
         };
     let running = false;
     let refreshGeneration = liveSocket.statusSnapshot().generation;
@@ -94,15 +96,12 @@ export function useOrderValuation(order: Order) {
       try {
         const rows = await strategyClient.list(stop.signal);
         stop.signal.throwIfAborted();
-        let strategies = compatibleStrategies(rows, target.kind).sort(
-          (a, b) =>
-            Number(
-              b.input.targets.length === 1 && b.input.targets[0] === "gift",
-            ) -
-            Number(
-              a.input.targets.length === 1 && a.input.targets[0] === "gift",
-            ),
-        );
+        let strategies = compatibleStrategies(
+          rows,
+          target.kind,
+          false,
+          order.kind === "bid" ? undefined : "estimate",
+        ).sort((a, b) => a.input.targets.length - b.input.targets.length);
         if (!strategies.length)
           throw new Error("No compatible valuation strategies are available.");
         const ids = strategies.map((row) => row.id);
@@ -127,9 +126,9 @@ export function useOrderValuation(order: Order) {
             ? resolved.kind === "selection" &&
               target.kind === "selection" &&
               sameCriteria(resolved.criteria, target.criteria)
-            : resolved.kind === "gift" &&
-              resolved.gift.id === gift?.id &&
-              resolved.gift.number === gift?.number);
+            : resolved.kind === "gift_attributes" &&
+              target.kind === "gift_attributes" &&
+              sameGiftAttributes(resolved, target));
         if (report.currency_id !== order.book.currency_id || !matches)
           throw new Error(
             "Gift details changed. Refresh this market and try again.",

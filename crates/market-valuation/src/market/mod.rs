@@ -13,15 +13,14 @@ use crate::*;
 pub(crate) use actor::MarketValuationActor;
 pub use context::ValuationContext;
 pub use inputs::{
-    CatalogInput, ExecutionInput, ExecutionPeriod, InputContract, ResolvedGiftInput,
-    SelectionInput, StrategyInput,
+    CatalogInput, ExecutionInput, ExecutionPeriod, InputContract, SelectionInput, StrategyInput,
 };
 use market_gifts::{Amount, CurrencyId, Period};
 use serde::{Deserialize, Serialize};
 pub use strategies::{AskFloor, ExecutionMean, ExecutionMedian};
 pub use target::{
-    CatalogDetails, CatalogSelection, PairSelection, ResolvedTarget, ValuationTarget,
-    ValuationTargetKind,
+    CatalogDetails, CatalogSelection, GiftAttributes, PairSelection, ResolvedTarget,
+    ValuationTarget, ValuationTargetKind,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,17 +117,16 @@ impl PreparedQuery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct AskFloorValuation {
+pub struct FloorValuation {
+    #[serde(flatten)]
     pub price: ValuationMetric,
-    pub evidence: FloorEvidence,
+    /// Distinct identifiable gifts, deduplicated across venues. Not a listing count.
+    pub count: u32,
 }
-/// Shared current-ask evidence, independent of any individual-gift strategy.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct FloorEvidence {
-    pub listings: u32,
-    /// Distinct identifiable collectibles; cross-listings count once and broad criteria do not count.
-    pub gifts: u32,
+impl FloorValuation {
+    pub fn value(&self) -> Option<&market_gifts::Amount> {
+        self.price.value()
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -156,7 +154,7 @@ pub struct ExecutionPriceValuation {
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum StrategyValuation {
     CatalogFloor(std::sync::Arc<crate::CatalogFloorValuation>),
-    AskFloor(AskFloorValuation),
+    AskFloor(FloorValuation),
     ExecutionMean(ExecutionPriceValuation),
     ExecutionMedian(ExecutionPriceValuation),
     GiftFloor(GiftFloorValuation),

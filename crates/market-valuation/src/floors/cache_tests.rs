@@ -46,7 +46,7 @@ async fn summaries_do_not_prepare_traits_and_survive_a_catalog_sweep() {
             assert!(
                 first.models.is_empty() && first.backdrops.is_empty() && first.patterns.is_empty()
             );
-            assert_eq!(first.collection.evidence().gifts, 12);
+            assert_eq!(first.collection.count, 12);
             for i in 0..20 {
                 cache
                     .collection(
@@ -75,7 +75,7 @@ async fn summaries_do_not_prepare_traits_and_survive_a_catalog_sweep() {
 }
 
 #[tokio::test]
-async fn requested_pairs_are_independent_of_cached_trait_preparation_and_follow_expiry() {
+async fn requested_pairs_share_cached_trait_observation_time_until_the_minimum_refresh() {
     let (_dir, mut writer) = book();
     let expiry = jiff::Timestamp::now().as_millisecond() + 1000;
     writer
@@ -119,9 +119,16 @@ async fn requested_pairs_are_independent_of_cached_trait_preparation_and_follow_
     assert_eq!(first.price.value().unwrap().as_str(), "1");
     let remaining = (expiry - jiff::Timestamp::now().as_millisecond()).max(0) as u64;
     tokio::time::sleep(std::time::Duration::from_millis(remaining + 30)).await;
+    let retained = prepare(cache.clone()).await.unwrap();
+    assert_eq!(
+        retained.price.value().unwrap().as_str(),
+        "1",
+        "Pair eligibility uses the cached collection observation time"
+    );
+    crate::test_support::refresh_interval().await;
     let next = prepare(cache).await.unwrap();
     assert_eq!(next.price.value().unwrap().as_str(), "100");
-    assert_eq!(next.evidence.gifts, 3);
+    assert_eq!(next.count, 3);
     runtime.shutdown().await;
 }
 
@@ -707,5 +714,48 @@ async fn background_summary_refresh_does_not_promote_trait_recency() {
         })
         .await
         .unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn previously_unrequested_pairs_use_the_cached_collection_generation_after_updates() {
+    let (_dir, mut writer) = book();
+    let runtime =
+        market_replica::ReadRuntime::new(writer.reader(), 2, CancellationToken::new()).unwrap();
+    let source = ValuationSource::new(runtime.handle());
+    let cache = Arc::new(BookCache::default());
+    let prepare = |include_pair: bool| {
+        let cache = cache.clone();
+        source.prepare(move |snapshot| {
+            let currency = "GRAM".into();
+            let context = crate::ValuationContext::new(&snapshot, &currency, &cache);
+            let stats = context.floor_statistics(&"gift".into()).unwrap();
+            let pair = include_pair.then(|| {
+                context
+                    .pair_floor(&"gift".into(), &"m".into(), &"b".into())
+                    .unwrap()
+            });
+            (stats, pair)
+        })
+    };
+    let (initial, _) = prepare(false).await.unwrap();
+    writer
+        .apply(w::Batch {
+            cursor: "changed-pair".into(),
+            changes: vec![ask("pair0", "m", "b", "1", 123, None)],
+        })
+        .unwrap();
+    let (cached, pair) = prepare(true).await.unwrap();
+    assert!(Arc::ptr_eq(&initial, &cached));
+    assert_eq!(
+        pair.unwrap().price.value().unwrap().as_str(),
+        "100",
+        "A newly requested pair must not read newer asks than the cached model/backdrop floors"
+    );
+    crate::test_support::refresh_interval().await;
+    let (fresh, pair) = prepare(true).await.unwrap();
+    assert!(!Arc::ptr_eq(&initial, &fresh));
+    assert_eq!(fresh.collection.price.as_ref().unwrap().as_str(), "1");
+    assert_eq!(pair.unwrap().price.value().unwrap().as_str(), "1");
     runtime.shutdown().await;
 }

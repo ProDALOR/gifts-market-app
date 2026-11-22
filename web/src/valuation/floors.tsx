@@ -124,9 +124,8 @@ export function FloorBadge({
   abbreviated?: boolean;
 }) {
   if (!floor) return null;
-  const price = "value" in floor.price ? floor.price.value : undefined;
-  const message =
-    "error" in floor.price ? floor.price.error.message : undefined;
+  const price = "value" in floor ? floor.value : undefined;
+  const message = "error" in floor ? floor.error.message : undefined;
   const value = price ? `${price} ${currency}` : "unavailable";
   const display = price
     ? rounded
@@ -154,12 +153,11 @@ export function FloorBadge({
 }
 const counts = new Intl.NumberFormat();
 function giftCount(floor: SharedFloor) {
-  const { gifts } = floor.evidence;
+  const gifts = floor.count;
   return `${counts.format(gifts)} ${gifts === 1 ? "gift" : "gifts"}`;
 }
 function evidenceTooltip(floor: SharedFloor) {
-  const { listings } = floor.evidence;
-  return `${giftCount(floor)} · ${counts.format(listings)} ${listings === 1 ? "listing" : "listings"}\nGifts are unique identifiable collectibles with current asks in this scope. Listings are sale offers; the same gift can appear on several markets. Offers without an identifiable gift contribute only to listings.`;
+  return `${giftCount(floor)}\nUnique identifiable gifts with eligible asks in this scope. The same gift counts once across markets. Broad criteria may supply prices without an identifiable gift.`;
 }
 /** Each scope shows its own live valuation evidence, independently of gift estimates. */
 export function FloorSummary(props: ComponentProps<typeof FloorBadge>) {
@@ -170,10 +168,8 @@ export function FloorSummary(props: ComponentProps<typeof FloorBadge>) {
       <small className="floor-evidence" title={evidenceTooltip(props.floor)}>
         {giftCount(props.floor)}
       </small>
-      {!props.compact && "error" in props.floor.price && (
-        <small className="floor-evidence">
-          {props.floor.price.error.message}
-        </small>
+      {!props.compact && "error" in props.floor && (
+        <small className="floor-evidence">{props.floor.error.message}</small>
       )}
     </span>
   );

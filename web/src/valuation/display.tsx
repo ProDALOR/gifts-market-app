@@ -49,7 +49,9 @@ export function ValuationFields({
 }) {
   if (!fields.length) return null;
   return (
-    <ul className="valuation-metrics">
+    <ul
+      className={`valuation-metrics${compact ? " valuation-metrics-compact" : ""}`}
+    >
       {fields.map((field) => (
         <li
           key={field.id}

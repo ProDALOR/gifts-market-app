@@ -41,6 +41,15 @@ fn subjects() -> Vec<Arc<ResolvedTarget>> {
                 }),
             },
         },
+        ResolvedTarget::GiftAttributes(GiftAttributes {
+            number: None,
+            collection_id: "gift".into(),
+            traits: GiftTraits {
+                model: None,
+                backdrop: None,
+                pattern: Some("symbol".into()),
+            },
+        }),
         ResolvedTarget::Gift {
             gift: CollectibleGift {
                 id: "gift-123".into(),
@@ -122,17 +131,15 @@ fn execution_input_always_has_a_valid_explicit_half_open_period() {
 #[test]
 fn gift_contract_rejects_other_subjects_and_preserves_optional_facts() {
     for target in subjects() {
-        let result = ResolvedGiftInput::resolve(target.clone(), None);
+        let result = GiftAttributes::resolve(target.clone(), None);
         if let Some(gift) = target.gift() {
             let input = result.unwrap();
-            assert_eq!(input.gift(), gift);
-            assert!(input.gift().traits.model.is_none());
-            assert!(input.gift().traits.backdrop.is_none());
-            assert_eq!(
-                input.gift().traits.pattern.as_ref().unwrap().as_str(),
-                "symbol"
-            );
-            assert_eq!(input.gift().number.unwrap().get(), 123);
+            assert_eq!(input.collection_id, gift.collection_id);
+            assert!(input.traits.model.is_none());
+            assert!(input.traits.backdrop.is_none());
+            assert_eq!(input.traits.pattern.as_ref().unwrap().as_str(), "symbol");
+        } else if let ResolvedTarget::GiftAttributes(attributes) = target.as_ref() {
+            assert_eq!(&result.unwrap(), attributes);
         } else {
             assert_eq!(
                 result.unwrap_err().code(),
@@ -141,8 +148,11 @@ fn gift_contract_rejects_other_subjects_and_preserves_optional_facts() {
         }
     }
     assert_eq!(
-        ResolvedGiftInput::CONTRACT.targets(),
-        &[ValuationTargetKind::Gift]
+        GiftAttributes::CONTRACT.targets(),
+        &[
+            ValuationTargetKind::Gift,
+            ValuationTargetKind::GiftAttributes
+        ]
     );
-    assert!(!ResolvedGiftInput::CONTRACT.requires_period());
+    assert!(!GiftAttributes::CONTRACT.requires_period());
 }

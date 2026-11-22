@@ -20,7 +20,13 @@ export function giftBasisChanged(
   shared: Pick<FloorsEntry, "floor" | "traits">,
   strategy = "gift_floor",
 ) {
-  if (report.target.kind !== "gift") return undefined;
+  const traits =
+    report.target.kind === "gift"
+      ? report.target.gift.traits
+      : report.target.kind === "gift_attributes"
+        ? report.target.traits
+        : undefined;
+  if (!traits) return undefined;
   const result = report.results.find((row) => row.strategy === strategy);
   if (!result || "error" in result || result.strategy !== "gift_floor")
     return undefined;
@@ -29,15 +35,14 @@ export function giftBasisChanged(
   const equal = (
     metric: typeof data.collection_floor,
     floor: typeof shared.floor | undefined,
-    proof: typeof shared.floor.evidence | undefined,
   ) =>
     !floor ||
     !metric ||
-    !proof ||
-    JSON.stringify([metric, proof]) ===
-      JSON.stringify([floor.price, floor.evidence]);
-  const model = report.target.gift.traits.model,
-    backdrop = report.target.gift.traits.backdrop;
+    (metric.count === floor.count &&
+      JSON.stringify("value" in metric ? metric.value : metric.error) ===
+        JSON.stringify("value" in floor ? floor.value : floor.error));
+  const model = traits.model,
+    backdrop = traits.backdrop;
   const pair = shared.traits?.pair;
   if (
     shared.traits &&
@@ -46,23 +51,20 @@ export function giftBasisChanged(
   )
     return true;
   return (
-    !equal(data.collection_floor, shared.floor, data.evidence.collection) ||
+    !equal(data.collection_floor, shared.floor) ||
     !equal(
       data.model_floor,
       model ? shared.traits?.models[model] : undefined,
-      data.evidence.model,
     ) ||
     !equal(
       data.backdrop_floor,
       backdrop ? shared.traits?.backdrops[backdrop] : undefined,
-      data.evidence.backdrop,
     ) ||
     !equal(
       data.model_backdrop_floor,
       pair && pair.model_id === model && pair.backdrop_id === backdrop
         ? pair.floor
         : undefined,
-      data.evidence.model_backdrop,
     )
   );
 }

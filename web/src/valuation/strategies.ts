@@ -32,11 +32,13 @@ export function compatibleStrategies(
   rows: readonly ValuationStrategy[],
   target: ValuationQuery["target"]["kind"],
   hasPeriod = false,
+  purpose?: ValuationStrategy["purpose"],
 ) {
   return rows.filter(
     (row) =>
       row.input.targets.includes(target) &&
-      (hasPeriod || row.input.period !== "required"),
+      (hasPeriod || row.input.period !== "required") &&
+      (!purpose || row.purpose === purpose),
   );
 }
 export const guideKey = (strategy: ValuationStrategy) =>

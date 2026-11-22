@@ -12,7 +12,7 @@ pub(crate) const METADATA_KEY_LIMIT: usize = 50_000;
 #[derive(Clone)]
 pub struct ReadDependencies(Arc<Dependencies>);
 struct Dependencies {
-    books: Vec<(BookScope, ReadRevision)>,
+    books: Vec<(w::ReadRequest, ReadRevision)>,
     metadata: MetadataDependencies,
     collections: Option<MetadataRevision>,
     checked: Mutex<MetadataRevision>,
@@ -69,9 +69,9 @@ impl ValuationSnapshot {
         {
             return Ok(false);
         }
-        for (scope, expected) in &deps.books {
+        for (request, expected) in &deps.books {
             self.check_cancelled()?;
-            if !expected.same_data(&self.reader.read_revision(&super::orders::request(scope))?) {
+            if !expected.same_data(&self.reader.read_revision(request)?) {
                 return Ok(false);
             }
         }
@@ -92,8 +92,9 @@ impl ValuationSnapshot {
         currency: &CurrencyId,
         lookup: Option<&GiftLookup>,
     ) -> Result<ReadDependencies> {
+        let scopes: Vec<_> = scopes.into_iter().collect();
         self.dependencies_with_books(
-            scopes,
+            scopes.clone(),
             currency,
             &[
                 CatalogTrait::Model,
@@ -101,9 +102,29 @@ impl ValuationSnapshot {
                 CatalogTrait::Pattern,
             ],
             &[],
-            lookup.is_some(),
+            false,
         )
         .and_then(|mut dependencies| {
+            if lookup.is_some() {
+                let deps = Arc::get_mut(&mut dependencies.0).expect("new dependencies");
+                for scope in &scopes {
+                    for mode in [w::OrderMode::Ask, w::OrderMode::Executed] {
+                        let mut request = super::orders::request(scope);
+                        let Some(w::selection::Source::Scope(selected)) = request
+                            .selection
+                            .as_mut()
+                            .and_then(|selection| selection.source.as_mut())
+                        else {
+                            unreachable!("book scope")
+                        };
+                        selected.currency_id = None;
+                        selected.modes = vec![mode as i32];
+                        request.sort = w::ReadSort::Identity as i32;
+                        let revision = self.reader.read_revision(&request)?;
+                        deps.books.push((request, revision));
+                    }
+                }
+            }
             if matches!(lookup, Some(GiftLookup::Slug(_))) {
                 Arc::get_mut(&mut dependencies.0)
                     .expect("new dependencies")
@@ -132,10 +153,9 @@ impl ValuationSnapshot {
         for scope in scopes {
             self.check_cancelled()?;
             if include_books {
-                books.push((
-                    scope.clone(),
-                    self.reader.read_revision(&super::orders::request(&scope))?,
-                ));
+                let request = super::orders::request(&scope);
+                let revision = self.reader.read_revision(&request)?;
+                books.push((request, revision));
             }
             keys.push(w::Key {
                 kind: w::EntityKind::ItemType as i32,

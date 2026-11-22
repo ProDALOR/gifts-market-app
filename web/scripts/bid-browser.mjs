@@ -105,6 +105,7 @@ const server = await createServer({
             res.end(
               JSON.stringify([
                 {
+                  purpose: "reference",
                   id: "ask_floor",
                   revision: "r1",
                   display: fixtureDisplay("ask_floor"),

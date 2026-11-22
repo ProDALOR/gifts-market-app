@@ -5,6 +5,7 @@ import { ResourceCache } from "../src/resources/cache.ts";
 import type { ValuationStrategy } from "../src/market.ts";
 const signal = () => new AbortController().signal;
 const row = (id: string, revision = "r1"): ValuationStrategy => ({
+  purpose: "estimate",
   id,
   name: id,
   description: "description",
@@ -90,6 +91,7 @@ test("strategy compatibility uses discovered capabilities rather than strategy I
   const rows: ValuationStrategy[] = [
     {
       ...row("renamed_floor"),
+      purpose: "reference",
       input: { targets: ["gift", "selection"], period: "unsupported" },
     },
     {
@@ -114,4 +116,14 @@ test("strategy compatibility uses discovered capabilities rather than strategy I
     ["renamed_floor", "renamed_history"],
   );
   assert.deepEqual(compatibleStrategies(rows, "catalog", true), []);
+  assert.deepEqual(
+    compatibleStrategies(rows, "gift", false, "estimate").map((row) => row.id),
+    ["renamed_composite"],
+    "Gift previews select estimates without hardcoding strategy IDs",
+  );
+  assert.deepEqual(
+    compatibleStrategies(rows, "selection", false).map((row) => row.id),
+    ["renamed_floor"],
+    "Bids retain matching reference floors",
+  );
 });

@@ -195,6 +195,57 @@ pub struct BookIndex {
     declared: OrdMap<Key, OrdSet<Book>>,
     references: OrdMap<Book, usize>,
 }
+/// A scoped immutable active-order view. Only the selected partitions are retained;
+/// history, metadata and unrelated books are not pinned. Callers bound traversal work.
+#[derive(Clone)]
+pub struct OrderBookSnapshot {
+    index: BookIndex,
+    scope: Scope,
+}
+impl OrderBookSnapshot {
+    pub(crate) fn new(index: &BookIndex, scope: Scope) -> Self {
+        let group = BookGroup {
+            item_type_id: scope.item_type_id.clone().expect("scoped collection"),
+            currency_id: scope.currency_id.clone().expect("scoped currency"),
+        };
+        let mut selected = BookIndex::default();
+        for book in index.groups.get(&group).into_iter().flatten() {
+            for mode in [ActiveMode::Ask, ActiveMode::Bid] {
+                if !scope.modes.contains(&mode.into()) {
+                    continue;
+                }
+                let key = BookPartition {
+                    book: book.clone(),
+                    mode,
+                };
+                if let Some((key, partition)) = index.partitions.get_key_value(&key) {
+                    selected.partitions.insert(key.clone(), partition.clone());
+                    selected
+                        .groups
+                        .entry(group.clone())
+                        .or_default()
+                        .insert(book.clone());
+                }
+            }
+        }
+        Self {
+            index: selected,
+            scope,
+        }
+    }
+    /// Price-ordered candidates, narrowed by available attribute indexes. The caller
+    /// checks exact predicates, eligibility, cancellation and its own scan budget.
+    pub fn candidates(
+        &self,
+        attributes: std::collections::BTreeMap<String, w::AttributePredicate>,
+    ) -> impl Iterator<Item = &Arc<w::Entity>> {
+        let mut scope = self.scope.clone();
+        scope.attributes = attributes;
+        self.index
+            .ranked(&scope, None, Sort::PriceAsc)
+            .map(|(_, entity)| entity)
+    }
+}
 impl BookIndex {
     pub(crate) fn contains(&self, key: &w::BookKey) -> bool {
         self.references.contains_key(&Book::from(key))

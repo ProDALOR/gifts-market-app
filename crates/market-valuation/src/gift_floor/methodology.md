@@ -1,93 +1,79 @@
 # Gift floor valuation
 
-This strategy estimates a gift from available market asking prices. All prices use the currency selected in the market. Listings from all available venues are considered.
+This strategy estimates a gift from current asking prices in the selected currency, across available venues. It adds model and backdrop premiums to the collection floor. A matching model-and-backdrop floor caps the estimate when available. Symbol floors are shown independently and do not enter this formula.
 
-## The four floors
+## Floors and eligibility
 
-A floor is the lowest eligible asking price for a selection:
+- **Collection floor** $F_C$: lowest eligible ask in the collection.
+- **Model floor** $F_M$: lowest eligible ask with the gift's exact model.
+- **Backdrop floor** $F_B$: lowest eligible ask with its exact backdrop.
+- **Model & backdrop floor** $F_{MB}$: lowest eligible ask matching both traits. This is a single price, not a product.
 
-- **Collection floor:** any supported listing in the gift's collection.
-- **Model floor:** listings with the gift's exact model.
-- **Backdrop floor:** listings with the gift's exact backdrop.
-- **Model × backdrop floor:** listings matching both the gift's model and backdrop. This is one asking price, not the product of two prices.
+Eligible asks have positive prices and remaining quantity, are not expired at the observation time, and have supported gift targets. Trait IDs must resolve in the collection catalog. Broad criteria may supply prices; trait floors require a single exact choice for each selected trait. Unsupported targets, bids, history and other currencies do not supply these floors.
 
-An eligible ask has a positive price and remaining quantity, has not expired, and has a supported gift target. Unsupported targets do not supply floors. A model or backdrop must resolve to a catalog choice. Broad criteria can contribute to the collection floor; trait floors require a single exact choice for that trait.
+Collection, trait and pair floors use the **same immutable ask partitions and eligibility time** for that collection/currency. Only selected active ask partitions are retained; metadata, history and unrelated orderbooks are not pinned. Pair floors are calculated on demand using the existing attribute indexes, without preparing a matrix of combinations.
 
-## Multipliers
+## Additive premiums
 
-The multipliers compare each trait's floor with the collection floor:
-
-Let $F_C$ be the collection floor, $F_M$ the model floor, $F_B$ the backdrop floor, and $F_{MB}$ the matching model-and-backdrop floor. The multipliers are $m$ and $b$:
-
-$$
-m = \frac{F_M}{F_C}, \qquad b = \frac{F_B}{F_C}
-$$
-
-They are dimensionless: a model multiplier of 1.50× means its floor is 1.5 times the collection floor.
-
-Each multiplier requires at least **3 distinct identifiable gifts** in the collection and at least **3** matching its selected trait. The collection floor must be positive. The matching model-and-backdrop floor needs at least one eligible matching listing.
-
-Evidence reports both eligible listing rows and distinct gifts for the collection, model, backdrop and pair. The same gift listed on multiple venues counts once toward the distinct-gift requirement. All its eligible asks still contribute to the floor price. Broad criteria without a concrete identity can supply price evidence, but do not count as identifiable gifts. Distinct gifts do not imply independent sellers or completed sales.
-
-## Final mark
-
-The estimate is $E$, and the final mark is $V$:
+The model and backdrop premiums are nonnegative amounts above the collection floor:
 
 $$
 \begin{aligned}
-E &= F_C \cdot m \cdot b \\
-V &= \operatorname{round}_2\!\left(\min(F_{MB}, E)\right)
+P_M &= \max(0, F_M - F_C) \\
+P_B &= \max(0, F_B - F_C) \\
+E &= F_C + P_M + P_B
 \end{aligned}
 $$
 
-The estimate can also be written as:
+For coherent floors, each selected trait is a subset of the collection, so $F_M,F_B\ge F_C$ and $E=F_M+F_B-F_C$. Clamping premiums to zero keeps the definition explicit and nonnegative.
+
+The final mark is:
 
 $$
-E = \frac{F_M \cdot F_B}{F_C}
+V = \begin{cases}
+\operatorname{round}_2(\min(F_{MB},E)), & \text{matching pair asks exist} \\
+\operatorname{round}_2(E), & \text{no matching pair asks}
+\end{cases}
 $$
 
-The lower of the matching floor and the estimate wins. Both multipliers and the matching floor must be available; a missing input does not produce a fallback mark.
+`basis` is `pair_capped` when pair evidence is available, even if the cap does not reduce the estimate, or `additive` when there is no pair floor. It is omitted when required floors are unavailable. The unavailable pair metric and its zero count remain visible alongside an uncapped additive estimate. Read failures, cancellation and capacity errors are not treated as absent pair data.
 
-This is a **floor-based heuristic**. Holding the model and backdrop floors fixed, lowering the collection floor increases the multiplier estimate. For example, changing the collection floor from 3 to 1 changes an estimate based on model 10 and backdrop 11 from 36.67 to 110, before applying the matching-floor cap. A cheap baseline listing can therefore materially affect the result. This formula has not been calibrated against historical executions; no statistical confidence or expected sale price is implied. Alternative estimators should be compared against executions as separately named strategies before replacing this formula.
+Collection, model and backdrop floors are required. Missing individual floors or unresolved traits produce explicit metric errors rather than zero premiums. The collection baseline must be positive.
 
-## Rounding
+## Explanatory multipliers and counts
 
-Calculations use the available decimal precision, without substituting the rounded multipliers shown in the app. Only displayed multipliers and the final mark are rounded to **2 decimal places**. The four floor prices retain their original precision.
+$$
+m=\frac{F_M}{F_C}, \qquad b=\frac{F_B}{F_C}
+$$
 
-Rounding uses **midpoint-to-even**: an exact halfway value rounds toward the nearest even last digit. For example, 20.125 becomes 20.12, while 20.135 becomes 20.14. The minimum is chosen before rounding.
+Multipliers are display-only ratios; neither their values nor their availability controls the estimate. There is no minimum distinct-gift gate for floor arithmetic. Each floor contains its exact `value` or typed `error` beside `count`, the number of distinct identifiable gifts. There are no separate evidence objects or listing counts. The count does not claim statistical confidence. The same gift listed on several venues counts once. Unidentified criteria can supply a floor without increasing the distinct-gift count. Distinct gifts do not imply independent sellers or completed sales.
 
-## Worked example
+Symbol floors stay separate: a model/backdrop pair can have another symbol, so its floor cannot safely cap a symbol-inclusive estimate. Gift numbers and rarity premiums are not inferred.
 
-Assume all sample requirements are met, with these floors in the selected currency:
+## Examples
 
-- Collection: **3**
-- Model: **10**
-- Backdrop: **11**
-- Matching model and backdrop: **100**
+With collection **3**, model **10**, backdrop **11**:
 
 ```text
-model multiplier = 10 / 3 → displayed as 3.33×
-backdrop multiplier = 11 / 3 → displayed as 3.67×
+model premium = 10 - 3 = 7
+backdrop premium = 11 - 3 = 8
+additive estimate = 3 + 7 + 8 = 18
 
-estimate = 10 × 11 / 3 = 36.666…
-final mark = round2(min(100, 36.666…)) = 36.67
+pair floor 100: final mark 18.00, basis pair_capped
+pair floor 15.125: final mark 15.12, basis pair_capped
+no pair floor: final mark 18.00, basis additive
 ```
 
-Using the displayed multipliers would give a different result. If the matching floor instead were 20.125, it would cap the estimate and the final mark would be **20.12**.
+If only the collection floor falls to **1**, the additive estimate becomes **20**, rather than the former multiplicative estimate of **110**. The result still responds to floor movements; it does not eliminate anomalous listings or guarantee a sale price. Accuracy has not been calibrated against historical executions.
 
-## When values are unavailable
+## Precision and errors
 
-A metric shows an explanation rather than treating missing data as zero:
+Floors, premiums and `additive_estimate` retain available decimal precision. Only displayed multipliers and `final_mark` round to two decimals, using midpoint-to-even: 15.125 becomes 15.12; 15.135 becomes 15.14. The pair cap is applied before rounding.
 
-- **Not enough data:** no matching asks or too few distinct identifiable gifts.
-- **Missing trait:** the gift's model or backdrop is absent or cannot resolve to a catalog choice.
-- **Invalid baseline:** the collection floor cannot serve as a positive denominator.
-- **Calculation overflow:** a required value cannot be represented safely.
+Missing traits, absent required asks, invalid baselines and arithmetic overflow produce typed metric issues. Required-floor errors keep their original code and identify the failed floor in `dependency`. A multiplier overflow cannot block a valid additive estimate. If a nonnegative additive sum overflows but a finite pair floor exists, that floor safely caps the mark; without a pair cap, overflow remains explicit.
 
-The final mark preserves the original issue, evidence and a typed `dependency` identifying the failed component, such as `backdrop_multiplier` or `model_backdrop_floor`.
+## Refresh and availability
 
-Gift identity must be present in available market listings. Gifts missing from that data cannot be resolved for valuation. Malformed source data can make the request fail rather than supply a price.
+Collection/currency observations refresh at most once per minute, on requested or watched work. Until then, collection, model, backdrop, symbol and newly requested pair floors all retain the previous observation generation, including its expiry cutoff. Changes, expirations and reconnect triggers are combined until the next refresh. Unchanged data can reuse the same observations without a rescan. The bounded trait cache retains shared partition/index references, not copied orders or a full replica snapshot; eviction releases them.
 
-## Reading the result
-
-The calculation time shows when the estimate was computed. Cached reports and collection/currency floor statistics are held for at least 60 seconds. Related order/catalog changes and expired asks are combined until the next requested or watched refresh; unchanged statistics are reused without a full scan. Cached quotes can therefore include listings that expired during that minute. Availability changes update the status flag promptly without resetting the price refresh deadline. Preparation contains independent collection/model/backdrop/symbol values only. A new gift or selection calculates on demand using its requested indexed orderbook observations and cached floor baselines; other combinations are not prepared. A stale indicator describes interrupted market updates, rather than the normal one-minute cache interval. Calculation time does not indicate when every underlying listing changed.
+The report's calculation time is distinct from the collection observation time. A stale flag describes interrupted market updates, not the normal one-minute sampling interval. Availability changes do not reset price refresh deadlines. Direct `gift_attributes` input needs only a known collection and its supplied catalog traits; no listed identity or gift number is required. URL/number references resolve their facts from current listings or recorded executions. Unknown reference facts require a direct attribute input; attributes are never invented from a URL. Malformed source data can fail the request.

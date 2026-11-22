@@ -5,9 +5,11 @@ pub use display::{
     FieldFormat, ValuationDisplay,
 };
 pub mod gift_floor;
-pub use gift_floor::{GiftFloor, GiftFloorEvidence, GiftFloorValuation, MINIMUM_MULTIPLIER_GIFTS};
+pub use gift_floor::{GiftFloor, GiftFloorBasis, GiftFloorValuation};
 mod strategy;
-pub use strategy::{Strategy, StrategyMetadata, strategies, strategies_for, strategy};
+pub use strategy::{
+    Strategy, StrategyMetadata, StrategyPurpose, strategies, strategies_for, strategy,
+};
 mod client;
 mod market;
 pub use market::*;

@@ -11,6 +11,17 @@ pub enum ValuationTargetKind {
     Catalog,
     Selection,
     Gift,
+    GiftAttributes,
+}
+/// Known gift attributes, without asserting a market listing or a collectible identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct GiftAttributes {
+    pub collection_id: CollectionId,
+    pub traits: GiftTraits,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<GiftNumber>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -24,6 +35,7 @@ pub enum ValuationTarget {
     Gift {
         gift: GiftLookup,
     },
+    GiftAttributes(GiftAttributes),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -91,6 +103,7 @@ pub enum ResolvedTarget {
         #[serde(skip_serializing_if = "Option::is_none")]
         slug: Option<GiftSlug>,
     },
+    GiftAttributes(GiftAttributes),
 }
 impl ValuationTarget {
     pub(crate) fn normalize(&mut self) -> Result<(), ValuationError> {
@@ -118,7 +131,7 @@ impl ValuationTarget {
                 criteria.patterns.sort();
                 criteria.patterns.dedup();
             }
-            Self::Gift { .. } => {}
+            Self::Gift { .. } | Self::GiftAttributes(_) => {}
         }
         Ok(())
     }
@@ -140,6 +153,28 @@ impl ValuationTarget {
                     _ => None,
                 },
             },
+            Self::GiftAttributes(attributes) => {
+                snapshot.require_collection(&attributes.collection_id)?;
+                for (kind, id) in [
+                    (
+                        CatalogTrait::Model,
+                        attributes.traits.model.as_ref().map(ModelId::as_str),
+                    ),
+                    (
+                        CatalogTrait::Backdrop,
+                        attributes.traits.backdrop.as_ref().map(BackdropId::as_str),
+                    ),
+                    (
+                        CatalogTrait::Pattern,
+                        attributes.traits.pattern.as_ref().map(PatternId::as_str),
+                    ),
+                ] {
+                    if let Some(id) = id {
+                        snapshot.require_trait(&attributes.collection_id, kind, id)?;
+                    }
+                }
+                ResolvedTarget::GiftAttributes(attributes.clone())
+            }
             Self::Selection {
                 collection_id,
                 criteria,
@@ -168,12 +203,14 @@ impl ResolvedTarget {
             Self::Catalog(_) => ValuationTargetKind::Catalog,
             Self::Selection { .. } => ValuationTargetKind::Selection,
             Self::Gift { .. } => ValuationTargetKind::Gift,
+            Self::GiftAttributes(_) => ValuationTargetKind::GiftAttributes,
         }
     }
     pub fn collection(&self) -> Option<&CollectionId> {
         match self {
             Self::Selection { collection_id, .. } => Some(collection_id),
             Self::Gift { gift, .. } => Some(&gift.collection_id),
+            Self::GiftAttributes(attributes) => Some(&attributes.collection_id),
             Self::Catalog(_) => None,
         }
     }
@@ -184,10 +221,16 @@ impl ResolvedTarget {
         }
     }
     pub fn model(&self) -> Option<&ModelId> {
+        if let Self::GiftAttributes(attributes) = self {
+            return attributes.traits.model.as_ref();
+        }
         self.criteria()
             .and_then(|criteria| (criteria.models.len() == 1).then(|| &criteria.models[0]))
     }
     pub fn backdrop(&self) -> Option<&BackdropId> {
+        if let Self::GiftAttributes(attributes) = self {
+            return attributes.traits.backdrop.as_ref();
+        }
         self.criteria()
             .and_then(|criteria| (criteria.backdrops.len() == 1).then(|| &criteria.backdrops[0]))
     }
@@ -196,6 +239,13 @@ impl ResolvedTarget {
             Self::Gift { gift, .. } => Some(gift),
             _ => None,
         }
+    }
+    pub fn pattern(&self) -> Option<&PatternId> {
+        if let Self::GiftAttributes(attributes) = self {
+            return attributes.traits.pattern.as_ref();
+        }
+        self.criteria()
+            .and_then(|criteria| (criteria.patterns.len() == 1).then(|| &criteria.patterns[0]))
     }
     pub fn slug(&self) -> Option<&GiftSlug> {
         match self {
@@ -228,6 +278,21 @@ impl ResolvedTarget {
             filters.backdrops = criteria.backdrops.clone();
             filters.patterns = criteria.patterns.clone();
             filters.number = criteria.number.clone();
+        }
+        if let Self::GiftAttributes(attributes) = self {
+            filters
+                .models
+                .extend(attributes.traits.model.iter().cloned());
+            filters
+                .backdrops
+                .extend(attributes.traits.backdrop.iter().cloned());
+            filters
+                .patterns
+                .extend(attributes.traits.pattern.iter().cloned());
+            filters.number = attributes.number.map(|number| GiftNumberRange {
+                min: Some(number),
+                max: Some(number),
+            });
         }
         if let Some(number) = self.gift().and_then(|gift| gift.number) {
             filters.number = Some(GiftNumberRange {

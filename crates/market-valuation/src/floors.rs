@@ -1,5 +1,5 @@
 //! Lightweight collection summaries and independent trait floors; combinations are read on demand.
-use crate::{FloorEvidence, ValuationIssueCode, ValuationMetric};
+use crate::{FloorValuation, ValuationIssueCode, ValuationMetric};
 use crate::{
     ValuationError,
     source::{BookScope, CatalogTrait, ReadDependencies, ValuationSnapshot},
@@ -32,13 +32,14 @@ pub(crate) const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 #[derive(Default, Clone)]
 pub(crate) struct Floor {
     pub price: Option<Amount>,
-    evidence: FloorEvidence,
+    pub count: u32,
+    pub observations: u32,
     identities: HashSet<Arc<GiftId>>,
 }
 impl Floor {
     /// Return the number of new identity memberships for bounded evidence accounting.
     fn observe(&mut self, price: &Amount, gift: Option<&Arc<GiftId>>) -> usize {
-        self.evidence.listings += 1;
+        self.observations += 1;
         if self
             .price
             .as_ref()
@@ -47,28 +48,21 @@ impl Floor {
             self.price = Some(price.clone());
         }
         let added = gift.is_some_and(|id| self.identities.insert(id.clone()));
-        self.evidence.gifts += u32::from(added);
+        self.count += u32::from(added);
         usize::from(added)
     }
-    pub fn from_valuation(value: &crate::AskFloorValuation) -> Self {
+    pub fn from_valuation(value: &crate::FloorValuation) -> Self {
         Self {
             price: value.price.value().cloned(),
-            evidence: value.evidence.clone(),
+            count: value.count,
+            observations: 0,
             identities: HashSet::new(),
         }
     }
-    pub fn evidence(&self) -> FloorEvidence {
-        self.evidence.clone()
-    }
-    #[cfg(test)]
-    pub fn fixture(price: &str, gifts: u32) -> Self {
-        Self {
-            price: Some(Amount::new(price).unwrap()),
-            evidence: FloorEvidence {
-                listings: gifts,
-                gifts,
-            },
-            identities: HashSet::new(),
+    pub fn valuation(&self, present: bool) -> FloorValuation {
+        FloorValuation {
+            price: self.metric(present),
+            count: self.count,
         }
     }
 }
@@ -82,18 +76,49 @@ pub(crate) struct Statistics {
     pub models: BTreeMap<ModelId, Floor>,
     pub backdrops: BTreeMap<BackdropId, Floor>,
     pub patterns: BTreeMap<PatternId, Floor>,
+    asks: Option<crate::source::AskBookSnapshot>,
     preparation: Preparation,
     dependencies: ReadDependencies,
     expires_at_ms: i64,
 }
 impl Statistics {
+    /// On-demand pair observations share the cached floors' book view and eligibility time.
+    pub(crate) fn pair_floor(
+        &self,
+        snapshot: &ValuationSnapshot,
+        model: &ModelId,
+        backdrop: &BackdropId,
+    ) -> Result<crate::FloorValuation, ValuationError> {
+        let asks = self
+            .asks
+            .as_ref()
+            .expect("trait statistics retain ask partitions");
+        let mut floor = Floor::default();
+        let mut budget = market_replica::catalog_read::ScanBudget::default();
+        for (scanned, quote) in asks
+            .pair_quotes(model, backdrop, self.evaluated_at.as_millisecond())
+            .enumerate()
+        {
+            snapshot.check_cancelled()?;
+            if scanned % 500 == 0 {
+                budget.page()?;
+            }
+            if let Some(quote) = quote? {
+                if floor.observations >= 50_000 {
+                    return Err(ValuationError::capacity("ask observation budget exceeded"));
+                }
+                floor.observe(&quote.price, quote.gift_id.map(Arc::new).as_ref());
+            }
+        }
+        Ok(floor.valuation(true))
+    }
     pub(crate) fn metadata_keys(&self) -> usize {
         self.dependencies.key_count()
     }
     pub(crate) fn traits_prepared(&self) -> bool {
         self.preparation == Preparation::Traits
     }
-    pub(crate) fn selection(&self, selection: FloorSelection<'_>) -> crate::AskFloorValuation {
+    pub(crate) fn selection(&self, selection: FloorSelection<'_>) -> crate::FloorValuation {
         let floor = match selection {
             FloorSelection::Collection => Some(&self.collection),
             FloorSelection::Model(id) => self.models.get(id),
@@ -102,10 +127,7 @@ impl Statistics {
         };
         let empty = Floor::default();
         let floor = floor.unwrap_or(&empty);
-        crate::AskFloorValuation {
-            price: floor.metric(true),
-            evidence: floor.evidence(),
-        }
+        floor.valuation(true)
     }
     fn collection_only(&self, snapshot: &ValuationSnapshot) -> Result<Self, ValuationError> {
         Ok(Self {
@@ -118,6 +140,7 @@ impl Statistics {
             models: BTreeMap::new(),
             backdrops: BTreeMap::new(),
             patterns: BTreeMap::new(),
+            asks: None,
             preparation: Preparation::Collection,
             dependencies: snapshot.dependencies(
                 [self.scope.clone()],
@@ -166,6 +189,9 @@ impl Statistics {
             models: BTreeMap::new(),
             backdrops: BTreeMap::new(),
             patterns: BTreeMap::new(),
+            asks: (preparation == Preparation::Traits)
+                .then(|| snapshot.ask_book(scope))
+                .transpose()?,
             preparation,
             dependencies: snapshot.dependencies(
                 [scope.clone()],
@@ -188,7 +214,7 @@ impl Statistics {
         {
             return Err(capacity());
         }
-        let now = jiff::Timestamp::now().as_millisecond();
+        let now = stats.evaluated_at.as_millisecond();
         let mut token = String::new();
         let mut budget = market_replica::catalog_read::ScanBudget::default();
         let mut memberships = 0;
@@ -264,7 +290,7 @@ impl Statistics {
                     floor.identities = HashSet::new();
                 }
                 stats.evaluated_at = jiff::Timestamp::now();
-                tracing::debug!(collection=%scope.collection,currency=%scope.currency,?preparation,rows=stats.collection.evidence.listings,models=stats.models.len(),backdrops=stats.backdrops.len(),patterns=stats.patterns.len(),elapsed_ms=started.elapsed().as_millis(),"prepared valuation floors");
+                tracing::debug!(collection=%scope.collection,currency=%scope.currency,?preparation,rows=stats.collection.observations,models=stats.models.len(),backdrops=stats.backdrops.len(),patterns=stats.patterns.len(),elapsed_ms=started.elapsed().as_millis(),"prepared valuation floors");
                 return Ok(stats);
             }
             token = page.next_page_token;
@@ -285,13 +311,8 @@ mod tests {
         for price in ["10", "9", "11"] {
             floor.observe(&price.into(), Some(&gift));
         }
-        assert_eq!(
-            floor.evidence(),
-            FloorEvidence {
-                listings: 3,
-                gifts: 1
-            }
-        );
+        assert_eq!(floor.count, 1);
+        assert_eq!(floor.observations, 3);
         assert_eq!(floor.price.unwrap().as_str(), "9");
     }
 }

@@ -21,7 +21,7 @@ async fn floor_reads_and_watches_share_collection_scoped_snapshots() {
     assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
     let rest: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(
-        rest["results"][0]["data"]["collections"][0]["floor"]["price"]["value"],
+        rest["results"][0]["data"]["collections"][0]["floor"]["value"],
         "1.000000001"
     );
     for field in ["revision", "sync", "cursor"] {
@@ -57,7 +57,7 @@ async fn floor_reads_and_watches_share_collection_scoped_snapshots() {
     )
     .await;
     assert_eq!(
-        changed["data"]["results"][0]["data"]["collections"][0]["floor"]["price"]["value"],
+        changed["data"]["results"][0]["data"]["collections"][0]["floor"]["value"],
         "2"
     );
     bid_filters::send(
@@ -150,7 +150,7 @@ async fn target_strategies_share_rest_and_websocket_results_and_keep_partial_fai
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
     let mut rest: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(rest["results"][0]["data"]["price"]["value"], "3");
+    assert_eq!(rest["results"][0]["data"]["value"], "3");
     for index in [1, 2] {
         assert_eq!(rest["results"][index]["data"]["price"]["value"], "20");
         assert_eq!(rest["results"][index]["data"]["evidence"]["gifts"], 3);

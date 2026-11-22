@@ -152,6 +152,9 @@ pub(super) fn eligible(order: &GiftOrder, target: &ResolvedTarget) -> bool {
                 && target
                     .backdrop()
                     .is_none_or(|id| gift.traits.backdrop.as_ref() == Some(id))
+                && target
+                    .pattern()
+                    .is_none_or(|id| gift.traits.pattern.as_ref() == Some(id))
         }
         GiftTarget::Criteria { criteria } => {
             target
@@ -160,6 +163,9 @@ pub(super) fn eligible(order: &GiftOrder, target: &ResolvedTarget) -> bool {
                 && target
                     .backdrop()
                     .is_none_or(|id| criteria.backdrops.as_slice() == [id.clone()])
+                && target
+                    .pattern()
+                    .is_none_or(|id| criteria.patterns.as_slice() == [id.clone()])
         }
         GiftTarget::Unsupported { .. } => false,
     }

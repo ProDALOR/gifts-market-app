@@ -113,23 +113,15 @@ function report(body) {
     slug: null,
     gift: { ...gift, collection_id: "gift" },
     currency_id: body.currency_id,
-    collection_floor: { value: "8" },
-    model_floor: { value: String(number * 10) },
-    backdrop_floor: { value: "9" },
-    model_backdrop_floor: { value: "12" },
+    collection_floor: { ...{ value: "8" }, count: 5 },
+    model_floor: { ...{ value: String((number ?? 1) * 10) }, count: 3 },
+    backdrop_floor: { ...{ value: "9" }, count: 1 },
+    model_backdrop_floor: { ...{ value: "12" }, count: 1 },
     model_multiplier: { value: "1.25" },
     backdrop_multiplier: missing,
     final_mark: missing,
     decision: missing,
     confidence: { value: "87.5" },
-
-    evidence: {
-      collection: { listings: 5, gifts: 5 },
-      model: { listings: 3, gifts: 3 },
-      backdrop: { listings: 1, gifts: 1 },
-      model_backdrop: { listings: 1, gifts: 1 },
-      minimum_multiplier_gifts: 3,
-    },
   };
 }
 let browser;
@@ -240,8 +232,9 @@ try {
     holdMetadata = false,
     releaseMetadata;
   const strategyMetadata = {
+    purpose: "estimate",
     id: "fixture_floor",
-    input: { targets: ["gift"], period: "unsupported" },
+    input: { targets: ["gift", "gift_attributes"], period: "unsupported" },
     name: "Fixture floor",
     description: "Discovered strategy description.",
     documentation_url: "/__fixture_strategy.md",
@@ -275,7 +268,7 @@ try {
         },
       ],
       evidence: [
-        { path: "/evidence/collection/gifts", label: "fixture observations" },
+        { path: "/collection_floor/count", label: "fixture observations" },
       ],
       note: "A note owned by the fixture strategy.",
     },
@@ -295,6 +288,7 @@ try {
               {
                 ...strategyMetadata,
                 id: "ask_floor",
+                purpose: "reference",
                 display: fixtureDisplay("ask_floor"),
                 input: { targets: ["selection"], period: "unsupported" },
               },
@@ -391,7 +385,7 @@ try {
       }
       assert.equal(command.method, "valuation.query");
       const body = {
-        gift: command.params.target.gift,
+        gift: command.params.target.gift ?? command.params.target,
         currency_id: command.params.currency_id,
       };
       requests.push(body);
@@ -685,7 +679,12 @@ try {
   assert.equal(requests.length, 1);
   assert.equal(guideRequests, 0, "Guide is not requested while collapsed");
   assert.deepEqual(requests[0], {
-    gift: { collection_id: "gift", number: 1 },
+    gift: {
+      kind: "gift_attributes",
+      collection_id: "gift",
+      number: 1,
+      traits: { model: "gold", backdrop: "blue", pattern: "symbol" },
+    },
     currency_id: "GRAM",
   });
   assert.equal(await page.locator(".valuation-metrics > li").count(), 1);
@@ -978,7 +977,7 @@ try {
   await settled();
   await page.setViewportSize({ width: 390, height: 844 });
   await content
-    .getByRole("heading", { name: "Final mark", exact: true })
+    .getByRole("heading", { name: "Additive premiums", exact: true })
     .scrollIntoViewIfNeeded();
   assert.equal(
     await page
@@ -1097,7 +1096,9 @@ try {
   // Only a single live currency estimate can be compared with an active ask.
   reportKind = "estimate";
   await refreshValuation();
-  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
+  await page
+    .getByLabel("Ask price is about 20% below this estimate", { exact: true })
+    .waitFor();
 
   // A response started before an interruption stays outdated even if it arrives after recovery.
   const beforeBackgroundRefresh = await page
@@ -1142,7 +1143,9 @@ try {
   );
   mode = "success";
   release();
-  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
+  await page
+    .getByLabel("Ask price is about 20% below this estimate", { exact: true })
+    .waitFor();
   await settled();
   assert.equal(
     requests.length,
@@ -1154,7 +1157,9 @@ try {
     0,
   );
   await refreshValuation();
-  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
+  await page
+    .getByLabel("Ask price is about 20% below this estimate", { exact: true })
+    .waitFor();
   assert.equal(await page.locator(".valuation-breakdown").count(), 0);
   const requestsBeforeDelay = requests.length;
   socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
@@ -1165,14 +1170,18 @@ try {
   assert.equal(await page.locator(".price-comparison").count(), 0);
   socket.send(JSON.stringify({ type: "market.status", status: "available" }));
   await page.waitForTimeout(50);
-  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
+  await page
+    .getByLabel("Ask price is about 20% below this estimate", { exact: true })
+    .waitFor();
   assert.equal(
     requests.length,
     requestsBeforeDelay + 1,
     "A fresh request restores the comparison after market recovery",
   );
   await refreshValuation();
-  await page.getByText("About 20% below estimate", { exact: true }).waitFor();
+  await page
+    .getByLabel("Ask price is about 20% below this estimate", { exact: true })
+    .waitFor();
 
   await page.setViewportSize({ width: 320, height: 720 });
   assert.equal(
@@ -1342,7 +1351,7 @@ try {
     ),
   );
   let sharedDetailRequests;
-  for (const kind of ["ask", "bid", "executed"]) {
+  for (const kind of ["ask", "executed", "bid"]) {
     await page.evaluate((order) => window.renderDetails(order), { ...b, kind });
     await settled();
     if (sharedDetailRequests === undefined)
@@ -1350,9 +1359,10 @@ try {
     else
       assert.equal(
         requests.length,
-        sharedDetailRequests,
-        "Ask/history mode changes reuse the valuation of the same gift",
+        sharedDetailRequests + (kind === "bid" ? 1 : 0),
+        "Ask/history reuse the same gift estimate; bids select reference strategies too",
       );
+    const beforeResize = requests.length;
     for (const [width, height] of [
       [320, 568],
       [390, 844],
@@ -1416,7 +1426,7 @@ try {
     }
     assert.equal(
       requests.length,
-      sharedDetailRequests,
+      beforeResize,
       "Responsive layout changes do not request another valuation",
     );
   }

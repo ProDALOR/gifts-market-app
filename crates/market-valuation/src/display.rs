@@ -11,11 +11,14 @@ pub struct DisplayDefinition {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct FieldDefinition {
-    /// Top-level metric key in the strategy's typed data, containing value or error.
+    /// Stable field ID; by default this is the top-level metric key containing value or error.
     pub id: &'static str,
     pub label: &'static str,
     pub primary: bool,
     pub format: FieldFormat,
+    /// Optional RFC 6901 pointer to the metric; an empty pointer selects a flat root metric.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<&'static str>,
 }
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -43,6 +46,7 @@ impl FieldDefinition {
             label,
             primary: false,
             format: FieldFormat::Currency { decimals },
+            path: None,
         }
     }
     pub const fn number(
@@ -56,10 +60,15 @@ impl FieldDefinition {
             label,
             primary: false,
             format: FieldFormat::Number { decimals, suffix },
+            path: None,
         }
     }
     pub const fn primary(mut self) -> Self {
         self.primary = true;
+        self
+    }
+    pub const fn at(mut self, path: &'static str) -> Self {
+        self.path = Some(path);
         self
     }
 }
@@ -117,7 +126,9 @@ impl DisplayDefinition {
         let fields = definitions
             .iter()
             .map(|field| {
-                let metric = &data[field.id];
+                let metric = field.path.map_or(&data[field.id], |path| {
+                    data.pointer(path).unwrap_or(&serde_json::Value::Null)
+                });
                 let value = metric["value"]
                     .as_str()
                     .and_then(|value| rust_decimal::Decimal::from_str_exact(value).ok());

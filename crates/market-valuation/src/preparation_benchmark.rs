@@ -104,7 +104,7 @@ async fn benchmark_preparation() {
                 assert!(stats.models.is_empty());
                 assert!(stats.backdrops.is_empty());
             }
-            assert_eq!(stats.collection.evidence().listings, 20_012);
+            assert_eq!(stats.collection.observations, 20_012);
         }
         elapsed.sort();
         println!(
@@ -130,10 +130,52 @@ async fn benchmark_preparation() {
             .unwrap()
             .unwrap();
         elapsed.push(time.elapsed());
-        assert_eq!(pair.evidence.gifts, 2);
+        assert_eq!(pair.count, 2);
     }
     elapsed.sort();
-    println!("requested_pair: median={:?}; 2 matching asks", elapsed[2]);
+    println!(
+        "requested_pair_cold: median={:?}; 2 matching asks",
+        elapsed[2]
+    );
+    let books = std::sync::Arc::new(crate::floors::BookCache::default());
+    let warm = books.clone();
+    source
+        .prepare(move |snapshot| {
+            warm.get(
+                &snapshot,
+                &BookScope {
+                    collection: "gift".into(),
+                    currency: "GRAM".into(),
+                },
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+    let mut elapsed = vec![];
+    for _ in 0..5 {
+        let books = books.clone();
+        let time = Instant::now();
+        let pair = source
+            .prepare(move |snapshot| {
+                let currency = "GRAM".into();
+                crate::ValuationContext::new(&snapshot, &currency, &books).pair_floor(
+                    &"gift".into(),
+                    &"bench-model-0".into(),
+                    &"bench-backdrop-0".into(),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        elapsed.push(time.elapsed());
+        assert_eq!(pair.count, 2);
+    }
+    elapsed.sort();
+    println!(
+        "requested_pair_cached: median={:?}; shared immutable ask partitions; 2 matching asks",
+        elapsed[2]
+    );
     source
         .prepare(|snapshot| {
             let cache = crate::floors::BookCache::default();

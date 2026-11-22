@@ -97,7 +97,7 @@ test("gift valuation preserves every strategy outcome and uses typed requests an
     results: [
       {
         strategy: "ask_floor",
-        data: { price: { value: "6" }, evidence: { listings: 3, gifts: 3 } },
+        data: { value: "6", count: 3 },
         display: {
           fields: [],
           summary: "Strategy summary",

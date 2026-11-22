@@ -15,7 +15,7 @@ export function criteriaReport(params) {
       {
         strategy: "ask_floor",
         revision: "r1",
-        data: { price: { value: "12" }, evidence: { listings: 3, gifts: 3 } },
+        data: { value: "12", count: 3 },
       },
     ],
   };
@@ -27,9 +27,9 @@ export function floorReport(
   backdrops = [],
   patterns = [],
 ) {
-  const floor = (value, gifts = 3, listings = gifts) => ({
-    price: { value },
-    evidence: { listings, gifts },
+  const floor = (value, count = 3) => ({
+    value,
+    count,
   });
   return {
     target: params.target,
@@ -49,24 +49,24 @@ export function floorReport(
             return {
               collection_id,
               evaluated_at: calculatedAt.get(key),
-              floor: floor("8", 7, 9),
+              floor: floor("8", 7),
               ...(details?.collection_id === collection_id
                 ? {
                     traits: {
                       models: Object.fromEntries(
-                        models.map((id) => [id, floor("10.000000001", 2, 4)]),
+                        models.map((id) => [id, floor("10.000000001", 2)]),
                       ),
                       backdrops: Object.fromEntries(
-                        backdrops.map((id) => [id, floor("9", 1, 2)]),
+                        backdrops.map((id) => [id, floor("9", 1)]),
                       ),
                       patterns: Object.fromEntries(
-                        patterns.map((id) => [id, floor("8.5", 3, 4)]),
+                        patterns.map((id) => [id, floor("8.5", 3)]),
                       ),
                       ...(details.pair
                         ? {
                             pair: {
                               ...details.pair,
-                              floor: floor("12.5", 1, 1),
+                              floor: floor("12.5", 1),
                             },
                           }
                         : {}),
@@ -92,7 +92,10 @@ export function giftReport(params, data) {
     ...metrics
   } = data;
   return {
-    target: { kind: "gift", gift, ...(slug ? { slug } : {}) },
+    target:
+      params.target.kind === "gift_attributes"
+        ? { ...params.target, number: gift?.number ?? params.target.number }
+        : { kind: "gift", gift, ...(slug ? { slug } : {}) },
     currency_id,
     evaluated_at,
     stale,
@@ -129,18 +132,14 @@ export function fixtureDisplay(id) {
             format: { kind: "number", decimals: 2, suffix: "×" },
           },
         ],
-        evidence: [
-          { path: "/evidence/collection/gifts", label: "gifts" },
-          { path: "/evidence/collection/listings", label: "listings" },
-        ],
+        evidence: [{ path: "/collection_floor/count", label: "gifts" }],
         note: "Current asks, before fees.",
       }
     : {
-        fields: [currency("price", "Matching ask floor", null, true)],
-        evidence: [
-          { path: "/evidence/gifts", label: "gifts" },
-          { path: "/evidence/listings", label: "listings" },
+        fields: [
+          { ...currency("price", "Matching ask floor", null, true), path: "" },
         ],
+        evidence: [{ path: "/count", label: "gifts" }],
         note: "Current matching asks, before fees.",
       };
 }

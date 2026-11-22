@@ -1,8 +1,8 @@
 //! Typed strategy arguments and their discoverable input requirements.
-use super::{ResolvedTarget, ValuationTargetKind};
+use super::{GiftAttributes, ResolvedTarget, ValuationTargetKind};
 use crate::ValuationError;
 use jiff::Timestamp;
-use market_gifts::{CollectibleGift, Period};
+use market_gifts::Period;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -14,15 +14,21 @@ pub enum InputContract {
     Catalog,
     Selection,
     SelectionWithExecutionPeriod,
-    ResolvedGift,
+    GiftAttributes,
 }
-const SELECTION_TARGETS: &[ValuationTargetKind] =
-    &[ValuationTargetKind::Selection, ValuationTargetKind::Gift];
+const SELECTION_TARGETS: &[ValuationTargetKind] = &[
+    ValuationTargetKind::Selection,
+    ValuationTargetKind::Gift,
+    ValuationTargetKind::GiftAttributes,
+];
 impl InputContract {
     pub const fn targets(self) -> &'static [ValuationTargetKind] {
         match self {
             Self::Catalog => &[ValuationTargetKind::Catalog],
-            Self::ResolvedGift => &[ValuationTargetKind::Gift],
+            Self::GiftAttributes => &[
+                ValuationTargetKind::Gift,
+                ValuationTargetKind::GiftAttributes,
+            ],
             Self::Selection | Self::SelectionWithExecutionPeriod => SELECTION_TARGETS,
         }
     }
@@ -134,26 +140,23 @@ impl StrategyInput for ExecutionInput {
         })
     }
 }
-/// All resolved gift facts remain available; optional traits are not fabricated or required.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedGiftInput {
-    gift: CollectibleGift,
-}
-impl ResolvedGiftInput {
-    pub fn gift(&self) -> &CollectibleGift {
-        &self.gift
-    }
-}
-impl StrategyInput for ResolvedGiftInput {
-    const CONTRACT: InputContract = InputContract::ResolvedGift;
+impl StrategyInput for GiftAttributes {
+    const CONTRACT: InputContract = InputContract::GiftAttributes;
     fn resolve(
         target: Arc<ResolvedTarget>,
         _period: Option<ExecutionPeriod>,
     ) -> Result<Self, ValuationError> {
-        let gift = target.gift().ok_or_else(|| {
-            ValuationError::unsupported_target("this strategy requires a resolved gift")
-        })?;
-        Ok(Self { gift: gift.clone() })
+        match target.as_ref() {
+            ResolvedTarget::GiftAttributes(attributes) => Ok(attributes.clone()),
+            ResolvedTarget::Gift { gift, .. } => Ok(Self {
+                collection_id: gift.collection_id.clone(),
+                traits: gift.traits.clone(),
+                number: gift.number,
+            }),
+            _ => Err(ValuationError::unsupported_target(
+                "this strategy requires gift attributes",
+            )),
+        }
     }
 }
 

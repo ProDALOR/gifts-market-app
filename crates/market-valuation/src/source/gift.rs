@@ -1,4 +1,4 @@
-//! Resolve public slugs or stable collection/number identities from synchronized orders.
+//! Resolve public gift identities from observed listings and executions.
 use super::*;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
@@ -88,38 +88,41 @@ impl ValuationSnapshot {
             let mut query = GiftOrderQuery::new(filters);
             query.sort = Some(GiftSort::NumberAsc);
             query.limit = 200;
-            let mut continuation = String::new();
-            loop {
-                self.check_cancelled()?;
-                budget.page()?;
-                let page = self.gifts(query.clone(), continuation)?;
-                for gift in page.data {
-                    if gift.number != Some(number) {
-                        continue;
-                    }
-                    match &mut found {
-                        None => found = Some(gift),
-                        Some(current) => {
-                            if current.id != gift.id {
-                                return Err(Status::unavailable(
-                                    "Conflicting gift identities for this collection and number",
-                                ));
+            for source in [OrderSource::Asks, OrderSource::History] {
+                query.source = source;
+                let mut continuation = String::new();
+                loop {
+                    self.check_cancelled()?;
+                    budget.page()?;
+                    let page = self.gifts(query.clone(), continuation)?;
+                    for gift in page.data {
+                        if gift.number != Some(number) {
+                            continue;
+                        }
+                        match &mut found {
+                            None => found = Some(gift),
+                            Some(current) => {
+                                if current.id != gift.id {
+                                    return Err(Status::unavailable(
+                                        "Conflicting gift identities for this collection and number",
+                                    ));
+                                }
+                                merge(&mut current.traits.model, gift.traits.model)?;
+                                merge(&mut current.traits.backdrop, gift.traits.backdrop)?;
+                                merge(&mut current.traits.pattern, gift.traits.pattern)?;
                             }
-                            merge(&mut current.traits.model, gift.traits.model)?;
-                            merge(&mut current.traits.backdrop, gift.traits.backdrop)?;
-                            merge(&mut current.traits.pattern, gift.traits.pattern)?;
                         }
                     }
+                    if page.next_page_token.is_empty() {
+                        break;
+                    }
+                    continuation = page.next_page_token;
                 }
-                if page.next_page_token.is_empty() {
-                    break;
-                }
-                continuation = page.next_page_token;
             }
         }
         found.ok_or_else(|| {
             Status::not_found(
-                "Gift is not in available market asks; unlisted gifts cannot be resolved",
+                "Gift attributes are unknown in market listings and executions; supply collection and traits directly",
             )
         })
     }

@@ -407,3 +407,29 @@ test("valuation reports reject legacy targets and request errors reject actor de
     ),
   );
 });
+
+test("gift attribute valuation frames need no listed identity or number and validate supplied facts", () => {
+  const target = {
+    kind: "gift_attributes",
+    collection_id: "gift",
+    traits: { model: "m", backdrop: "b", pattern: "s" },
+  };
+  const value = { ...result, data: { ...result.data, target } };
+  assert.deepEqual(parseFrame(JSON.stringify(value)), value);
+  const watched = { type: "valuation.snapshot", id: "attrs", data: value.data };
+  assert.deepEqual(parseFrame(JSON.stringify(watched)), watched);
+  for (const bad of [
+    { ...target, traits: null },
+    { ...target, traits: { model: 123 } },
+    { ...target, number: 0 },
+    { ...target, number: 1.5 },
+    { ...target, id: "invented" },
+    { ...target, collection_id: null },
+    { ...target, criteria: {} },
+  ])
+    assert.throws(() =>
+      parseFrame(
+        JSON.stringify({ ...value, data: { ...value.data, target: bad } }),
+      ),
+    );
+});

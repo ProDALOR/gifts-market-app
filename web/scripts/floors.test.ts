@@ -35,26 +35,23 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
       {
         strategy: "gift_floor",
         data: {
-          collection_floor: price,
-          model_floor: price,
-          backdrop_floor: price,
-          model_backdrop_floor: price,
+          collection_floor: { ...price, count: evidence.gifts },
+          model_floor: { ...price, count: evidence.gifts },
+          backdrop_floor: { ...price, count: evidence.gifts },
+          model_backdrop_floor: { ...price, count: evidence.gifts },
           model_multiplier: price,
           backdrop_multiplier: price,
+          model_premium: { value: "0" },
+          backdrop_premium: { value: "0" },
+          additive_estimate: price,
+          basis: "pair_capped",
           final_mark: price,
-          evidence: {
-            collection: evidence,
-            model: evidence,
-            backdrop: evidence,
-            model_backdrop: evidence,
-            minimum_multiplier_gifts: 3,
-          },
         },
         revision: "r1",
       },
     ],
   };
-  const floor = { price, evidence };
+  const floor = { ...price, count: evidence.gifts };
   const shared: Pick<FloorsEntry, "floor" | "traits"> = {
     floor,
     traits: {
@@ -70,7 +67,7 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
       ...shared,
       traits: {
         ...shared.traits!,
-        patterns: { symbol: { price: { value: "123" }, evidence } },
+        patterns: { symbol: { value: "123", count: evidence.gifts } },
       },
     }),
     false,
@@ -79,14 +76,14 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
   assert.equal(
     giftBasisChanged(report, {
       ...shared,
-      floor: { ...floor, price: { value: "11" } },
+      floor: { ...floor, value: "11" },
     }),
     true,
   );
   assert.equal(
     giftBasisChanged(report, {
       ...shared,
-      floor: { ...floor, evidence: { listings: 4, gifts: 3 } },
+      floor: { ...floor, count: 4 },
     }),
     true,
   );
@@ -94,7 +91,7 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
   delete removed.traits!.models.model;
   assert.equal(giftBasisChanged(report, removed), true);
   const pair = structuredClone(shared);
-  pair.traits!.pair!.floor.price = { value: "12" };
+  pair.traits!.pair!.floor.value = "12";
   assert.equal(giftBasisChanged(report, pair), true);
   assert.equal(
     giftBasisChanged(report, { floor }),
@@ -104,8 +101,8 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
 });
 test("attribute valuations use only the matching scope and never invent a symbol or missing value", () => {
   const floor = (value: string, gifts: number, listings: number) => ({
-    price: { value },
-    evidence: { gifts, listings },
+    value,
+    count: gifts,
   });
   const entry: FloorsEntry = {
     floor: floor("8", 7, 9),
@@ -138,7 +135,7 @@ function report(
   time = "2026-11-20T12:00:00Z",
 ): ValuationResponse {
   const scope = target(query),
-    floor = { price: { value }, evidence: { gifts: 3, listings: 3 } };
+    floor = { value, count: 3 };
   return {
     target: structuredClone(scope),
     currency_id: query.currency_id,
@@ -334,10 +331,7 @@ test("collection switches cancel old traits but keep the summary sweep; late res
   await flush(t);
   release();
   await flush(t, 0);
-  assert.equal(
-    f.controller.getSnapshot().entries.get("a")?.floor.price.value,
-    "3",
-  );
+  assert.equal(f.controller.getSnapshot().entries.get("a")?.floor.value, "3");
   assert.ok(f.controller.getSnapshot().entries.get("b")?.traits);
   assert.equal(
     f.calls.filter((c) => !target(c.query).details).length,
@@ -378,7 +372,7 @@ test("currency changes and reconnects reject old results and refresh stale cache
   await flush(t, 0);
   assert.equal(f.controller.getSnapshot().currency, "XTR");
   assert.equal(
-    f.controller.getSnapshot().entries.get("gift")?.floor.price.value,
+    f.controller.getSnapshot().entries.get("gift")?.floor.value,
     "5",
   );
 });
@@ -438,7 +432,7 @@ test("nanosecond ordering rejects late summaries without discarding newer select
   release();
   await flush(t, 0);
   assert.equal(
-    f.controller.getSnapshot().entries.get("gift")?.floor.price.value,
+    f.controller.getSnapshot().entries.get("gift")?.floor.value,
     "5",
   );
   assert.ok(f.controller.getSnapshot().entries.get("gift")?.traits);
@@ -492,7 +486,7 @@ test("all summaries are retained while trait maps remain bounded to eight select
   assert.ok(f.controller.getSnapshot().entries.get(ids.at(-1)!)?.traits);
 });
 
-test("catalog validation rejects duplicate scopes and impossible gift evidence", () => {
+test("catalog validation rejects duplicate scopes and invalid counts and legacy floor wrappers", () => {
   const query: ValuationQuery = {
     target: { kind: "catalog", collection_ids: ["gift"] },
     currency_id: "GRAM",
@@ -507,7 +501,7 @@ test("catalog validation rejects duplicate scopes and impossible gift evidence",
     patterns: { symbol: structuredClone(data.collections[0].floor) },
   };
   assert.equal(catalogFloors(data), true);
-  data.collections[0].traits.patterns.symbol.evidence.gifts = -1;
+  data.collections[0].traits.patterns.symbol.count = -1;
   assert.equal(
     catalogFloors(data),
     false,
@@ -530,11 +524,11 @@ test("catalog validation rejects duplicate scopes and impossible gift evidence",
     true,
     "Symbol floors use the same price/evidence validation",
   );
-  traits.patterns.symbol.evidence.gifts = 99;
+  traits.patterns.symbol.count = 1.5;
   assert.equal(
     catalogFloors(data),
     false,
-    "Impossible symbol gift counts are rejected",
+    "Fractional symbol counts are rejected",
   );
   delete data.collections[0].traits;
   assert.ok(
@@ -550,7 +544,7 @@ test("catalog validation rejects duplicate scopes and impossible gift evidence",
   data.collections.push(data.collections[0]);
   assert.equal(catalogFloors(data), false);
   data.collections.pop();
-  data.collections[0].floor.evidence.gifts = 5;
+  data.collections[0].floor.count = Number.MAX_SAFE_INTEGER + 1;
   assert.equal(catalogFloors(data), false);
 });
 
@@ -608,7 +602,7 @@ test("older cached detail responses wait for the minute refresh instead of retry
   await flush(t);
   assert.equal(details, 1);
   assert.equal(
-    f.controller.getSnapshot().entries.get("gift")?.floor.price.value,
+    f.controller.getSnapshot().entries.get("gift")?.floor.value,
     "5",
   );
   assert.equal(f.controller.getSnapshot().detail.pending, false);
@@ -618,7 +612,7 @@ test("older cached detail responses wait for the minute refresh instead of retry
   await flush(t, 59_000);
   await flush(t);
   assert.equal(
-    f.controller.getSnapshot().entries.get("gift")?.floor.price.value,
+    f.controller.getSnapshot().entries.get("gift")?.floor.value,
     "6",
   );
   assert.ok(f.controller.getSnapshot().entries.get("gift")?.traits);
@@ -653,11 +647,11 @@ test("a slow selected detail request owns its summary slot across refreshes and 
   release();
   await flush(t, 0);
   assert.equal(
-    f.controller.getSnapshot().entries.get("gift-0")?.floor.price.value,
+    f.controller.getSnapshot().entries.get("gift-0")?.floor.value,
     "4",
   );
   assert.equal(
-    f.controller.getSnapshot().entries.get("gift-1")?.floor.price.value,
+    f.controller.getSnapshot().entries.get("gift-1")?.floor.value,
     "4",
   );
 });

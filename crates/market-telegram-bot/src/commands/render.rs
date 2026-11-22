@@ -51,12 +51,12 @@ pub(super) fn valuation(value: &ValuationReport) -> Reply {
     Reply { text }
 }
 pub(super) fn usage(_kind: CommandKind) -> Reply {
-    Reply { text: "Use /value PlushPepe-123 [GRAM|XTR] or /value https://t.me/nft/PlushPepe-123. Only gifts listed in available market data can be resolved.".into() }
+    Reply { text: "Use /value PlushPepe-123 [GRAM|XTR] or /value https://t.me/nft/PlushPepe-123. Gift links use attributes observed in listings or executions; no active listing is required.".into() }
 }
 pub(crate) fn launch_reply(command: CommandKind) -> Option<Reply> {
     Some(Reply { text: match command {
         CommandKind::Start | CommandKind::Market => "Browse live gift markets, compare venues and filter offers in one place.",
-        CommandKind::Help => "/value <gift URL or slug> [GRAM|XTR] — unified gift valuation. You can also send a gift link directly.\n/status — market availability.\n/market — open the market.\nGift lookup uses available market listings; unlisted gifts are unavailable.",
+        CommandKind::Help => "/value <gift URL or slug> [GRAM|XTR] — unified gift valuation. You can also send a gift link directly.\n/status — market availability.\n/market — open the market.\nGift links resolve attributes from observed listings and executions; a current listing is not required.",
         _ => return None,
     }.into() })
 }
@@ -91,36 +91,33 @@ mod tests {
             value: Amount::new(value).unwrap(),
         };
         let report = GiftFloorValuation {
-            collection_floor: metric("3.123456789"),
-            model_floor: metric("10"),
-            backdrop_floor: metric("11"),
-            model_backdrop_floor: metric("100"),
+            collection_floor: FloorValuation {
+                price: metric("3.123456789"),
+                count: 12,
+            },
+            model_floor: FloorValuation {
+                price: metric("10"),
+                count: 6,
+            },
+            backdrop_floor: FloorValuation {
+                price: metric("11"),
+                count: 6,
+            },
+            model_backdrop_floor: FloorValuation {
+                price: metric("100"),
+                count: 6,
+            },
             model_multiplier: ValuationMetric::Value {
                 value: Multiplier::new("1.2").unwrap(),
             },
             backdrop_multiplier: ValuationMetric::Value {
                 value: Multiplier::new("3.67").unwrap(),
             },
-            final_mark: metric("36.67"),
-            evidence: GiftFloorEvidence {
-                collection: FloorEvidence {
-                    listings: 12,
-                    gifts: 12,
-                },
-                model: FloorEvidence {
-                    listings: 6,
-                    gifts: 6,
-                },
-                backdrop: FloorEvidence {
-                    listings: 6,
-                    gifts: 6,
-                },
-                model_backdrop: FloorEvidence {
-                    listings: 3,
-                    gifts: 3,
-                },
-                minimum_multiplier_gifts: 3,
-            },
+            model_premium: metric("6.876543211"),
+            backdrop_premium: metric("7.876543211"),
+            additive_estimate: metric("17.876543211"),
+            final_mark: metric("17.88"),
+            basis: Some(GiftFloorBasis::PairCapped),
         };
         let mark = ValuationReport {
             target: ResolvedTarget::Gift {
@@ -138,16 +135,6 @@ mod tests {
             results: vec![StrategyOutcome::Value(StrategyValuation::GiftFloor(report))],
         };
         let mut mark = mark;
-        mark.results.insert(
-            0,
-            StrategyOutcome::Value(StrategyValuation::AskFloor(AskFloorValuation {
-                price: metric("100"),
-                evidence: FloorEvidence {
-                    listings: 2,
-                    gifts: 1,
-                },
-            })),
-        );
         mark.results.push(StrategyOutcome::Error {
             strategy: StrategyId::new("external_strategy").unwrap(),
             error: StrategyFailure {
@@ -159,13 +146,12 @@ mod tests {
         assert!(text.contains("Collection floor: 3.123456789 GRAM"));
         assert!(text.contains("Model multiplier: 1.20×"));
         assert!(text.contains("Backdrop multiplier: 3.67×"));
-        assert!(text.contains("Final mark: 36.67 GRAM"));
+        assert!(text.contains("Final mark: 17.88 GRAM"));
         assert!(text.contains("Model & backdrop floor: 100 GRAM"));
-        assert!(text.contains("Ask floor"));
+        assert!(!text.contains("Ask floor"));
         assert!(text.contains("Gift floor"));
         assert!(text.contains("external_strategy"));
         assert!(text.contains("History unavailable"));
-        assert!(text.contains("Lowest eligible ask, before fees."));
         assert!(!text.contains("uses unrounded multipliers"));
     }
 }

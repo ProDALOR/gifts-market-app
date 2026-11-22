@@ -84,6 +84,9 @@ impl MessageHandler for MarketCommands {
                             market_valuation::ValuationTargetKind::Gift,
                             false,
                         )
+                        .filter(|metadata| {
+                            metadata.purpose == market_valuation::StrategyPurpose::Estimate
+                        })
                         .map(|metadata| {
                             market_valuation::StrategyId::new(metadata.id)
                                 .expect("registered strategy ID")

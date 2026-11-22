@@ -76,6 +76,14 @@ const valuationTarget = (value: unknown) => {
         value.model_id == null &&
         value.backdrop_id == null
       );
+    case "gift_attributes":
+      return (
+        traits(value.traits) &&
+        (value.number == null || integer(value.number)) &&
+        value.gift == null &&
+        value.id == null &&
+        value.slug == null
+      );
     case "selection":
       return (
         value.model_id == null &&

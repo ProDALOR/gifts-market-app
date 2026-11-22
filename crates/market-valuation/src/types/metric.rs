@@ -19,8 +19,6 @@ pub enum ValuationDependency {
     ModelFloor,
     BackdropFloor,
     ModelBackdropFloor,
-    ModelMultiplier,
-    BackdropMultiplier,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

@@ -1,5 +1,6 @@
 //! Protocol-native, disposable read replica. No hub implementation dependencies.
 mod book_index;
+pub use book_index::OrderBookSnapshot;
 mod limits;
 mod query;
 mod ranking;
@@ -199,6 +200,28 @@ impl ReplicaReader {
     }
     pub fn snapshot(&self) -> Result<Self, Status> {
         Ok(self.pin(self.view()?))
+    }
+    /// Retain active partitions for one collection/currency, without the full replica view.
+    pub fn order_book_snapshot(
+        &self,
+        collection: &str,
+        currency: &str,
+        mode: w::OrderMode,
+    ) -> Result<OrderBookSnapshot, Status> {
+        self.check_cancelled()?;
+        if collection.is_empty()
+            || currency.is_empty()
+            || !matches!(mode, w::OrderMode::Ask | w::OrderMode::Bid)
+        {
+            return Err(Status::invalid_argument("active book scope required"));
+        }
+        let scope = query::Scope::try_from(w::Scope {
+            item_type_id: Some(collection.into()),
+            currency_id: Some(currency.into()),
+            modes: vec![mode as i32],
+            ..Default::default()
+        })?;
+        Ok(OrderBookSnapshot::new(self.view()?.state.books(), scope))
     }
     fn pin(&self, view: Arc<ReplicaView>) -> Self {
         let (status, _) = watch::channel(self.status_for(&view));

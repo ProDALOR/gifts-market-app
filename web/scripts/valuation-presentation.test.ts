@@ -8,6 +8,7 @@ import {
 import type { ValuationResponse, ValuationStrategy } from "../src/market.ts";
 type Result = ValuationResponse["results"][number];
 const strategy: ValuationStrategy = {
+  purpose: "estimate",
   id: "future",
   name: "Future strategy",
   description: "Future calculation",
@@ -186,4 +187,70 @@ test("stale contracts and malformed metrics fail before rendering", () => {
       validateDefinitions([{ ...strategy, ...patch } as ValuationStrategy]),
     );
   assert.throws(() => validateDefinitions([strategy, strategy]));
+});
+
+test("flat reference floors use a discovered root pointer with a single count", () => {
+  const reference: ValuationStrategy = {
+    ...strategy,
+    purpose: "reference",
+    display: {
+      fields: [
+        {
+          id: "price",
+          label: "Matching floor",
+          primary: true,
+          path: "",
+          format: { kind: "currency" },
+        },
+      ],
+      evidence: [{ path: "/count", label: "gifts" }],
+      note: "Current asks",
+    },
+  };
+  validateDefinitions([reference]);
+  const rendered = presentResult(
+    reference,
+    outcome({ value: "10.800000001", count: 0 }),
+    "GRAM",
+  );
+  assert.deepEqual(rendered.fields[0].value, {
+    kind: "currency",
+    amount: "10.800000001",
+    currency_id: "GRAM",
+  });
+  assert.deepEqual(rendered.evidence, ["0 gifts"]);
+  const missing = presentResult(
+    reference,
+    outcome({
+      error: { code: "not_enough_data", message: "No matching asks" },
+      count: 0,
+    }),
+    "GRAM",
+  );
+  assert.equal(missing.fields[0].value.kind, "unavailable");
+  for (const path of ["bad", "/~2bad"])
+    assert.throws(() =>
+      validateDefinitions([
+        {
+          ...reference,
+          display: {
+            ...reference.display,
+            fields: [{ ...reference.display.fields[0], path }],
+          },
+        },
+      ]),
+    );
+  assert.throws(() =>
+    presentResult(
+      {
+        ...reference,
+        display: {
+          ...reference.display,
+          fields: [{ ...reference.display.fields[0], path: "/missing" }],
+        },
+      },
+      outcome({ value: "10", count: 1 }),
+      "GRAM",
+    ),
+  );
 });

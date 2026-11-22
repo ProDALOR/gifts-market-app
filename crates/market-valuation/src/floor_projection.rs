@@ -14,7 +14,7 @@ pub struct CollectionFloors {
     /// When this collection's current statistics were calculated; unchanged by other collections.
     #[cfg_attr(feature="schema",schema(value_type=String,format=DateTime))]
     pub evaluated_at: jiff::Timestamp,
-    pub floor: AskFloorValuation,
+    pub floor: FloorValuation,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traits: Option<TraitFloors>,
 }
@@ -23,15 +23,15 @@ pub struct CollectionFloors {
 pub struct PairFloor {
     pub model_id: ModelId,
     pub backdrop_id: BackdropId,
-    pub floor: AskFloorValuation,
+    pub floor: FloorValuation,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct TraitFloors {
-    pub models: BTreeMap<ModelId, AskFloorValuation>,
-    pub backdrops: BTreeMap<BackdropId, AskFloorValuation>,
+    pub models: BTreeMap<ModelId, FloorValuation>,
+    pub backdrops: BTreeMap<BackdropId, FloorValuation>,
     /// Current ask floors for symbols, independent of the gift-floor estimate formula.
-    pub patterns: BTreeMap<PatternId, AskFloorValuation>,
+    pub patterns: BTreeMap<PatternId, FloorValuation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pair: Option<PairFloor>,
 }
@@ -43,6 +43,7 @@ pub struct CatalogFloorValuation {
 /// The picker projection is an ordinary strategy with catalog-scoped typed input.
 pub struct CatalogFloor;
 impl Strategy for CatalogFloor {
+    const PURPOSE: crate::StrategyPurpose = crate::StrategyPurpose::Reference;
     const DISPLAY: crate::DisplayDefinition = crate::DisplayDefinition {
         fields: &[],
         evidence: &[],
@@ -82,14 +83,14 @@ impl Strategy for CatalogFloor {
                         {
                             context.pair_floor(collection, &pair.model_id, &pair.backdrop_id)?
                         } else {
-                            AskFloorValuation {
+                            FloorValuation {
                                 price: market::unavailable(
                                     ValuationIssueCode::MissingTrait,
                                     "The selected pair is no longer in the collection catalog",
                                     None,
                                     None,
                                 ),
-                                evidence: FloorEvidence::default(),
+                                count: 0,
                             }
                         },
                     })

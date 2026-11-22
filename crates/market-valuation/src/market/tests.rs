@@ -436,7 +436,10 @@ async fn every_registered_strategy_runs_through_its_typed_input_for_the_same_gif
         let wire = serde_json::to_value(result).unwrap();
         let metadata = crate::strategy(result.strategy()).unwrap();
         for field in metadata.display.fields {
-            let metric = &wire["data"][field.id];
+            let data = &wire["data"];
+            let metric = field.path.map_or(&data[field.id], |path| {
+                data.pointer(path).expect("declared metric path")
+            });
             assert!(
                 metric.is_object(),
                 "{} missing metric {}",
@@ -465,7 +468,7 @@ async fn every_registered_strategy_runs_through_its_typed_input_for_the_same_gif
     let StrategyOutcome::Value(StrategyValuation::GiftFloor(gift)) = &report.results[3] else {
         panic!()
     };
-    assert_eq!(gift.final_mark.value().unwrap().as_str(), "36.67");
+    assert_eq!(gift.final_mark.value().unwrap().as_str(), "18");
     // The fixture's gift has no symbol; the floor formula does not require one.
     assert!(report.target.gift().unwrap().traits.pattern.is_none());
     task.shutdown().await.unwrap();
@@ -487,4 +490,43 @@ fn computation_failures_exclude_storage_retry_codes_and_internal_messages() {
     let failure = StrategyFailure::from(ValuationError::unsupported_target("Requires a gift"));
     assert_eq!(failure.code, StrategyFailureCode::UnsupportedTarget);
     assert_eq!(failure.message, "Requires a gift");
+}
+
+#[test]
+fn shared_floor_values_flatten_count_without_legacy_wrappers_or_confidence_gates() {
+    let floor = FloorValuation {
+        price: ValuationMetric::Value {
+            value: Amount::new("10.800000001").unwrap(),
+        },
+        count: 0,
+    };
+    let value = serde_json::to_value(&floor).unwrap();
+    assert_eq!(value, serde_json::json!({"value":"10.800000001","count":0}));
+    assert_eq!(
+        serde_json::from_value::<FloorValuation>(value)
+            .unwrap()
+            .value(),
+        floor.value()
+    );
+    let absent = FloorValuation {
+        price: super::unavailable(
+            ValuationIssueCode::NotEnoughData,
+            "No matching asks",
+            None,
+            None,
+        ),
+        count: 0,
+    };
+    let value = serde_json::to_value(&absent).unwrap();
+    assert_eq!(value["error"]["code"], "not_enough_data");
+    assert_eq!(value["count"], 0);
+    for key in ["price", "evidence", "gifts", "listings"] {
+        assert!(value.get(key).is_none());
+    }
+    assert!(
+        serde_json::from_value::<FloorValuation>(
+            serde_json::json!({"price":{"value":"10"},"evidence":{"gifts":1,"listings":2}})
+        )
+        .is_err()
+    );
 }

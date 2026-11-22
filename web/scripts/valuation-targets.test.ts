@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sameCatalogTarget, sameCriteria } from "../src/valuation/targets.ts";
+import {
+  sameCatalogTarget,
+  sameCriteria,
+  sameGiftAttributes,
+} from "../src/valuation/targets.ts";
 
 test("catalog scope identity normalizes omitted and null options without accepting another scope", () => {
   const target = {
@@ -77,4 +81,25 @@ test("canonical selection alternatives tolerate server sorting and deduplication
     ),
     false,
   );
+});
+
+test("attribute responses must match every supplied trait, collection and optional number", () => {
+  const target = {
+    kind: "gift_attributes" as const,
+    collection_id: "gift",
+    traits: { model: "m", backdrop: "b", pattern: "s" },
+  };
+  assert.equal(sameGiftAttributes({ ...target, number: null }, target), true);
+  for (const traits of [
+    { model: "other", backdrop: "b", pattern: "s" },
+    { model: "m", backdrop: "other", pattern: "s" },
+    { model: "m", backdrop: "b", pattern: "other" },
+    { model: "m", backdrop: "b" },
+  ])
+    assert.equal(sameGiftAttributes({ ...target, traits }, target), false);
+  assert.equal(
+    sameGiftAttributes({ ...target, collection_id: "other" }, target),
+    false,
+  );
+  assert.equal(sameGiftAttributes({ ...target, number: 42 }, target), false);
 });

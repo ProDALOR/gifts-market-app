@@ -149,7 +149,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         })?,
         "result" => {
             let report: market_valuation::ValuationReport = serde_json::from_value(
-                json!({"target":{"kind":"selection","collection_id":"tg.gift.123","criteria":{}},"currency_id":"GRAM","evaluated_at":"2026-11-18T12:00:00Z","stale":false,"results":[{"strategy":"ask_floor","data":{"price":{"value":"3"},"evidence":{"listings":3,"gifts":3}}}]}),
+                json!({"target":{"kind":"selection","collection_id":"tg.gift.123","criteria":{}},"currency_id":"GRAM","evaluated_at":"2026-11-18T12:00:00Z","stale":false,"results":[{"strategy":"ask_floor","data":{"value":"3","count":3}}]}),
             )?;
             serde_json::to_value(ServerFrame::Result(ApiResult::Valuation {
                 id: "request-1".into(),
@@ -191,7 +191,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
         })?,
         "valuation.snapshot" => {
             let data = serde_json::from_value(
-                json!({"target":{"kind":"catalog","collection_ids":["tg.gift.123"],"details":{"collection_id":"tg.gift.123"}},"currency_id":"GRAM","stale":false,"evaluated_at":"2026-11-18T12:00:00Z","results":[{"strategy":"catalog_floor","data":{"collections":[{"collection_id":"tg.gift.123","evaluated_at":"2026-11-18T12:00:00Z","floor":{"price":{"value":"3"},"evidence":{"listings":3,"gifts":3}},"traits":{"models":{},"backdrops":{},"patterns":{}}}]}}]}),
+                json!({"target":{"kind":"catalog","collection_ids":["tg.gift.123"],"details":{"collection_id":"tg.gift.123"}},"currency_id":"GRAM","stale":false,"evaluated_at":"2026-11-18T12:00:00Z","results":[{"strategy":"catalog_floor","data":{"collections":[{"collection_id":"tg.gift.123","evaluated_at":"2026-11-18T12:00:00Z","floor":{"value":"3","count":3},"traits":{"models":{},"backdrops":{},"patterns":{}}}]}}]}),
             )?;
             serde_json::to_value(ServerFrame::ValuationSnapshot {
                 id: "prices".into(),

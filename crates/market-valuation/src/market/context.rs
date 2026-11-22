@@ -85,16 +85,9 @@ impl<'a> ValuationContext<'a> {
         collection: &CollectionId,
         model: &market_gifts::ModelId,
         backdrop: &market_gifts::BackdropId,
-    ) -> Result<crate::AskFloorValuation, ValuationError> {
-        let target = crate::ResolvedTarget::Selection {
-            collection_id: collection.clone(),
-            criteria: market_gifts::GiftCriteria {
-                models: vec![model.clone()],
-                backdrops: vec![backdrop.clone()],
-                ..Default::default()
-            },
-        };
-        super::strategies::matching_ask_floor(self, &target)
+    ) -> Result<crate::FloorValuation, ValuationError> {
+        self.floor_statistics(collection)?
+            .pair_floor(self.snapshot, model, backdrop)
     }
 
     /// Record the sources that the next periodic refresh needs to validate.

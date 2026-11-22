@@ -70,22 +70,31 @@ impl ReadSet {
     ) -> Result<(), ValuationError> {
         // Successful statistics already cover these books, their currency and catalog choices.
         let uncovered = collections
-            .into_iter()
+            .iter()
+            .cloned()
             .filter(|collection| {
                 !self.statistics.iter().any(|stats| {
                     &stats.scope.collection == collection && &stats.scope.currency == currency
                 })
             })
             .collect::<Vec<_>>();
-        if !uncovered.is_empty() || matches!(lookup, Some(GiftLookup::Slug(_))) {
-            self.metadata = Some(snapshot.target_dependencies(
-                uncovered.into_iter().map(|collection| BookScope {
-                    collection,
-                    currency: currency.clone(),
-                }),
-                currency,
-                lookup,
-            )?);
+        if !uncovered.is_empty() || lookup.is_some() {
+            self.metadata = Some(
+                snapshot.target_dependencies(
+                    (if lookup.is_some() {
+                        collections
+                    } else {
+                        uncovered
+                    })
+                    .into_iter()
+                    .map(|collection| BookScope {
+                        collection,
+                        currency: currency.clone(),
+                    }),
+                    currency,
+                    lookup,
+                )?,
+            );
         }
         self.check_metadata_budget()
     }

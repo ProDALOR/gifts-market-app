@@ -30,3 +30,17 @@ export function sameCriteria(actual: Criteria, expected: Criteria) {
     ]);
   return key(actual) === key(expected);
 }
+
+/** Attribute valuation does not require a listed identity; the entire supplied basis must echo back. */
+export function sameGiftAttributes(
+  actual: Extract<ValuationResponse["target"], { kind: "gift_attributes" }>,
+  expected: Extract<ValuationQuery["target"], { kind: "gift_attributes" }>,
+) {
+  return (
+    actual.collection_id === expected.collection_id &&
+    (actual.number ?? null) === (expected.number ?? null) &&
+    (["model", "backdrop", "pattern"] as const).every(
+      (key) => (actual.traits[key] ?? null) === (expected.traits[key] ?? null),
+    )
+  );
+}

@@ -1611,6 +1611,24 @@ async fn gift_queries_share_rest_and_websocket_reports_without_repeated_context(
     let result = &body["results"][0];
     assert_eq!(result["strategy"], "gift_floor");
     assert_eq!(result["data"]["final_mark"]["value"], "6");
+    assert_eq!(result["data"]["model_premium"]["value"], "4");
+    assert_eq!(result["data"]["backdrop_premium"]["value"], "4");
+    assert_eq!(result["data"]["additive_estimate"]["value"], "10");
+    assert_eq!(result["data"]["basis"], "pair_capped");
+    assert!(result["data"].get("evidence").is_none());
+    for field in [
+        "collection_floor",
+        "model_floor",
+        "backdrop_floor",
+        "model_backdrop_floor",
+    ] {
+        let floor = &result["data"][field];
+        assert!(floor["value"].is_string());
+        assert!(floor["count"].is_u64());
+        for retired in ["price", "evidence", "gifts", "listings"] {
+            assert!(floor.get(retired).is_none());
+        }
+    }
     for field in ["gift", "currency_id", "slug", "evaluated_at", "stale"] {
         assert!(result["data"].get(field).is_none());
     }
@@ -1629,7 +1647,16 @@ async fn gift_queries_share_rest_and_websocket_reports_without_repeated_context(
         .find(|row| row["id"] == "gift_floor")
         .unwrap();
     assert_eq!(result["revision"], metadata["revision"]);
-    assert_eq!(metadata["display"]["fields"].as_array().unwrap().len(), 7);
+    assert_eq!(metadata["purpose"], "estimate");
+    let reference = discovery
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "ask_floor")
+        .unwrap();
+    assert_eq!(reference["purpose"], "reference");
+    assert_eq!(reference["display"]["fields"][0]["path"], "");
+    assert_eq!(metadata["display"]["fields"].as_array().unwrap().len(), 10);
     assert_eq!(metadata["display"]["fields"][0]["id"], "final_mark");
     assert_eq!(metadata["display"]["fields"][0]["format"]["decimals"], 2);
     for key in ["revision", "sync", "data", "strategy"] {
@@ -1699,7 +1726,7 @@ async fn gift_queries_share_rest_and_websocket_reports_without_repeated_context(
     );
     assert_eq!(
         result["data"]["final_mark"]["error"]["dependency"],
-        "backdrop_multiplier"
+        "backdrop_floor"
     );
     stop.cancel();
     runtime.shutdown().await.unwrap();
@@ -2001,6 +2028,10 @@ async fn canonical_slug_lookup_survives_renames_and_rejects_missing_or_ambiguous
         serde_json::from_str(&market_api::schema_json().unwrap()).unwrap();
     assert_eq!(schema["components"]["schemas"]["GiftNumber"]["minimum"], 1);
     assert!(schema["components"]["schemas"]["GiftLookup"]["oneOf"].is_array());
+    for removed in ["FloorEvidence", "GiftFloorEvidence", "AskFloorValuation"] {
+        assert!(schema["components"]["schemas"].get(removed).is_none());
+    }
+    assert!(schema["components"]["schemas"]["FloorValuation"].is_object());
     assert_eq!(
         schema["components"]["schemas"]["GiftNumber"]["type"],
         "integer"
@@ -2720,3 +2751,163 @@ async fn unified_query_uses_source_defaults_one_key_and_explicit_snapshot_leases
 
 #[path = "market_api/bid_filters.rs"]
 mod bid_filters;
+
+#[actix_web::test]
+async fn sparse_gift_estimates_without_matching_pair_asks_are_explicitly_additive() {
+    let (state, runtime, peer, stop) = setup().await;
+    let mut page = slug_page(3);
+    for row in &mut page.entities {
+        if let Some(w::entity::Entity::Order(order)) = &mut row.entity {
+            if order.item_id.as_deref() == Some("gift-123") {
+                // Identity remains resolvable, but this expired listing supplies no floor.
+                order.expires_at_ms = Some(1);
+            } else if order.id == "trait-1" {
+                order.attributes.insert(
+                    "tg.backdrop".into(),
+                    w::AttributePredicate {
+                        predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                            value: Some(w::attribute_value::Value::OptionId("base".into())),
+                        })),
+                    },
+                );
+            } else if order.id == "trait-2" {
+                order.attributes.insert(
+                    "tg.model".into(),
+                    w::AttributePredicate {
+                        predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                            value: Some(w::attribute_value::Value::OptionId("other".into())),
+                        })),
+                    },
+                );
+            }
+        }
+    }
+    peer.page.send_replace(page);
+    let first = wait_slug(&state).await;
+    assert_eq!(gift_data(&first).final_mark.value().unwrap().as_str(), "13");
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let body: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/query")
+            .set_json(gift_query(serde_json::json!("Gift-123"), "GRAM"))
+            .to_request(),
+    )
+    .await;
+    let data = &body["results"][0]["data"];
+    assert_eq!(data["basis"], "additive");
+    assert_eq!(data["model_premium"]["value"], "5");
+    assert_eq!(data["backdrop_premium"]["value"], "6");
+    assert_eq!(data["additive_estimate"]["value"], "13");
+    assert_eq!(data["final_mark"]["value"], "13");
+    assert_eq!(
+        data["model_backdrop_floor"]["error"]["code"],
+        "not_enough_data"
+    );
+    assert_eq!(data["model_floor"]["count"], 1);
+    assert_eq!(data["model_backdrop_floor"]["count"], 0);
+    assert!(data.get("symbol_floor").is_none());
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+async fn gift_attribute_queries_value_unknown_numbers_and_share_rest_websocket_contracts() {
+    let (state, runtime, peer, stop) = setup().await;
+    peer.page.send_replace(slug_page(3));
+    wait_slug(&state).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let query = serde_json::json!({"target":{"kind":"gift_attributes","collection_id":"tg.gift.123","number":999999,"traits":{"model":"model","backdrop":"b"}},"currency_id":"GRAM","strategies":["gift_floor","ask_floor"]});
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/query")
+            .set_json(&query)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(body["target"], query["target"]);
+    assert!(body["target"].get("id").is_none());
+    assert_eq!(body["results"][0]["data"]["final_mark"]["value"], "6");
+    assert_eq!(
+        body["results"][1]["data"]["error"]["code"],
+        "not_enough_data"
+    );
+    let mut unnumbered = query.clone();
+    unnumbered["target"]
+        .as_object_mut()
+        .unwrap()
+        .remove("number");
+    let result: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/query")
+            .set_json(&unnumbered)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(result["target"], unnumbered["target"]);
+    assert_eq!(result["results"][0]["data"]["final_mark"]["value"], "6");
+    assert_eq!(result["results"][1]["data"]["value"], "6");
+    for (field, value) in [("model", "b"), ("backdrop", "model"), ("pattern", "model")] {
+        let mut invalid = query.clone();
+        invalid["target"]["traits"][field] = value.into();
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/valuations/query")
+                .set_json(&invalid)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            400,
+            "Wrong-kind trait {field} must fail validation"
+        );
+    }
+    let web_dir = peer._directory.path().join("web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "fixture").unwrap();
+    let server = api_server(&runtime, web_dir);
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(server.run(api_stop.child_token()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    bid_filters::send(&mut socket,serde_json::json!({"type":"request","id":"attributes","method":"valuation.query","params":query})).await;
+    let mut ws = bid_filters::frame(&mut socket, "attributes", "result").await["data"].clone();
+    let mut rest = body;
+    rest.as_object_mut().unwrap().remove("evaluated_at");
+    ws.as_object_mut().unwrap().remove("evaluated_at");
+    assert_eq!(rest, ws);
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"valuation.watch","id":"attribute-watch","params":query}),
+    )
+    .await;
+    let snapshot = bid_filters::frame(&mut socket, "attribute-watch", "valuation.snapshot").await;
+    assert_eq!(snapshot["data"]["target"], query["target"]);
+    assert_eq!(
+        snapshot["data"]["results"][0]["data"]["final_mark"]["value"],
+        "6"
+    );
+    socket.close(None).await.unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}

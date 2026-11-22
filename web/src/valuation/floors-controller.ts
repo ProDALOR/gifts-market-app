@@ -13,7 +13,7 @@ type Values = components["schemas"]["CatalogFloorValuation"];
 type TraitFloors = NonNullable<Values["collections"][number]["traits"]>;
 type CatalogTarget = Extract<ValuationQuery["target"], { kind: "catalog" }>;
 type Pair = NonNullable<CatalogTarget["details"]>["pair"];
-export type SharedFloor = components["schemas"]["AskFloorValuation"];
+export type SharedFloor = components["schemas"]["FloorValuation"];
 export type FloorsEntry = {
   floor: SharedFloor;
   traits?: TraitFloors;

@@ -71,10 +71,7 @@ async fn batch_reuses_gift_statistics_and_status_changes_do_not_rebuild_price_da
             ["code"],
         "not_enough_data"
     );
-    assert_eq!(
-        traits.patterns[&PatternId::from("symbol")].evidence.gifts,
-        0
-    );
+    assert_eq!(traits.patterns[&PatternId::from("symbol")].count, 0);
     assert_eq!(
         traits.models[&ModelId::from("m")]
             .price
@@ -393,8 +390,7 @@ async fn symbol_floors_deduplicate_gifts_and_follow_catalog_and_order_changes() 
         .unwrap()
         .patterns[&PatternId::from("symbol")];
     assert_eq!(symbol.price.value().unwrap().as_str(), "5");
-    assert_eq!(symbol.evidence.gifts, 1);
-    assert_eq!(symbol.evidence.listings, 2);
+    assert_eq!(symbol.count, 1);
     writer
         .apply(w::Batch {
             cursor: "symbol-repriced".into(),

@@ -225,7 +225,7 @@ fn encode_response(
 mod tests {
     use super::*;
     fn valuation_report() -> Arc<market_valuation::ValuationReport> {
-        Arc::new(serde_json::from_value(serde_json::json!({"target":{"kind":"selection","collection_id":"gift","criteria":{}},"currency_id":"GRAM","evaluated_at":"2026-01-01T00:00:00Z","stale":false,"results":[{"strategy":"ask_floor","data":{"price":{"value":"123.456789"},"evidence":{"gifts":2,"listings":3}}}]})).unwrap())
+        Arc::new(serde_json::from_value(serde_json::json!({"target":{"kind":"selection","collection_id":"gift","criteria":{}},"currency_id":"GRAM","evaluated_at":"2026-01-01T00:00:00Z","stale":false,"results":[{"strategy":"ask_floor","data":{"value":"123.456789","count":2}}]})).unwrap())
     }
     #[tokio::test]
     async fn valuation_encoding_is_bounded_and_shared_by_rest_requests_and_watches() {

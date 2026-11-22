@@ -566,3 +566,69 @@ fn number_predicates_seek_rank_bounds_in_both_directions_without_losing_ties_or_
         3
     );
 }
+
+#[test]
+fn scoped_order_snapshot_shares_only_selected_partitions_and_survives_replacement() {
+    let mut state = State::default();
+    for (id, collection, currency, mode, venue) in [
+        ("ask", "gift", "GRAM", 1, "venue"),
+        ("second", "gift", "GRAM", 1, "second"),
+        ("bid", "gift", "GRAM", 2, "venue"),
+        ("other-collection", "other", "GRAM", 1, "venue"),
+        ("other-currency", "gift", "XTR", 1, "venue"),
+    ] {
+        let mut row = order(id, "10", None);
+        row.mode = mode;
+        row.book = Some(w::BookKey {
+            venue_id: venue.into(),
+            item_type_id: collection.into(),
+            currency_id: currency.into(),
+        });
+        state.upsert(entity(E::Order(row))).unwrap();
+    }
+    let mut selected = scope(&order("", "1", None).book.unwrap());
+    selected.modes.insert(crate::types::OrderMode::Ask);
+    let snapshot = OrderBookSnapshot::new(state.books(), selected);
+    assert_eq!(snapshot.index.partitions.len(), 2);
+    assert!(
+        snapshot.index.locations.is_empty(),
+        "The scoped view does not retain global identity indexes"
+    );
+    let rows: Vec<_> = snapshot.candidates(Default::default()).cloned().collect();
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        assert!(Arc::ptr_eq(
+            row,
+            state.entity(&entity_key(row).unwrap()).unwrap()
+        ));
+    }
+    let unrelated = Arc::downgrade(
+        state
+            .entity(&Key::order("venue".into(), "other-collection".into()))
+            .unwrap(),
+    );
+    state
+        .upsert(entity(E::Order(order("ask", "1", None))))
+        .unwrap();
+    assert!(
+        snapshot
+            .candidates(Default::default())
+            .all(|row| crate::state::order(row).unwrap().price == "10")
+    );
+    assert_eq!(
+        crate::state::order(
+            state
+                .entity(&Key::order("venue".into(), "ask".into()))
+                .unwrap()
+        )
+        .unwrap()
+        .price,
+        "1"
+    );
+    drop(state);
+    assert!(
+        unrelated.upgrade().is_none(),
+        "Unrelated orders are released even while the scoped view remains alive"
+    );
+    assert_eq!(snapshot.candidates(Default::default()).count(), 2);
+}

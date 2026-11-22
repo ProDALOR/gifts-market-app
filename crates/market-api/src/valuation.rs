@@ -68,6 +68,7 @@ pub struct StrategyResponse {
     pub documentation_url: String,
     pub documentation_revision: String,
     pub input: InputRequirements,
+    pub purpose: market_valuation::StrategyPurpose,
 }
 impl From<&market_valuation::StrategyMetadata> for StrategyResponse {
     fn from(metadata: &market_valuation::StrategyMetadata) -> Self {
@@ -76,11 +77,16 @@ impl From<&market_valuation::StrategyMetadata> for StrategyResponse {
             name: metadata.name,
             description: metadata.description,
             revision: content_revision(
-                &serde_json::to_vec(&(InputRequirements::from(metadata.input), metadata.display))
-                    .expect("static strategy contract serializes"),
+                &serde_json::to_vec(&(
+                    InputRequirements::from(metadata.input),
+                    metadata.display,
+                    metadata.purpose,
+                ))
+                .expect("static strategy contract serializes"),
             ),
             display: metadata.display,
             input: metadata.input.into(),
+            purpose: metadata.purpose,
             documentation_revision: content_revision(metadata.documentation.as_bytes()),
             documentation_url: format!("/valuations/strategies/{}/documentation", metadata.id),
         }
@@ -208,6 +214,7 @@ mod tests {
         fn entries(documentation: &'static str) -> [market_valuation::StrategyMetadata; 2] {
             [
                 market_valuation::StrategyMetadata {
+                    purpose: market_valuation::StrategyPurpose::Estimate,
                     id: "one",
                     name: "One",
                     description: "first",
@@ -216,6 +223,7 @@ mod tests {
                     display: market_valuation::strategy("ask_floor").unwrap().display,
                 },
                 market_valuation::StrategyMetadata {
+                    purpose: market_valuation::StrategyPurpose::Estimate,
                     id: "two",
                     name: "Two",
                     description: "second",
@@ -286,11 +294,14 @@ mod tests {
             new_catalog.guides[base.id].etag
         );
         changed = base;
-        changed.input = market_valuation::InputContract::ResolvedGift;
+        changed.input = market_valuation::InputContract::GiftAttributes;
+        assert_ne!(original.revision, StrategyResponse::from(&changed).revision);
+        changed = base;
+        changed.purpose = market_valuation::StrategyPurpose::Estimate;
         assert_ne!(original.revision, StrategyResponse::from(&changed).revision);
         changed = base;
         changed.display.evidence = &[market_valuation::EvidenceDefinition {
-            path: "/evidence/gifts",
+            path: "/count",
             label: "unique gifts",
         }];
         assert_ne!(original.revision, StrategyResponse::from(&changed).revision);

@@ -32,6 +32,7 @@ export function validateDefinitions(rows: ValuationStrategy[]) {
       !record(row) ||
       !text(row.id) ||
       !text(row.name) ||
+      !["estimate", "reference"].includes(row.purpose) ||
       !text(row.revision) ||
       !row.revision ||
       row.revision.length > 64 ||
@@ -39,7 +40,7 @@ export function validateDefinitions(rows: ValuationStrategy[]) {
       !Array.isArray(row.input.targets) ||
       !row.input.targets.length ||
       !row.input.targets.every((target) =>
-        ["catalog", "selection", "gift"].includes(target),
+        ["catalog", "selection", "gift", "gift_attributes"].includes(target),
       ) ||
       !["required", "unsupported"].includes(row.input.period) ||
       Object.hasOwn(row, "targets") ||
@@ -60,6 +61,10 @@ export function validateDefinitions(rows: ValuationStrategy[]) {
         !/^[a-z][a-z0-9_]*$/.test(field.id) ||
         !text(field.label) ||
         typeof field.primary !== "boolean" ||
+        (field.path != null &&
+          (!text(field.path) ||
+            (field.path !== "" && !field.path.startsWith("/")) ||
+            /~(?![01])/.test(field.path))) ||
         !record(field.format) ||
         !["currency", "number"].includes(field.format.kind) ||
         (field.format.kind === "number" && !text(field.format.suffix)) ||
@@ -81,6 +86,7 @@ export function validateDefinitions(rows: ValuationStrategy[]) {
   }
 }
 function pointer(data: unknown, path: string): unknown {
+  if (path === "") return data;
   let value = data;
   for (const token of path.slice(1).split("/")) {
     const key = token.replace(/~1/g, "/").replace(/~0/g, "~");
@@ -136,6 +142,7 @@ export function presentResult(
     ? [
         strategy.display.fields.find((f) => f.primary) ?? {
           id: "value",
+          path: undefined,
           label: "Value",
           primary: true,
           format: { kind: "currency" as const },
@@ -144,9 +151,13 @@ export function presentResult(
     : strategy.display.fields;
   const fields: PresentedField[] = definitions.map((field) => {
     if (error) return { ...field, value: unavailable(error) };
-    if (!record(data) || !Object.hasOwn(data, field.id))
-      throw new Error("Valuation metric is missing");
-    const metric = data[field.id];
+    const metric =
+      field.path == null
+        ? record(data)
+          ? data[field.id]
+          : undefined
+        : pointer(data, field.path);
+    if (metric === undefined) throw new Error("Valuation metric is missing");
     if (
       !record(metric) ||
       Object.hasOwn(metric, "value") === Object.hasOwn(metric, "error")

@@ -74,9 +74,9 @@ try {
         [selected + "-back"],
       );
       for (const row of data.results[0].data.collections) {
-        row.floor.price.value = "12345678.123456789";
+        row.floor.value = "12345678.123456789";
         if (row.traits) {
-          row.traits.models[selected + "-model"].price.value =
+          row.traits.models[selected + "-model"].value =
             selected === "a" ? "10.123456789" : "20.123456789";
         }
       }

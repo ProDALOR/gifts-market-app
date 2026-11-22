@@ -23,7 +23,59 @@ pub(super) fn request(scope: &BookScope) -> w::ReadRequest {
         ..Default::default()
     }
 }
+/// Gift projection over scoped generic active-order partitions, with no request token retained.
+pub(crate) struct AskBookSnapshot(market_replica::OrderBookSnapshot);
+impl AskBookSnapshot {
+    pub(crate) fn pair_quotes<'a>(
+        &'a self,
+        model: &ModelId,
+        backdrop: &BackdropId,
+        now_ms: i64,
+    ) -> impl Iterator<Item = Result<Option<AskQuote>>> + use<'a> {
+        let attributes = [
+            ("tg.model", model.as_str()),
+            ("tg.backdrop", backdrop.as_str()),
+        ]
+        .into_iter()
+        .map(|(key, value)| {
+            (
+                key.to_owned(),
+                w::AttributePredicate {
+                    predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                        value: Some(w::attribute_value::Value::OptionId(value.to_owned())),
+                    })),
+                },
+            )
+        })
+        .collect();
+        let model = model.clone();
+        let backdrop = backdrop.clone();
+        self.0.candidates(attributes).map(move |entity| {
+            let Some(w::entity::Entity::Order(order)) = &entity.entity else {
+                return Err(Status::data_loss("expected an active order"));
+            };
+            market_gifts_hub::ask_quote(order, now_ms)
+                .map(|quote| {
+                    quote.filter(|quote| {
+                        quote.model_id.as_ref() == Some(&model)
+                            && quote.backdrop_id.as_ref() == Some(&backdrop)
+                    })
+                })
+                .map_err(|error| Status::data_loss(error.to_string()))
+        })
+    }
+}
 impl ValuationSnapshot {
+    pub(crate) fn ask_book(&self, scope: &BookScope) -> Result<AskBookSnapshot> {
+        self.check_cancelled()?;
+        self.reader
+            .order_book_snapshot(
+                scope.collection.as_str(),
+                scope.currency.as_str(),
+                w::OrderMode::Ask,
+            )
+            .map(AskBookSnapshot)
+    }
     /// Bounded, domain-projected observations for target estimators. The snapshot stays pinned.
     pub(crate) fn valuation_orders(
         &self,
