@@ -231,11 +231,16 @@ try {
     bunny: "_y_lqMGEh6UieJB3_3_TTw",
     pepe: "EnnK_4Kr2qgEkLGpYM3NxA",
   };
+  let releaseInitialCatalog;
+  const initialCatalog = new Promise((resolve) => {
+    releaseInitialCatalog = resolve;
+  });
   let catalogRequests = 0;
   let failOptions = true,
     optionRequests = 0;
-  await page.route("**/catalog", (route) => {
+  await page.route("**/catalog", async (route) => {
     catalogRequests++;
+    await initialCatalog;
     return route.fulfill({
       headers: { etag: `"${directoryRevision}"` },
       json: {
@@ -478,7 +483,54 @@ try {
     });
   });
   const base = `http://127.0.0.1:${server.httpServer.address().port}`;
+  await page.setViewportSize({ width: 1200, height: 900 });
   await page.goto(`${base}/?collection=bunny&currency=GRAM`);
+  const title = page.locator(".market-heading h1");
+  await page
+    .getByRole("heading", { name: "Loading collection", exact: true })
+    .waitFor();
+  assert.equal(await title.getAttribute("aria-busy"), "true");
+  assert.equal(await title.locator(".collection-title-skeleton").count(), 1);
+  assert.equal(
+    await page.getByText("Select a collection", { exact: true }).count(),
+    0,
+    "Selected collections never flash an empty-selection title",
+  );
+  releaseInitialCatalog();
+  await page
+    .getByRole("heading", { name: "Jelly Bunny", exact: true })
+    .waitFor();
+  assert.equal(await title.getAttribute("aria-busy"), "false");
+  assert.equal(await title.locator(".collection-title-skeleton").count(), 0);
+  assert.equal(await page.locator(".market-eyebrow").count(), 0);
+  assert.equal(await page.locator(".feed-status").count(), 1);
+  const headerLayout = await page
+    .locator(".market-heading")
+    .evaluate((header) => {
+      const title = header.querySelector("h1").getBoundingClientRect();
+      const status = header
+        .querySelector(".feed-status")
+        .getBoundingClientRect();
+      return {
+        oneRow:
+          Math.abs(
+            (title.top + title.bottom) / 2 - (status.top + status.bottom) / 2,
+          ) < 1,
+        separated: status.left >= title.right + 15,
+        compact: header.getBoundingClientRect().height <= 40,
+      };
+    });
+  assert.deepEqual(headerLayout, {
+    oneRow: true,
+    separated: true,
+    compact: true,
+  });
+  assert.equal(
+    await page.locator('.feed-status > [aria-hidden="true"]').innerText(),
+    "·",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+
   await page.waitForSelector('.collection-tile[data-collection-id="bunny"]');
   assert.deepEqual(
     catalogCommands,
@@ -1322,9 +1374,7 @@ try {
     assert.ok(!labels.includes(hidden), hidden);
   assert.equal(await page.locator(".source-details").count(), 0);
   await page.locator('[data-metric="final_mark"] .valuation-value').waitFor();
-  await page
-    .getByLabel("Collection floor: 8.00 GRAM", { exact: true })
-    .waitFor();
+  await page.getByLabel("Collection floor: 8 GRAM", { exact: true }).waitFor();
   const beforeFloorUpdate = floorRequests;
   floorPrice = "7";
   for (const socket of openSockets) {
@@ -1333,9 +1383,7 @@ try {
     );
     socket.send(JSON.stringify({ type: "market.status", status: "available" }));
   }
-  await page
-    .getByLabel("Collection floor: 7.00 GRAM", { exact: true })
-    .waitFor();
+  await page.getByLabel("Collection floor: 7 GRAM", { exact: true }).waitFor();
   assert.equal(
     await page
       .locator('[data-attribute="collection"] .floor-evidence')
@@ -1406,7 +1454,7 @@ try {
     await page
       .locator('[data-attribute="pattern"] .quote-amount')
       .textContent(),
-    "8.50",
+    "8.5",
   );
   assert.equal(
     await page
@@ -1421,37 +1469,30 @@ try {
       .count(),
     0,
   );
-  const inspect = page.locator('[data-attribute="model"] .floor-inspect');
+  const inspect = page.locator('[data-attribute="model"] .floor-value');
   const beforeInspect = floorRequests;
   await inspect.click();
   const floorInfo = page.getByRole("dialog", {
     name: "Floor details",
     exact: true,
   });
-  await floorInfo.waitFor();
+  assert.equal(await floorInfo.count(), 0);
+  assert.equal(await inspect.evaluate((el) => el.tagName), "SPAN");
   assert.equal(
-    await floorInfo.locator(".detail-fact-price .quote-amount").textContent(),
-    "10.000000001",
-  );
-  assert.deepEqual(
-    await floorInfo.locator(".detail-fact-values dd").allTextContents(),
-    ["10.000000001", "2", "4"],
+    await page
+      .locator(".gift-attributes button, .gift-attributes [aria-haspopup]")
+      .count(),
+    0,
   );
   assert.equal(
     floorRequests,
     beforeInspect,
-    "Inspecting exact floor evidence reuses the loaded projection",
+    "Read-only floor values reuse the loaded projection",
   );
-  await page.keyboard.press("Escape");
-  await floorInfo.waitFor({ state: "detached" });
   assert.equal(
     await page.locator(".detail").count(),
     1,
-    "Closing floor details keeps the gift open",
-  );
-  assert.equal(
-    await inspect.evaluate((el) => el === document.activeElement),
-    true,
+    "Reading a floor keeps the gift open",
   );
   const detailViewport = page.viewportSize();
   for (const width of [320, 390, 1200]) {

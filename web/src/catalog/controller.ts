@@ -23,6 +23,7 @@ export type CatalogState = {
   item?: Collection;
   options: ReadonlyMap<string, CatalogOption>;
   names: Map<string, string>;
+  catalogLoading: boolean;
   startupError: string;
   optionsError: string;
   optionsLoading: boolean;
@@ -59,6 +60,7 @@ export class CatalogController {
     directory: [],
     options: emptyOptions,
     names: new Map(),
+    catalogLoading: true,
     startupError: "",
     optionsError: "",
     optionsLoading: false,
@@ -311,6 +313,8 @@ export class CatalogController {
       item,
       options,
       names,
+      catalogLoading:
+        this.directory.value === undefined && !this.directory.error,
       startupError: this.directory.error || this.liveError,
       optionsError: resource?.error ?? "",
       optionsLoading:

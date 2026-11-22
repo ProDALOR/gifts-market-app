@@ -3,6 +3,77 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { listingLink, serial, modelName } from "../src/orderbook.ts";
 import type { Collection, CatalogOption, Order } from "../src/market.ts";
+import { criteriaPresentation, giftPresentation } from "../src/order-target.ts";
+import { modelMedia } from "../src/market.ts";
+import { giftAppearance } from "../src/previews/gift-appearance.ts";
+
+test("executed criteria use gift presentation without changing their market target", async () => {
+  const { giftDetails } = await import("../src/orderbook.ts");
+  const target = {
+    kind: "criteria" as const,
+    models: ["model"],
+    backdrops: ["back"],
+    patterns: ["symbol"],
+    number: { min: 42, max: 42 },
+  };
+  const execution = { kind: "executed", target } as Order;
+  const media = {
+    preview_url: "/model/preview",
+    thumbnail_url: "/model/thumbnail",
+  };
+  const palette = { center: "#778899", edge: "#112233", pattern: "#334455" };
+  const options = new Map<string, CatalogOption>([
+    ["model", { kind: "model", id: "model", name: "Model", media }],
+    ["back", { kind: "backdrop", id: "back", name: "Backdrop", palette }],
+    [
+      "symbol",
+      {
+        kind: "pattern",
+        id: "symbol",
+        name: "Symbol",
+        media: { thumbnail_url: "/symbol/thumbnail" },
+      },
+    ],
+  ]);
+  assert.equal(criteriaPresentation(execution), undefined);
+  assert.equal(serial(execution), "42");
+  assert.equal(modelMedia(execution, options), media);
+  assert.equal(giftAppearance(execution, options).palette, palette);
+  assert.deepEqual(giftAppearance(execution, options).patternUrls, [
+    "/symbol/thumbnail",
+  ]);
+  assert.deepEqual(
+    giftDetails(execution, new Map(), options).map((row) => row.label),
+    ["Model", "Backdrop", "Symbol"],
+  );
+  assert.equal(
+    execution.target,
+    target,
+    "presentation must not manufacture a resolved gift identity",
+  );
+  const bid = { ...execution, kind: "bid" as const };
+  assert.equal(criteriaPresentation(bid), target);
+  assert.equal(giftPresentation(bid), undefined);
+  assert.equal(modelMedia(bid, options), undefined);
+  assert.equal(serial(bid), undefined);
+});
+
+test("ambiguous executed criteria do not invent a model, backdrop or gift number", () => {
+  const order = {
+    kind: "executed",
+    target: {
+      kind: "criteria",
+      models: ["a", "b"],
+      backdrops: [],
+      patterns: [],
+      number: { min: 1, max: 100 },
+    },
+  } as Order;
+  assert.equal(criteriaPresentation(order), undefined);
+  assert.equal(serial(order), undefined);
+  assert.equal(giftPresentation(order)?.traits.model, undefined);
+  assert.equal(giftPresentation(order)?.traits.backdrop, undefined);
+});
 test("concrete gift numbers remain distinct from bid selection ranges", () => {
   const gift = {
     target: { kind: "gift", number: 42, traits: { model: "gold" } },

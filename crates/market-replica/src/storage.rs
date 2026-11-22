@@ -326,7 +326,8 @@ impl Store {
         Ok(batches)
     }
     pub fn finish(&self, cursor: &str) -> Result<(), Status> {
-        let tx = self.0.begin_write().map_err(failure)?;
+        let mut tx = self.0.begin_write().map_err(failure)?;
+        tx.set_durability(Durability::Immediate).map_err(failure)?;
         checkpoint(&tx, cursor)?;
         tx.delete_table(JOURNAL).map_err(failure)?;
         tx.open_table(JOURNAL).map_err(failure)?;

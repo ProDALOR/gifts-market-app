@@ -14,7 +14,8 @@ import type {
   SharedFloor,
 } from "./floors-controller";
 import type { Order } from "../market";
-import { roundedAmount } from "../amount";
+import { roundedAmount, trimDecimalZeros } from "../amount";
+import { giftPresentation } from "../order-target";
 import { Quote } from "../ui/market-controls";
 import "./floors.css";
 const empty: FloorsState = {
@@ -47,10 +48,10 @@ export function FloorsProvider({
     controller.getSnapshot,
   );
   const traits =
-    order?.target.kind === "gift" &&
+    order &&
     order.book.collection_id === collection &&
     order.book.currency_id === currency
-      ? order.target.traits
+      ? giftPresentation(order)?.traits
       : undefined;
   const model = traits?.model,
     backdrop = traits?.backdrop;
@@ -127,7 +128,11 @@ export function FloorBadge({
   const message =
     "error" in floor.price ? floor.price.error.message : undefined;
   const value = price ? `${price} ${currency}` : "unavailable";
-  const display = price && rounded ? roundedAmount(price) : price;
+  const display = price
+    ? rounded
+      ? roundedAmount(price)
+      : trimDecimalZeros(price)
+    : undefined;
   return (
     <span
       className={`floor-badge${stale ? " stale" : ""}`}

@@ -39,8 +39,10 @@ export function amount(value: string) {
     (fraction ? "." + fraction : "")
   );
 }
+export const trimDecimalZeros = (value: string) =>
+  value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
 export const roundedAmount = (value: string) =>
-  formatDecimal(value, 2, "half_up");
+  trimDecimalZeros(formatDecimal(value, 2, "half_up"));
 
 /** Small collection tiles use a decimal magnitude; full prices remain available on intent. */
 export function compactAmount(value: string) {
@@ -62,7 +64,7 @@ export function compactAmount(value: string) {
     ).replace(/\.$/, "");
   };
   let rounded = roundedAmount(scaled(exponent));
-  if (rounded === (exponent > 12 ? "10.00" : "1000.00")) {
+  if (rounded === (exponent > 12 ? "10" : "1000")) {
     exponent += exponent > 12 ? 1 : 3;
     rounded = roundedAmount(scaled(exponent));
   }

@@ -133,18 +133,89 @@ try {
     await page
       .locator(".trait-group-toggle")
       .evaluateAll((rows) => rows.map((row) => row.getAttribute("aria-label"))),
-    [
-      "0.5% rarity",
-      "1% rarity",
-      "2% rarity",
-      "2.1% rarity",
-      "Legendary rarity",
-      "Epic rarity",
-      "Rare rarity",
-      "Uncommon rarity",
-      "Unknown rarity",
-    ],
+    ["0.5% rarity", "1% rarity", "2% rarity", "2.1% rarity", "Unknown rarity"],
   );
+  const search = page.getByRole("searchbox");
+  assert.equal(await button("Primary").getAttribute("aria-pressed"), "true");
+  assert.equal(await check("0.5%").locator(".trait-group-count").count(), 0);
+  assert.equal(await check("1%").locator(".trait-group-count").count(), 0);
+  assert.equal(
+    await check("2%").locator(".trait-group-count").textContent(),
+    "30",
+  );
+  await button("Amber").click();
+  await page
+    .locator(".trait-options")
+    .evaluate((node) => (node.scrollTop = 80));
+  await button("Craftable").click();
+  assert.equal(
+    await page.locator(".trait-options").evaluate((node) => node.scrollTop),
+    0,
+  );
+  assert.deepEqual(
+    await page.evaluate(() => window.currentFilters.models),
+    ["amber"],
+    "Switching groups does not select models",
+  );
+  assert.deepEqual(await page.locator(".trait-group-label").allTextContents(), [
+    "Legendary",
+    "Epic",
+    "Rare",
+    "Uncommon",
+  ]);
+  const tierColors = await page
+    .locator(".trait-group-toggle")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => getComputedStyle(button).color),
+    );
+  assert.equal(
+    new Set(tierColors).size,
+    4,
+    "Each craft tier has its own color",
+  );
+  await button("Craft rare").click();
+  await search.fill("legendary");
+  assert.equal(await page.locator(".trait-group").count(), 1);
+  await button("Primary").click();
+  await page.getByText("No matching traits", { exact: true }).waitFor();
+  assert.deepEqual(
+    await page.evaluate(() => window.currentFilters.models),
+    ["amber", "rare"],
+    "Selections from both groups survive switching and search",
+  );
+  await search.fill("");
+  assert.equal(await button("Amber").getAttribute("aria-pressed"), "true");
+  await button("Craftable").click();
+  await checked("Rare", true);
+  await mkdir("/tmp/gifts-market-ui", { recursive: true });
+  for (const width of [320, 1200]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.screenshot({
+      path: `/tmp/gifts-market-ui/craft-picker-${width}.png`,
+    });
+    await page.evaluate(() => {
+      document.documentElement.classList.add("telegram");
+      document.documentElement.dataset.telegramTheme = "light";
+    });
+    const lightColors = await page
+      .locator(".trait-group-toggle")
+      .evaluateAll((buttons) =>
+        buttons.map((button) => getComputedStyle(button).color),
+      );
+    assert.equal(new Set(lightColors).size, 4);
+    assert.notDeepEqual(
+      lightColors,
+      tierColors,
+      "Craft colors adapt to light theme",
+    );
+    await page.evaluate(() => {
+      document.documentElement.classList.remove("telegram");
+      delete document.documentElement.dataset.telegramTheme;
+    });
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await button("Primary").click();
+  await button("Any").click();
   await check("0.5%").click();
   await checked("0.5%", true);
   assert.deepEqual(await page.evaluate(() => window.currentFilters.models), [
@@ -157,7 +228,6 @@ try {
   await page.keyboard.press("Space");
   await checked("0.5%", true);
   await check("1%").click();
-  const search = page.getByRole("searchbox");
   await search.fill("  Amber ");
   assert.equal(await page.locator(".trait-group").count(), 1);
   await check("0.5%").click();
@@ -174,7 +244,9 @@ try {
   await checked("0.5%", "mixed");
   await button("Any").click();
   assert.equal(await button("Any").getAttribute("aria-pressed"), "true");
+  await button("Craftable").click();
   await check("Rare").click();
+  await button("Primary").click();
   assert.deepEqual(await page.evaluate(() => window.currentFilters.models), [
     "rare",
   ]);
@@ -184,6 +256,7 @@ try {
     "unknown",
   ]);
   await button("Backdrop").click();
+  assert.equal(await page.locator(".model-type-options").count(), 0);
   await check("0.5%").click();
   assert.deepEqual(await page.evaluate(() => window.currentFilters.backdrops), [
     "black",
@@ -251,6 +324,7 @@ try {
   }
   await page.evaluate(() => window.chooseCollection("b"));
   await button("Other collection model").waitFor();
+  assert.equal(await page.locator(".model-type-options").count(), 0);
   await checked("0.5%", false);
   assert.equal(await button("Amber").count(), 0);
   await check("0.5%").click();

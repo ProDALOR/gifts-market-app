@@ -11,14 +11,14 @@ test("amount formatting preserves precision beyond JavaScript numeric range", ()
 });
 test("picker floor rounding uses exact half-up decimals and carries across whole amounts", () => {
   for (const [input, expected] of [
-    ["0", "0.00"],
-    ["8", "8.00"],
-    ["1.2", "1.20"],
+    ["0", "0"],
+    ["8", "8"],
+    ["1.2", "1.2"],
     ["1.234999999", "1.23"],
     ["1.235", "1.24"],
-    ["9.999", "10.00"],
+    ["9.999", "10"],
     ["0.005", "0.01"],
-    ["9007199254740993.995", "9007199254740994.00"],
+    ["9007199254740993.995", "9007199254740994"],
   ])
     assert.equal(roundedAmount(input), expected);
 });

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { ComponentProps } from "react";
-import type { Order } from "../market";
+import type { GiftMedia } from "../market";
+import type { PreviewOrder } from "../order-target";
 import { giftAppearance } from "./gift-appearance";
 import type { GiftOption } from "./gift-appearance";
 import { GiftArtwork } from "./gift-artwork";
@@ -9,9 +10,11 @@ import { GiftArtwork } from "./gift-artwork";
 export function GiftPreview({
   order,
   options,
+  fallbackMedia,
   ...props
 }: {
-  order: Pick<Order, "target">;
+  order: PreviewOrder;
+  fallbackMedia?: GiftMedia;
   options: ReadonlyMap<string, GiftOption>;
 } & Omit<
   ComponentProps<typeof GiftArtwork>,
@@ -34,7 +37,7 @@ export function GiftPreview({
   return (
     <GiftArtwork
       {...props}
-      media={appearance.media}
+      media={appearance.media ?? fallbackMedia}
       palette={palette}
       patternUrls={patternUrls}
       label={appearance.label}

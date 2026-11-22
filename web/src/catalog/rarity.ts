@@ -11,6 +11,13 @@ const tiers = {
   rare: "Rare",
   uncommon: "Uncommon",
 } as const;
+export function craftTier(
+  rarity: Choice["rarity"],
+): keyof typeof tiers | undefined {
+  return rarity && Object.hasOwn(tiers, rarity.kind)
+    ? (rarity.kind as keyof typeof tiers)
+    : undefined;
+}
 function rarityGroup(rarity: Choice["rarity"]) {
   if (rarity?.kind === "percentage") {
     const value = rarity.permille;
@@ -19,16 +26,25 @@ function rarityGroup(rarity: Choice["rarity"]) {
         key: `percentage:${value}`,
         order: value,
         label: `${Math.floor(value / 10)}${value % 10 ? `.${value % 10}` : ""}%`,
+        craft: undefined,
       };
     }
-  } else if (rarity && Object.hasOwn(tiers, rarity.kind)) {
+  }
+  const craft = craftTier(rarity);
+  if (craft) {
     return {
-      key: rarity.kind,
-      order: 1001 + Object.keys(tiers).indexOf(rarity.kind),
-      label: tiers[rarity.kind],
+      key: craft,
+      order: 1001 + Object.keys(tiers).indexOf(craft),
+      label: tiers[craft],
+      craft,
     };
   }
-  return { key: "unknown", order: Infinity, label: "Unknown" };
+  return {
+    key: "unknown",
+    order: Infinity,
+    label: "Unknown",
+    craft: undefined,
+  };
 }
 
 /** Keep exact percentages and craft tiers distinct; unknown rarity comes last. */

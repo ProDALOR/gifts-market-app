@@ -1,5 +1,6 @@
-import type { Order, CatalogOption, BackdropPalette } from "../market.ts";
+import type { CatalogOption, BackdropPalette } from "../market.ts";
 import { modelMedia } from "../market.ts";
+import { giftPresentation, type PreviewOrder } from "../order-target.ts";
 export type GiftOption = CatalogOption;
 export type { BackdropPalette } from "../market.ts";
 export function backdropPalette(
@@ -9,14 +10,13 @@ export function backdropPalette(
     ? backdrop.palette || undefined
     : undefined;
 }
-/** Catalog colors are validated by the gift projection; only concrete gifts get artwork. */
+/** Use known gift/execution traits; open criteria orders keep their bid composition. */
 export function giftAppearance(
-  order: Pick<Order, "target">,
+  order: PreviewOrder,
   options: ReadonlyMap<string, GiftOption>,
 ) {
   const media = modelMedia(order, options);
-  const selected =
-    order.target.kind === "gift" ? order.target.traits : undefined;
+  const selected = giftPresentation(order)?.traits;
   const backdrop = selected?.backdrop
     ? options.get(selected.backdrop)
     : undefined;

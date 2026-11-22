@@ -370,7 +370,7 @@ body:has(.detail[open]) {
   overflow: hidden;
 }
 .attribute-floor-table {
-  margin-top: 12px;
+  margin-top: 8px;
 }
 .detail-attributes {
   width: 100%;
@@ -387,7 +387,7 @@ body:has(.detail[open]) {
 .detail-attributes th,
 .detail-attributes td {
   vertical-align: middle;
-  padding: 8px;
+  padding: 5px 8px;
   border-bottom: 1px solid var(--line);
 }
 .detail-attributes tbody tr:last-child > * {
@@ -427,6 +427,10 @@ body:has(.detail[open]) {
   flex-direction: column;
   min-width: 0;
   gap: 1px;
+  line-height: 1.25;
+}
+.attribute-label {
+  font-size: 10px;
 }
 .attribute-name {
   color: var(--ink);
@@ -513,25 +517,14 @@ body:has(.detail[open]) {
   border-radius: 4px;
 }
 
-.floor-inspect {
+.floor-value {
   display: inline-grid;
   align-items: center;
   justify-items: end;
   width: 100%;
   min-width: 0;
-  min-height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
   color: inherit;
-  background: transparent;
   text-align: right;
-}
-.floor-inspect > .floor-summary {
-  pointer-events: none;
-}
-.floor-inspect:hover:not(:disabled) {
-  background: var(--surface);
 }
 .condition-floor {
   display: inline-flex;
@@ -543,7 +536,7 @@ body:has(.detail[open]) {
   display: grid;
   gap: 4px;
   width: 44px;
-  min-height: 26px;
+  min-height: 22px;
   align-content: center;
   justify-items: end;
 }
@@ -563,11 +556,4 @@ body:has(.detail[open]) {
   height: 18px;
   border: 1px solid var(--line);
   border-radius: 50%;
-}
-
-@media (pointer: coarse) {
-  .floor-inspect {
-    min-width: 44px;
-    min-height: 44px;
-  }
 }

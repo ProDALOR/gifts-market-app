@@ -3,6 +3,7 @@ import {
   rarityGroups,
   groupSelection,
   toggleRarityGroup,
+  craftTier,
 } from "../catalog/rarity";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { TraitFilters, TraitKey } from "../market";
@@ -31,7 +32,16 @@ export const TraitPickers = memo(function TraitPickers({
   change: (id: TraitKey, value?: string[]) => void;
 }) {
   const [query, setQuery] = useState("");
-  const { shown, shell, panel, content } = usePickerMotion(open, query);
+  const [modelGroup, setModelGroup] = useState<{
+    collection?: string;
+    craft: boolean;
+  }>();
+  const selectedCraft =
+    modelGroup?.collection === collection?.id && modelGroup?.craft === true;
+  const { shown, shell, panel, content } = usePickerMotion(
+    open,
+    JSON.stringify([collection?.id, selectedCraft, query]),
+  );
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -46,12 +56,22 @@ export const TraitPickers = memo(function TraitPickers({
     };
   }, [open, setOpen]);
   const trait = traits.find((trait) => trait.id === shown);
-  const available = shown ? collectionOptions(collection, shown, options) : [];
+  const available = useMemo(
+    () => (shown ? collectionOptions(collection, shown, options) : []),
+    [collection, shown, options],
+  );
   const chosen = shown ? filters[shown] || [] : [];
-  const groups = useMemo(
+  const allGroups = useMemo(
     () => rarityGroups(available, query),
     [available, query],
   );
+  const splitModels =
+    shown === "models" && available.some((option) => craftTier(option.rarity));
+  const hasNonCraft = available.some((option) => !craftTier(option.rarity));
+  const showCraft = selectedCraft || !hasNonCraft;
+  const groups = splitModels
+    ? allGroups.filter((group) => !!group.craft === showCraft)
+    : allGroups;
   return (
     <div
       className="trait-controls"
@@ -124,6 +144,34 @@ export const TraitPickers = memo(function TraitPickers({
               onChange={(event) => setQuery(event.target.value)}
               placeholder={`Search ${trait?.label.toLowerCase()}…`}
             />
+            {splitModels && (
+              <div
+                className="segments model-type-options"
+                role="group"
+                aria-label="Model type"
+              >
+                {[
+                  { label: "Primary", craft: false },
+                  { label: "Craftable", craft: true },
+                ].map((type) => (
+                  <button
+                    key={type.label}
+                    type="button"
+                    className={showCraft === type.craft ? "active" : ""}
+                    aria-pressed={showCraft === type.craft}
+                    disabled={!type.craft && !hasNonCraft}
+                    onClick={() =>
+                      setModelGroup({
+                        collection: collection?.id,
+                        craft: type.craft,
+                      })
+                    }
+                  >
+                    {type.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div
               ref={content}
               className="trait-options"
@@ -141,6 +189,7 @@ export const TraitPickers = memo(function TraitPickers({
               {groups.map((group) => (
                 <div
                   className="trait-group"
+                  data-craft={group.craft}
                   role="group"
                   aria-label={`${group.label} rarity`}
                   key={group.key}
@@ -156,9 +205,11 @@ export const TraitPickers = memo(function TraitPickers({
                     }
                   >
                     <span className="trait-group-label">{group.label}</span>
-                    <span className="trait-group-count">
-                      {group.options.length}
-                    </span>
+                    {group.options.length >= 3 && (
+                      <span className="trait-group-count">
+                        {group.options.length}
+                      </span>
+                    )}
                   </button>
                   <div className="trait-group-options">
                     {group.options.map((option) => (

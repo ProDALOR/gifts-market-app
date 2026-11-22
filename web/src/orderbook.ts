@@ -1,11 +1,11 @@
 import type { Order, CatalogOption, TraitFilters } from "./market.ts";
 import { resolveTraits } from "./catalog/traits.ts";
+import { giftPresentation } from "./order-target.ts";
 export { traits } from "./catalog/traits.ts";
 export type { Collection, CatalogOption } from "./market.ts";
 export function serial(order: Order): string | undefined {
-  return order.target.kind === "gift" && order.target.number != null
-    ? String(order.target.number)
-    : undefined;
+  const number = giftPresentation(order)?.number;
+  return number != null ? String(number) : undefined;
 }
 export function modelName(
   order: Order,
@@ -62,16 +62,17 @@ export function giftDetails(
   if (target.kind === "unsupported")
     return [{ label: "Conditions", value: target.message }];
   const rows: GiftDetail[] = [];
+  const gift = giftPresentation(order);
   const selection: TraitFilters =
-    target.kind === "criteria"
+    !gift && target.kind === "criteria"
       ? target
       : {
-          models: target.traits.model ? [target.traits.model] : [],
-          backdrops: target.traits.backdrop ? [target.traits.backdrop] : [],
-          patterns: target.traits.pattern ? [target.traits.pattern] : [],
+          models: gift?.traits.model ? [gift.traits.model] : [],
+          backdrops: gift?.traits.backdrop ? [gift.traits.backdrop] : [],
+          patterns: gift?.traits.pattern ? [gift.traits.pattern] : [],
         };
   for (const trait of resolveTraits(selection, options ?? new Map(), names)) {
-    if (target.kind === "gift" && !trait.entries.length) continue;
+    if (gift && !trait.entries.length) continue;
     const option =
       trait.entries.length === 1 ? trait.entries[0].option : undefined;
     rows.push({
@@ -83,7 +84,7 @@ export function giftDetails(
       ...(option?.kind === trait.kind ? { option } : {}),
     });
   }
-  const criteria = target.kind === "criteria" ? target : undefined;
+  const criteria = !gift && target.kind === "criteria" ? target : undefined;
   const number = giftNumberRange(criteria?.number);
   if (number) rows.push({ label: "Gift #", value: number });
   return rows;

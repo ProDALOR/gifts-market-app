@@ -85,6 +85,7 @@ enum PublicationState {
     Prepared {
         view: Arc<ReplicaView>,
         data_changed: bool,
+        directory_sync: Option<std::fs::File>,
     },
 }
 /// Read-only access to immutable views published by synchronization.
@@ -102,9 +103,28 @@ pub struct ReplicaWriter {
     publication: PublicationState,
     #[cfg(test)]
     fail_publish_once: bool,
+    #[cfg(test)]
+    fail_directory_sync_once: bool,
+    // Keep this last: release writer admission after database/publication handles.
+    // The lock file itself is never renamed or deleted with a database generation.
+    _directory_lock: std::fs::File,
 }
 impl ReplicaWriter {
     pub fn open(directory: &Path, source: &str) -> Result<Self, Status> {
+        std::fs::create_dir_all(directory).map_err(storage::failure)?;
+        let directory_lock = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join("replica.lock"))
+            .map_err(storage::failure)?;
+        directory_lock.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => {
+                Status::failed_precondition("replica data directory already has a writer")
+            }
+            std::fs::TryLockError::Error(error) => storage::failure(error),
+        })?;
         let path = directory.join("replica.redb");
         let store = Store::open(&path, source)?;
         let building = directory.join("building.redb");
@@ -155,6 +175,9 @@ impl ReplicaWriter {
             publication: PublicationState::Current,
             #[cfg(test)]
             fail_publish_once: false,
+            #[cfg(test)]
+            fail_directory_sync_once: false,
+            _directory_lock: directory_lock,
         })
     }
 }
@@ -232,12 +255,10 @@ impl ReplicaWriter {
         self.store.cursor()
     }
     fn resume_cursor(&mut self) -> Result<String, Status> {
-        if let PublicationState::Prepared { view, data_changed } = &self.publication {
-            let view = view.clone();
-            let data_changed = *data_changed;
+        if let PublicationState::Prepared { view, .. } = &self.publication {
             let cursor = view.cursor.clone();
             let availability = self.reader.status().state;
-            self.publish(view, availability, data_changed)?;
+            self.publish_prepared(availability)?;
             return Ok(cursor);
         }
         let history = self.store.snapshot()?;
@@ -264,6 +285,9 @@ impl ReplicaWriter {
                 "a replica snapshot is already being built",
             ));
         }
+        if !matches!(self.publication, PublicationState::Current) {
+            self.resume_cursor()?;
+        }
         let lease = Arc::new(());
         let snapshot =
             SnapshotBuilder::open(&self.path, &self.source, self.owner.clone(), lease.clone())?;
@@ -279,19 +303,29 @@ impl ReplicaWriter {
                 "snapshot belongs to another replica or source",
             ));
         }
-        std::fs::rename(self.path.with_file_name("building.redb"), &self.path)
-            .map_err(storage::failure)?;
-        std::fs::File::open(
+        if !matches!(self.publication, PublicationState::Current) {
+            self.resume_cursor()?;
+        }
+        // Prepare everything fallible before changing the canonical file name.
+        // Once rename succeeds, retain the new database and its directory barrier
+        // even if syncing or publication fails; subsequent writes must recover it.
+        let history = snapshot.store.snapshot()?;
+        let checkpoint = history.checkpoint()?;
+        let view = self.replacement_view(history, snapshot.state, checkpoint);
+        let directory = std::fs::File::open(
             self.path
                 .parent()
                 .ok_or_else(|| storage::failure("missing replica directory"))?,
         )
-        .map_err(storage::failure)?
-        .sync_all()
         .map_err(storage::failure)?;
-        let history = snapshot.store.snapshot()?;
-        let checkpoint = history.checkpoint()?;
-        self.install_state(history, snapshot.state, checkpoint, SyncState::Live)
+        std::fs::rename(self.path.with_file_name("building.redb"), &self.path)
+            .map_err(storage::failure)?;
+        self.publication = PublicationState::Prepared {
+            view,
+            data_changed: true,
+            directory_sync: Some(directory),
+        };
+        self.publish_prepared(SyncState::Live)
     }
 }
 
@@ -327,17 +361,24 @@ impl ReplicaWriter {
         checkpoint: storage::Checkpoint,
         availability: SyncState,
     ) -> Result<(), Status> {
+        let view = self.replacement_view(history, state, checkpoint);
+        self.publish(view, availability, true)
+    }
+    fn replacement_view(
+        &self,
+        history: Snapshot,
+        state: State,
+        checkpoint: storage::Checkpoint,
+    ) -> Arc<ReplicaView> {
         self.reader.expire();
         let revisions = revisions::Revisions::replaced(self.reader.view().ok().as_deref(), &state);
-        let view = Arc::new(ReplicaView {
+        Arc::new(ReplicaView {
             revisions,
             state,
             history,
             cursor: checkpoint.cursor,
             updated_at: checkpoint.updated_at,
-        });
-        self.publish(view, availability, true)?;
-        Ok(())
+        })
     }
     pub fn apply(&mut self, batch: w::Batch) -> Result<(), Status> {
         self.apply_deliveries(std::slice::from_ref(&batch))
@@ -403,9 +444,31 @@ impl ReplicaWriter {
         // Arc retention does not copy state. Retry this exact view and its scoped
         // revisions if publication fails, instead of rebuilding the dataset.
         self.publication = PublicationState::Prepared {
-            view: view.clone(),
+            view,
             data_changed,
+            directory_sync: None,
         };
+        self.publish_prepared(availability)
+    }
+    fn publish_prepared(&mut self, availability: SyncState) -> Result<(), Status> {
+        let PublicationState::Prepared {
+            view,
+            data_changed,
+            directory_sync,
+        } = &mut self.publication
+        else {
+            return Err(Status::failed_precondition("no prepared publication"));
+        };
+        if let Some(directory) = directory_sync {
+            #[cfg(test)]
+            if std::mem::take(&mut self.fail_directory_sync_once) {
+                return Err(Status::unavailable("test directory sync failure"));
+            }
+            directory.sync_all().map_err(storage::failure)?;
+            *directory_sync = None;
+        }
+        let view = view.clone();
+        let data_changed = *data_changed;
         #[cfg(test)]
         if std::mem::take(&mut self.fail_publish_once) {
             return Err(Status::unavailable("test publication failure"));
@@ -467,3 +530,6 @@ mod bootstrap_benchmark;
 
 #[cfg(test)]
 mod live_update_benchmark;
+
+#[cfg(test)]
+mod snapshot_recovery_tests;

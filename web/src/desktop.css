@@ -166,30 +166,39 @@
     flex: 1;
   }
   .market-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 36px;
+    margin-bottom: 14px;
+  }
+  .market-heading h1 {
     position: static;
     width: auto;
     height: auto;
     overflow: visible;
     clip-path: none;
-    margin-bottom: 14px;
-  }
-  .market-eyebrow {
-    color: var(--muted);
-    font-size: 11px;
-    margin-bottom: 4px;
-  }
-  .market-heading h1 {
-    font-size: 28px;
+    min-width: 0;
+    flex: 1;
+    overflow-wrap: anywhere;
+    font-size: 24px;
     font-weight: 700;
     line-height: 1.2;
     letter-spacing: -0.025em;
+  }
+  .collection-title-skeleton {
+    display: block;
+    width: min(220px, 100%);
+    height: 24px;
+    border-radius: 6px;
+    background: var(--raised);
   }
   .market-results {
     min-height: calc(100dvh - 48px);
   }
   .market-results .feed-status {
-    min-height: 34px;
-    margin-bottom: 8px;
+    flex-shrink: 0;
     font-size: 11px;
   }
   .market-results .gift-grid {

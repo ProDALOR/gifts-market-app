@@ -3,6 +3,7 @@ import type {
   FieldValue as Value,
 } from "./presentation";
 import { amount } from "../market";
+import { trimDecimalZeros } from "../amount";
 import { Quote } from "../ui/market-controls";
 function ValueResult({ value, compact }: { value: Value; compact: boolean }) {
   switch (value.kind) {
@@ -17,7 +18,10 @@ function ValueResult({ value, compact }: { value: Value; compact: boolean }) {
     case "currency":
       return (
         <strong className="valuation-value">
-          <Quote price={value.amount} currency={value.currency_id} />
+          <Quote
+            price={trimDecimalZeros(value.amount)}
+            currency={value.currency_id}
+          />
         </strong>
       );
     case "number":

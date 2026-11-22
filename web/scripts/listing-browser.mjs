@@ -1228,6 +1228,52 @@ try {
       })
       .waitFor();
   }
+  // An execution keeps its real selection query while using ordinary gift visuals.
+  const executedCriteria = {
+    ...b,
+    id: "criteria-execution",
+    kind: "executed",
+    executed_at: new Date().toISOString(),
+    target: {
+      kind: "criteria",
+      models: ["gold"],
+      backdrops: ["blue"],
+      patterns: ["symbol"],
+      number: { min: 42, max: 42 },
+    },
+  };
+  await page.evaluate((order) => window.selectListing(order), executedCriteria);
+  await page
+    .locator(
+      ".detail:not(.detail-criteria) .valuation-summary .valuation-value",
+    )
+    .waitFor();
+  assert.equal(
+    await page
+      .locator(".detail .bid-detail-preview, .detail .bid-conditions")
+      .count(),
+    0,
+  );
+  await page.locator(".detail-art .gift-model-image.loaded").waitFor();
+  assert.match(await page.locator("#detail-title").textContent(), /#42/);
+  assert.equal(await page.locator(".detail-caption p").textContent(), "Gold");
+  assert.equal(
+    await page
+      .locator('[data-attribute="model"] .attribute-name')
+      .textContent(),
+    "Gold",
+  );
+  assert.equal(await page.locator(".detail-price-unit").count(), 0);
+  await page.getByRole("heading", { name: "Paid", exact: true }).waitFor();
+  for (const width of [390, 1200]) {
+    await page.setViewportSize({ width, height: 844 });
+    assert.equal(
+      await page
+        .locator(".detail")
+        .evaluate((el) => el.scrollWidth <= el.clientWidth),
+      true,
+    );
+  }
   // Criteria use one matching-ask request, without invoking the individual gift estimate.
   const countBeforeCriteria = requests.length;
   await page.evaluate((order) => window.selectListing(order), {
@@ -1243,7 +1289,11 @@ try {
   });
   await page.locator(".detail-criteria").waitFor();
   assert.equal(await page.locator(".detail .valuation-summary").count(), 0);
-  assert.equal(await page.locator(".attribute-visual").count(), 0);
+  assert.equal(
+    await page.locator(".attribute-visual").count(),
+    1,
+    "Bids share the collection-floor artwork row",
+  );
   assert.equal(await page.locator(".detail .condition-any").count(), 3);
   assert.equal(requests.length, countBeforeCriteria);
   assert.equal(
@@ -1706,6 +1756,12 @@ try {
     0,
     "Missing execution times never fall back to observation time",
   );
+  await page.evaluate((order) => window.renderListing(order), executedCriteria);
+  await page
+    .locator(".gift-card .gift-preview:not(.bid-card) .gift-model-image.loaded")
+    .waitFor();
+  assert.equal(await page.locator(".bid-card").count(), 0);
+  assert.equal(await page.locator(".serial").textContent(), "#42");
   await page.evaluate(() => window.unmount());
   assert.deepEqual(errors, []);
   console.log(

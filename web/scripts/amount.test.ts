@@ -5,29 +5,42 @@ import {
   compactAmount,
   listingAmount,
   roundedAmount,
+  trimDecimalZeros,
 } from "../src/amount.ts";
 
 test("collection floors compact thousands and handle rounding across magnitude boundaries", () => {
   for (const [value, expected] of [
-    ["999", "999.00"],
+    ["999", "999"],
     ["999.994", "999.99"],
-    ["999.995", "1.00K"],
-    ["1000", "1.00K"],
+    ["999.995", "1K"],
+    ["1000", "1K"],
     ["1234.5678", "1.23K"],
-    ["999999.995", "1.00M"],
+    ["999999.995", "1M"],
     ["12345678.123456789", "12.35M"],
     ["1234567890", "1.23B"],
     ["1234567890000", "1.23T"],
-    ["999999999999999.999", "1.00e15"],
-    ["10000000000000000.123456789", "1.00e16"],
+    ["999999999999999.999", "1e15"],
+    ["10000000000000000.123456789", "1e16"],
   ])
     assert.equal(compactAmount(value), expected);
-  assert.equal(roundedAmount("999.995"), "1000.00");
+  assert.equal(roundedAmount("999.995"), "1000");
   assert.equal(amount(roundedAmount("1000.125")), "1,000.13");
   assert.equal(
     amount(roundedAmount("10000000000000000.135")),
     "10,000,000,000,000,000.14",
   );
+});
+
+test("floor labels trim only trailing fractional zeros without losing precision", () => {
+  for (const [value, expected] of [
+    ["0.000", "0"],
+    ["1000", "1000"],
+    ["12.500", "12.5"],
+    ["10000000000000000.00000000100", "10000000000000000.000000001"],
+  ])
+    assert.equal(trimDecimalZeros(value), expected);
+  assert.equal(roundedAmount("12.501"), "12.5");
+  assert.equal(roundedAmount("12.006"), "12.01");
 });
 
 test("item cards hide fractional digits after two places without altering the price", () => {

@@ -1,4 +1,5 @@
 import { ApiFailure } from "./api-error.ts";
+import { giftPresentation, type PreviewOrder } from "./order-target.ts";
 export { ApiFailure } from "./api-error.ts";
 import { liveSocket } from "./live-socket.ts";
 import type { components } from "./gen/api";
@@ -87,13 +88,12 @@ export const collectionCatalog = (
     revision,
   );
 export { amount, roundedAmount } from "./amount.ts";
-/** Previews represent actual collectibles, never a bid's hypothetical target. */
+/** Concrete gifts and unambiguous executions supply artwork; bids stay criteria. */
 export function modelMedia(
-  order: Pick<Order, "target">,
+  order: PreviewOrder,
   options: ReadonlyMap<string, CatalogOption>,
 ): GiftMedia | undefined {
-  const id =
-    order.target.kind === "gift" ? order.target.traits.model : undefined;
+  const id = giftPresentation(order)?.traits.model;
   const model = id ? options.get(id) : undefined;
   return model?.kind === "model" ? model.media || undefined : undefined;
 }

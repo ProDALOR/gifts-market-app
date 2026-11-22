@@ -8,8 +8,9 @@ import {
   useCollectionFloorDetails,
 } from "../valuation/floors";
 import { traitFloor } from "../valuation/floors-controller";
-import { FloorDetails } from "./floor-details";
+import { FloorValue } from "./floor-value";
 import type { SharedFloor } from "../valuation/floors-controller";
+import { criteriaPresentation, giftPresentation } from "../order-target";
 
 export function OrderAttributes({
   order,
@@ -30,35 +31,8 @@ export function OrderAttributes({
     order.book.collection_id,
     order.book.currency_id,
   );
-  if (order.target.kind === "criteria")
-    return (
-      <>
-        {shared && (
-          <section
-            className="shared-floors"
-            aria-label="Current market ask values"
-          >
-            <div>
-              <FloorDetails
-                floor={shared.floor}
-                currency={order.book.currency_id}
-                stale={shared.stale}
-                label="Collection floor"
-                evaluatedAt={shared.evaluatedAt}
-              />
-            </div>
-          </section>
-        )}
-        <BidConditions
-          criteria={order.target}
-          options={options}
-          names={names}
-          collection={order.book.collection_id}
-          currency={order.book.currency_id}
-        />
-      </>
-    );
-  const traits = order.target.kind === "gift" ? order.target.traits : undefined;
+  const traits = giftPresentation(order)?.traits;
+  const criteria = criteriaPresentation(order);
   const pair = shared?.traits?.pair;
   const matchingPair =
     pair &&
@@ -66,7 +40,7 @@ export function OrderAttributes({
     pair.backdrop_id === traits?.backdrop
       ? pair.floor
       : undefined;
-  const details = giftDetails(order, names, options);
+  const details = criteria ? [] : giftDetails(order, names, options);
   const model = details.find((row) => row.attribute === "model")?.option;
   const backdrop = details.find((row) => row.attribute === "backdrop")?.option;
   const rows: {
@@ -76,24 +50,19 @@ export function OrderAttributes({
     visual?: CatalogOption;
     floor?: SharedFloor;
   }[] = [
-    ...(traits
+    {
+      label: "Collection",
+      value: names.get(order.book.collection_id) || order.book.collection_id,
+      attribute: "collection" as const,
+      floor: shared?.floor,
+    },
+    ...(traits?.model && traits.backdrop
       ? [
           {
-            label: "Collection",
-            value:
-              names.get(order.book.collection_id) || order.book.collection_id,
-            attribute: "collection" as const,
-            floor: shared?.floor,
+            label: "Model & Backdrop",
+            attribute: "pair" as const,
+            floor: matchingPair,
           },
-          ...(traits.model && traits.backdrop
-            ? [
-                {
-                  label: "Model & Backdrop",
-                  attribute: "pair" as const,
-                  floor: matchingPair,
-                },
-              ]
-            : []),
         ]
       : []),
     ...details.map(({ label, value, attribute, option }) => ({
@@ -144,13 +113,11 @@ export function OrderAttributes({
                   </span>
                 </th>
                 <td>
-                  <FloorDetails
+                  <FloorValue
                     label={`${label} floor`}
-                    name={value}
                     floor={floor}
                     currency={order.book.currency_id}
                     stale={shared?.stale}
-                    evaluatedAt={shared?.evaluatedAt}
                     loading={detail.pending}
                     error={detail.error}
                   />
@@ -160,6 +127,15 @@ export function OrderAttributes({
           </tbody>
         </table>
       </div>
+      {criteria && (
+        <BidConditions
+          criteria={criteria}
+          options={options}
+          names={names}
+          collection={order.book.collection_id}
+          currency={order.book.currency_id}
+        />
+      )}
     </section>
   );
 }

@@ -53,7 +53,25 @@ One local debug run with allocation instrumentation reported zero allocations fo
 
 The reusable collector separately measured zero allocations and reallocations while grouping 1,024 already-decoded frames into 16 groups with preallocated capacity. This excludes decoding, initial buffer allocation and storage-task scheduling; frame payloads are still released as groups complete.
 
+## Snapshot replacement and restart
+
+Replacement follows a fixed sequence:
+
+1. Finalize staging with an explicit immediate-durability transaction containing its checkpoint and journal removal.
+2. Prepare the immutable view, read its checkpoint/history, and open the parent directory before renaming anything.
+3. Rename `building.redb` over `replica.redb` in the same directory. There is no delete-then-rename gap.
+4. Retain the new view/database and directory handle, then sync the directory. A failed sync remains a pending barrier.
+5. Publish the view and adopt its database handle together, then release old handles outside the view lock.
+
+Failure before rename preserves the canonical old database. After rename, recovery retains the new database lock and retries the directory barrier before publication. Both live writes and another snapshot build must finish that recovery first; they cannot continue writing to the unlinked old database. A successful barrier is not repeated if publication later fails. Existing pinned readers can continue reading the old inode without seeing new data mixed into it.
+
+On restart, the canonical `replica.redb` is authoritative. Redb recovers its committed transactions; state, history and checkpoint are read from one snapshot. Any `building.redb` is discarded, including a finalized build that was never installed. The app never guesses that an uninstalled staging file should replace the canonical database.
+
+Regression tests cover rename and directory-sync failures, retained database locks, live writes after recovery, concurrent readers, and subprocess exits at six boundaries: during building, after finalization, after rename before directory sync, after directory sync before publication, after publication, and after a subsequent live commit. The subprocess exits skip Rust destructors and redb shutdown. These test process crashes, not power loss. Before the directory barrier completes, power-loss recovery may retain the old or new file name according to filesystem guarantees; the app relies on same-directory atomic rename, redb's durable commit and successful directory sync.
+
 ## Cancellation and memory ownership
+
+Writer admission uses an OS lock on the stable `replica.lock` file, acquired before opening the database or cleaning staging files. Database locks follow individual file handles and are insufficient across replacement: another opener could retain the old inode while the canonical name changes. The directory lock stays held across every generation and is released after the writer's database/publication handles, or automatically on process exit. The empty lock file persists and needs no stale-lock deletion; it must not be removed while a writer runs. Reader views do not own this admission lock and can retain older immutable database handles.
 
 The replication worker owns cancellation once, covering page requests, retries, replay and reconnect backoff. Dropping a network future does not stop an already running blocking transaction. On session failure, recovery drains admitted storage jobs before starting another session; shutdown does the same before marking the replica stale. Tracking includes destruction of abandoned job results, which may still own the snapshot builder, staging database or prepared snapshot. This prevents an old job from retaining a build lease or publishing after a new session starts. Transactions already admitted at cancellation finish atomically; cancellation does not interrupt their disk writes.
 

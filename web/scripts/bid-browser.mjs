@@ -728,7 +728,9 @@ try {
   await details.waitFor({ state: "detached" });
   await page.locator('[data-order-id="any"]').click();
   await details.waitFor();
-  await details.getByRole("img", { name: "Any model", exact: true }).waitFor();
+  await detailPreview
+    .getByRole("img", { name: "Any model", exact: true })
+    .waitFor();
   assert.equal(await details.locator(".condition-any").count(), 3);
   for (const [width, height] of [
     [320, 568],
@@ -793,22 +795,31 @@ try {
       `[data-condition="${kind}"] .condition-any`,
     );
     const label = kind === "pattern" ? "Any symbol" : `Any ${kind}`;
-    const toggle = condition.locator("summary");
-    assert.equal(await toggle.getAttribute("aria-label"), label);
-    assert.equal((await toggle.textContent()).trim(), "∞");
-    assert.equal(
-      await condition.locator(".condition-any-label").isVisible(),
-      false,
-    );
-    await toggle.click();
-    await condition.getByText(label, { exact: true }).waitFor();
-    await toggle.focus();
-    await page.keyboard.press("Space");
-    assert.equal(
-      await condition.locator(".condition-any-label").isVisible(),
-      false,
-    );
+    await condition.getByRole("img", { name: label, exact: true }).waitFor();
+    assert.equal((await condition.textContent()).trim(), "∞");
+    await condition.click();
+    assert.equal(await condition.locator(".condition-any-label").count(), 0);
+    assert.equal(await condition.locator("summary, button").count(), 0);
   }
+  assert.equal(
+    await details
+      .locator(".bid-conditions button, .gift-attributes [aria-haspopup]")
+      .count(),
+    0,
+  );
+  assert.ok(
+    await details
+      .locator(".condition-chip")
+      .evaluateAll((chips) =>
+        chips.every((chip) => getComputedStyle(chip).borderTopWidth === "1px"),
+      ),
+  );
+  assert.equal(
+    await details
+      .locator('[data-attribute="collection"] .attribute-name')
+      .count(),
+    1,
+  );
   assert.equal(
     await details.locator(".model-animation").count(),
     0,

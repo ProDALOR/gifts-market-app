@@ -106,6 +106,7 @@ function App({ context }: { context: TelegramContext }) {
     options,
     names,
     item,
+    catalogLoading,
     startupError,
     optionsLoading,
     optionsError,
@@ -493,18 +494,24 @@ function App({ context }: { context: TelegramContext }) {
           </aside>
           <div className="market-results">
             <header className="market-heading">
-              <div>
-                <p className="market-eyebrow">
-                  {choice.mode === "ask"
-                    ? "Asks"
-                    : choice.mode === "bid"
-                      ? "Bids"
-                      : "History"}
-                </p>
-                <h1>{item?.name || "Select a collection"}</h1>
-              </div>
-            </header>
-            <section className="orders" aria-label="Order book">
+              <h1
+                aria-busy={catalogLoading && !item}
+                aria-label={
+                  catalogLoading && !item ? "Loading collection" : undefined
+                }
+              >
+                {item?.name ||
+                  (catalogLoading ? (
+                    <span
+                      className="collection-title-skeleton"
+                      aria-hidden="true"
+                    />
+                  ) : choice.collection ? (
+                    "Collection unavailable"
+                  ) : (
+                    "Select a collection"
+                  ))}
+              </h1>
               <div className="feed-status">
                 <span
                   role="status"
@@ -513,15 +520,18 @@ function App({ context }: { context: TelegramContext }) {
                   <i />
                   {status}
                 </span>
-                <span>{orders.length} loaded</span>
+                <span aria-hidden="true">·</span>
+                <span>{orders.length.toLocaleString()} loaded</span>
               </div>
-
+            </header>
+            <section className="orders" aria-label="Order book">
               <GiftGrid
                 orders={displayOrders}
                 busy={status === "Loading" || status === "Connecting"}
                 visible={setVisibleRange}
                 card={(order) => ({
                   options,
+                  collectionPreview: item?.preview ?? undefined,
                   activity: activity.get(orderKey(order)),
                   collectionName:
                     item?.name ||

@@ -450,7 +450,7 @@ try {
   );
   assert.equal(
     await selectionRow.locator(".quote-amount").textContent(),
-    "10.00",
+    "10",
     "New metadata precision renders the same typed value",
   );
   incompatibleDefinition = true;

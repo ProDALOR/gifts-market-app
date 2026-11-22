@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
-import type { Order } from "../market";
+import type { Order, GiftMedia } from "../market";
+import { criteriaPresentation } from "../order-target";
 import type { CatalogOption } from "../orderbook";
 import { serial, modelName, giftNumberRange } from "../orderbook";
 import { BidPreview } from "./bid-preview";
@@ -15,6 +16,7 @@ export const GiftCard = memo(function GiftCard({
   options,
   activity,
   collectionName,
+  collectionPreview,
   venueName,
   selected,
   open,
@@ -27,6 +29,7 @@ export const GiftCard = memo(function GiftCard({
   activity?: OrderActivity;
   options: ReadonlyMap<string, CatalogOption>;
   collectionName: string;
+  collectionPreview?: GiftMedia;
   venueName: string;
   selected: boolean;
   open: (order: Order) => void;
@@ -41,7 +44,7 @@ export const GiftCard = memo(function GiftCard({
   );
   const number = serial(order),
     unsupported = order.target.kind === "unsupported";
-  const criteria = order.target.kind === "criteria" ? order.target : undefined;
+  const criteria = criteriaPresentation(order);
   const content = (
     <>
       {activity && (
@@ -151,6 +154,11 @@ export const GiftCard = memo(function GiftCard({
           order={order}
           options={options}
           fallback={collectionName[0] || "◇"}
+          fallbackMedia={
+            order.kind === "executed" && order.target.kind === "criteria"
+              ? collectionPreview
+              : undefined
+          }
           className="card-preview"
           patternLayout="card"
           playback={

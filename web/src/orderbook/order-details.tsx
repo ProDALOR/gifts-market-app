@@ -11,6 +11,7 @@ import { BidPreview } from "./bid-preview";
 import { useOrderValuation } from "../valuation/use-order-valuation";
 import { useBackgroundPlaybackSuspension } from "../previews/use-playback";
 import { ExecutionTime } from "./execution-time";
+import { criteriaPresentation, giftPresentation } from "../order-target";
 export function OrderDetails({
   selected,
   options,
@@ -32,10 +33,9 @@ export function OrderDetails({
 }) {
   useBackgroundPlaybackSuspension(true);
   const state = useOrderValuation(selected);
-  const criteria = selected.target.kind === "criteria";
+  const criteria = criteriaPresentation(selected);
   const selectedSerial = serial(selected),
-    model =
-      selected.target.kind === "gift" ? modelName(selected, options, "") : "",
+    model = giftPresentation(selected) ? modelName(selected, options, "") : "",
     marketLink = listingLink(selected),
     venue = names.get(selected.book.venue_id) || selected.book.venue_id;
   const telegramLink =
@@ -117,10 +117,10 @@ export function OrderDetails({
             <VenueIcon name={venue} />
           </span>
         </div>
-        {selected.target.kind === "criteria" ? (
+        {criteria ? (
           <div className="bid-detail-preview">
             <BidPreview
-              criteria={selected.target}
+              criteria={criteria}
               options={options}
               names={names}
               compact={false}
@@ -132,6 +132,12 @@ export function OrderDetails({
             order={selected}
             options={options}
             fallback={collectionName[0] || "◇"}
+            fallbackMedia={
+              selected.kind === "executed" &&
+              selected.target.kind === "criteria"
+                ? collectionPreview
+                : undefined
+            }
             size="large"
             playback="detail"
           />
@@ -171,7 +177,7 @@ export function OrderDetails({
             </section>
             <OrderValuationSummary
               state={state}
-              criteria={criteria}
+              criteria={!!criteria}
               history={selected.kind === "executed"}
               price={
                 !removed && selected.kind === "ask" ? selected.price : undefined
