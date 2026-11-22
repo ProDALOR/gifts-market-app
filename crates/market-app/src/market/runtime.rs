@@ -61,6 +61,18 @@ impl MarketRuntime {
     pub fn valuation(&self) -> market_valuation::ValuationHandle {
         self.valuation.clone()
     }
+    #[cfg(feature = "bot")]
+    pub fn start_accounts(&self, worker: market_telegram_client::AccountWorker) -> Result<()> {
+        self.valuation
+            .set_gift_resolver(Arc::new(worker.resolver()))?;
+        let stop = self.supervisor.token();
+        self.supervisor
+            .spawn_optional(TaskKind::TelegramAccounts, async move {
+                worker.run(stop).await.map_err(|error| {
+                    tracing::error!(%error, "Telegram gift lookup service stopped");
+                })
+            })
+    }
     pub fn start_replication(&self, hub: market_hub_client::HubClient) -> Result<()> {
         let replication = self
             .replication

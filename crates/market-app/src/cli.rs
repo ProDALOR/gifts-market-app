@@ -37,6 +37,10 @@ pub struct Cli {
     #[cfg(feature = "bot")]
     #[arg(long, env = "MARKET_BOT_DATA_DIR")]
     pub bot_data_dir: Option<PathBuf>,
+    /// Authorized user-session export for gift slug lookup; otherwise discover accounts.json.
+    #[cfg(feature = "bot")]
+    #[arg(long, env = "MARKET_TELEGRAM_ACCOUNTS")]
+    pub telegram_accounts: Option<PathBuf>,
     #[cfg(feature = "miniapp")]
     #[arg(long, env = "MARKET_SESSION_KEY", hide_env_values = true)]
     pub session_key: Option<String>,
@@ -90,6 +94,7 @@ mod tests {
         assert!(!has_arg("bot_enabled"));
         assert_eq!(has_arg("telegram_bot_token"), cfg!(feature = "bot"));
         assert_eq!(has_arg("telegram_api_id"), cfg!(feature = "bot"));
+        assert_eq!(has_arg("telegram_accounts"), cfg!(feature = "bot"));
         assert_eq!(has_arg("telegram_api_hash"), cfg!(feature = "bot"));
         assert_eq!(has_arg("session_key"), cfg!(feature = "miniapp"));
         assert_eq!(has_arg("miniapp_bot_id"), cfg!(feature = "miniapp"));

@@ -4,7 +4,7 @@ use market_hub_protocol::wire as w;
 fn by_name(input: &str, id: &str, name: &str) -> bool {
     id == input || name.eq_ignore_ascii_case(input)
 }
-fn by_telegram(input: i64, aliases: &[w::ExternalId]) -> bool {
+pub fn has_telegram_alias(input: i64, aliases: &[w::ExternalId]) -> bool {
     aliases
         .iter()
         .any(|alias| alias.namespace == TELEGRAM_NAMESPACE && alias.id.parse::<i64>() == Ok(input))
@@ -15,7 +15,7 @@ pub(crate) fn collection_matches(lookup: &ModelLookup, item: &w::ItemType) -> bo
         ModelLookup::Catalog { collection, .. } | ModelLookup::Collection { collection } => {
             collection.as_str() == item.id
         }
-        ModelLookup::Telegram { gift_id, .. } => by_telegram(gift_id.get(), &item.aliases),
+        ModelLookup::Telegram { gift_id, .. } => has_telegram_alias(gift_id.get(), &item.aliases),
     }
 }
 pub(crate) fn model_matches(lookup: &ModelLookup, option: &w::AttributeOption) -> bool {
@@ -24,7 +24,7 @@ pub(crate) fn model_matches(lookup: &ModelLookup, option: &w::AttributeOption) -
         ModelLookup::Name { model, .. } => by_name(model, &option.id, &option.name),
         ModelLookup::Catalog { model, .. } => model.as_str() == option.id,
         ModelLookup::Telegram { document_id, .. } => {
-            by_telegram(document_id.get(), &option.aliases)
+            has_telegram_alias(document_id.get(), &option.aliases)
         }
     }
 }

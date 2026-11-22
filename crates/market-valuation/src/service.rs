@@ -1,6 +1,7 @@
 use crate::{source::ValuationSource, *};
 use std::sync::Arc;
 use tokio::sync::watch;
+pub(crate) type GiftResolverState = Arc<std::sync::OnceLock<Arc<dyn market_gifts::GiftResolver>>>;
 pub(crate) struct Work {
     pub request: crate::market::PreparedQuery,
     pub previous: Option<Arc<crate::market::ValuationRead>>,
@@ -10,8 +11,18 @@ pub struct ValuationHandle {
     native: Handle<Work, Arc<crate::market::ValuationRead>, ValuationError>,
     status: watch::Receiver<market_replica::SyncStatus>,
     watch_slots: Arc<tokio::sync::Semaphore>,
+    gift_resolver: GiftResolverState,
 }
 impl ValuationHandle {
+    /// Configure once during application composition, before starting API/bot consumers.
+    pub fn set_gift_resolver(
+        &self,
+        resolver: Arc<dyn market_gifts::GiftResolver>,
+    ) -> Result<(), ValuationError> {
+        self.gift_resolver
+            .set(resolver)
+            .map_err(|_| ValuationError::invalid("Gift resolver is already configured"))
+    }
     pub async fn query(
         &self,
         request: ValuationQuery,
@@ -54,6 +65,8 @@ impl ValuationHandle {
         reads: market_replica::ReadExecutor,
     ) -> Result<(Self, ValuationTask), ServiceError> {
         let status = reads.reader().status_updates();
+        let gift_resolver: GiftResolverState = Default::default();
+        let actor_resolver = gift_resolver.clone();
         let service = Service::start_on(
             arbiter,
             "valuation",
@@ -62,6 +75,7 @@ impl ValuationHandle {
                     ValuationSource::new(reads),
                     Arc::new(crate::floors::BookCache::default()),
                     life,
+                    actor_resolver,
                 )
             },
             Config {
@@ -75,6 +89,7 @@ impl ValuationHandle {
                 native: service.handle,
                 status,
                 watch_slots: Arc::new(tokio::sync::Semaphore::new(32)),
+                gift_resolver,
             },
             service.task,
         ))

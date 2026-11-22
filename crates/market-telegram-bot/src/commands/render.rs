@@ -56,7 +56,7 @@ pub(super) fn usage(_kind: CommandKind) -> Reply {
 pub(crate) fn launch_reply(command: CommandKind) -> Option<Reply> {
     Some(Reply { text: match command {
         CommandKind::Start | CommandKind::Market => "Browse live gift markets, compare venues and filter offers in one place.",
-        CommandKind::Help => "/value <gift URL or slug> [GRAM|XTR] — unified gift valuation. You can also send a gift link directly.\n/status — market availability.\n/market — open the market.\nGift links resolve attributes from observed listings and executions; a current listing is not required.",
+        CommandKind::Help => "/value <gift URL or slug> [GRAM|XTR] — unified gift valuation. You can also send a gift link directly.\n/status — market availability.\n/market — open the market.\nGift links resolve attributes through the configured user session or observed market data; a current listing is not required.",
         _ => return None,
     }.into() })
 }

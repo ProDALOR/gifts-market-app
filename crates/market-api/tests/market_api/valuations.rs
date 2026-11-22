@@ -247,3 +247,120 @@ async fn target_strategies_share_rest_and_websocket_results_and_keep_partial_fai
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
+
+struct SlugResolver;
+impl market_gifts::GiftResolver for SlugResolver {
+    fn resolve<'a>(
+        &'a self,
+        slug: &'a market_gifts::GiftSlug,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        market_gifts::TelegramGiftDetails,
+                        market_gifts::GiftResolutionError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            Ok(market_gifts::TelegramGiftDetails {
+                id: "telegram-unlisted".into(),
+                slug: slug.clone(),
+                number: slug.number(),
+                collection: market_gifts::TelegramGiftId::new(123).unwrap(),
+                model: market_gifts::TelegramDocumentId::new(456).unwrap(),
+                backdrop: Some(789),
+                pattern: None,
+            })
+        })
+    }
+}
+#[actix_web::test]
+async fn unlisted_slug_facts_are_shared_by_rest_websocket_queries_and_watches() {
+    let (state, runtime, peer, stop) = setup().await;
+    let mut page = slug_page(3);
+    page.cursor = "external-slugs".into();
+    for row in &mut page.entities {
+        match row.entity.as_mut() {
+            Some(w::entity::Entity::ItemType(item)) => {
+                item.aliases = vec![w::ExternalId {
+                    namespace: "tg".into(),
+                    id: "123".into(),
+                }]
+            }
+            Some(w::entity::Entity::AttributeOption(option))
+                if option.id == "model" || option.id == "b" =>
+            {
+                option.aliases = vec![w::ExternalId {
+                    namespace: "tg".into(),
+                    id: if option.id == "model" { "456" } else { "789" }.into(),
+                }]
+            }
+            _ => {}
+        }
+    }
+    peer.page.send_replace(page);
+    checkpoint(&runtime, "external-slugs").await;
+    runtime
+        .valuation
+        .set_gift_resolver(Arc::new(SlugResolver))
+        .unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let query = gift_query(serde_json::json!("https://t.me/nft/Gift-14029"), "GRAM");
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/query")
+            .set_json(&query)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let rest: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(rest["target"]["gift"]["id"], "telegram-unlisted");
+    assert_eq!(rest["target"]["gift"]["number"], 14029);
+    assert_eq!(rest["results"][0]["data"]["final_mark"]["value"], "6");
+    let web_dir = peer._directory.path().join("web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "fixture").unwrap();
+    let server = api_server(&runtime, web_dir);
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(server.run(api_stop.child_token()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"request","id":"slug","method":"valuation.query","params":query}),
+    )
+    .await;
+    let ws = bid_filters::frame(&mut socket, "slug", "result").await;
+    assert_eq!(rest["target"], ws["data"]["target"]);
+    assert_eq!(rest["results"], ws["data"]["results"]);
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"valuation.watch","id":"watch","params":query}),
+    )
+    .await;
+    let ws = bid_filters::frame(&mut socket, "watch", "valuation.snapshot").await;
+    assert_eq!(rest["target"], ws["data"]["target"]);
+    assert_eq!(rest["results"], ws["data"]["results"]);
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"cancel","id":"watch"}),
+    )
+    .await;
+    socket.close(None).await.unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}

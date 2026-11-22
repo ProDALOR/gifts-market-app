@@ -6,7 +6,7 @@ pub mod transport;
 mod types;
 pub use config::{BotConfig, BotCredentials, app_url};
 pub use error::{BotError, ErrorDisposition};
-pub use mtproto::{Connection, InventoryClient};
+pub use mtproto::{AccountGiftResolver, AccountWorker, Connection, InventoryClient};
 pub use transport::BotUser;
 pub use types::{IncomingMessage, LaunchButton, MenuCommand, Reply};
 #[cfg(test)]

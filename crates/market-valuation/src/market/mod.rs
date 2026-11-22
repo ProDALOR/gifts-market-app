@@ -50,6 +50,7 @@ impl ValuationQuery {
             currency_id: self.currency_id,
             strategies,
             period,
+            external_gift: None,
         })
     }
     fn resolve_options(
@@ -100,10 +101,12 @@ pub(crate) struct PreparedQuery {
     currency_id: CurrencyId,
     strategies: Vec<&'static crate::strategy::Registration>,
     period: Option<ExecutionPeriod>,
+    external_gift: Option<market_gifts::TelegramGiftDetails>,
 }
 impl PreparedQuery {
     fn same_query(&self, other: &Self) -> bool {
         self.target == other.target
+            && self.external_gift == other.external_gift
             && self.currency_id == other.currency_id
             && self.period == other.period
             && self.strategies.len() == other.strategies.len()
@@ -277,3 +280,6 @@ mod tests;
 
 #[cfg(test)]
 mod watch_tests;
+
+#[cfg(test)]
+mod slug_tests;

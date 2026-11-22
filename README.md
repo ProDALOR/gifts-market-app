@@ -165,13 +165,36 @@ Enable the **Main Mini App** in BotFather for this bot and set its URL to `MARKE
 /value PlushPepe-123 XTR
 ```
 
-`/value` resolves a concrete gift from available market asks and runs every compatible strategy that needs no execution period. Sending a bare gift link or slug in a private chat also works. Currency defaults to `GRAM`; `TON` is its bot shorthand. Results use registered strategy names and static presentation definitions over typed values and evidence, with one calculation time and a stale-data indicator. Missing evidence remains an explicit per-metric error; one failed strategy does not hide the others.
+`/value` resolves a concrete gift through the configured user session, or observed market data and runs every compatible strategy that needs no execution period. Sending a bare gift link or slug in a private chat also works. Currency defaults to `GRAM`; `TON` is its bot shorthand. Results use registered strategy names and static presentation definitions over typed values and evidence, with one calculation time and a stale-data indicator. Missing evidence remains an explicit per-metric error; one failed strategy does not hide the others.
 
 `/portfolio`, `/floor` and `/multiplier` are temporarily removed from parsing, help and menus. Startup no longer creates a portfolio actor. The `market-portfolio` library and inventory transport remain available for future work.
 
-Gift lookup uses the local replica, matching its collection prefix to the canonical `tg.slug` catalog alias (case-insensitively), then finding the positive gift number across loaded quote currencies. Only concrete asks establish gift facts; criteria bids are excluded. Unlisted gifts, missing number metadata and unknown collections return not-found responses. Conflicting identities or traits fail rather than choosing an arbitrary venue. No external lookup is attempted: [payments.getUniqueStarGift](https://core.telegram.org/method/payments.getUniqueStarGift) is documented as user-only. API-only deployments can value loaded gifts without Telegram credentials.
+Gift URL/slug queries share one resolver across REST, WebSocket and bot commands. With an imported user session, [payments.getUniqueStarGift](https://core.telegram.org/method/payments.getUniqueStarGift) supplies the gift's collection, number and trait document IDs even if it has never been listed. These are matched through Telegram catalog aliases; prices still come from market orderbooks. Canonical collection slugs are not required for this path. Existing observed market identities are preserved. Without an account, or during temporary lookup failures, observed asks and executions provide the fallback; criteria bids never establish gift facts. Conflicting identities or traits fail explicitly.
 
-The hub must supply the canonical collection slug as an `ItemType.aliases` entry, for example `{"namespace":"tg.slug","id":"PlushPepe"}`. The Telegram catalog producer in `gifts-market-hub` discovers this prefix from a native collectible sample, verifies its collection ID and edition number, and persists it in its discovery cache. Existing catalogs missing the alias are backfilled even when their attribute timestamps are fresh. Redeploy `market-control` in that repository and run **Refresh catalog** for the relevant Telegram or MRKT factory; ordinary replication then updates API and bot lookup without clearing app data or sessions. Empty resale samples remain unresolved and are retried on later initialization; display names are never used to invent slugs. Both catalog endpoints expose this as nullable `collection.slug`, independent of the display name. Collections without this alias remain browsable but cannot resolve gift slugs; malformed or conflicting aliases are projection errors. Slug equality, ordering, hashing and lookup use normalized keys while JSON and messages preserve spelling.
+### Optional user session for slug lookup
+
+The `bot` feature (included in the Docker image) can import the existing `accounts.json` session export. It works without a bot token. Discovery checks the working directory first, then `<bot-data-dir>/accounts.json`; set `MARKET_TELEGRAM_ACCOUNTS` / `--telegram-accounts` to override the path. Missing optional files leave market-only lookup available; an explicitly configured invalid file fails startup.
+
+The file is a JSON array with one or more authorized user sessions (maximum 16):
+
+```json
+[{"api_id":12345,"auth_key":"<512 hexadecimal characters>","dc_id":2,"server_address":"149.154.167.51:443"}]
+```
+
+This imports an existing authorization in memory: no API hash, phone login or code is required. The source file is read-only and excluded from the image build. Per-session locks live in `<bot-data-dir>/accounts`; no user updates or messages are read or sent. Lookups use the invocation scheduler with account/group pacing, bounded concurrency, flood waits and cancellation. Concurrent lookups for the same slug coalesce. Gift facts have a bounded 128-entry cache (five minutes for successes, fifteen seconds for missing gifts); valuation refresh intervals remain unchanged.
+
+For Compose, add a local `compose.override.yaml` with a read-only mount, then start normally:
+
+```yaml
+services:
+  market-app:
+    volumes:
+      - ./accounts.json:/app/accounts.json:ro
+```
+
+Or mount the export at the path set by `MARKET_TELEGRAM_ACCOUNTS`. The mounted file must be readable by container UID 10001. Keep the export private and outside version control.
+
+The hub must supply the canonical collection slug as an `ItemType.aliases` entry, for example `{"namespace":"tg.slug","id":"PlushPepe"}`. The Telegram catalog producer in `gifts-market-hub` discovers this prefix from a native collectible sample, verifies its collection ID and edition number, and persists it in its discovery cache. Existing catalogs missing the alias are backfilled even when their attribute timestamps are fresh. Redeploy `market-control` in that repository and run **Refresh catalog** for the relevant Telegram or MRKT factory; ordinary replication then updates API and bot lookup without clearing app data or sessions. Empty resale samples remain unresolved and are retried on later initialization; display names are never used to invent slugs. Both catalog endpoints expose this as nullable `collection.slug`, independent of the display name. Collections without this alias remain browsable; market-only slug lookup requires the alias, while user-session lookup uses the numeric Telegram collection alias; malformed or conflicting aliases are projection errors. Slug equality, ordering, hashing and lookup use normalized keys while JSON and messages preserve spelling.
 
 ```sh
 # Log in/resume the local session and inspect identity; no updates consumed or messages sent.

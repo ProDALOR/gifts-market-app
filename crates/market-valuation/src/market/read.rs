@@ -7,6 +7,7 @@ use std::sync::Arc;
 pub(crate) struct ValuationRead {
     pub report: Arc<ValuationReport>,
     pub(super) reads: ReadSet,
+    pub(super) external_gift: Option<market_gifts::TelegramGiftDetails>,
 }
 impl ValuationRead {
     #[cfg(test)]
@@ -24,7 +25,9 @@ impl ValuationRead {
         previous: Option<&Arc<Self>>,
     ) -> Result<Arc<Self>, ValuationError> {
         let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
-        if let Some(previous) = previous {
+        if let Some(previous) =
+            previous.filter(|previous| previous.external_gift == input.external_gift)
+        {
             let due = tokio::time::Instant::now() >= previous.deadline();
             if !(due && transient(&previous.report.results)) && previous.reads.current(snapshot)? {
                 if !due && previous.report.stale == stale {
@@ -41,11 +44,22 @@ impl ValuationRead {
                     report.stale = stale;
                     Arc::new(report)
                 };
-                return Ok(Arc::new(Self { report, reads }));
+                return Ok(Arc::new(Self {
+                    report,
+                    reads,
+                    external_gift: previous.external_gift.clone(),
+                }));
             }
         }
         snapshot.require_currency(&input.currency_id)?;
-        let target = Arc::new(input.target.resolve(snapshot)?);
+        let target = Arc::new(if let Some(gift) = &input.external_gift {
+            ResolvedTarget::Gift {
+                gift: snapshot.telegram_gift(gift)?,
+                slug: Some(gift.slug.clone()),
+            }
+        } else {
+            input.target.resolve(snapshot)?
+        });
         let collections = match target.as_ref() {
             ResolvedTarget::Catalog(selection) => selection.collection_ids.clone(),
             target => vec![target.collection().expect("single selection").clone()],
@@ -85,6 +99,7 @@ impl ValuationRead {
         }
         let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
         Ok(Arc::new(Self {
+            external_gift: input.external_gift.clone(),
             report: Arc::new(ValuationReport {
                 target: target.as_ref().clone(),
                 currency_id: input.currency_id.clone(),

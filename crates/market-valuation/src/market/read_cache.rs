@@ -111,6 +111,7 @@ mod tests {
                 results: vec![],
             }),
             reads: ReadSet::new(),
+            external_gift: None,
         })
     }
     #[tokio::test(start_paused = true)]

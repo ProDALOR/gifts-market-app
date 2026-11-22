@@ -3,6 +3,96 @@ use super::*;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
 impl ValuationSnapshot {
+    /// Match transport facts through catalog aliases, without assuming hub ID formats.
+    pub(crate) fn telegram_gift(&self, facts: &TelegramGiftDetails) -> Result<CollectibleGift> {
+        self.check_cancelled()?;
+        let items = market_replica::catalog_read::entities_cancellable(
+            &self.reader,
+            w::EntityKind::ItemType,
+            None,
+            &self.cancelled,
+        )?;
+        let lookup = ModelLookup::Telegram {
+            gift_id: facts.collection,
+            document_id: facts.model,
+        };
+        let item = market_gifts_hub::find_collection(
+            &lookup,
+            items.iter().filter_map(|item| match item {
+                w::entity::Entity::ItemType(item) => Some(item),
+                _ => None,
+            }),
+        )
+        .map_err(|_| {
+            Status::unavailable(
+                "Telegram gift collection is missing or ambiguous in the market catalog",
+            )
+        })?;
+        let rules = market_gifts_hub::CollectionChoices::new(item)
+            .map_err(|_| Status::unavailable("Invalid gift collection catalog"))?;
+        let collection_id: CollectionId = item
+            .id
+            .clone()
+            .try_into()
+            .map_err(|_| Status::unavailable("Invalid gift collection ID"))?;
+        let choice = |kind: &str, id: i64| -> Result<String> {
+            let ids = rules.trait_option_ids(kind);
+            let options = market_replica::catalog_read::trait_options(
+                &self.reader,
+                kind,
+                ids.as_deref(),
+                &self.cancelled,
+            )?;
+            let mut found = options.iter().filter(|option| {
+                rules.accepts(option) && market_gifts_hub::has_telegram_alias(id, &option.aliases)
+            });
+            let value = found.next().ok_or_else(|| {
+                Status::unavailable("Telegram gift trait is not in the market catalog")
+            })?;
+            if found.next().is_some() {
+                return Err(Status::unavailable(
+                    "Telegram gift trait alias is ambiguous",
+                ));
+            }
+            Ok(value.id.clone())
+        };
+        let traits = GiftTraits {
+            model: Some(
+                choice(market_gifts_hub::MODEL, facts.model.get())?
+                    .try_into()
+                    .map_err(|_| Status::unavailable("Invalid model ID"))?,
+            ),
+            backdrop: facts
+                .backdrop
+                .map(|id| {
+                    choice(market_gifts_hub::BACKDROP, i64::from(id)).and_then(|id| {
+                        id.try_into()
+                            .map_err(|_| Status::unavailable("Invalid backdrop ID"))
+                    })
+                })
+                .transpose()?,
+            pattern: facts
+                .pattern
+                .map(|id| {
+                    choice(market_gifts_hub::PATTERN, id.get()).and_then(|id| {
+                        id.try_into()
+                            .map_err(|_| Status::unavailable("Invalid pattern ID"))
+                    })
+                })
+                .transpose()?,
+        };
+        let id = match self.gift_by_number(item, facts.number) {
+            Ok(gift) => gift.id,
+            Err(error) if error.code() == tonic::Code::NotFound => facts.id.clone(),
+            Err(error) => return Err(error),
+        };
+        Ok(CollectibleGift {
+            id,
+            collection_id,
+            number: Some(facts.number),
+            traits,
+        })
+    }
     pub fn gift(&self, lookup: &GiftLookup) -> Result<CollectibleGift> {
         match lookup {
             GiftLookup::Slug(slug) => self.gift_by_slug(slug),

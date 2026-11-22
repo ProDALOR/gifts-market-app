@@ -4,7 +4,7 @@ mod lookup;
 mod orders;
 pub mod query;
 pub use catalog::*;
-pub use lookup::{find_collection, find_model, model_identity};
+pub use lookup::{find_collection, find_model, has_telegram_alias, model_identity};
 pub use orders::{ask_quote, book, concrete_gift, is_exhausted, order, order_ref};
 #[derive(Debug)]
 pub struct ProjectionError(String);

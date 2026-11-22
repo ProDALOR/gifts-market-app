@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum Group {
     Control,
     Gifts(u64),
+    GiftLookup,
     Media,
     Reply(i64),
 }
@@ -111,7 +112,7 @@ impl Executor {
 pub(super) fn policy(account: u64, group: Group, replay: Replay) -> Policy {
     let (name, interval, concurrency) = match group {
         Group::Control => ("control", 100, 1),
-        Group::Gifts(_) => ("gifts", 300, 2),
+        Group::Gifts(_) | Group::GiftLookup => ("gifts", 300, 2),
         Group::Media => ("media", 100, 2),
         Group::Reply(_) => ("replies", 50, 4),
     };

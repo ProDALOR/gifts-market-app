@@ -1,4 +1,6 @@
 //! Application composition, configuration and process lifecycle.
+#[cfg(feature = "bot")]
+pub mod account_config;
 pub mod api_config;
 #[cfg(feature = "bot")]
 pub mod bot_config;

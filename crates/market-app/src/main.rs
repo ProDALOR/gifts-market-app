@@ -64,6 +64,10 @@ async fn main() -> anyhow::Result<()> {
         args.max_live_queries,
     )
     .await?;
+    #[cfg(feature = "bot")]
+    if let Some(accounts) = market_app::account_config::worker(&args).await? {
+        runtime.start_accounts(accounts)?;
+    }
     let media_dir = args
         .media_dir
         .clone()

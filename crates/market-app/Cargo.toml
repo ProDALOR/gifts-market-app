@@ -16,6 +16,7 @@ market-actors.workspace = true
 market-hub-client.workspace = true
 market-replica.workspace = true
 market-telegram = { workspace = true, optional = true }
+market-telegram-client = { workspace = true, optional = true }
 market-telegram-bot = { workspace = true, optional = true }
 market-miniapp = { workspace = true, optional = true }
 futures-util.workspace = true
@@ -27,7 +28,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 [features]
 default = []
-bot = ["dep:market-invocations", "dep:market-telegram", "dep:market-telegram-bot"]
+bot = ["dep:market-invocations", "dep:market-telegram", "dep:market-telegram-bot", "dep:market-telegram-client"]
 miniapp = ["dep:market-miniapp", "market-api/miniapp"]
 [dev-dependencies]
 market-hub-protocol.workspace = true

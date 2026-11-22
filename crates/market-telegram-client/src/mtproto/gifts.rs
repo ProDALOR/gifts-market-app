@@ -244,9 +244,9 @@ fn profile_relation(
     }
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    fn saved_gift(collection_id: i64, document_id: i64) -> tl::enums::SavedStarGift {
+    pub(crate) fn saved_gift(collection_id: i64, document_id: i64) -> tl::enums::SavedStarGift {
         let gift = tl::types::StarGiftUnique {
             require_premium: false,
             resale_ton_only: false,

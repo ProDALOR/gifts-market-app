@@ -1,5 +1,7 @@
 //! Private grammers adapter: TL calls, payloads, session storage and gift mapping.
+mod accounts;
 mod client;
+pub use accounts::{AccountGiftResolver, AccountWorker};
 mod connection;
 mod gifts;
 mod invocations;

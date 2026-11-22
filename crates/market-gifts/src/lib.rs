@@ -1,6 +1,8 @@
 //! Gift-market language shared by actors and transports. No hub, storage, HTTP or Telegram client dependencies.
 pub mod catalog;
 pub mod gift;
+mod gift_resolver;
+pub use gift_resolver::{GiftResolutionError, GiftResolver, TelegramGiftDetails};
 mod ids;
 pub mod inventory;
 mod lookup;

@@ -63,6 +63,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-media",
                 "market-replica",
                 "market-telegram",
+                "market-telegram-client",
                 "market-telegram-bot",
                 "market-invocations",
                 "market-valuation",

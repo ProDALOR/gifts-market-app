@@ -24,8 +24,8 @@ impl std::fmt::Display for BotError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Configuration(message) => f.write_str(message),
-            Self::Session => f.write_str("Bot session storage unavailable"),
-            Self::Authorization => f.write_str("Telegram bot authorization failed"),
+            Self::Session => f.write_str("Telegram session storage unavailable"),
+            Self::Authorization => f.write_str("Telegram authorization failed"),
             Self::Invocations => f.write_str("Telegram invocation scheduler stopped"),
             Self::Runner => f.write_str("Telegram connection runner stopped"),
             Self::Transport => f.write_str("Telegram connection failed"),
