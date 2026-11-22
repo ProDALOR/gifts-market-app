@@ -8,12 +8,8 @@ import {
 } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { FloorsController, traitFloor } from "./floors-controller";
-import type {
-  FloorsEntry,
-  FloorsState,
-  SharedFloor,
-} from "./floors-controller";
-import type { Order } from "../market";
+import type { FloorsEntry, FloorsState } from "./floors-controller";
+import type { FloorValuation, Order } from "../market";
 import { roundedAmount, trimDecimalZeros } from "../amount";
 import { giftPresentation } from "../order-target";
 import { Quote } from "../ui/market-controls";
@@ -115,7 +111,7 @@ export function FloorBadge({
   rounded = false,
   abbreviated = false,
 }: {
-  floor?: SharedFloor;
+  floor?: FloorValuation;
   currency: string;
   stale?: boolean;
   label?: string;
@@ -135,7 +131,7 @@ export function FloorBadge({
   return (
     <span
       className={`floor-badge${stale ? " stale" : ""}`}
-      title={`${label}: ${value}${stale ? " · updates pending" : ""}${message ? `: ${message}` : ""}\n${evidenceTooltip(floor)}`}
+      title={`${label}: ${value}${stale ? " · updates pending" : ""}${message ? `: ${message}` : ""}\n${countTooltip(floor)}`}
       aria-label={`${label}: ${display ? `${display} ${currency}` : "unavailable"}${stale ? "; updates pending" : ""}`}
     >
       {!compact && <span>{label}</span>}
@@ -152,20 +148,20 @@ export function FloorBadge({
   );
 }
 const counts = new Intl.NumberFormat();
-function giftCount(floor: SharedFloor) {
+function giftCount(floor: FloorValuation) {
   const gifts = floor.count;
   return `${counts.format(gifts)} ${gifts === 1 ? "gift" : "gifts"}`;
 }
-function evidenceTooltip(floor: SharedFloor) {
+function countTooltip(floor: FloorValuation) {
   return `${giftCount(floor)}\nUnique identifiable gifts with eligible asks in this scope. The same gift counts once across markets. Broad criteria may supply prices without an identifiable gift.`;
 }
-/** Each scope shows its own live valuation evidence, independently of gift estimates. */
+/** Each scope shows its own floor and count, independently of gift estimates. */
 export function FloorSummary(props: ComponentProps<typeof FloorBadge>) {
   if (!props.floor) return null;
   return (
     <span className={`floor-summary${props.stale ? " stale" : ""}`}>
       <FloorBadge {...props} />
-      <small className="floor-evidence" title={evidenceTooltip(props.floor)}>
+      <small className="floor-evidence" title={countTooltip(props.floor)}>
         {giftCount(props.floor)}
       </small>
       {!props.compact && "error" in props.floor && (

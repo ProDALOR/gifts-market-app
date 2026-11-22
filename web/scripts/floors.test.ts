@@ -15,8 +15,8 @@ import {
 } from "../src/valuation/freshness.ts";
 import type { ValuationResponse } from "../src/market.ts";
 import type { FloorsEntry } from "../src/valuation/floors-controller.ts";
-test("gift estimates become stale when prices, evidence or catalog membership change", () => {
-  const evidence = { listings: 3, gifts: 3 },
+test("gift estimates become stale when prices, counts or catalog membership change", () => {
+  const count = 3,
     price = { value: "10" };
   const report: ValuationResponse = {
     target: {
@@ -35,10 +35,10 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
       {
         strategy: "gift_floor",
         data: {
-          collection_floor: { ...price, count: evidence.gifts },
-          model_floor: { ...price, count: evidence.gifts },
-          backdrop_floor: { ...price, count: evidence.gifts },
-          model_backdrop_floor: { ...price, count: evidence.gifts },
+          collection_floor: { ...price, count },
+          model_floor: { ...price, count },
+          backdrop_floor: { ...price, count },
+          model_backdrop_floor: { ...price, count },
           model_multiplier: price,
           backdrop_multiplier: price,
           model_premium: { value: "0" },
@@ -51,7 +51,7 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
       },
     ],
   };
-  const floor = { ...price, count: evidence.gifts };
+  const floor = { ...price, count };
   const shared: Pick<FloorsEntry, "floor" | "traits"> = {
     floor,
     traits: {
@@ -67,7 +67,7 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
       ...shared,
       traits: {
         ...shared.traits!,
-        patterns: { symbol: { value: "123", count: evidence.gifts } },
+        patterns: { symbol: { value: "123", count } },
       },
     }),
     false,
@@ -98,18 +98,50 @@ test("gift estimates become stale when prices, evidence or catalog membership ch
     false,
     "Awaiting a trait baseline does not invent a difference",
   );
+  const unavailable = structuredClone(report),
+    outcome = unavailable.results[0];
+  if ("error" in outcome || outcome.strategy !== "gift_floor")
+    throw new Error("Expected a gift floor result");
+  outcome.data.model_backdrop_floor = {
+    count: 0,
+    error: {
+      code: "not_enough_data",
+      message: "No matching pair asks",
+      dependency: "model_backdrop_floor",
+      available_samples: 0,
+    },
+  };
+  const current = structuredClone(shared);
+  current.traits!.pair!.floor = {
+    error: {
+      available_samples: 0,
+      dependency: "model_backdrop_floor",
+      message: "No matching pair asks",
+      code: "not_enough_data",
+    },
+    count: 0,
+  };
+  assert.equal(
+    giftBasisChanged(unavailable, current),
+    false,
+    "Error property order does not change the floor basis",
+  );
+  current.traits!.pair!.floor.error.available_samples = 1;
+  assert.equal(giftBasisChanged(unavailable, current), true);
+  current.traits!.pair!.floor = { value: "10", count: 0 };
+  assert.equal(giftBasisChanged(unavailable, current), true);
 });
 test("attribute valuations use only the matching scope and never invent a symbol or missing value", () => {
-  const floor = (value: string, gifts: number, listings: number) => ({
+  const floor = (value: string, count: number) => ({
     value,
-    count: gifts,
+    count,
   });
   const entry: FloorsEntry = {
-    floor: floor("8", 7, 9),
+    floor: floor("8", 7),
     traits: {
-      models: { model: floor("10", 2, 4) },
-      backdrops: { backdrop: floor("9", 1, 2) },
-      patterns: { symbol: floor("8.5", 3, 4) },
+      models: { model: floor("10", 2) },
+      backdrops: { backdrop: floor("9", 1) },
+      patterns: { symbol: floor("8.5", 3) },
     },
     stale: false,
     evaluatedAt: "2026-11-20T12:00:00Z",
@@ -505,7 +537,7 @@ test("catalog validation rejects duplicate scopes and invalid counts and legacy 
   assert.equal(
     catalogFloors(data),
     false,
-    "Symbol evidence uses the same validation as other traits",
+    "Symbol counts use the same validation as other traits",
   );
   delete data.collections[0].traits.patterns;
   assert.equal(
@@ -522,7 +554,7 @@ test("catalog validation rejects duplicate scopes and invalid counts and legacy 
   assert.equal(
     catalogFloors(data),
     true,
-    "Symbol floors use the same price/evidence validation",
+    "Symbol floors use the same price/count validation",
   );
   traits.patterns.symbol.count = 1.5;
   assert.equal(

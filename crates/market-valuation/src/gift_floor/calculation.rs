@@ -6,7 +6,7 @@ use market_gifts::*;
 use rust_decimal::Decimal;
 
 impl Statistics {
-    pub fn report(&self, traits: &GiftTraits, pair: &Floor) -> GiftFloorValuation {
+    pub fn report(&self, traits: &GiftTraits, pair: crate::FloorValuation) -> GiftFloorValuation {
         let empty = Floor::default();
         let model = traits
             .model
@@ -24,7 +24,7 @@ impl Statistics {
             self.collection.valuation(true),
             model_floor.valuation(model.is_some()),
             backdrop_floor.valuation(backdrop.is_some()),
-            pair.valuation(model.is_some() && backdrop.is_some()),
+            pair,
         )
     }
 }

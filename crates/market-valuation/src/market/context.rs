@@ -80,16 +80,6 @@ impl<'a> ValuationContext<'a> {
         self.reads.borrow_mut().statistics(stats)?;
         Ok(statistics)
     }
-    pub(crate) fn pair_floor(
-        &self,
-        collection: &CollectionId,
-        model: &market_gifts::ModelId,
-        backdrop: &market_gifts::BackdropId,
-    ) -> Result<crate::FloorValuation, ValuationError> {
-        self.floor_statistics(collection)?
-            .pair_floor(self.snapshot, model, backdrop)
-    }
-
     /// Record the sources that the next periodic refresh needs to validate.
     pub fn orders(
         &self,

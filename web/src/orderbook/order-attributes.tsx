@@ -1,4 +1,9 @@
-import type { Order, CatalogOption, GiftMedia } from "../market";
+import type {
+  Order,
+  CatalogOption,
+  GiftMedia,
+  FloorValuation,
+} from "../market";
 import { BidConditions } from "./bid-conditions";
 import { giftDetails } from "../orderbook";
 import { AttributeArt } from "./attribute-art";
@@ -9,7 +14,6 @@ import {
 } from "../valuation/floors";
 import { traitFloor } from "../valuation/floors-controller";
 import { FloorValue } from "./floor-value";
-import type { SharedFloor } from "../valuation/floors-controller";
 import { criteriaPresentation, giftPresentation } from "../order-target";
 
 export function OrderAttributes({
@@ -48,7 +52,7 @@ export function OrderAttributes({
     value?: string;
     attribute?: AttributeArtKind;
     visual?: CatalogOption;
-    floor?: SharedFloor;
+    floor?: FloorValuation;
   }[] = [
     {
       label: "Collection",

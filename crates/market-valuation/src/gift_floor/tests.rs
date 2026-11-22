@@ -611,9 +611,15 @@ async fn missing_pair_asks_preserve_the_additive_estimate_and_expose_its_basis()
             let currency = "GRAM".into();
             let context = ValuationContext::new(&snapshot, &currency, &cache);
             let stats = context.floor_statistics(&"gift".into()).unwrap();
-            let pair = context
-                .pair_floor(&"gift".into(), &"m".into(), &"b".into())
+            let mut pair = stats
+                .pair_floor(&snapshot, &"m".into(), &"b".into())
                 .unwrap();
+            let ValuationMetric::Unavailable { error } = &mut pair.price else {
+                panic!("the pair was removed")
+            };
+            error.message = "No matching model/backdrop asks in the captured book".into();
+            error.dependency = Some(ValuationDependency::ModelBackdropFloor);
+            let expected_pair = serde_json::to_value(&pair).unwrap();
             let gift = CollectibleGift {
                 id: "unlisted".into(),
                 collection_id: "gift".into(),
@@ -624,12 +630,13 @@ async fn missing_pair_asks_preserve_the_additive_estimate_and_expose_its_basis()
                     pattern: Some("symbol".into()),
                 },
             };
-            let output = stats.report(&gift.traits, &crate::floors::Floor::from_valuation(&pair));
+            let output = stats.report(&gift.traits, pair);
             assert_eq!(output.final_mark.value().unwrap().as_str(), "18");
             assert_eq!(output.basis, Some(GiftFloorBasis::Additive));
             assert_eq!(output.model_backdrop_floor.count, 0);
             assert!(output.model_backdrop_floor.value().is_none());
             let json = serde_json::to_value(output).unwrap();
+            assert_eq!(json["model_backdrop_floor"], expected_pair);
             assert_eq!(json["basis"], "additive");
             assert_eq!(json["additive_estimate"]["value"], "18");
             assert!(

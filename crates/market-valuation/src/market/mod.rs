@@ -117,19 +117,6 @@ impl PreparedQuery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct FloorValuation {
-    #[serde(flatten)]
-    pub price: ValuationMetric,
-    /// Distinct identifiable gifts, deduplicated across venues. Not a listing count.
-    pub count: u32,
-}
-impl FloorValuation {
-    pub fn value(&self) -> Option<&market_gifts::Amount> {
-        self.price.value()
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ExecutionEvidence {
     pub executions: u32,
     pub gifts: u32,

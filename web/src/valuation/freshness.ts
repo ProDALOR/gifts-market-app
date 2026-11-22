@@ -1,4 +1,4 @@
-import type { ValuationResponse } from "../market.ts";
+import type { FloorValuation, ValuationResponse } from "../market.ts";
 import type { FloorsEntry } from "./floors-controller.ts";
 import type { MarketStatus } from "../market.ts";
 export function estimateIsStale(
@@ -32,15 +32,6 @@ export function giftBasisChanged(
     return undefined;
   const data = result.data;
 
-  const equal = (
-    metric: typeof data.collection_floor,
-    floor: typeof shared.floor | undefined,
-  ) =>
-    !floor ||
-    !metric ||
-    (metric.count === floor.count &&
-      JSON.stringify("value" in metric ? metric.value : metric.error) ===
-        JSON.stringify("value" in floor ? floor.value : floor.error));
   const model = traits.model,
     backdrop = traits.backdrop;
   const pair = shared.traits?.pair;
@@ -51,21 +42,39 @@ export function giftBasisChanged(
   )
     return true;
   return (
-    !equal(data.collection_floor, shared.floor) ||
-    !equal(
+    !sameFloor(data.collection_floor, shared.floor) ||
+    !sameFloor(
       data.model_floor,
       model ? shared.traits?.models[model] : undefined,
     ) ||
-    !equal(
+    !sameFloor(
       data.backdrop_floor,
       backdrop ? shared.traits?.backdrops[backdrop] : undefined,
     ) ||
-    !equal(
+    !sameFloor(
       data.model_backdrop_floor,
       pair && pair.model_id === model && pair.backdrop_id === backdrop
         ? pair.floor
         : undefined,
     )
+  );
+}
+
+function sameFloor(basis: FloorValuation, current?: FloorValuation) {
+  // A scope that has not loaded yet supplies no evidence of a change.
+  if (!current) return true;
+  if (basis.count !== current.count) return false;
+  if ("value" in basis)
+    return "value" in current && basis.value === current.value;
+  if (!("error" in current)) return false;
+  const a = basis.error,
+    b = current.error;
+  return (
+    a.code === b.code &&
+    a.message === b.message &&
+    a.required_samples === b.required_samples &&
+    a.available_samples === b.available_samples &&
+    a.dependency === b.dependency
   );
 }
 

@@ -20,14 +20,10 @@ impl Strategy for GiftFloor {
                 if stats.known_models.contains(model)
                     && stats.known_backdrops.contains(backdrop) =>
             {
-                crate::floors::Floor::from_valuation(&context.pair_floor(
-                    &input.collection_id,
-                    model,
-                    backdrop,
-                )?)
+                stats.pair_floor(context.snapshot(), model, backdrop)?
             }
-            _ => crate::floors::Floor::default(),
+            _ => crate::floors::Floor::default().valuation(false),
         };
-        Ok(stats.report(&input.traits, &pair))
+        Ok(stats.report(&input.traits, pair))
     }
 }

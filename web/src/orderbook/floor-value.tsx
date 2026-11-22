@@ -1,4 +1,4 @@
-import type { SharedFloor } from "../valuation/floors-controller";
+import type { FloorValuation } from "../market";
 import { FloorSummary } from "../valuation/floors";
 
 /** Read-only cached floor, including loading and unavailable states. */
@@ -11,7 +11,7 @@ export function FloorValue({
   error = "",
 }: {
   label: string;
-  floor?: SharedFloor;
+  floor?: FloorValuation;
   currency: string;
   stale?: boolean;
   loading?: boolean;

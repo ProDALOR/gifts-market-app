@@ -49,6 +49,21 @@ impl<T> ValuationMetric<T> {
     }
 }
 
+/// A shared floor result, independent of the strategy or query that produced it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct FloorValuation {
+    #[serde(flatten)]
+    pub price: ValuationMetric,
+    /// Distinct identifiable gifts, deduplicated across venues. Not a listing count.
+    pub count: u32,
+}
+impl FloorValuation {
+    pub fn value(&self) -> Option<&Amount> {
+        self.price.value()
+    }
+}
+
 /// A nonnegative dimensionless decimal, distinct from a monetary amount.
 /// ```compile_fail
 /// use market_valuation::{Multiplier, ValuationMetric};

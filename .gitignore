@@ -34,3 +34,5 @@ __pycache__/
 
 # Local browser verification artifacts.
 web/test-artifacts/
+
+*.logs.txt

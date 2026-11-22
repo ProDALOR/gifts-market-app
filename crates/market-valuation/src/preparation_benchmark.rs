@@ -120,8 +120,8 @@ async fn benchmark_preparation() {
                 let books = crate::floors::BookCache::default();
                 let currency = "GRAM".into();
                 let context = crate::ValuationContext::new(&snapshot, &currency, &books);
-                context.pair_floor(
-                    &"gift".into(),
+                context.floor_statistics(&"gift".into())?.pair_floor(
+                    &snapshot,
                     &"bench-model-0".into(),
                     &"bench-backdrop-0".into(),
                 )
@@ -159,11 +159,13 @@ async fn benchmark_preparation() {
         let pair = source
             .prepare(move |snapshot| {
                 let currency = "GRAM".into();
-                crate::ValuationContext::new(&snapshot, &currency, &books).pair_floor(
-                    &"gift".into(),
-                    &"bench-model-0".into(),
-                    &"bench-backdrop-0".into(),
-                )
+                crate::ValuationContext::new(&snapshot, &currency, &books)
+                    .floor_statistics(&"gift".into())?
+                    .pair_floor(
+                        &snapshot,
+                        &"bench-model-0".into(),
+                        &"bench-backdrop-0".into(),
+                    )
             })
             .await
             .unwrap()

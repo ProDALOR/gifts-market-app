@@ -14,16 +14,15 @@ function floor(value: unknown) {
     )
   )
     return false;
-  const price = value;
   return (
-    (typeof price.value === "string" &&
-      price.value.length <= 128 &&
-      /^\d+(?:\.\d+)?$/.test(price.value) &&
-      !Object.hasOwn(price, "error")) ||
-    (record(price.error) &&
-      text(price.error.code) &&
-      text(price.error.message) &&
-      !Object.hasOwn(price, "value"))
+    (typeof value.value === "string" &&
+      value.value.length <= 128 &&
+      /^\d+(?:\.\d+)?$/.test(value.value) &&
+      !Object.hasOwn(value, "error")) ||
+    (record(value.error) &&
+      text(value.error.code) &&
+      text(value.error.message) &&
+      !Object.hasOwn(value, "value"))
   );
 }
 /** Validate the projection at its typed consumer; the WS envelope remains strategy-independent. */

@@ -81,7 +81,7 @@ impl Strategy for CatalogFloor {
                         floor: if book.known_models.contains(&pair.model_id)
                             && book.known_backdrops.contains(&pair.backdrop_id)
                         {
-                            context.pair_floor(collection, &pair.model_id, &pair.backdrop_id)?
+                            book.pair_floor(context.snapshot(), &pair.model_id, &pair.backdrop_id)?
                         } else {
                             FloorValuation {
                                 price: market::unavailable(

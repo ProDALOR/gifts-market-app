@@ -5,7 +5,7 @@ use super::{
 };
 use crate::Strategy;
 use market_gifts::{GiftTarget, OrderSource};
-use std::collections::BTreeSet;
+use std::sync::Arc;
 pub struct AskFloor;
 impl Strategy for AskFloor {
     const PURPOSE: crate::StrategyPurpose = crate::StrategyPurpose::Reference;
@@ -55,9 +55,7 @@ pub(crate) fn matching_ask_floor(
 ) -> Result<FloorValuation, ValuationError> {
     let query = target.query(context.currency().clone(), OrderSource::Asks, None);
     let mut token = String::new();
-    let mut floor: Option<Amount> = None;
-    let mut gifts = BTreeSet::new();
-    let mut count = 0;
+    let mut floor = crate::floors::Floor::default();
     let mut budget = market_replica::catalog_read::ScanBudget::default();
     loop {
         budget.page()?;
@@ -71,39 +69,21 @@ pub(crate) fn matching_ask_floor(
             {
                 continue;
             }
-            count += 1;
-            if count > MAX_OBSERVATIONS {
+            if floor.observations as usize >= MAX_OBSERVATIONS {
                 return Err(ValuationError::capacity("ask observation budget exceeded"));
             }
-            if let GiftTarget::Gift { gift } = &order.target {
-                gifts.insert(gift.id.clone());
-            }
-            if floor
-                .as_ref()
-                .is_none_or(|old| order.price.decimal() < old.decimal())
-            {
-                floor = Some(order.price.clone());
-            }
+            let gift = match &order.target {
+                GiftTarget::Gift { gift } => Some(Arc::new(gift.id.clone())),
+                _ => None,
+            };
+            floor.observe(&order.price, gift.as_ref());
         }
         if page.next_page_token.is_empty() {
             break;
         }
         token = page.next_page_token;
     }
-    Ok(FloorValuation {
-        price: floor.map_or_else(
-            || {
-                unavailable(
-                    ValuationIssueCode::NotEnoughData,
-                    "No eligible asks match this target",
-                    None,
-                    None,
-                )
-            },
-            |value| ValuationMetric::Value { value },
-        ),
-        count: gifts.len() as u32,
-    })
+    Ok(floor.valuation(true))
 }
 pub struct ExecutionMean;
 impl Strategy for ExecutionMean {

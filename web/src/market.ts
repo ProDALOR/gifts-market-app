@@ -10,6 +10,7 @@ export const valuationStrategies = (
   request("/valuations/strategies", undefined, signal);
 export type ValuationQuery = components["schemas"]["ValuationQuery"];
 export type ValuationResponse = components["schemas"]["ValuationResponse"];
+export type FloorValuation = components["schemas"]["FloorValuation"];
 export const valuation = (
   query: ValuationQuery,
   signal?: AbortSignal,

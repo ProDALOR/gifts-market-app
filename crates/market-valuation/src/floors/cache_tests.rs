@@ -95,8 +95,8 @@ async fn requested_pairs_share_cached_trait_observation_time_until_the_minimum_r
             let stats = context.floor_statistics(&"gift".into()).unwrap();
             assert_eq!(stats.models.len(), 2);
             assert_eq!(stats.backdrops.len(), 2);
-            let pair = context
-                .pair_floor(&"gift".into(), &"m".into(), &"b".into())
+            let pair = stats
+                .pair_floor(&snapshot, &"m".into(), &"b".into())
                 .unwrap();
             assert!(Arc::ptr_eq(
                 &stats,
@@ -731,8 +731,8 @@ async fn previously_unrequested_pairs_use_the_cached_collection_generation_after
             let context = crate::ValuationContext::new(&snapshot, &currency, &cache);
             let stats = context.floor_statistics(&"gift".into()).unwrap();
             let pair = include_pair.then(|| {
-                context
-                    .pair_floor(&"gift".into(), &"m".into(), &"b".into())
+                stats
+                    .pair_floor(&snapshot, &"m".into(), &"b".into())
                     .unwrap()
             });
             (stats, pair)
@@ -757,5 +757,15 @@ async fn previously_unrequested_pairs_use_the_cached_collection_generation_after
     assert!(!Arc::ptr_eq(&initial, &fresh));
     assert_eq!(fresh.collection.price.as_ref().unwrap().as_str(), "1");
     assert_eq!(pair.unwrap().price.value().unwrap().as_str(), "1");
+    let retained_pair = source
+        .prepare(move |snapshot| initial.pair_floor(&snapshot, &"m".into(), &"b".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retained_pair.value().unwrap().as_str(),
+        "100",
+        "An in-progress calculation retains its floor generation even after cache replacement"
+    );
     runtime.shutdown().await;
 }

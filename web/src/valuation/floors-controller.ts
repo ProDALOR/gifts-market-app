@@ -4,6 +4,7 @@ import { evaluatedAfter } from "./freshness.ts";
 import { liveSocket } from "../live-socket.ts";
 import { valuation, ApiFailure } from "../market.ts";
 import type {
+  FloorValuation,
   MarketStatus,
   ValuationQuery,
   ValuationResponse,
@@ -13,9 +14,8 @@ type Values = components["schemas"]["CatalogFloorValuation"];
 type TraitFloors = NonNullable<Values["collections"][number]["traits"]>;
 type CatalogTarget = Extract<ValuationQuery["target"], { kind: "catalog" }>;
 type Pair = NonNullable<CatalogTarget["details"]>["pair"];
-export type SharedFloor = components["schemas"]["FloorValuation"];
 export type FloorsEntry = {
-  floor: SharedFloor;
+  floor: FloorValuation;
   traits?: TraitFloors;
   stale: boolean;
   evaluatedAt: string;

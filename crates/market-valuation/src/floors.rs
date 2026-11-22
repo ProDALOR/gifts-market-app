@@ -38,7 +38,7 @@ pub(crate) struct Floor {
 }
 impl Floor {
     /// Return the number of new identity memberships for bounded evidence accounting.
-    fn observe(&mut self, price: &Amount, gift: Option<&Arc<GiftId>>) -> usize {
+    pub(crate) fn observe(&mut self, price: &Amount, gift: Option<&Arc<GiftId>>) -> usize {
         self.observations += 1;
         if self
             .price
@@ -50,14 +50,6 @@ impl Floor {
         let added = gift.is_some_and(|id| self.identities.insert(id.clone()));
         self.count += u32::from(added);
         usize::from(added)
-    }
-    pub fn from_valuation(value: &crate::FloorValuation) -> Self {
-        Self {
-            price: value.price.value().cloned(),
-            count: value.count,
-            observations: 0,
-            identities: HashSet::new(),
-        }
     }
     pub fn valuation(&self, present: bool) -> FloorValuation {
         FloorValuation {
@@ -289,7 +281,7 @@ impl Statistics {
                 {
                     floor.identities = HashSet::new();
                 }
-                stats.evaluated_at = jiff::Timestamp::now();
+                // Preserve the eligibility time used by this traversal for later pair reads.
                 tracing::debug!(collection=%scope.collection,currency=%scope.currency,?preparation,rows=stats.collection.observations,models=stats.models.len(),backdrops=stats.backdrops.len(),patterns=stats.patterns.len(),elapsed_ms=started.elapsed().as_millis(),"prepared valuation floors");
                 return Ok(stats);
             }
