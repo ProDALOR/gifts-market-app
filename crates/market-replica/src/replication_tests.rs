@@ -7,6 +7,59 @@ use tonic::Status;
 use w::entity::Entity as E;
 
 #[tokio::test]
+async fn abandoned_returned_snapshot_results_release_resources_off_thread_and_drain() {
+    use super::{StorageValue, drain};
+    use tokio_util::task::TaskTracker;
+    struct Held {
+        _builder: crate::SnapshotBuilder,
+        entered: Option<tokio::sync::oneshot::Sender<()>>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            let _ = self.entered.take().unwrap().send(());
+            let _ = self.release.recv_timeout(Duration::from_secs(5));
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let mut writer = crate::ReplicaWriter::open(directory.path(), "cleanup").unwrap();
+    let jobs = TaskTracker::new();
+    let (entered, started) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let value = StorageValue::new(
+        Held {
+            _builder: writer.begin_snapshot().unwrap(),
+            entered: Some(entered),
+            release: blocked,
+        },
+        &jobs,
+    );
+    jobs.close();
+    let owner_untracked = tokio::time::timeout(Duration::from_millis(25), jobs.wait())
+        .await
+        .is_ok();
+    drop(value);
+    started.await.unwrap();
+    let exclusive = writer.begin_snapshot().is_err();
+    let mut draining = Box::pin(drain(&jobs));
+    let premature = tokio::time::timeout(Duration::from_millis(25), &mut draining)
+        .await
+        .is_ok();
+    let _ = release.send(());
+    draining.await;
+    assert!(
+        !owner_untracked,
+        "returned values remain tracked while awaiting prefetch"
+    );
+    assert!(
+        exclusive,
+        "cleanup must retain the build lease until resources are released"
+    );
+    assert!(!premature, "recovery must drain off-thread result cleanup");
+    assert!(writer.begin_snapshot().is_ok());
+}
+
+#[tokio::test]
 async fn live_grouping_preserves_bounds_pending_frames_and_terminal_errors() {
     use super::live_deliveries;
     use crate::limits::{MAX_APPLY_BATCHES, MAX_APPLY_BYTES};
@@ -738,10 +791,21 @@ async fn snapshot_paging_spools_changes_before_older_snapshot_rows_and_resumes_s
                     cursor: "c0".into(),
                 }
             } else {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let index = r.get_ref().page_token.strip_prefix("later").unwrap();
+                let index: usize = if index.is_empty() {
+                    1
+                } else {
+                    index.parse().unwrap()
+                };
                 w::Page {
                     entities: vec![entity(E::Order(order("late-row", "9", None)))],
                     cursor: "c0".into(),
+                    next_page_token: if index < 18 {
+                        format!("later{}", index + 1)
+                    } else {
+                        String::new()
+                    },
                     ..Default::default()
                 }
             };
@@ -872,7 +936,7 @@ async fn snapshot_paging_spools_changes_before_older_snapshot_rows_and_resumes_s
     }
     assert_eq!(
         peer.reads.load(std::sync::atomic::Ordering::SeqCst),
-        4,
+        21,
         "retry only the failed page; restart must resume without a new snapshot"
     );
     assert_eq!(peer.watches.load(std::sync::atomic::Ordering::SeqCst), 4);

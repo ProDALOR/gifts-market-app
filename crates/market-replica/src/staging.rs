@@ -6,18 +6,32 @@ use crate::{
 use market_hub_protocol::wire as w;
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 use tonic::Status;
 
 pub struct SnapshotBuilder {
     store: Store,
-    state: State,
+    state: Option<State>,
+    timings: BuildTimings,
     target: PathBuf,
     source: String,
     journal: SnapshotJournal,
     lease: SnapshotLease,
     owner: Arc<()>,
+}
+/// Accumulated successful staging/replay work, excluding worker queue time.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BuildTimings {
+    pub transactions: u64,
+    pub state: Duration,
+    pub db_wait: Duration,
+    pub db_write: Duration,
+    pub db_commit: Duration,
 }
 pub(crate) struct Replayed {
     pub next_position: u64,
@@ -34,10 +48,12 @@ pub struct PreparedSnapshot {
 }
 /// A staging-only journal; all clones are closed before a snapshot is finalized.
 #[derive(Clone)]
-pub struct SnapshotJournal(Arc<Mutex<JournalState>>);
+pub struct SnapshotJournal(Arc<JournalState>);
 struct JournalState {
     store: Store,
-    open: bool,
+    open: AtomicBool,
+    writes: Mutex<Vec<u8>>,
+    lease: Weak<()>,
 }
 struct SnapshotLease {
     journal: SnapshotJournal,
@@ -45,9 +61,9 @@ struct SnapshotLease {
 }
 impl Drop for SnapshotLease {
     fn drop(&mut self) {
-        if let Ok(mut journal) = self.journal.0.lock() {
-            journal.open = false;
-        }
+        // Closing on cancellation must not wait for a database writer. An
+        // admitted push owns its own lease until its transaction has finished.
+        self.journal.0.open.store(false, Ordering::Release);
     }
 }
 impl SnapshotBuilder {
@@ -62,10 +78,12 @@ impl SnapshotBuilder {
             std::fs::remove_file(&path).map_err(storage::failure)?;
         }
         let store = Store::open(&path, source)?;
-        let journal = SnapshotJournal(Arc::new(Mutex::new(JournalState {
+        let journal = SnapshotJournal(Arc::new(JournalState {
             store: store.clone(),
-            open: true,
-        })));
+            open: AtomicBool::new(true),
+            writes: Mutex::new(Vec::new()),
+            lease: Arc::downgrade(&token),
+        }));
         Ok(Self {
             lease: SnapshotLease {
                 journal: journal.clone(),
@@ -74,7 +92,8 @@ impl SnapshotBuilder {
             journal,
             owner,
             store,
-            state: State::default(),
+            state: Some(State::default()),
+            timings: BuildTimings::default(),
             target: target.to_owned(),
             source: source.into(),
         })
@@ -85,14 +104,27 @@ impl SnapshotBuilder {
     pub fn append(&mut self, changes: &[w::Change]) -> Result<(), Status> {
         self.append_changes(changes)
     }
+    pub(crate) fn timings(&self) -> BuildTimings {
+        self.timings
+    }
     fn append_changes<'a>(
         &mut self,
         changes: impl IntoIterator<Item = &'a w::Change> + Clone,
     ) -> Result<(), Status> {
-        let mut state = self.state.clone();
+        // No published view can share these roots. Any failure leaves None:
+        // production abandons the build, so rebuilding it just to discard it
+        // wastes a complete database scan and duplicates its RAM allocations.
+        let mut state = self.state.take().ok_or_else(failed_builder)?;
+        let started = Instant::now();
         state.apply(changes.clone())?;
-        self.store.apply(changes, None)?;
-        self.state = state;
+        let state_time = started.elapsed();
+        let applied = self.store.apply(changes, None)?;
+        self.state = Some(state);
+        self.timings.transactions += 1;
+        self.timings.state += state_time;
+        self.timings.db_wait += applied.timings.wait;
+        self.timings.db_write += applied.timings.write;
+        self.timings.db_commit += applied.timings.commit;
         Ok(())
     }
     pub fn replay(&mut self, position: u64) -> Result<Option<String>, Status> {
@@ -113,6 +145,9 @@ impl SnapshotBuilder {
         deliveries: usize,
         bytes: usize,
     ) -> Result<Option<Replayed>, Status> {
+        if self.state.is_none() {
+            return Err(failed_builder());
+        }
         let mut batches = self.store.journal_range(position, deliveries, bytes)?;
         if batches.is_empty() {
             return Ok(None);
@@ -135,12 +170,13 @@ impl SnapshotBuilder {
         if cursor.is_empty() {
             return Err(Status::data_loss("missing snapshot checkpoint"));
         }
+        let state = self.state.ok_or_else(failed_builder)?;
         // Serialize closing with admitted journal writes, including tracked storage jobs.
-        self.journal.0.lock().map_err(storage::failure)?.open = false;
+        self.journal.close()?;
         self.store.finish(cursor)?;
         Ok(PreparedSnapshot {
             store: self.store,
-            state: self.state,
+            state,
             target: self.target,
             source: self.source,
             owner: self.owner,
@@ -148,13 +184,28 @@ impl SnapshotBuilder {
         })
     }
 }
+fn failed_builder() -> Status {
+    Status::failed_precondition("snapshot builder must be discarded after a failed batch")
+}
 impl SnapshotJournal {
     pub fn push(&self, batch: &w::Batch) -> Result<(), Status> {
-        let journal = self.0.lock().map_err(storage::failure)?;
-        if !journal.open {
+        let mut buffer = self.0.writes.lock().map_err(storage::failure)?;
+        if !self.0.open.load(Ordering::Acquire) {
             return Err(Status::failed_precondition("snapshot journal is closed"));
         }
-        journal.store.journal(batch)
+        let _lease = self
+            .0
+            .lease
+            .upgrade()
+            .ok_or_else(|| Status::failed_precondition("snapshot journal is closed"))?;
+        self.0.store.journal(batch, &mut buffer)
+    }
+    fn close(&self) -> Result<(), Status> {
+        self.0.open.store(false, Ordering::Release);
+        // Finalization must wait for admitted pushes before flushing/removing
+        // their journal. Waiting pushes see closed and cannot write afterwards.
+        drop(self.0.writes.lock().map_err(storage::failure)?);
+        Ok(())
     }
 }
 
@@ -165,6 +216,223 @@ mod tests {
         tests::{catalog, entity, order, read, upsert},
     };
     use market_hub_protocol::wire as w;
+
+    #[tokio::test]
+    async fn abandoning_a_builder_does_not_wait_for_an_admitted_journal_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = ReplicaWriter::open(directory.path(), "test").unwrap();
+        let builder = writer.begin_snapshot().unwrap();
+        let transaction = builder.store.hold_write_for_test();
+        let journal = builder.journal();
+        let writing = journal.clone();
+        let job = tokio::task::spawn_blocking(move || {
+            writing.push(&w::Batch {
+                cursor: "queued".into(),
+                changes: vec![],
+            })
+        });
+        let admitted = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while journal.0.lease.strong_count() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        if !admitted {
+            drop(transaction);
+            let _ = job.await;
+            panic!("journal write was not admitted");
+        }
+        let (dropped, done) = tokio::sync::oneshot::channel();
+        let dropping = std::thread::spawn(move || {
+            drop(builder);
+            let _ = dropped.send(());
+        });
+        let prompt = tokio::time::timeout(std::time::Duration::from_millis(100), done)
+            .await
+            .is_ok();
+        let exclusive = writer.begin_snapshot().is_err();
+        // Release before asserting, so an old blocking destructor cannot hang a failed test.
+        drop(transaction);
+        let result = job.await.unwrap();
+        dropping.join().unwrap();
+        assert!(
+            prompt,
+            "builder drop must not wait on journal/database locks"
+        );
+        assert!(
+            exclusive,
+            "admitted writes retain the exclusive build lease"
+        );
+        result.unwrap();
+        assert!(
+            journal
+                .push(&w::Batch {
+                    cursor: "closed".into(),
+                    changes: vec![]
+                })
+                .is_err()
+        );
+        assert!(writer.begin_snapshot().is_ok());
+    }
+
+    #[tokio::test]
+    async fn prefetch_progresses_during_journal_contention_and_waits_for_accepted_writes() {
+        use futures_util::StreamExt;
+        use tokio_util::task::TaskTracker;
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = ReplicaWriter::open(directory.path(), "test").unwrap();
+        let mut builder = writer.begin_snapshot().unwrap();
+        let transaction = builder.store.hold_write_for_test();
+        let journal = builder.journal();
+        let mut stream = futures_util::stream::iter([Ok(w::Batch {
+            cursor: "queued".into(),
+            changes: vec![],
+        })])
+        .chain(futures_util::stream::pending());
+        let (advance, ready) = tokio::sync::oneshot::channel();
+        let (progress, progressed) = tokio::sync::oneshot::channel();
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let work = async {
+            ready.await.unwrap();
+            let _ = progress.send(());
+            finished.await.unwrap();
+            Ok(42)
+        };
+        let mut queued = 0;
+        let mut elapsed = std::time::Duration::ZERO;
+        let jobs = TaskTracker::new();
+        let mut collecting = Box::pin(crate::replication::collecting(
+            work,
+            &mut stream,
+            &journal,
+            &mut queued,
+            &mut elapsed,
+            &jobs,
+        ));
+        let admitted = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::select! {
+                _ = async { while journal.0.lease.strong_count() < 2 { tokio::task::yield_now().await; } } => true,
+                _ = &mut collecting => false,
+            }
+        }).await.unwrap_or(false);
+        let _ = advance.send(());
+        let made_progress = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            tokio::select! { _ = progressed => true, _ = &mut collecting => false }
+        })
+        .await
+        .unwrap_or(false);
+        let _ = finish.send(());
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(25), &mut collecting)
+            .await
+            .is_err();
+        drop(transaction);
+        let result = collecting.await.unwrap();
+        jobs.close();
+        jobs.wait().await;
+        assert!(
+            admitted && made_progress,
+            "prefetch must keep polling during writer contention"
+        );
+        assert!(
+            waited,
+            "completed work cannot bypass an accepted journal write"
+        );
+        assert_eq!(result, 42);
+        assert_eq!(queued, 1);
+        assert_eq!(builder.replay(0).unwrap(), Some("queued".into()));
+    }
+
+    #[test]
+    fn uncertain_staging_commits_cannot_be_finished_or_reused() {
+        for committed in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut writer = ReplicaWriter::open(directory.path(), "test").unwrap();
+            let mut initial = writer.begin_snapshot().unwrap();
+            initial.append(&catalog()).unwrap();
+            writer
+                .install_snapshot(initial.finish("old").unwrap())
+                .unwrap();
+            let mut builder = writer.begin_snapshot().unwrap();
+            builder.append(&catalog()).unwrap();
+            builder.store.fail_commit_once(committed);
+            assert!(
+                builder
+                    .append(&[upsert(entity(w::entity::Entity::Order(order(
+                        "new", "1", None
+                    ))))])
+                    .is_err()
+            );
+            assert!(builder.append(&[]).is_err());
+            assert!(builder.replay(0).is_err());
+            assert!(builder.finish("new").is_err());
+            assert_eq!(writer.cursor().unwrap(), "old");
+            drop(writer);
+            let mut reopened = ReplicaWriter::open(directory.path(), "test").unwrap();
+            assert_eq!(reopened.cursor().unwrap(), "old");
+            assert!(reopened.begin_snapshot().is_ok());
+        }
+    }
+
+    #[test]
+    fn failed_staging_storage_validation_aborts_without_rebuilding_ram() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = ReplicaWriter::open(directory.path(), "test").unwrap();
+        let mut builder = writer.begin_snapshot().unwrap();
+        builder.append(&catalog()).unwrap();
+        builder
+            .append(&[upsert(entity(w::entity::Entity::Order(order(
+                "sale",
+                "1",
+                Some(1),
+            ))))])
+            .unwrap();
+        // RAM accepts execution removal, while storage rejects changing immutable history.
+        let rejected = upsert(entity(w::entity::Entity::Order(order("new", "2", None))));
+        let conflict = upsert(entity(w::entity::Entity::Order(order(
+            "sale",
+            "3",
+            Some(1),
+        ))));
+        assert!(builder.append(&[rejected, conflict]).is_err());
+        assert!(builder.state.is_none());
+        assert!(
+            builder
+                .store
+                .state()
+                .unwrap()
+                .entity(
+                    &state::entity_key(&entity(w::entity::Entity::Order(order("new", "2", None))))
+                        .unwrap()
+                )
+                .is_none()
+        );
+        assert!(builder.finish("failed").is_err());
+        let mut builder = writer.begin_snapshot().unwrap();
+        builder.append(&catalog()).unwrap();
+        builder
+            .append(&[upsert(entity(w::entity::Entity::Order(order(
+                "accepted", "4", None,
+            ))))])
+            .unwrap();
+        writer
+            .install_snapshot(builder.finish("ok").unwrap())
+            .unwrap();
+        let result = writer.reader().read(read(1, false)).unwrap();
+        assert_eq!(result.page.entities.len(), 1);
+        assert_eq!(
+            state::order(&result.page.entities[0]).unwrap().id,
+            "accepted"
+        );
+        drop(writer);
+        let writer = ReplicaWriter::open(directory.path(), "test").unwrap();
+        let result = writer.reader().read(read(1, false)).unwrap();
+        assert_eq!(result.page.entities.len(), 1);
+        assert_eq!(
+            state::order(&result.page.entities[0]).unwrap().id,
+            "accepted"
+        );
+    }
 
     #[test]
     fn snapshot_builds_are_exclusive_and_failed_appends_do_not_publish_partial_state() {
@@ -186,12 +454,18 @@ mod tests {
                 .is_err()
         );
         assert!(!reader.status().ready);
+        assert!(builder.state.is_none());
+        assert!(builder.finish("failed").is_err());
         let batch = w::Batch {
             cursor: "c1".into(),
             changes: vec![upsert(entity(w::entity::Entity::Order(order(
                 "accepted", "1", None,
             ))))],
         };
+        assert!(journal.push(&batch).is_err());
+        let mut builder = writer.begin_snapshot().unwrap();
+        builder.append(&catalog()).unwrap();
+        let journal = builder.journal();
         journal.push(&batch).unwrap();
         assert_eq!(builder.replay(0).unwrap(), Some("c1".into()));
         assert_eq!(builder.replay(1).unwrap(), None);
@@ -366,8 +640,9 @@ mod tests {
             })
             .unwrap();
         assert!(builder.replay_chunk(2).is_err());
-        assert!(builder.state.entity(&key).is_none());
+        assert!(builder.state.is_none());
         assert!(builder.store.state().unwrap().entity(&key).is_none());
+        assert!(builder.finish("failed").is_err());
         assert!(!writer.reader().status().ready);
     }
 }

@@ -9,6 +9,7 @@ use redb::{
     Database, Durability, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata,
     TableDefinition, WriteTransaction,
 };
+use std::time::{Duration, Instant};
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 use tonic::Status;
 
@@ -37,6 +38,13 @@ pub(crate) struct Applied {
     pub updated_at: Option<i64>,
     pub data_changed: bool,
     pub history_changed: bool,
+    pub timings: WriteTimings,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct WriteTimings {
+    pub wait: Duration,
+    pub write: Duration,
+    pub commit: Duration,
 }
 #[derive(Debug)]
 pub(crate) struct ApplyError {
@@ -148,7 +156,10 @@ impl Store {
         changes: impl IntoIterator<Item = &'a w::Change>,
         cursor: Option<&str>,
     ) -> Result<Applied, ApplyError> {
+        let waiting = Instant::now();
         let mut tx = self.0.begin_write().map_err(failure)?;
+        let wait = waiting.elapsed();
+        let writing = Instant::now();
         tx.set_durability(if cursor.is_some() {
             Durability::Immediate
         } else {
@@ -159,6 +170,10 @@ impl Store {
             updated_at: None,
             data_changed: false,
             history_changed: false,
+            timings: WriteTimings {
+                wait,
+                ..Default::default()
+            },
         };
         let mut changes = changes.into_iter().peekable();
         if changes.peek().is_some() {
@@ -270,10 +285,13 @@ impl Store {
                 commit_attempted: true,
             });
         }
+        applied.timings.write = writing.elapsed();
+        let committing = Instant::now();
         tx.commit().map_err(|error| ApplyError {
             status: failure(error),
             commit_attempted: true,
         })?;
+        applied.timings.commit = committing.elapsed();
         #[cfg(test)]
         if fault == 2 {
             return Err(ApplyError {
@@ -283,17 +301,22 @@ impl Store {
         }
         Ok(applied)
     }
-    pub fn journal(&self, batch: &w::Batch) -> Result<(), Status> {
+    pub fn journal(&self, batch: &w::Batch, buffer: &mut Vec<u8>) -> Result<(), Status> {
+        buffer.clear();
+        buffer.reserve(batch.encoded_len());
+        batch.encode(&mut *buffer).map_err(failure)?;
         let mut tx = self.0.begin_write().map_err(failure)?;
         tx.set_durability(Durability::None).map_err(failure)?;
         {
             let mut table = tx.open_table(JOURNAL).map_err(failure)?;
             let next = table.len().map_err(failure)?;
-            table
-                .insert(next, batch.encode_to_vec().as_slice())
-                .map_err(failure)?;
+            table.insert(next, buffer.as_slice()).map_err(failure)?;
         }
         tx.commit().map_err(failure)
+    }
+    #[cfg(test)]
+    pub(crate) fn hold_write_for_test(&self) -> WriteTransaction {
+        self.0.begin_write().unwrap()
     }
     pub fn journal_range(
         &self,

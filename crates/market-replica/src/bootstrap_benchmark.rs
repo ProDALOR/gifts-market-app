@@ -15,6 +15,7 @@ fn bootstrap_storage_benchmark() {
         builder.append(page).unwrap();
     }
     let append = start.elapsed();
+    let detail = builder.timings();
     let journal = builder.journal();
     let template = rows
         .iter()
@@ -60,6 +61,106 @@ fn bootstrap_storage_benchmark() {
     println!(
         "bootstrap: 10,000 orders, 500-row pages, 2,000 journal deliveries; append={append:?}; journal={journal_time:?}; replay={replay:?}; finalize_publish={finish:?}"
     );
+    println!(
+        "snapshot transactions={}; state={:?}; db_wait={:?}; db_write={:?}; db_commit={:?}",
+        detail.transactions, detail.state, detail.db_wait, detail.db_write, detail.db_commit
+    );
+}
+
+/// Reproduce the previous staging loop alongside the current production builder.
+#[test]
+#[ignore = "manual mixed active/history staging benchmark"]
+fn bootstrap_batching_benchmark() {
+    let mut rows = fixture(100_000);
+    for (i, row) in rows.iter_mut().enumerate() {
+        if let Some(w::change::Change::Upsert(w::Entity {
+            entity: Some(w::entity::Entity::Order(order)),
+        })) = &mut row.change
+            && i % 2 == 0
+        {
+            order.mode = w::OrderMode::Executed as i32;
+            order.executed_at_ms = Some(i as i64 + 1);
+        }
+    }
+    let expected = rows
+        .iter()
+        .filter(|row| {
+            !matches!(&row.change,
+        Some(w::change::Change::Upsert(w::Entity { entity: Some(w::entity::Entity::Order(order)) }))
+            if order.mode == w::OrderMode::Executed as i32)
+        })
+        .count();
+    for (label, batch_rows) in [
+        ("legacy_cow_500", 500),
+        ("unique_500", 500),
+        ("unique_4000", 4_000),
+    ] {
+        let mut samples = Vec::new();
+        for _ in 0..3 {
+            let directory = tempfile::tempdir().unwrap();
+            if label.starts_with("legacy") {
+                let store =
+                    crate::storage::Store::open(&directory.path().join("legacy.redb"), "benchmark")
+                        .unwrap();
+                let mut state = crate::state::State::default();
+                let started = Instant::now();
+                for page in rows.chunks(batch_rows) {
+                    let mut next = state.clone();
+                    next.apply(page).unwrap();
+                    store.apply(page, None).unwrap();
+                    state = next;
+                }
+                samples.push(started.elapsed());
+                assert_eq!(state.range(None, None).count(), expected);
+                assert_eq!(
+                    store
+                        .snapshot()
+                        .unwrap()
+                        .state()
+                        .unwrap()
+                        .range(None, None)
+                        .count(),
+                    expected
+                );
+            } else {
+                let mut writer = ReplicaWriter::open(directory.path(), "benchmark").unwrap();
+                let mut builder = writer.begin_snapshot().unwrap();
+                let started = Instant::now();
+                for page in rows.chunks(batch_rows) {
+                    builder.append(page).unwrap();
+                }
+                samples.push(started.elapsed());
+                let detail = builder.timings();
+                writer
+                    .install_snapshot(builder.finish("benchmark").unwrap())
+                    .unwrap();
+                assert_eq!(
+                    writer
+                        .store
+                        .snapshot()
+                        .unwrap()
+                        .state()
+                        .unwrap()
+                        .range(None, None)
+                        .count(),
+                    expected
+                );
+                println!(
+                    "{label}: transactions={}; state={:?}; db_wait={:?}; db_write={:?}; db_commit={:?}",
+                    detail.transactions,
+                    detail.state,
+                    detail.db_wait,
+                    detail.db_write,
+                    detail.db_commit
+                );
+            }
+        }
+        samples.sort();
+        println!(
+            "{label}: 100,000 orders (50% executions); median={:?}; samples={samples:?}",
+            samples[1]
+        );
+    }
 }
 
 /// Run alone so the global allocation counters exclude other tests' work.
@@ -92,4 +193,41 @@ fn execution_replay_allocation_regression() {
         "execution payload must not be cloned into RAM: {stats:?}"
     );
     println!("borrowed execution replay (2 MiB payload): {stats:?}");
+}
+
+#[cfg(feature = "profile-allocations")]
+#[test]
+#[ignore = "manual failed-batch allocation regression; use --test-threads=1"]
+fn failed_snapshot_batch_allocation_regression() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut writer = ReplicaWriter::open(directory.path(), "failed-batch").unwrap();
+    let rows = fixture(10_000);
+    let mut initial = writer.begin_snapshot().unwrap();
+    initial.append(&crate::test_support::catalog()).unwrap();
+    writer
+        .install_snapshot(initial.finish("old").unwrap())
+        .unwrap();
+    let mut builder = writer.begin_snapshot().unwrap();
+    for page in rows.chunks(500) {
+        builder.append(page).unwrap();
+    }
+    let mut rejected = rows.last().unwrap().clone();
+    let Some(w::change::Change::Upsert(w::Entity {
+        entity: Some(w::entity::Entity::Order(order)),
+    })) = &mut rejected.change
+    else {
+        unreachable!()
+    };
+    order.id = "rejected-prefix".into();
+    let changes = [rejected, w::Change { change: None }];
+    let region = stats_alloc::Region::new(&stats_alloc::INSTRUMENTED_SYSTEM);
+    assert!(builder.append(&changes).is_err());
+    let allocations = region.change();
+    assert!(
+        allocations.bytes_allocated < 128 * 1024,
+        "aborting a failed batch must not rebuild 10,000 staged orders: {allocations:?}"
+    );
+    assert!(builder.finish("invalid").is_err());
+    assert_eq!(writer.cursor().unwrap(), "old");
+    println!("failed batch with 10,000 staged orders: {allocations:?}");
 }

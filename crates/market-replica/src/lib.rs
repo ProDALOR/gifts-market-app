@@ -332,6 +332,7 @@ impl ReplicaWriter {
         // Prepare everything fallible before changing the canonical file name.
         // Once rename succeeds, retain the new database and its directory barrier
         // even if syncing or publication fails; subsequent writes must recover it.
+        let preparing = std::time::Instant::now();
         let history = snapshot.store.snapshot()?;
         let checkpoint = history.checkpoint()?;
         let view = self.replacement_view(history, snapshot.state, checkpoint);
@@ -341,13 +342,21 @@ impl ReplicaWriter {
                 .ok_or_else(|| storage::failure("missing replica directory"))?,
         )
         .map_err(storage::failure)?;
+        let prepare_time = preparing.elapsed();
+        let renaming = std::time::Instant::now();
         std::fs::rename(self.path.with_file_name("building.redb"), &self.path)
             .map_err(storage::failure)?;
+        let rename_time = renaming.elapsed();
         self.publication = PublicationState::Prepared {
             view,
             data_changed: true,
             directory_sync: Some(directory),
         };
+        tracing::info!(
+            prepare_ms = prepare_time.as_millis(),
+            rename_ms = rename_time.as_millis(),
+            "replica snapshot replacement prepared"
+        );
         self.publish_prepared(SyncState::Live)
     }
 }
@@ -482,6 +491,8 @@ impl ReplicaWriter {
         else {
             return Err(Status::failed_precondition("no prepared publication"));
         };
+        let replacement = directory_sync.is_some();
+        let started = std::time::Instant::now();
         if let Some(directory) = directory_sync {
             #[cfg(test)]
             if std::mem::take(&mut self.fail_directory_sync_once) {
@@ -490,6 +501,8 @@ impl ReplicaWriter {
             directory.sync_all().map_err(storage::failure)?;
             *directory_sync = None;
         }
+        let directory_time = started.elapsed();
+        let switching = std::time::Instant::now();
         let view = view.clone();
         let data_changed = *data_changed;
         #[cfg(test)]
@@ -520,9 +533,19 @@ impl ReplicaWriter {
             self.notify_changed();
         }
         self.publication = PublicationState::Current;
+        let switch_time = switching.elapsed();
         // Old roots/database handles can be expensive to release after a full
         // replacement. Readers must not wait on that destruction under the lock.
+        let retiring = std::time::Instant::now();
         drop(old);
+        if replacement {
+            tracing::info!(
+                directory_sync_ms = directory_time.as_millis(),
+                view_switch_ms = switch_time.as_millis(),
+                retire_ms = retiring.elapsed().as_millis(),
+                "replica snapshot publication timings"
+            );
+        }
         Ok(())
     }
 }

@@ -4,7 +4,7 @@ On startup, a saved replica can serve reads immediately, while its durable curso
 
 ## Why a rebuild can take minutes
 
-The snapshot includes catalog, active orders and execution history. Reads request 500 rows per page, so a large history requires many sequential continuation requests. Downloading is only part of the work: each page builds in-memory indexes and writes indexed execution history to redb. Watch deliveries arriving during that work are journaled to the same staging database, then replayed before publication. A busy stream can build a substantial catch-up backlog.
+The snapshot includes catalog, active orders and execution history. Reads request 500 rows per page, so a large history requires many sequential continuation requests. Downloading is only part of the work: snapshot rows build in-memory indexes and write indexed execution history to redb. Watch deliveries arriving during that work are journaled to the same staging database, then replayed before publication. A busy stream can build a substantial catch-up backlog.
 
 Previously, each page download waited for the preceding page's staging transaction, and every journal delivery required a separate replay transaction. Transient errors during page streaming could also discard the whole build. Finalization used two durable transactions.
 
@@ -12,8 +12,8 @@ The production warning `cursor expired or hub restarted; restart Read` explains 
 
 ## Bounded changes
 
-- Fetch one next page while the current page is staged. Continuations remain sequential; this adds at most one downloaded page to the pipeline.
-- Replay up to 64 deliveries or 1 MiB of encoded journal data per transaction, preserving delivery order. ACK-only groups advance the checkpoint without rewriting state. Failed groups leave both staged state and storage unchanged.
+- Stage the first page immediately, then prefetch one bounded batch while another stages. Each batch holds at most eight pages, 4,000 rows or 4 MiB of encoded page data, whichever limit is reached first. Continuations remain sequential. A page that does not fit is carried into the next batch without another request. The pipeline retains at most one staging batch, one prefetch batch and one overflow page; decoded objects and database/index memory have additional overhead. Oversized individual pages fail before staging.
+- Replay up to 64 deliveries or 1 MiB of encoded journal data per transaction, preserving delivery order. ACK-only groups advance the checkpoint without rewriting state. A failed group invalidates its unpublished builder; no part of that build can be published. Pre-commit storage failures roll back their transaction, and the previous canonical replica remains available.
 - Commit the final checkpoint and remove the journal in one durable transaction. Publish only after finalization succeeds; the storage format and atomic replacement behavior are unchanged.
 - Retry transient capacity, unavailable and deadline errors on the same page continuation, including errors after receiving a partial stream. Each attempt has a ten-second timeout, with at most six attempts. Expired continuations and other errors return immediately to session recovery.
 - Reset reconnect backoff after a completed bootstrap, as well as after successfully applying a live batch.
@@ -73,15 +73,19 @@ Regression tests cover rename and directory-sync failures, retained database loc
 
 Writer admission uses an OS lock on the stable `replica.lock` file, acquired before opening the database or cleaning staging files. Database locks follow individual file handles and are insufficient across replacement: another opener could retain the old inode while the canonical name changes. The directory lock stays held across every generation and is released after the writer's database/publication handles, or automatically on process exit. The empty lock file persists and needs no stale-lock deletion; it must not be removed while a writer runs. Reader views do not own this admission lock and can retain older immutable database handles.
 
-The replication worker owns cancellation once, covering page requests, retries, replay and reconnect backoff. Dropping a network future does not stop an already running blocking transaction. On session failure, recovery drains admitted storage jobs before starting another session; shutdown does the same before marking the replica stale. Tracking includes destruction of abandoned job results, which may still own the snapshot builder, staging database or prepared snapshot. This prevents an old job from retaining a build lease or publishing after a new session starts. Transactions already admitted at cancellation finish atomically; cancellation does not interrupt their disk writes.
+The replication worker owns cancellation once, covering page requests, retries, replay and reconnect backoff. Dropping a network future does not stop an already running blocking transaction. On session failure, recovery drains admitted storage jobs before starting another session; shutdown does the same before marking the replica stale. Tracking includes deferred destruction of abandoned snapshot builders, staging databases and prepared snapshots, including results already returned into async prefetch buffers. Their cleanup runs on storage workers rather than async threads. This prevents an old job from retaining a build lease or publishing after a new session starts. Transactions already admitted at cancellation finish atomically; cancellation does not interrupt their disk writes.
 
-Only one continuation page is prefetched. Page-to-change conversion runs inside the storage worker. Replay borrows each decoded batch's changes for its state and storage passes instead of allocating another flattened vector, and stops at the collected journal position without an extra empty read. Execution payloads are not cloned into the in-memory state: only their active-order identities need removal, while the original payload is indexed in storage. Active entities still need owned data in immutable published views; the transactional state clone uses persistent indexes and remains necessary for rollback on invalid input.
+Page-to-change conversion and decoded payload destruction run inside the storage worker, once per batch. The staging timer includes payload destruction. Prefetch retains its buffered prefix and continuation across awaits, so cancelling a fetch cannot lose completed pages or turn a retry into false EOF. A single journal write can wait on the staging database while page prefetch continues to be polled; it must finish before the batch result advances the journal position. Replay borrows each decoded batch's changes for its state and storage passes instead of allocating another flattened vector, and stops at the collected journal position without an extra empty read. Execution payloads are not cloned into the in-memory state: only their active-order identities need removal, while the original payload is indexed in storage. Active entities still need owned data in immutable published views. Unpublished staging roots are mutated directly instead of being cloned for every transaction. Any failed batch or interrupted mutation makes the builder unpublishable; it must be discarded before another build begins. Production already restarts failed builds, so there is no full RAM rebuild from staging storage just to discard it. These paths preserve the old canonical database and the exclusive build lease. Live updates retain their persistent transactional clones for rollback.
+
+Journal closure on abandonment is an atomic flag update, without waiting on a journal/database mutex. An admitted push upgrades a weak build lease and retains it through its transaction; a replacement build cannot start until that write releases it. Finalization closes admission and waits for all accepted writes before flushing/removing the journal. Closed journal handles do not retain the exclusive lease. Writes serialize through one reusable encoding buffer per build. Recovery drains writes and deferred cleanup before reusing the staging path.
 
 ## Timing logs
 
-INFO logs mark bootstrap start, snapshot download completion and publication. Progress is logged at phase boundaries when at least five seconds have elapsed, with `pages`, `rows`, `queued`, `replayed`, `backlog` and `elapsed_ms`. A blocked operation does not emit periodic progress until it returns.
+INFO logs mark bootstrap start, snapshot download completion and publication. Progress is logged at phase boundaries when at least five seconds have elapsed, with `pages`, `rows`, `snapshot_batches`, `queued`, `replayed`, `backlog`, build timings and `elapsed_ms`. A blocked operation does not emit periodic progress until it returns.
 
 Completion includes `download_ms`, `staging_ms`, `replay_ms`, `finalize_ms` and `publish_ms`. Download and staging overlap: their totals must not be added to estimate wall time. The download duration includes page retries; staging and replay durations measure work inside the storage worker. Overall elapsed time also includes stream setup, journaling and scheduling. New logs do not include authentication or continuation tokens.
+
+Detailed fields split successful build transactions into `build_state_ms` (RAM indexing), `build_db_wait_ms` (database writer admission), `build_db_write_ms` (encoding, row/index updates and checkpoint preparation), and `build_db_commit_ms`. `build_transactions` counts both snapshot staging and replay transactions; completion timings cover both phases. `worker_wait_ms` measures snapshot staging worker queueing. `journal_ms` includes queueing and writer waits for journal writes. These durations can overlap and must not be summed as wall time. Snapshot replacement preparation logs `prepare_ms` (history/checkpoint reads, revision preparation and retained-view expiry) and `rename_ms`. A separate snapshot publication log reports `directory_sync_ms`, `view_switch_ms` and `retire_ms` for old roots/database handles. Retirement remains outside the published-view lock.
 
 Large download time suggests page/transport latency; large staging time suggests index construction or disk work. A growing backlog or large replay time points to catch-up throughput. Large finalization/publication time points to the durable flush or replacement. Watch is not drained during final flush/publication, so this interval should remain short.
 
@@ -90,25 +94,33 @@ Large download time suggests page/transport latency; large staging time suggests
 Run without a hub or credentials:
 
 ```sh
-cargo test -p market-replica bootstrap_storage_benchmark -- --ignored --nocapture
+CARGO_INCREMENTAL=0 cargo test --release --locked -p market-replica bootstrap_ -- --ignored --nocapture --test-threads=1
 ```
 
-The fixture stages 10,000 active orders in 500-row chunks, journals 2,000 one-order deliveries, replays them, and finalizes the replica. These are single local debug-build measurements, not a production throughput guarantee or a network benchmark.
+`bootstrap_storage_benchmark` stages 10,000 active orders in 500-row chunks, journals 2,000 one-order deliveries, replays them, and finalizes the replica. `bootstrap_batching_benchmark` compares the previous clone-per-page loop with direct mutation at 500 and 4,000 rows per transaction. It uses 100,000 orders split equally between active orders and executions, validates persisted state, and reports three samples per mode. Timers exclude fixture construction and final publication.
 
-| Phase | Before | After |
+Local optimized-build results and their detailed timings are recorded below. Docker end-to-end gains depend on upstream latency, disk performance and concurrent load.
+
+| Staging mode | Transactions | Median |
 | --- | ---: | ---: |
-| Stage snapshot | 580 ms | 560 ms |
-| Write journal | 468 ms | 507 ms |
-| Replay journal | 965 ms | 125 ms |
-| Finalize and publish | 41 ms | 32 ms |
+| Previous per-page copy-on-write, 500 rows | 201 | 2.030 s |
+| Unique staging roots, 500 rows | 201 | 1.385 s |
+| Unique staging roots, 4,000 rows | 26 | 1.196 s |
 
-Grouped replay was about 7.7 times faster in this fixture. Page overlap needs measurements against the deployed hub; this storage benchmark cannot quantify its benefit.
+The combined change reduced staging time by about 41% in this local macOS arm64 release run. The original 10,000-active-order fixture, keeping 500-row transactions in both runs, improved from 132 ms to 80 ms. In the mixed fixture, the remaining database row/index work took about 847–888 ms per optimized run, while database commit work took about 37–38 ms. Full bootstrap also includes download, journaling, finalization and publication; the production log's 333-second rebuild needs a deployed measurement after this change.
 
 An additional allocation regression checks that applying an execution with a 2 MiB metadata payload to RAM does not duplicate that payload. Run it alone because allocation counters are process-wide:
 
 ```sh
 cargo test -p market-replica --features profile-allocations execution_replay_allocation_regression -- --ignored --nocapture --test-threads=1
 ```
+
+An allocation regression also loads 10,000 staged orders, injects a partially applied invalid batch, and verifies that aborting allocates less than 128 KiB instead of rebuilding all staged orders. A local optimized run allocated 3,113 bytes for that failure while releasing approximately 29 MB of staged indexes/payloads. Run it in isolation:
+
+```sh
+CARGO_INCREMENTAL=0 cargo test --release --locked -p market-replica --features profile-allocations failed_snapshot_batch_allocation_regression -- --ignored --nocapture --test-threads=1
+```
+
 
 ## Remaining upstream improvements
 
