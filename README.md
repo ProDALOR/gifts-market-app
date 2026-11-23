@@ -61,6 +61,8 @@ docker compose up --build --detach
 docker compose logs --follow --tail=100 market-app
 ```
 
+Place your exported `accounts.json` beside `compose.yaml` before starting Compose; it is mounted read-only at `/app/accounts.json` by default and must be readable by UID 10001. See [user-session setup](#optional-user-session-for-slug-lookup).
+
 Compose reads runtime configuration from `.env`; unset options use application defaults. Container data, bot, media and frontend paths are fixed to `/data`, `/bot-data`, `/data/media` and `/app/web/dist`, so native paths in `.env` do not override the mounted directories. Custom container paths require a Compose override with matching writable mounts. The listener is fixed to `0.0.0.0:8080`; `MARKET_APP_PORT` controls the published host port. After editing runtime settings, run `docker compose up --detach` to recreate the service with the updated environment.
 
 Compose starts only this application, connects to the configured hub URL, publishes `0.0.0.0:8080` and persists its replica in `market-app-data:/data`. `MARKET_APP_PORT` changes the published port. Separate deployments use separate volumes. Multiple instances can sit behind a load balancer; retained snapshot pagination requires affinity to the instance holding the view. Query positions can move between instances synchronized to the same market.
@@ -199,14 +201,7 @@ Explicit `--api-id` / `--api-hash` arguments take precedence over exported `TELE
 
 The destination defaults to the configured/discovered export, then `./accounts.json`. Login appends atomically, preserves existing records and restricts the resulting file to its owner on Unix. Concurrent login commands cannot write the same export. Restart the application after adding a session. Keep this file private: it contains authorized account credentials.
 
-With the existing Compose setup, save directly into its persistent bot volume:
-
-```sh
-docker compose run --rm --no-deps market-app account login --output /bot-data/accounts.json
-docker compose restart market-app
-```
-
-This uses the image's CLI and `.env` credentials. A separately mounted `accounts.json` remains read-only; use the native command to update that host file instead.
+Compose mounts the host export read-only by default. Create or update it with the native login command, copy it beside `compose.yaml` on the server, then recreate the container to load the replacement file.
 
 The file is a JSON array with one or more authorized user sessions (maximum 16):
 
@@ -216,16 +211,32 @@ The file is a JSON array with one or more authorized user sessions (maximum 16):
 
 This imports an existing authorization in memory: no API hash, phone login or code is required. The source file is read-only and excluded from the image build. Per-session locks live in `<bot-data-dir>/accounts`; no user updates or messages are read or sent. Lookups use the invocation scheduler with account/group pacing, bounded concurrency, flood waits and cancellation. Concurrent lookups for the same slug coalesce. Gift facts have a bounded 128-entry cache (five minutes for successes, fifteen seconds for missing gifts); valuation refresh intervals remain unchanged.
 
-For Compose, add a local `compose.override.yaml` with a read-only mount, then start normally:
+Place `accounts.json` beside `compose.yaml` on the deployment server. Compose mounts it read-only by default:
 
 ```yaml
-services:
-  market-app:
     volumes:
-      - ./accounts.json:/app/accounts.json:ro
+      - market-app-data:/data
+      - market-bot-data:/bot-data
+      - type: bind
+        source: ./accounts.json
+        target: /app/accounts.json
+        read_only: true
+        bind:
+          create_host_path: false
 ```
 
-Or mount the export at the path set by `MARKET_TELEGRAM_ACCOUNTS`. The mounted file must be readable by container UID 10001. Keep the export private and outside version control.
+No override file or extra environment setting is required: `/app/accounts.json` is discovered automatically and takes precedence over the bot-volume export. If `MARKET_TELEGRAM_ACCOUNTS` is already set, point it to `/app/accounts.json` or remove it to use discovery. The default Compose setup requires this file to exist. For deployments without a user session, remove this bind mount; native runs still support optional account discovery.
+
+The mounted file must be readable by container UID 10001. On Linux:
+
+```sh
+sudo chown 10001:10001 accounts.json
+sudo chmod 600 accounts.json
+docker compose up -d --force-recreate market-app
+docker compose logs --tail=100 market-app
+```
+
+Successful authorization logs `Telegram user gift lookup session authenticated`. No image rebuild is needed for a mount change. Keep the export private and outside version control.
 
 The hub must supply the canonical collection slug as an `ItemType.aliases` entry, for example `{"namespace":"tg.slug","id":"PlushPepe"}`. The Telegram catalog producer in `gifts-market-hub` discovers this prefix from a native collectible sample, verifies its collection ID and edition number, and persists it in its discovery cache. Existing catalogs missing the alias are backfilled even when their attribute timestamps are fresh. Redeploy `market-control` in that repository and run **Refresh catalog** for the relevant Telegram or MRKT factory; ordinary replication then updates API and bot lookup without clearing app data or sessions. Empty resale samples remain unresolved and are retried on later initialization; display names are never used to invent slugs. Both catalog endpoints expose this as nullable `collection.slug`, independent of the display name. Collections without this alias remain browsable; market-only slug lookup requires the alias, while user-session lookup uses the numeric Telegram collection alias; malformed or conflicting aliases are projection errors. Slug equality, ordering, hashing and lookup use normalized keys while JSON and messages preserve spelling.
 

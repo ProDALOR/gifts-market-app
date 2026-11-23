@@ -10,7 +10,15 @@ services:
     security_opt: ["no-new-privileges:true"]
     stop_grace_period: 15s
     tmpfs: ["/tmp:size=16m,mode=1777,nosuid,nodev"]
-    volumes: ["market-app-data:/data", "market-bot-data:/bot-data"]
+    volumes:
+      - market-app-data:/data
+      - market-bot-data:/bot-data
+      - type: bind
+        source: ./accounts.json
+        target: /app/accounts.json
+        read_only: true
+        bind:
+          create_host_path: false
     env_file: .env
     environment:
       MARKET_HUB_URL: ${MARKET_HUB_URL:?Set MARKET_HUB_URL to a reachable hub address}
