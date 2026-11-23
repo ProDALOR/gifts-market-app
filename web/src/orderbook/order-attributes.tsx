@@ -1,9 +1,4 @@
-import type {
-  Order,
-  CatalogOption,
-  GiftMedia,
-  FloorValuation,
-} from "../market";
+import type { CatalogOption, GiftMedia, FloorValuation } from "../market";
 import { BidConditions } from "./bid-conditions";
 import { giftDetails } from "../orderbook";
 import { AttributeArt } from "./attribute-art";
@@ -14,6 +9,7 @@ import {
 } from "../valuation/floors";
 import { traitFloor } from "../valuation/floors-controller";
 import { FloorValue } from "./floor-value";
+import type { ValuationSubject } from "../order-target";
 import { criteriaPresentation, giftPresentation } from "../order-target";
 
 export function OrderAttributes({
@@ -22,7 +18,7 @@ export function OrderAttributes({
   names,
   collectionPreview,
 }: {
-  order: Order;
+  order: ValuationSubject;
   options: ReadonlyMap<string, CatalogOption>;
   names: ReadonlyMap<string, string>;
   collectionPreview?: GiftMedia;

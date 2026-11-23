@@ -9,9 +9,9 @@ import {
 import type { ComponentProps, ReactNode } from "react";
 import { FloorsController, traitFloor } from "./floors-controller";
 import type { FloorsEntry, FloorsState } from "./floors-controller";
-import type { FloorValuation, Order } from "../market";
+import type { FloorValuation } from "../market";
 import { roundedAmount, trimDecimalZeros } from "../amount";
-import { giftPresentation } from "../order-target";
+import { giftPresentation, type ValuationSubject } from "../order-target";
 import { Quote } from "../ui/market-controls";
 import "./floors.css";
 const empty: FloorsState = {
@@ -35,7 +35,7 @@ export function FloorsProvider({
   currency: string;
   collection: string;
   collections?: readonly string[];
-  order?: Order;
+  order?: ValuationSubject;
   children: ReactNode;
 }) {
   const controller = useMemo(() => new FloorsController(), []);

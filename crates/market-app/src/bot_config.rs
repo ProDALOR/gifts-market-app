@@ -54,10 +54,12 @@ pub async fn manage(args: &Cli, command: &BotCommand) -> anyhow::Result<()> {
         BotCommand::Inspect => {
             let inspection = market_telegram::inspect(config.credentials, config.data_dir).await?;
             println!(
-                "@{} (ID {})\nMain Mini App: {}\nMTProto session: {}",
+                "@{} (ID {})\nMain Mini App: {}\nInline mode: {}\nGuest mode: {}\nMTProto session: {}",
                 inspection.user.username,
                 inspection.user.id,
                 inspection.user.has_main_web_app,
+                inspection.user.inline_enabled,
+                inspection.user.guest_enabled,
                 inspection.session_path.display()
             );
         }

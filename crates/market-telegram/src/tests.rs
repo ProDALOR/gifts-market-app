@@ -57,6 +57,7 @@ impl MessageHandler for TestHandler {
     async fn handle(&self, request: TestRequest) -> Result<Reply, BotError> {
         Ok(Reply {
             text: request.command,
+            ..Default::default()
         })
     }
 }
@@ -64,9 +65,18 @@ impl MessageHandler for TestHandler {
 fn replies_are_bounded_in_utf16_without_splitting_characters() {
     let reply = Reply {
         text: "😀".repeat(4096),
+        ..Default::default()
     }
     .bounded();
     assert!(reply.text.encode_utf16().count() <= 4096);
     assert!(reply.text.ends_with('…'));
-    assert!(!Reply { text: " ".into() }.bounded().text.is_empty());
+    assert!(
+        !Reply {
+            text: " ".into(),
+            ..Default::default()
+        }
+        .bounded()
+        .text
+        .is_empty()
+    );
 }

@@ -1,11 +1,13 @@
 //! Typed command requests, services and reply rendering.
+mod history;
+mod interactions;
 mod parse;
 mod render;
+mod report;
 use market_actors::MarketDataHandle;
 use market_telegram::{BotError, IncomingMessage, MenuCommand, MessageHandler, Reply};
 pub use parse::CommandKind;
 pub(crate) use parse::parse;
-pub(super) use render::launch_reply;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -13,27 +15,16 @@ pub enum Command {
     Market,
     Help,
     Status,
-    Value(ValueRequest),
-    Invalid(CommandKind),
+    Gift(ValueRequest),
+    GiftHelp,
+    View(u64),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueRequest {
     pub gift: market_gifts::GiftSlug,
     pub currency_id: market_gifts::CurrencyId,
 }
-impl Command {
-    pub fn kind(&self) -> CommandKind {
-        match self {
-            Self::Start => CommandKind::Start,
-            Self::Market => CommandKind::Market,
-            Self::Help => CommandKind::Help,
-            Self::Status => CommandKind::Status,
-            Self::Value(_) => CommandKind::Value,
-            Self::Invalid(kind) => *kind,
-        }
-    }
-}
-/// The worker obtains these identifiers from the incoming private message.
+/// Identity comes from the authenticated transport event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandRequest {
     pub command: Command,
@@ -43,10 +34,22 @@ pub struct CommandRequest {
 pub struct MarketCommands {
     market: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
+    views: interactions::Views,
+    icons: std::sync::Arc<crate::ReportIcons>,
 }
 impl MarketCommands {
     pub fn new(market: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
-        Self { market, valuation }
+        Self {
+            market,
+            valuation,
+            views: Default::default(),
+            icons: Default::default(),
+        }
+    }
+    /// Configure presentation once for private, inline, guest and callback reports.
+    pub fn with_report_icons(mut self, icons: crate::ReportIcons) -> Self {
+        self.icons = std::sync::Arc::new(icons);
+        self
     }
 }
 impl MessageHandler for MarketCommands {
@@ -60,6 +63,13 @@ impl MessageHandler for MarketCommands {
     fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<CommandRequest> {
         parse(message, usernames)
     }
+    fn parse_event(
+        &self,
+        event: &market_telegram::Event,
+        usernames: &[String],
+    ) -> Option<CommandRequest> {
+        interactions::parse_event(event, usernames)
+    }
     async fn handle(&self, request: CommandRequest) -> Result<Reply, BotError> {
         match request.command {
             Command::Status => Ok(match self.market.status().await {
@@ -72,40 +82,8 @@ impl MessageHandler for MarketCommands {
                     },
                 ),
             }),
-            Command::Value(query) => Ok(
-                match self
-                    .valuation
-                    .query(market_valuation::ValuationQuery {
-                        target: market_valuation::ValuationTarget::Gift {
-                            gift: query.gift.into(),
-                        },
-                        currency_id: query.currency_id,
-                        strategies: market_valuation::strategies_for(
-                            market_valuation::ValuationTargetKind::Gift,
-                            false,
-                        )
-                        .filter(|metadata| {
-                            metadata.purpose == market_valuation::StrategyPurpose::Estimate
-                        })
-                        .map(|metadata| {
-                            market_valuation::StrategyId::new(metadata.id)
-                                .expect("registered strategy ID")
-                        })
-                        .collect(),
-                        period: None,
-                    })
-                    .await
-                {
-                    Ok(result) => render::valuation(&result),
-                    Err(error) => render::error_reply(
-                        if error.code() == market_valuation::ValuationErrorCode::Unavailable {
-                            "Valuations are temporarily unavailable"
-                        } else {
-                            error.message()
-                        },
-                    ),
-                },
-            ),
+            Command::Gift(query) => Ok(self.value(query).await),
+            Command::View(id) => Ok(self.view(id).await),
             command => {
                 LaunchCommands
                     .handle(CommandRequest { command, ..request })
@@ -127,11 +105,8 @@ impl MessageHandler for LaunchCommands {
         parse(message, usernames)
     }
     async fn handle(&self, request: CommandRequest) -> Result<Reply, BotError> {
-        if matches!(request.command, Command::Invalid(_)) {
-            return Ok(render::usage(request.command.kind()));
-        }
-        launch_reply(request.command.kind()).ok_or(BotError::Configuration(
-            "Market data handler is required for this command",
+        render::launch_reply(&request.command).ok_or(BotError::Configuration(
+            "Market data handler is required for this request",
         ))
     }
 }
@@ -145,3 +120,6 @@ fn menu() -> Vec<MenuCommand> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

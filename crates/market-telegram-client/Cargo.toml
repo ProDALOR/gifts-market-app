@@ -7,17 +7,19 @@ market-invocations.workspace = true
 market-gifts.workspace = true
 market-media.workspace = true
 anyhow.workspace = true
+futures-util.workspace = true
+tempfile = "3"
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 grammers-client.workspace = true
 grammers-session.workspace = true
 sha2.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png", "webp"] }
 tokio.workspace = true
 tokio-util.workspace = true
 url.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"
 [lints]
 workspace = true

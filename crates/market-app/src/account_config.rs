@@ -6,6 +6,19 @@ pub async fn worker(args: &Cli) -> anyhow::Result<Option<AccountWorker>> {
         .bot_data_dir
         .clone()
         .unwrap_or_else(|| args.data_dir.join("bot"));
+    let Some(path) = export_path(args).await? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        AccountWorker::from_file(&path, directory.join("accounts")).await?,
+    ))
+}
+
+pub(crate) async fn export_path(args: &Cli) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let directory = args
+        .bot_data_dir
+        .clone()
+        .unwrap_or_else(|| args.data_dir.join("bot"));
     let path = if let Some(path) = &args.telegram_accounts {
         path.clone()
     } else if tokio::fs::try_exists("accounts.json").await? {
@@ -17,9 +30,7 @@ pub async fn worker(args: &Cli) -> anyhow::Result<Option<AccountWorker>> {
         }
         path
     };
-    Ok(Some(
-        AccountWorker::from_file(&path, directory.join("accounts")).await?,
-    ))
+    Ok(Some(path))
 }
 
 #[cfg(test)]

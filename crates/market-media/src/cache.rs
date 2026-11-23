@@ -31,6 +31,7 @@ pub(crate) struct Counters {
     pub downloads: AtomicU64,
     pub skipped: AtomicU64,
     pub renders: AtomicU64,
+    pub covers: AtomicU64,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct MediaStats {
@@ -39,6 +40,7 @@ pub struct MediaStats {
     pub downloads: u64,
     pub skipped_downloads: u64,
     pub preview_generations: u64,
+    pub cover_generations: u64,
     pub memory_bytes: usize,
     pub queued: usize,
 }
@@ -159,8 +161,11 @@ impl MediaCache {
                 stamp,
                 // Derivatives are immutable by source hash and renderer version. Source
                 // changes select a new key; only originals need periodic revalidation.
-                expires: (key.kind() != crate::MediaKind::Preview)
-                    .then(|| Instant::now() + self.0.limits.memory_ttl),
+                expires: (!matches!(
+                    key.kind(),
+                    crate::MediaKind::Preview | crate::MediaKind::Cover
+                ))
+                .then(|| Instant::now() + self.0.limits.memory_ttl),
             },
         );
     }
@@ -215,7 +220,10 @@ impl MediaCache {
         self.disk(&job).await
     }
     pub async fn get(&self, key: MediaKey) -> MediaResult {
-        if key.kind() == crate::MediaKind::Preview {
+        if matches!(
+            key.kind(),
+            crate::MediaKind::Preview | crate::MediaKind::Cover
+        ) {
             return Err(MediaError::InvalidMedia);
         }
         if self.0.closed.load(Ordering::Acquire) {
@@ -237,6 +245,57 @@ impl MediaCache {
         {
             job.result.send_replace(Some(Err(MediaError::Unavailable)));
             self.retire(&job);
+        }
+        job.wait(self.0.limits.request_timeout).await
+    }
+    pub(crate) async fn derive<F, Fut>(&self, key: MediaKey, build: F) -> MediaResult
+    where
+        F: FnOnce(Self, Arc<Job>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = MediaResult> + Send,
+    {
+        use crate::{MediaKind, scheduler::Running};
+        if self.0.closed.load(Ordering::Acquire) {
+            return Err(MediaError::Unavailable);
+        }
+        if !matches!(key.kind(), MediaKind::Preview | MediaKind::Cover) {
+            return Err(MediaError::InvalidMedia);
+        }
+        if let Some(asset) = self.resident(key) {
+            return Ok(asset);
+        }
+        let job = self.job(key)?;
+        let _demand = job.demand();
+        if let Some(asset) = self.disk(&job).await? {
+            return Ok(asset);
+        }
+        if let Some(error) = self.failure(key) {
+            return Err(error);
+        }
+        if !job.queued.swap(true, Ordering::AcqRel) {
+            let _admission = self.0.admission.lock().unwrap_or_else(|e| e.into_inner());
+            if self.0.closed.load(Ordering::Acquire) {
+                return Err(MediaError::Unavailable);
+            }
+            let cache = self.clone();
+            let job = job.clone();
+            self.0.tasks.spawn(async move {
+                let guard = Running::new(cache.clone(), job.clone());
+                let work = async {
+                    let _permit = tokio::select! { biased;
+                        _ = cache.0.stop.cancelled() => return Err(MediaError::Unavailable),
+                        _ = job.abandoned() => return Err(MediaError::Unavailable),
+                        permit = cache.0.preview_slots.clone().acquire_owned() => permit.map_err(|_| MediaError::Unavailable)?,
+                    };
+                    match key.kind() {
+                        MediaKind::Preview => cache.0.counters.renders.fetch_add(1, Ordering::Relaxed),
+                        MediaKind::Cover => cache.0.counters.covers.fetch_add(1, Ordering::Relaxed),
+                        _ => unreachable!(),
+                    };
+                    let asset = build(cache.clone(), job.clone()).await?;
+                    cache.store(key, asset).await
+                };
+                guard.finish(work.await);
+            });
         }
         job.wait(self.0.limits.request_timeout).await
     }
@@ -341,6 +400,7 @@ impl MediaCache {
             downloads: self.0.counters.downloads.load(Ordering::Relaxed),
             skipped_downloads: self.0.counters.skipped.load(Ordering::Relaxed),
             preview_generations: self.0.counters.renders.load(Ordering::Relaxed),
+            cover_generations: self.0.counters.covers.load(Ordering::Relaxed),
             memory_bytes: self
                 .0
                 .memory

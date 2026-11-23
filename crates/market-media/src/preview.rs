@@ -1,16 +1,21 @@
 //! Derived SVGs share source downloads, cache quotas, admission and shutdown with other media.
 use crate::{
     DocumentId, MAX_PREVIEW_BYTES, MediaAsset, MediaCache, MediaError, MediaKey, MediaResult,
-    scheduler::Running,
 };
-use std::{io::Read, process::Stdio, sync::atomic::Ordering, time::Duration};
-use tokio::io::AsyncReadExt;
+use std::sync::atomic::Ordering;
 #[cfg(test)]
 mod tests;
 
 pub(crate) fn validate(bytes: &[u8]) -> Result<(), MediaError> {
+    validate_svg(bytes, "0 0 512 512", MAX_PREVIEW_BYTES)
+}
+pub(crate) fn validate_svg(
+    bytes: &[u8],
+    view_box: &str,
+    max_bytes: usize,
+) -> Result<(), MediaError> {
     let invalid = MediaError::InvalidMedia;
-    if bytes.is_empty() || bytes.len() > MAX_PREVIEW_BYTES {
+    if bytes.is_empty() || bytes.len() > max_bytes {
         return Err(invalid);
     }
     let text = std::str::from_utf8(bytes).map_err(|_| invalid)?;
@@ -23,7 +28,7 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<(), MediaError> {
     )
     .map_err(|_| invalid)?;
     let root = doc.root_element();
-    if root.tag_name().name() != "svg" || root.attribute("viewBox") != Some("0 0 512 512") {
+    if root.tag_name().name() != "svg" || root.attribute("viewBox") != Some(view_box) {
         return Err(invalid);
     }
     for node in doc.descendants().filter(|node| node.is_element()) {
@@ -164,17 +169,26 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<(), MediaError> {
 
 impl MediaCache {
     pub async fn preview(&self, document: DocumentId) -> MediaResult {
+        self.preview_snapshot(document)
+            .await
+            .map(|(_, asset)| asset)
+    }
+    /// Keep source identity paired with the returned SVG across concurrent source replacements.
+    pub(crate) async fn preview_snapshot(
+        &self,
+        document: DocumentId,
+    ) -> Result<(MediaKey, MediaAsset), MediaError> {
         if self.0.closed.load(Ordering::Acquire) {
             return Err(MediaError::Unavailable);
         }
-        // Source identity is indexed separately from resident TGS bytes.
-        let cached_job = if let Some(key) = self.preview_key(document) {
+        // Retain the coalesced disk result while resolving a possible source miss.
+        let _cached_job = if let Some(key) = self.preview_key(document) {
             if let Some(asset) = self.resident(key) {
-                return Ok(asset);
+                return Ok((key, asset));
             }
             let job = self.job(key)?;
             if let Some(asset) = self.disk(&job).await? {
-                return Ok(asset);
+                return Ok((key, asset));
             }
             if let Some(error) = self.failure(key) {
                 return Err(error);
@@ -183,132 +197,16 @@ impl MediaCache {
         } else {
             None
         };
-        // Resolve the source before derivative admission; downloads never wait on their own pool.
+        // Source resolution must not hold a derivative renderer slot.
         let source = self.get(MediaKey::animation(document)).await?;
         let key = MediaKey::preview(document, source.digest);
-        if let Some(asset) = self.resident(key) {
-            return Ok(asset);
-        }
-        let job = match cached_job.filter(|job| job.key == key) {
-            Some(job) => job,
-            None => self.job(key)?,
-        };
-        let _demand = job.demand();
-        if let Some(asset) = self.disk(&job).await? {
-            return Ok(asset);
-        }
-        if let Some(error) = self.failure(key) {
-            return Err(error);
-        }
-        if !job.queued.swap(true, Ordering::AcqRel) {
-            let _admission = self.0.admission.lock().unwrap_or_else(|e| e.into_inner());
-            if self.0.closed.load(Ordering::Acquire) {
-                return Err(MediaError::Unavailable);
-            }
-            let cache = self.clone();
-            let job = job.clone();
-            self.0.tasks.spawn(async move {
-                let guard = Running::new(cache.clone(), job.clone());
-                let work = async {
-                    let permit = tokio::select! { biased;
-                        _ = cache.0.stop.cancelled() => return Err(MediaError::Unavailable),
-                        _ = job.abandoned() => return Err(MediaError::Unavailable),
-                        permit = cache.0.preview_slots.clone().acquire_owned() => permit.map_err(|_| MediaError::Unavailable)?,
-                    };
-                    let _permit = permit;
-                    cache.0.counters.renders.fetch_add(1, Ordering::Relaxed);
-                    let asset = cache.render_preview(source, &job).await?;
-                    cache.store(key, asset).await
-                };
-                let result = work.await;
-                guard.finish(result);
-            });
-        }
-        job.wait(self.0.limits.request_timeout).await
-    }
-
-    async fn render_preview(&self, source: MediaAsset, job: &crate::scheduler::Job) -> MediaResult {
-        let directory = self
-            .blocking(move || {
-                let directory = tempfile::tempdir().map_err(|_| MediaError::Unavailable)?;
-                std::fs::write(directory.path().join("source.tgs"), source.bytes())
-                    .map_err(|_| MediaError::Unavailable)?;
-                Ok(directory)
+        let asset = self
+            .derive(key, move |cache, job| async move {
+                cache
+                    .render_derivative(source.bytes().to_vec(), "source.tgs", "preview.svg", &job)
+                    .await
             })
             .await?;
-        if self.0.stop.is_cancelled() {
-            return Err(MediaError::Unavailable);
-        }
-        let mut child = tokio::process::Command::new(&self.0.renderer)
-            .arg(directory.path().join("source.tgs"))
-            .arg(directory.path().join("preview.svg"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| {
-                tracing::warn!(
-                    document_id = job.key.document().get(),
-                    stage = "preview_spawn",
-                    ?error,
-                    "preview renderer could not start"
-                );
-                MediaError::Unavailable
-            })?;
-        let mut stderr = child.stderr.take().ok_or(MediaError::Unavailable)?;
-        // Drain the pipe concurrently, retaining only a bounded diagnostic prefix.
-        let diagnostics = async {
-            let mut saved = Vec::new();
-            let mut buffer = [0; 1024];
-            loop {
-                let count = stderr.read(&mut buffer).await.unwrap_or(0);
-                if count == 0 {
-                    break;
-                }
-                let keep = count.min(4096usize.saturating_sub(saved.len()));
-                saved.extend_from_slice(&buffer[..keep]);
-            }
-            saved
-        };
-        let execution = async { tokio::join!(child.wait(), diagnostics) };
-        let status = tokio::select! { biased;
-            _ = self.0.stop.cancelled() => None,
-            _ = job.abandoned() => None,
-            result = tokio::time::timeout(Duration::from_secs(10), execution) => result.ok(),
-        };
-        let Some((status, diagnostics)) = status else {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            if !self.0.stop.is_cancelled() && job.has_demand() {
-                tracing::warn!(
-                    document_id = job.key.document().get(),
-                    stage = "preview_render",
-                    "preview renderer timed out"
-                );
-            }
-            return Err(MediaError::Unavailable);
-        };
-        let status = status.map_err(|_| MediaError::Unavailable)?;
-        if !status.success() {
-            tracing::warn!(document_id = job.key.document().get(), stage = "preview_render", ?status,
-                diagnostic = %String::from_utf8_lossy(&diagnostics), "preview renderer failed");
-            // Exit 2 is the helper protocol for unsupported/over-budget input.
-            return Err(if status.code() == Some(2) {
-                MediaError::InvalidMedia
-            } else {
-                MediaError::Unavailable
-            });
-        }
-        self.blocking(move || {
-            let file = std::fs::File::open(directory.path().join("preview.svg"))
-                .map_err(|_| MediaError::Unavailable)?;
-            let mut bytes = Vec::new();
-            file.take(MAX_PREVIEW_BYTES as u64 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|_| MediaError::Unavailable)?;
-            MediaAsset::preview(bytes)
-        })
-        .await
+        Ok((key, asset))
     }
 }

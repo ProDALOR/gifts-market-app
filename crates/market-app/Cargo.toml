@@ -22,13 +22,14 @@ market-miniapp = { workspace = true, optional = true }
 futures-util.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+rpassword = { version = "7", optional = true }
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 [features]
 default = []
-bot = ["dep:market-invocations", "dep:market-telegram", "dep:market-telegram-bot", "dep:market-telegram-client"]
+bot = ["dep:rpassword", "dep:market-invocations", "dep:market-telegram", "dep:market-telegram-bot", "dep:market-telegram-client"]
 miniapp = ["dep:market-miniapp", "market-api/miniapp"]
 [dev-dependencies]
 market-hub-protocol.workspace = true

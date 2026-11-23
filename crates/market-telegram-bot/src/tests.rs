@@ -5,69 +5,77 @@ fn message(text: &str) -> IncomingMessage<'_> {
         private: true,
         outgoing: false,
         user_id: Some(7),
-        message_id: 21,
+        message_id: 1,
         text: Some(text),
     }
 }
 #[test]
-fn gift_commands_and_bare_links_share_slug_validation_and_currency_shorthand() {
+fn gift_detection_accepts_links_slugs_and_short_messages_without_commands() {
     for text in [
-        "/value@MARKET_BOT Gift-123 TON",
-        "/value https://t.me/nft/Gift-123",
+        "Gift-123",
         "https://t.me/nft/Gift-123",
-        "Gift-00123",
+        "Please check Gift-123?",
+        "Check (https://t.me/nft/Gift-123), please",
+        "Gift-123 and gift-00123",
     ] {
         let request = commands::parse(message(text), &["market_bot"]).unwrap();
-        assert_eq!(request.user_id, 7);
-        assert_eq!(request.message_id, 21);
-        let Command::Value(query) = request.command else {
-            panic!("expected gift valuation");
+        let Command::Gift(query) = request.command else {
+            panic!("{text}")
         };
-        let slug = query.gift;
-        assert_eq!(slug.to_string(), "Gift-123");
+        assert_eq!(query.gift.to_string(), "Gift-123");
         assert_eq!(query.currency_id.as_str(), "GRAM");
+        assert_eq!(request.user_id, 7);
+        assert_eq!(request.message_id, 1);
     }
-    let request = commands::parse(message("/value Gift-123 xtr"), &["market_bot"]).unwrap();
-    let Command::Value(query) = request.command else {
-        panic!();
+    for text in ["Gift-123 xtr", "Could you check Gift-123 in XTR?"] {
+        let Command::Gift(query) = commands::parse(message(text), &["market_bot"])
+            .unwrap()
+            .command
+        else {
+            panic!()
+        };
+        assert_eq!(query.currency_id.as_str(), "XTR");
+    }
+    let Command::Gift(query) = commands::parse(message("Gift-123 TON GRAM"), &["market_bot"])
+        .unwrap()
+        .command
+    else {
+        panic!()
     };
-    assert_eq!(query.currency_id.as_str(), "XTR");
+    assert_eq!(query.currency_id.as_str(), "GRAM");
 }
 #[test]
-fn invalid_gift_commands_and_removed_commands_do_not_invoke_valuation() {
+fn removed_commands_invalid_and_ambiguous_gifts_are_ignored() {
     for text in [
         "/value",
-        "/value Gift-0",
-        "/value https://evil.example/nft/Gift-123",
-        "/value Gift-123 GRAM user_id=9",
-        "/value Gift-123 | GRAM",
-    ] {
-        assert!(
-            matches!(
-                commands::parse(message(text), &["market_bot"])
-                    .unwrap()
-                    .command,
-                Command::Invalid(CommandKind::Value)
-            ),
-            "{text}"
-        );
-    }
-    for text in [
-        "/floor model_floor | A | B",
+        "/value Gift-123",
+        "/value@market_bot Gift-123",
+        "/value@another_bot Gift-123",
+        "/floor A",
         "/portfolio",
         "/multiplier",
         "hello",
-        "/value@another_bot Gift-123",
+        "Gift-0",
+        "https://evil.example/nft/Gift-123",
+        "Gift-123 Other-1",
+        "Gift-123 TON XTR",
     ] {
         assert!(
             commands::parse(message(text), &["market_bot"]).is_none(),
             "{text}"
         );
     }
+    assert!(
+        commands::parse(
+            message(&format!("Gift-123 {}", "x".repeat(2048))),
+            &["market_bot"]
+        )
+        .is_none()
+    );
 }
 #[test]
 fn parsing_keeps_private_peer_and_bot_target_restrictions() {
-    for text in ["/value Gift-123", "Gift-123"] {
+    for text in ["/status@market_bot", "Gift-123"] {
         let mut incoming = message(text);
         incoming.private = false;
         assert!(commands::parse(incoming, &["market_bot"]).is_none());
@@ -78,31 +86,40 @@ fn parsing_keeps_private_peer_and_bot_target_restrictions() {
         incoming.user_id = None;
         assert!(commands::parse(incoming, &["market_bot"]).is_none());
     }
+    assert!(commands::parse(message("/status@another_bot"), &["market_bot"]).is_none());
+    assert!(matches!(
+        commands::parse(
+            message("/status@MARKET_ALIAS"),
+            &["market_bot", "market_alias"]
+        )
+        .unwrap()
+        .command,
+        Command::Status
+    ));
 }
 #[actix::test]
-async fn command_menu_and_help_only_advertise_gift_valuation() {
+async fn command_menu_and_help_use_automatic_gift_detection() {
     let handler = commands::LaunchCommands;
-    let menu: Vec<_> = handler.commands().iter().map(|c| c.name).collect();
-    assert_eq!(menu, ["start", "market", "help", "status", "value"]);
-    let help = handler
-        .handle(CommandRequest {
-            command: Command::Help,
-            user_id: 7,
-            message_id: 1,
-        })
-        .await
-        .unwrap();
-    assert!(help.text.contains("/value"));
-    for old in ["/portfolio", "/floor", "/multiplier"] {
-        assert!(!help.text.contains(old));
+    assert_eq!(
+        handler
+            .commands()
+            .iter()
+            .map(|c| c.name)
+            .collect::<Vec<_>>(),
+        ["start", "market", "help", "status"]
+    );
+    for command in [Command::Start, Command::Help, Command::GiftHelp] {
+        let reply = handler
+            .handle(CommandRequest {
+                command,
+                user_id: 7,
+                message_id: 1,
+            })
+            .await
+            .unwrap();
+        assert!(reply.text.contains("gift link or slug"));
+        for old in ["/value", "/portfolio", "/floor", "/multiplier"] {
+            assert!(!reply.text.contains(old));
+        }
     }
-    let invalid = handler
-        .handle(CommandRequest {
-            command: Command::Invalid(CommandKind::Value),
-            user_id: 7,
-            message_id: 1,
-        })
-        .await
-        .unwrap();
-    assert!(invalid.text.contains("/value"));
 }

@@ -39,6 +39,10 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         #[cfg(feature = "bot")]
+        Some(Command::Account { command }) => {
+            return market_app::account_login::manage(&args, command).await;
+        }
+        #[cfg(feature = "bot")]
         Some(Command::Bot { command }) => {
             return market_app::bot_config::manage(&args, command).await;
         }
@@ -75,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
     let (media, downloads) = market_media::MediaCache::open(&media_dir).await?;
     #[cfg(feature = "bot")]
     if let Some(bot) = bot.as_mut() {
-        bot.set_media_downloader(downloads);
+        bot.set_media(media.clone(), downloads);
     } else {
         drop(downloads);
     }

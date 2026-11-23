@@ -15,6 +15,8 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY web/ ./
+COPY crates/market-media/assets/ /crates/market-media/assets/
+COPY crates/market-media/assets/ /crates/market-media/assets/
 COPY --from=binaries /out/market-app /usr/local/bin/market-app
 RUN MARKET_SCHEMA_BIN=/usr/local/bin/market-app npm run build
 

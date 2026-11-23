@@ -720,6 +720,11 @@
   padding-top: 4px;
   margin-top: 6px;
 }
+.detail-pricing > :is(.valuation-summary, .matching-floor):only-child {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
 .valuation-result-row {
   display: flex;
   align-items: center;

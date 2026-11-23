@@ -57,3 +57,21 @@ test("Malformed or excessive launch parameters cannot create arbitrary routes", 
     false,
   );
 });
+
+test("gift preview deep links preserve only public gift selection", () => {
+  const payload = encodeView(
+    new URLSearchParams({
+      collection: "c",
+      currency: "GRAM",
+      gift: "Gift-123",
+      token: "private",
+    }),
+  )!;
+  const result = launchSelection(
+    { initData: new URLSearchParams({ start_param: payload }).toString() },
+    "",
+  );
+  assert.equal(result.get("gift"), "Gift-123");
+  assert.equal(result.get("collection"), "c");
+  assert.equal(result.has("token"), false);
+});

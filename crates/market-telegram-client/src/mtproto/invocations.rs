@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Copy)]
 pub(super) enum Group {
     Control,
+    Inline,
     Gifts(u64),
     GiftLookup,
     Media,
@@ -112,6 +113,7 @@ impl Executor {
 pub(super) fn policy(account: u64, group: Group, replay: Replay) -> Policy {
     let (name, interval, concurrency) = match group {
         Group::Control => ("control", 100, 1),
+        Group::Inline => ("inline", 50, 4),
         Group::Gifts(_) | Group::GiftLookup => ("gifts", 300, 2),
         Group::Media => ("media", 100, 2),
         Group::Reply(_) => ("replies", 50, 4),
@@ -321,6 +323,7 @@ mod tests {
             &crate::tests::message(1, "/test"),
             &crate::Reply {
                 text: "hello".into(),
+                ..Default::default()
             },
             None,
         );

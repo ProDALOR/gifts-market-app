@@ -29,10 +29,16 @@ pub struct Cli {
     #[arg(long, env = "TELEGRAM_BOT_TOKEN", hide_env_values = true)]
     pub telegram_bot_token: Option<String>,
     #[cfg(feature = "bot")]
-    #[arg(long, env = "TELEGRAM_API_ID")]
+    #[arg(long, visible_alias = "api-id", global = true, env = "TELEGRAM_API_ID")]
     pub telegram_api_id: Option<String>,
     #[cfg(feature = "bot")]
-    #[arg(long, env = "TELEGRAM_API_HASH", hide_env_values = true)]
+    #[arg(
+        long,
+        visible_alias = "api-hash",
+        global = true,
+        env = "TELEGRAM_API_HASH",
+        hide_env_values = true
+    )]
     pub telegram_api_hash: Option<String>,
     #[cfg(feature = "bot")]
     #[arg(long, env = "MARKET_BOT_DATA_DIR")]
@@ -66,6 +72,12 @@ pub enum Command {
     Asyncapi,
     #[cfg(feature = "miniapp")]
     SessionKey,
+    /// Authorize Telegram user sessions for gift lookup.
+    #[cfg(feature = "bot")]
+    Account {
+        #[command(subcommand)]
+        command: AccountCommand,
+    },
     #[cfg(feature = "bot")]
     Bot {
         #[command(subcommand)]
@@ -77,6 +89,17 @@ pub enum Command {
 pub enum BotCommand {
     Inspect,
     Configure,
+}
+
+#[cfg(feature = "bot")]
+#[derive(Subcommand)]
+pub enum AccountCommand {
+    /// Log in by phone/code/2FA and append to accounts.json; no bot token or hub is needed.
+    Login {
+        /// Export destination; defaults to the configured/discovered file or ./accounts.json.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[cfg(test)]
@@ -104,6 +127,10 @@ mod tests {
         assert_eq!(
             has_arg("public_url"),
             cfg!(any(feature = "bot", feature = "miniapp"))
+        );
+        assert_eq!(
+            command.find_subcommand("account").is_some(),
+            cfg!(feature = "bot")
         );
         assert_eq!(
             command.find_subcommand("bot").is_some(),

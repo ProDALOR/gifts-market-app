@@ -103,7 +103,7 @@ impl DiskStore {
                     },
                 );
             } else if retired_placeholder(&name)
-                || obsolete_preview(&name)
+                || obsolete_derivative(&name)
                 || stale_temporary(&name, &metadata, self.limits.temporary_ttl)
             {
                 let _ = fs::remove_file(item.path());
@@ -449,6 +449,10 @@ fn parse_name(name: &str) -> Option<MediaKey> {
     match extension {
         "thumb" => Some(MediaKey::thumbnail(id)),
         "tgs" => Some(MediaKey::animation(id)),
+        _ if extension.starts_with("cover-") => {
+            let (version, hash) = derivative_extension(extension, "cover-", ".png")?;
+            (version == crate::asset::COVER_VERSION).then(|| MediaKey::cover(id, hash))
+        }
         _ => {
             let (version, hash) = preview_extension(extension)?;
             (version == crate::asset::PREVIEW_VERSION).then(|| MediaKey::preview(id, hash))
@@ -456,9 +460,16 @@ fn parse_name(name: &str) -> Option<MediaKey> {
     }
 }
 fn preview_extension(extension: &str) -> Option<(&str, [u8; 32])> {
+    derivative_extension(extension, "preview-", ".svg")
+}
+fn derivative_extension<'a>(
+    extension: &'a str,
+    prefix: &str,
+    suffix: &str,
+) -> Option<(&'a str, [u8; 32])> {
     let (version, encoded) = extension
-        .strip_prefix("preview-")?
-        .strip_suffix(".svg")?
+        .strip_prefix(prefix)?
+        .strip_suffix(suffix)?
         .split_once('-')?;
     if version.is_empty() || !version.bytes().all(|c| c.is_ascii_digit()) || encoded.len() != 64 {
         return None;
@@ -476,13 +487,16 @@ fn retired_placeholder(name: &str) -> bool {
         .and_then(DocumentId::new)
         .is_some()
 }
-fn obsolete_preview(name: &str) -> bool {
+fn obsolete_derivative(name: &str) -> bool {
     let Some((id, extension)) = name.split_once('.') else {
         return false;
     };
-    id.parse().ok().and_then(DocumentId::new).is_some()
-        && preview_extension(extension)
-            .is_some_and(|(version, _)| version != crate::asset::PREVIEW_VERSION)
+    if id.parse::<i64>().ok().and_then(DocumentId::new).is_none() {
+        return false;
+    }
+    preview_extension(extension).is_some_and(|(version, _)| version != crate::PREVIEW_VERSION)
+        || derivative_extension(extension, "cover-", ".png")
+            .is_some_and(|(version, _)| version != crate::asset::COVER_VERSION)
 }
 fn stale_temporary(name: &str, metadata: &fs::Metadata, ttl: Duration) -> bool {
     let mut parts = name.split('.');

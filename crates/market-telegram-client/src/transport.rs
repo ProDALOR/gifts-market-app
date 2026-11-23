@@ -6,12 +6,15 @@ use grammers_session::{
 };
 use std::future::Future;
 
+#[derive(Clone)]
 pub struct BotUser {
     pub id: u64,
     pub username: String,
     pub active_usernames: Vec<String>,
     pub first_name: String,
     pub has_main_web_app: bool,
+    pub inline_enabled: bool,
+    pub guest_enabled: bool,
 }
 #[derive(Clone)]
 pub struct Message {
@@ -22,7 +25,7 @@ pub struct Message {
 }
 pub struct Delivery {
     pub state: State,
-    pub message: Option<Message>,
+    pub event: Option<crate::interactions::Event>,
 }
 /// Named Telegram operations; callers never construct TL requests.
 pub trait TelegramActions: Clone + Send + Sync {
@@ -39,10 +42,17 @@ pub trait TelegramActions: Clone + Send + Sync {
         commands: &[MenuCommand],
         launch: Option<&LaunchButton>,
     ) -> impl Future<Output = Result<(), BotError>> + Send;
+    fn answer_callback(
+        &self,
+        _: &crate::interactions::Event,
+        _: bool,
+    ) -> impl Future<Output = Result<(), BotError>> + Send {
+        async { Ok(()) }
+    }
     fn send(
         &self,
-        message: &Message,
-        reply: &Reply,
+        event: &crate::interactions::Event,
+        reply: Option<&Reply>,
         launch: Option<&LaunchButton>,
     ) -> impl Future<Output = Result<(), BotError>> + Send;
 }

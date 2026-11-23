@@ -1,14 +1,14 @@
 import type { Order, CatalogOption, TraitFilters } from "./market.ts";
 import { resolveTraits } from "./catalog/traits.ts";
-import { giftPresentation } from "./order-target.ts";
+import { giftPresentation, type PreviewOrder } from "./order-target.ts";
 export { traits } from "./catalog/traits.ts";
 export type { Collection, CatalogOption } from "./market.ts";
-export function serial(order: Order): string | undefined {
+export function serial(order: PreviewOrder): string | undefined {
   const number = giftPresentation(order)?.number;
   return number != null ? String(number) : undefined;
 }
 export function modelName(
-  order: Order,
+  order: PreviewOrder,
   options: ReadonlyMap<string, CatalogOption>,
   fallback: string,
 ) {
@@ -54,7 +54,7 @@ export type GiftDetail = {
 
 /** Resolve labels and single-trait visuals together, without reconstructing selections in the UI. */
 export function giftDetails(
-  order: Order,
+  order: PreviewOrder,
   names: ReadonlyMap<string, string>,
   options?: ReadonlyMap<string, CatalogOption>,
 ): GiftDetail[] {

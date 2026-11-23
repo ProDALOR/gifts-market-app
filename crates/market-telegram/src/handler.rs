@@ -11,6 +11,13 @@ pub trait MessageHandler: Send + Sync {
         "Open app"
     }
     fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<Self::Request>;
+    fn parse_event(&self, event: &crate::Event, usernames: &[String]) -> Option<Self::Request> {
+        if let crate::Event::Message(message) = event {
+            self.parse(crate::transport::incoming(message), usernames)
+        } else {
+            None
+        }
+    }
     fn handle(
         &self,
         request: Self::Request,

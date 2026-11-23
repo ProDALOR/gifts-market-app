@@ -42,7 +42,7 @@ impl Fake {
                             pts: index as i32 + 1,
                         }),
                     },
-                    message,
+                    event: message.map(crate::Event::Message),
                 })
                 .collect(),
             shared: FakeActions {
@@ -63,6 +63,8 @@ impl TelegramActions for FakeActions {
             active_usernames: vec!["market_bot".into(), "market_alias".into()],
             first_name: "Market".into(),
             has_main_web_app: true,
+            inline_enabled: true,
+            guest_enabled: true,
         })
     }
     async fn configure(
@@ -73,17 +75,32 @@ impl TelegramActions for FakeActions {
         self.events.lock().unwrap().push("configure".into());
         Ok(())
     }
+    async fn answer_callback(&self, event: &crate::Event, _: bool) -> Result<(), BotError> {
+        if let crate::Event::Callback { id, .. } = event {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("callbackack:{id}"));
+        }
+        Ok(())
+    }
     async fn send(
         &self,
-        message: &Message,
-        reply: &Reply,
+        event: &crate::Event,
+        reply: Option<&Reply>,
         _: Option<&LaunchButton>,
     ) -> Result<(), BotError> {
-        self.sent_text.lock().unwrap().push(reply.text.clone());
-        self.events
+        let id = match event {
+            crate::Event::Message(message) => message.id,
+            crate::Event::Inline { id, .. }
+            | crate::Event::Guest { id, .. }
+            | crate::Event::Callback { id, .. } => *id as i32,
+        };
+        self.sent_text
             .lock()
             .unwrap()
-            .push(format!("send:{}", message.id));
+            .push(reply.map(|v| v.text.clone()).unwrap_or_default());
+        self.events.lock().unwrap().push(format!("send:{id}"));
         self.changed.notify_waiters();
         self.replies.lock().unwrap().pop_front().unwrap_or(Ok(()))
     }
@@ -160,6 +177,7 @@ async fn generic_handler_receives_peer_identity_and_failure_keeps_pending_update
             match request.command.as_str() {
                 "status" => Ok(Reply {
                     text: "custom status".into(),
+                    ..Default::default()
                 }),
                 _ => Err(BotError::Configuration("custom handler rejected command")),
             }
@@ -303,6 +321,7 @@ impl MessageHandler for BlockingHandler {
         }
         Ok(Reply {
             text: format!("reply:{}", request.message_id),
+            ..Default::default()
         })
     }
 }
@@ -469,6 +488,7 @@ async fn handler_panics_and_exhausted_transient_errors_are_isolated() {
                 2 => Err(BotError::Rpc(500)),
                 _ => Ok(Reply {
                     text: "still running".into(),
+                    ..Default::default()
                 }),
             }
         }
@@ -514,11 +534,9 @@ async fn receiving_a_delivery_is_not_cancelled_when_another_command_completes() 
         }
         async fn next(&mut self) -> Result<Delivery, BotError> {
             let delivery = self.inner.next().await?;
-            if delivery
-                .message
-                .as_ref()
-                .is_some_and(|message| message.id == 2)
-            {
+            if delivery.event.as_ref().is_some_and(
+                |event| matches!(event,crate::Event::Message(message) if message.id==2),
+            ) {
                 self.popped.notify_one();
                 self.resume.notified().await;
             }
@@ -673,4 +691,179 @@ async fn closed_invocation_runtime_does_not_open_or_reconnect_a_session() {
         .await;
     assert!(matches!(result, Err(BotError::Invocations)));
     assert!(!worker.data_dir.exists());
+}
+
+#[tokio::test]
+async fn newer_inline_queries_cancel_old_work_and_empty_queries_are_answered_and_checkpointed() {
+    use crate::Event;
+    use tokio_util::sync::CancellationToken;
+    struct Handler {
+        started: CancellationToken,
+        cancelled: CancellationToken,
+    }
+    impl MessageHandler for Handler {
+        type Request = String;
+        fn parse(&self, _: crate::IncomingMessage<'_>, _: &[String]) -> Option<String> {
+            None
+        }
+        fn parse_event(&self, event: &Event, _: &[String]) -> Option<String> {
+            if let Event::Inline { query, .. } = event {
+                (!query.is_empty()).then(|| query.clone())
+            } else {
+                None
+            }
+        }
+        async fn handle(&self, query: String) -> Result<Reply, BotError> {
+            if query == "old" {
+                let _guard = self.cancelled.clone().drop_guard();
+                self.started.cancel();
+                std::future::pending::<()>().await;
+            }
+            Ok(Reply::text(query))
+        }
+    }
+    struct Feed {
+        actions: FakeActions,
+        rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
+        sequence: i32,
+    }
+    impl Transport for Feed {
+        type Actions = FakeActions;
+        fn actions(&self) -> FakeActions {
+            self.actions.clone()
+        }
+        async fn next(&mut self) -> Result<Delivery, BotError> {
+            let event = self.rx.recv().await.unwrap();
+            self.sequence += 1;
+            Ok(Delivery {
+                state: State {
+                    date: 10,
+                    seq: 10,
+                    message_box: Some(MessageBox::Common { pts: self.sequence }),
+                },
+                event: Some(event),
+            })
+        }
+    }
+    let fake = Fake::new(vec![], vec![]);
+    let actions = fake.shared;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let started = CancellationToken::new();
+    let cancelled = CancellationToken::new();
+    let handler = Handler {
+        started: started.clone(),
+        cancelled: cancelled.clone(),
+    };
+    let mut feed = Feed {
+        actions: actions.clone(),
+        rx,
+        sequence: 0,
+    };
+    let task = tokio::spawn(async move { worker().serve(&mut feed, true, &handler).await });
+    let query = |id, text: &str| Event::Inline {
+        id,
+        user_id: 7,
+        query: text.into(),
+        offset: String::new(),
+    };
+    tx.send(query(1, "old")).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.cancelled())
+        .await
+        .unwrap();
+    tx.send(query(2, "new")).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), cancelled.cancelled())
+        .await
+        .unwrap();
+    tx.send(query(3, "")).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if actions.events.lock().unwrap().contains(&"ack:3".to_owned()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // The second query can also be superseded before its debounce; neither old result leaks.
+    assert!(
+        !actions
+            .sent_text
+            .lock()
+            .unwrap()
+            .contains(&"old".to_owned())
+    );
+    {
+        let events = actions.events.lock().unwrap();
+        let a = events.iter().position(|v| v == "ack:1").unwrap();
+        let b = events.iter().position(|v| v == "ack:2").unwrap();
+        let c = events.iter().position(|v| v == "ack:3").unwrap();
+        assert!(a < b && b < c);
+    }
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn callback_spinner_is_acknowledged_before_a_slow_history_handler() {
+    use crate::{CallbackTarget, Event, InlineMessageId};
+    use tokio_util::sync::CancellationToken;
+    struct Slow {
+        started: CancellationToken,
+        release: CancellationToken,
+    }
+    impl MessageHandler for Slow {
+        type Request = ();
+        fn parse(&self, _: crate::IncomingMessage<'_>, _: &[String]) -> Option<()> {
+            None
+        }
+        fn parse_event(&self, event: &Event, _: &[String]) -> Option<()> {
+            matches!(event, Event::Callback { .. }).then_some(())
+        }
+        async fn handle(&self, _: ()) -> Result<Reply, BotError> {
+            self.started.cancel();
+            self.release.cancelled().await;
+            Ok(Reply::text("History"))
+        }
+    }
+    let mut fake = Fake::new(vec![None], vec![]);
+    fake.deliveries[0].event = Some(Event::Callback {
+        id: 1,
+        user_id: 7,
+        data: b"view".to_vec(),
+        target: CallbackTarget::Inline(InlineMessageId::Standard {
+            dc_id: 2,
+            id: 42,
+            access_hash: 123,
+        }),
+    });
+    let actions = fake.shared.clone();
+    let started = CancellationToken::new();
+    let release = CancellationToken::new();
+    let handler = Slow {
+        started: started.clone(),
+        release: release.clone(),
+    };
+    let task = tokio::spawn(async move { worker().serve(&mut fake, true, &handler).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.cancelled())
+        .await
+        .unwrap();
+    assert!(
+        actions
+            .events
+            .lock()
+            .unwrap()
+            .contains(&"callbackack:1".into())
+    );
+    assert!(actions.sent_text.lock().unwrap().is_empty());
+    release.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while actions.sent_text.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    let _ = task.await;
 }

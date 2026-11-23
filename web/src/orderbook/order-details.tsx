@@ -21,6 +21,7 @@ export function OrderDetails({
   collectionPreview,
   removed = false,
   close,
+  share,
 }: {
   selected: Order;
   options: ReadonlyMap<string, CatalogOption>;
@@ -30,6 +31,7 @@ export function OrderDetails({
   collectionPreview?: GiftMedia;
   removed?: boolean;
   close: () => void;
+  share?: (slug: string, currency: string) => void;
 }) {
   useBackgroundPlaybackSuspension(true);
   const state = useOrderValuation(selected);
@@ -200,6 +202,19 @@ export function OrderDetails({
         </div>
         {actions.length > 0 && (
           <div className="detail-actions">
+            {share && collectionSlug && selectedSerial && (
+              <button
+                className="detail-link detail-share"
+                onClick={() =>
+                  share(
+                    `${collectionSlug}-${selectedSerial}`,
+                    selected.book.currency_id,
+                  )
+                }
+              >
+                Share valuation ↗
+              </button>
+            )}
             {actions.map((action) => (
               <a
                 key={action.kind}

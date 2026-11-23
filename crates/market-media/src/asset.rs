@@ -4,6 +4,8 @@ pub const MAX_ANIMATION_BYTES: usize = 256 * 1024;
 pub const MAX_TGS_JSON_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_THUMBNAIL_BYTES: usize = 256 * 1024;
 pub const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
+pub const MAX_COVER_BYTES: usize = 2 * 1024 * 1024;
+pub const COVER_VERSION: &str = "3";
 pub const PREVIEW_VERSION: &str = "2";
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct DocumentId(i64);
@@ -20,6 +22,7 @@ pub enum MediaKind {
     Thumbnail,
     Animation,
     Preview,
+    Cover,
 }
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct MediaKey {
@@ -49,6 +52,13 @@ impl MediaKey {
             source: Some(source),
         }
     }
+    pub(crate) fn cover(document: DocumentId, source: [u8; 32]) -> Self {
+        Self {
+            document,
+            kind: MediaKind::Cover,
+            source: Some(source),
+        }
+    }
     pub fn document(self) -> DocumentId {
         self.document
     }
@@ -63,12 +73,22 @@ impl MediaKey {
             MediaKind::Thumbnail => MAX_THUMBNAIL_BYTES,
             MediaKind::Animation => MAX_ANIMATION_BYTES,
             MediaKind::Preview => MAX_PREVIEW_BYTES,
+            MediaKind::Cover => MAX_COVER_BYTES,
         }
     }
     pub(crate) fn extension(self) -> String {
         match self.kind {
             MediaKind::Thumbnail => "thumb".into(),
             MediaKind::Animation => "tgs".into(),
+            MediaKind::Cover => {
+                let hex: String = self
+                    .source
+                    .expect("covers require content identity")
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                format!("cover-{COVER_VERSION}-{hex}.png")
+            }
             MediaKind::Preview => {
                 let hash = self
                     .source
@@ -144,6 +164,10 @@ impl MediaAsset {
             MediaKind::Thumbnail => Self::thumbnail(bytes),
             MediaKind::Animation => Self::animation(bytes),
             MediaKind::Preview => Self::preview(bytes),
+            MediaKind::Cover => {
+                crate::cover::validate_png(&bytes)?;
+                Ok(Self::new(MediaKind::Cover, bytes, "image/png"))
+            }
         }
     }
     pub fn kind(&self) -> MediaKind {

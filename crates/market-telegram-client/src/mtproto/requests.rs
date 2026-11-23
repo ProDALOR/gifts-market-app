@@ -54,7 +54,11 @@ pub(super) fn reply_request(
         allow_paid_floodskip: false,
         peer: message.peer.into(),
         reply_to: None,
-        message: reply.text.clone(),
+        message: if reply.rich_html.is_some() {
+            String::new()
+        } else {
+            reply.text.clone()
+        },
         random_id,
         reply_markup: launch.map(|launch| {
             ReplyMarkup::from_buttons_row(&[Button::webview(&launch.text, launch.url.as_str())]).raw
@@ -67,6 +71,6 @@ pub(super) fn reply_request(
         effect: None,
         allow_paid_stars: None,
         suggested_post: None,
-        rich_message: None,
+        rich_message: super::interactions::rich(reply),
     }
 }

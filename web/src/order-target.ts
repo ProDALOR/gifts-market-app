@@ -2,6 +2,9 @@ import type { Order } from "./market.ts";
 
 type Gift = Extract<Order["target"], { kind: "gift" }>;
 export type PreviewOrder = Pick<Order, "target"> & Partial<Pick<Order, "kind">>;
+export type ValuationSubject = PreviewOrder & {
+  book: Pick<Order["book"], "collection_id" | "currency_id">;
+};
 const single = (ids: readonly string[]) =>
   ids.length === 1 ? ids[0] : undefined;
 

@@ -15,6 +15,9 @@ import { CollectionRail } from "./collections/collection-picker";
 import { TraitPickers } from "./collections/trait-pickers";
 import { TraitPreview } from "./previews/trait-preview";
 import { VenueIcon } from "./ui/icons";
+import { SlugDetails } from "./orderbook/slug-details";
+import { normalizeSlug } from "./valuation/slug";
+import type { ValuationSubject } from "./order-target";
 import { OrderDetails } from "./orderbook/order-details";
 import { FloorsProvider, FloorsStatus } from "./valuation/floors";
 import { orderKey } from "./orderbook/order-activity";
@@ -95,7 +98,27 @@ function saved(context: TelegramContext): Choice {
 function App({ context }: { context: TelegramContext }) {
   const controls = useRef<HTMLElement>(null);
   const telegram = useTelegram(context);
+  const shareValuation = context.app?.switchInlineQuery
+    ? (slug: string, currency: string) =>
+        context.app!.switchInlineQuery!(`${slug} ${currency}`, [
+          "users",
+          "groups",
+          "channels",
+        ])
+    : undefined;
   const [accountOpen, setAccountOpen] = useState(false);
+  const [giftSlug, setGiftSlug] = useState(() => {
+    const value = launchSelection(context, location.search).get("gift");
+    return normalizeSlug(value) ? value! : undefined;
+  });
+  const [slugSubject, setSlugSubject] = useState<ValuationSubject>();
+  const closeSlug = () => {
+    setGiftSlug(undefined);
+    setSlugSubject(undefined);
+    const url = new URL(location.href);
+    url.searchParams.delete("gift");
+    history.replaceState(null, "", url);
+  };
   const [choice, setChoice] = useState(() => saved(context)),
     [reloadKey, setReloadKey] = useState(0),
     [selected, setSelected] = useState<Order>(),
@@ -151,6 +174,7 @@ function App({ context }: { context: TelegramContext }) {
         if (choice.mode === "bid") p.set(key, String(value));
       } else if (value) p.set(key, String(value));
     }
+    if (giftSlug) p.set("gift", giftSlug);
     history.replaceState(null, "", `${location.pathname}?${p}`);
     setSelected(undefined);
   }, [JSON.stringify(choice)]);
@@ -217,12 +241,18 @@ function App({ context }: { context: TelegramContext }) {
       ),
     [displayOrders],
   );
-  useTelegramBack(context, accountOpen || !!selected || !!openTrait, () => {
-    if (accountOpen) setAccountOpen(false);
-    else if (selected) setSelected(undefined);
-    else if (openTrait) setOpenTrait(undefined);
-  });
+  useTelegramBack(
+    context,
+    accountOpen || !!selected || !!giftSlug || !!openTrait,
+    () => {
+      if (accountOpen) setAccountOpen(false);
+      else if (selected) setSelected(undefined);
+      else if (giftSlug) closeSlug();
+      else if (openTrait) setOpenTrait(undefined);
+    },
+  );
   const set = (next: Choice) => {
+    closeSlug();
     setChoice(next);
     setOpenTrait(undefined);
   };
@@ -284,16 +314,19 @@ function App({ context }: { context: TelegramContext }) {
     [],
   );
 
-  const selectedCollection = selected
-    ? types.find((collection) => collection.id === selected.book.collection_id)
-    : undefined;
+  const selectedCollection = types.find(
+    (collection) =>
+      collection.id ===
+      (selected?.book.collection_id ??
+        (giftSlug ? choice.collection : undefined)),
+  );
 
   return (
     <FloorsProvider
       currency={choice.currency}
       collection={choice.collection}
       collections={floorCollections}
-      order={selected}
+      order={selected ?? slugSubject}
     >
       <div className="workspace">
         <main className="orderbook market-shell">
@@ -542,7 +575,10 @@ function App({ context }: { context: TelegramContext }) {
                   selected:
                     selected?.id === order.id &&
                     selected.book.venue_id === order.book.venue_id,
-                  open: setSelected,
+                  open: (order) => {
+                    closeSlug();
+                    setSelected(order);
+                  },
                 })}
               />
               {!displayOrders.length && (
@@ -583,11 +619,28 @@ function App({ context }: { context: TelegramContext }) {
             </footer>
           </div>
         </main>
-        <BackToTop target={controls} blocked={!!selected || accountOpen} />
+        <BackToTop
+          target={controls}
+          blocked={!!selected || !!giftSlug || accountOpen}
+        />
+        {giftSlug && choice.collection && choice.currency && (
+          <SlugDetails
+            slug={giftSlug}
+            collection={choice.collection}
+            currency={choice.currency}
+            options={options}
+            names={names}
+            preview={selectedCollection?.preview ?? undefined}
+            onGift={setSlugSubject}
+            close={closeSlug}
+            share={shareValuation}
+          />
+        )}
         {selected && (
           <OrderDetails
             collectionPreview={selectedCollection?.preview ?? undefined}
             selected={selected}
+            share={shareValuation}
             options={options}
             names={names}
             collectionName={item?.name || ""}

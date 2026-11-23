@@ -54,6 +54,7 @@ export type WebApp = {
   };
   ready(): void;
   expand(): void;
+  switchInlineQuery?(query: string, chatTypes?: string[]): void;
   onEvent(event: string, callback: () => void): void;
   offEvent(event: string, callback: () => void): void;
 };
@@ -66,6 +67,7 @@ export type TelegramContext = { app?: WebApp; initData: string };
 const marker = "market.telegram.context";
 const sdk = "https://telegram.org/js/telegram-web-app.js";
 const keys = [
+  "gift",
   "collection",
   "currency",
   "venue",

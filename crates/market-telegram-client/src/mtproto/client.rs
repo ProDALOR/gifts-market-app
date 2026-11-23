@@ -1,9 +1,10 @@
 //! Grammers transport. Telegram credentials and raw MTProto types stay in this module.
 use super::{
     invocations::{CallError, Executor, Group},
-    requests::{command_request, menu_request, reply_request},
+    requests::{command_request, menu_request},
     session_store::DurableSession,
 };
+use crate::interactions::{CallbackTarget, Event, InlineMessageId};
 use crate::{
     BotCredentials, BotError, LaunchButton, MenuCommand, Reply,
     transport::{BotUser, Delivery, Message, TelegramActions, Transport, UpdateCheckpoint},
@@ -30,11 +31,14 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct MtProtoActions {
-    client: Client,
+    pub(super) client: Client,
     session: Arc<DurableSession>,
-    credentials: BotCredentials,
+    pub(super) credentials: BotCredentials,
     exited: CancellationToken,
-    invocations: Executor,
+    pub(super) invocations: Executor,
+    pub(super) profile: Arc<std::sync::OnceLock<BotUser>>,
+    pub(super) artwork: Option<market_media::MediaCache>,
+    pub(super) photos: super::photos::Photos,
     documents: super::media::Documents,
     inventory: Option<(super::gifts::InventoryClient, Arc<super::gifts::Live>)>,
 }
@@ -76,6 +80,9 @@ impl MtProtoTransport {
                 },
                 credentials,
                 exited,
+                profile: Default::default(),
+                artwork: None,
+                photos: Default::default(),
                 documents: super::media::Documents::default(),
                 inventory: None,
             },
@@ -84,6 +91,9 @@ impl MtProtoTransport {
             handle,
             runner: Some(runner),
         }
+    }
+    pub fn bind_artwork(&mut self, cache: market_media::MediaCache) {
+        self.actions.artwork = Some(cache);
     }
     pub fn bind_inventory(
         &mut self,
@@ -208,6 +218,7 @@ impl TelegramActions for MtProtoActions {
         if let Some((client, live)) = &self.inventory {
             client.publish(live.clone());
         }
+        let _ = self.profile.set(identity.clone());
         Ok(identity)
     }
     async fn configure(
@@ -239,26 +250,42 @@ impl TelegramActions for MtProtoActions {
         }
         Ok(())
     }
+    async fn answer_callback(&self, event: &Event, handled: bool) -> Result<(), BotError> {
+        let Event::Callback { id, .. } = event else {
+            return Ok(());
+        };
+        match self
+            .invocations
+            .rpc(
+                &self.client,
+                tl::functions::messages::SetBotCallbackAnswer {
+                    alert: false,
+                    query_id: *id,
+                    message: (!handled)
+                        .then(|| "This button has expired. Request a fresh valuation.".into()),
+                    url: None,
+                    cache_time: 0,
+                },
+                Group::Inline,
+                Priority::Interactive,
+                Replay::Safe,
+            )
+            .await
+        {
+            Ok(_) | Err(BotError::Rpc(400)) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
     async fn send(
         &self,
-        message: &Message,
-        reply: &Reply,
+        event: &Event,
+        reply: Option<&Reply>,
         launch: Option<&LaunchButton>,
     ) -> Result<(), BotError> {
         if self.exited.is_cancelled() {
             return Err(BotError::Runner);
         }
-        let request = reply_request(self.credentials.bot_id(), message, reply, launch);
-        self.invocations
-            .rpc(
-                &self.client,
-                request,
-                Group::Reply(message.peer.id.bare_id().ok_or(BotError::InvalidResponse)?),
-                Priority::Interactive,
-                Replay::Deduplicated,
-            )
-            .await?;
-        Ok(())
+        self.respond(event, reply, launch).await
     }
 }
 impl Transport for MtProtoTransport {
@@ -293,30 +320,130 @@ impl Transport for MtProtoTransport {
             .next_raw()
             .await
             .map_err(|error| self.actions.failure(error))?;
-        let update = Update::from_raw(&self.actions.client, raw, state.clone(), peers);
-        let message = if let Update::NewMessage(message) = update {
-            if message.outgoing() || message.peer_id().kind() != PeerKind::User {
-                None
-            } else {
-                let peer = message
-                    .peer_ref()
-                    .await
-                    .map_err(|_| BotError::Session)?
-                    .ok_or(BotError::InvalidResponse)?;
-                Some(Message {
-                    peer,
-                    id: message.id(),
-                    outgoing: false,
-                    text: message.text().to_owned(),
-                })
+        let event = match raw {
+            tl::enums::Update::BotInlineQuery(query) if query.user_id > 0 => Some(Event::Inline {
+                id: query.query_id,
+                user_id: query.user_id as u64,
+                query: query.query.chars().take(2048).collect(),
+                offset: query.offset,
+            }),
+            tl::enums::Update::BotGuestChatQuery(query) => guest_event(query),
+            tl::enums::Update::InlineBotCallbackQuery(query) if query.user_id > 0 => query
+                .data
+                .filter(|data| data.len() <= 64)
+                .map(|data| Event::Callback {
+                    id: query.query_id,
+                    user_id: query.user_id as u64,
+                    data,
+                    target: CallbackTarget::Inline(InlineMessageId::from(&query.msg_id)),
+                }),
+            tl::enums::Update::BotCallbackQuery(query) if query.user_id > 0 => {
+                if let Some(data) = query.data.filter(|data| data.len() <= 64) {
+                    peers
+                        .get_ref(PeerId::from(query.peer))
+                        .await
+                        .map_err(|_| BotError::Session)?
+                        .map(|peer| Event::Callback {
+                            id: query.query_id,
+                            user_id: query.user_id as u64,
+                            data,
+                            target: CallbackTarget::Message(Message {
+                                peer,
+                                id: query.msg_id,
+                                outgoing: true,
+                                text: String::new(),
+                            }),
+                        })
+                } else {
+                    None
+                }
             }
-        } else {
-            None
+            raw => {
+                let update = Update::from_raw(&self.actions.client, raw, state.clone(), peers);
+                if let Update::NewMessage(message) = update {
+                    if message.outgoing() || message.peer_id().kind() != PeerKind::User {
+                        None
+                    } else {
+                        let peer = message
+                            .peer_ref()
+                            .await
+                            .map_err(|_| BotError::Session)?
+                            .ok_or(BotError::InvalidResponse)?;
+                        Some(Event::Message(Message {
+                            peer,
+                            id: message.id(),
+                            outgoing: false,
+                            text: match &message.raw {
+                                tl::enums::Update::NewMessage(raw) => reference_text(&raw.message),
+                                _ => None,
+                            }
+                            .unwrap_or_else(|| message.text().chars().take(4096).collect()),
+                        }))
+                    }
+                } else {
+                    None
+                }
+            }
         };
-        Ok(Delivery { state, message })
+        Ok(Delivery { state, event })
     }
 }
 
+fn reference_text(message: &tl::enums::Message) -> Option<String> {
+    let mut text = match message {
+        tl::enums::Message::Message(message) => {
+            let mut text: String = message.message.chars().take(2048).collect();
+            for entity in message
+                .entities
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .take(16)
+            {
+                if let tl::enums::MessageEntity::TextUrl(entity) = entity
+                    && market_gifts::GiftSlug::new(&entity.url).is_ok()
+                {
+                    text.push(' ');
+                    text.push_str(&entity.url);
+                }
+            }
+            text
+        }
+        tl::enums::Message::Service(message) => match &message.action {
+            tl::enums::MessageAction::StarGiftUnique(action) => match &action.gift {
+                tl::enums::StarGift::Unique(gift) => gift.slug.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        },
+        _ => return None,
+    };
+    text.truncate(text.floor_char_boundary(4096));
+    Some(text)
+}
+fn guest_event(query: tl::types::UpdateBotGuestChatQuery) -> Option<Event> {
+    let tl::enums::Message::Message(message) = query.message else {
+        return None;
+    };
+    let Some(tl::enums::Peer::User(sender)) = &message.from_id else {
+        return None;
+    };
+    if sender.user_id <= 0 || message.out {
+        return None;
+    }
+    Some(Event::Guest {
+        id: query.query_id,
+        user_id: sender.user_id as u64,
+        text: reference_text(&tl::enums::Message::Message(message.clone())).unwrap_or_default(),
+        references: query
+            .reference_messages
+            .unwrap_or_default()
+            .into_iter()
+            .take(4)
+            .filter_map(|message| reference_text(&message))
+            .collect(),
+    })
+}
 impl UpdateCheckpoint for MtProtoActions {
     async fn acknowledge(&self, state: State) -> Result<(), BotError> {
         self.session.acknowledge(state).await
@@ -350,6 +477,8 @@ fn identity(user: User, expected: u64) -> Result<BotUser, BotError> {
         active_usernames: aliases,
         first_name: user.first_name().unwrap_or("").to_owned(),
         has_main_web_app,
+        inline_enabled: matches!(&user.raw,tl::enums::User::User(raw) if raw.bot_inline_placeholder.is_some()),
+        guest_enabled: matches!(&user.raw,tl::enums::User::User(raw) if raw.bot_guestchat),
     })
 }
 fn active_usernames(primary: Option<&str>, aliases: &[tl::enums::Username]) -> Vec<String> {

@@ -19,6 +19,7 @@ pub struct TelegramWorker {
     data_dir: PathBuf,
     identity_observer: Option<IdentityObserver>,
     media: Option<tokio::sync::Mutex<market_media::MediaDownloader>>,
+    artwork: Option<market_media::MediaCache>,
 }
 pub struct BotInspection {
     pub user: BotUser,
@@ -56,6 +57,7 @@ impl TelegramWorker {
             data_dir: config.data_dir,
             identity_observer: None,
             media: None,
+            artwork: None,
         })
     }
     pub fn inventory(&self) -> InventoryClient {
@@ -67,7 +69,12 @@ impl TelegramWorker {
         self.identity_observer = Some(Box::new(observer));
     }
     /// Attach background media work to the same authenticated transport generation.
-    pub fn set_media_downloader(&mut self, downloader: market_media::MediaDownloader) {
+    pub fn set_media(
+        &mut self,
+        cache: market_media::MediaCache,
+        downloader: market_media::MediaDownloader,
+    ) {
+        self.artwork = Some(cache);
         self.media = Some(tokio::sync::Mutex::new(downloader));
     }
     pub async fn configure<H: MessageHandler>(&self, handler: &H) -> Result<BotUser, BotError> {
@@ -135,6 +142,9 @@ impl TelegramWorker {
         // Finish opening storage before cancellation may release the worker lock.
         let mut connection =
             Connection::open(self.credentials.clone(), &self.data_dir, invocations).await?;
+        if let Some(cache) = &self.artwork {
+            connection.transport.bind_artwork(cache.clone());
+        }
         connection
             .transport
             .bind_inventory(self.inventory.clone())?;
@@ -191,7 +201,7 @@ impl TelegramWorker {
         if !consume {
             return Ok(user);
         }
-        tracing::info!(bot_id = user.id, bot_username = %user.username, "MTProto bot worker started");
+        tracing::info!(bot_id = user.id, bot_username = %user.username, inline_enabled=user.inline_enabled,guest_enabled=user.guest_enabled, "MTProto bot worker started");
         let commands = dispatcher::run(
             transport,
             handler,

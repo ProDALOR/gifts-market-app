@@ -13,6 +13,7 @@ sha2.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 roxmltree = "0.21"
+resvg = { version = "0.48", default-features = false }
 tempfile = "3"
 
 velato = { version = "=0.12.0", default-features = false }

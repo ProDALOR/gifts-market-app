@@ -13,7 +13,7 @@ use market_gifts::{
     TelegramGiftDetails, TelegramGiftId,
 };
 use market_invocations::{Priority, Replay};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
@@ -30,12 +30,12 @@ use std::{
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Deserialize)]
-struct Export {
-    api_id: i32,
-    auth_key: String,
-    dc_id: i32,
-    server_address: SocketAddr,
+#[derive(Deserialize, Serialize)]
+pub(super) struct Export {
+    pub(super) api_id: i32,
+    pub(super) auth_key: String,
+    pub(super) dc_id: i32,
+    pub(super) server_address: SocketAddr,
 }
 struct Account {
     api_id: i32,
@@ -91,6 +91,40 @@ pub struct AccountWorker {
     directory: PathBuf,
     resolver: AccountGiftResolver,
 }
+pub(super) fn validate_exports(bytes: &[u8]) -> Result<(), BotError> {
+    parse_accounts(bytes).map(|_| ())
+}
+fn parse_accounts(bytes: &[u8]) -> Result<Vec<Account>, BotError> {
+    if bytes.len() > 65_536 {
+        return Err(BotError::Configuration(
+            "Telegram accounts file exceeds 64 KiB",
+        ));
+    }
+    let exports: Vec<Export> = serde_json::from_slice(bytes).map_err(|_| {
+        BotError::Configuration(
+            "Invalid Telegram accounts JSON; expected api_id, auth_key, dc_id and server_address",
+        )
+    })?;
+    if exports.is_empty() || exports.len() > 16 {
+        return Err(BotError::Configuration(
+            "Configure 1..=16 Telegram user sessions",
+        ));
+    }
+    let accounts = exports
+        .into_iter()
+        .map(Account::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut keys = std::collections::HashSet::new();
+    if accounts
+        .iter()
+        .any(|a| !keys.insert(Sha256::digest(a.auth_key)))
+    {
+        return Err(BotError::Configuration(
+            "Duplicate Telegram account session",
+        ));
+    }
+    Ok(accounts)
+}
 impl AccountWorker {
     pub async fn from_file(path: &Path, directory: PathBuf) -> Result<Self, BotError> {
         use tokio::io::AsyncReadExt;
@@ -102,31 +136,7 @@ impl AccountWorker {
             .read_to_end(&mut bytes)
             .await
             .map_err(|_| BotError::Session)?;
-        if bytes.len() > 65_536 {
-            return Err(BotError::Configuration(
-                "Telegram accounts file exceeds 64 KiB",
-            ));
-        }
-        let exports: Vec<Export> = serde_json::from_slice(&bytes)
-            .map_err(|_| BotError::Configuration("Invalid Telegram accounts JSON; expected api_id, auth_key, dc_id and server_address"))?;
-        if exports.is_empty() || exports.len() > 16 {
-            return Err(BotError::Configuration(
-                "Configure 1..=16 Telegram user sessions",
-            ));
-        }
-        let accounts = exports
-            .into_iter()
-            .map(Account::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut keys = std::collections::HashSet::new();
-        if accounts
-            .iter()
-            .any(|a| !keys.insert(Sha256::digest(a.auth_key)))
-        {
-            return Err(BotError::Configuration(
-                "Duplicate Telegram account session",
-            ));
-        }
+        let accounts = parse_accounts(&bytes)?;
         let resolver = AccountGiftResolver(Arc::new(Shared {
             live: RwLock::new(vec![None; accounts.len()]),
             next: AtomicUsize::new(0),
