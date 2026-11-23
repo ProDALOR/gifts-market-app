@@ -4,6 +4,7 @@ mod interactions;
 mod parse;
 mod render;
 mod report;
+mod views;
 use market_actors::MarketDataHandle;
 use market_telegram::{BotError, IncomingMessage, MenuCommand, MessageHandler, Reply};
 pub use parse::CommandKind;

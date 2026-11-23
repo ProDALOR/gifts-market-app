@@ -286,7 +286,11 @@ mod tests {
             r##"<path d="M0 0L1 1" fill="#ffffff"/>"##.repeat(32)
         );
         tokio::fs::write(
-            media_path.join(format!("42.preview-2-{:x}.svg", sha2::Sha256::digest(&tgs))),
+            media_path.join(format!(
+                "42.preview-{}-{:x}.svg",
+                market_media::PREVIEW_VERSION,
+                sha2::Sha256::digest(&tgs)
+            )),
             &svg,
         )
         .await

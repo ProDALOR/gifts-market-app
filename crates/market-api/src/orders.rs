@@ -2,7 +2,7 @@
 use jiff::Timestamp;
 use market_gifts::{
     Amount, BackdropId, GiftBook, GiftId, GiftNumber, GiftNumberRange, GiftOrder, GiftOrderKind,
-    GiftTarget, GiftTraits, ModelId, OrderId, PatternId, UnsupportedGiftReason,
+    GiftTarget, GiftTraits, ModelId, OrderId, PatternId, UnsupportedGiftReason, market_link,
 };
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -162,17 +162,6 @@ impl<'a> From<&'a market_actors::OrderRead> for OrderReadResponse<'a> {
 pub struct OrderIdentity<'a> {
     pub venue_id: &'a market_gifts::VenueId,
     pub id: &'a OrderId,
-}
-fn market_link(value: &str) -> Option<String> {
-    if value.chars().any(char::is_control) {
-        return None;
-    }
-    let url = url::Url::parse(value).ok()?;
-    (matches!(url.scheme(), "http" | "https")
-        && url.host_str().is_some()
-        && url.username().is_empty()
-        && url.password().is_none())
-    .then(|| url.to_string())
 }
 
 #[cfg(test)]

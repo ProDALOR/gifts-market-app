@@ -257,7 +257,7 @@ impl MtProtoActions {
                 match target {
                     CallbackTarget::Message(message) => {
                         self.invocations
-                            .rpc(
+                            .rpc_call(
                                 &self.client,
                                 tl::functions::messages::EditMessage {
                                     no_webpage: true,
@@ -283,11 +283,13 @@ impl MtProtoActions {
                                 Priority::Interactive,
                                 Replay::Safe,
                             )
-                            .await?;
+                            .await
+                            .map(|_| ())
+                            .or_else(accept_unchanged_edit)?;
                     }
                     CallbackTarget::Inline(id) => {
                         self.invocations
-                            .rpc(
+                            .rpc_call(
                                 &self.client,
                                 tl::functions::messages::EditInlineBotMessage {
                                     no_webpage: true,
@@ -307,12 +309,26 @@ impl MtProtoActions {
                                 Priority::Interactive,
                                 Replay::Safe,
                             )
-                            .await?;
+                            .await
+                            .map(|_| ())
+                            .or_else(accept_unchanged_edit)?;
                     }
                 }
             }
         }
         Ok(())
+    }
+}
+
+// Duplicate callback deliveries can edit an already-current message. Only Telegram's
+// explicit unchanged result counts as success; other rejections retain their disposition.
+fn accept_unchanged_edit(error: CallError) -> Result<(), BotError> {
+    if matches!(&error, CallError::Remote(grammers_client::sender::InvocationError::Rpc(error))
+        if error.code == 400 && error.name == "MESSAGE_NOT_MODIFIED")
+    {
+        Ok(())
+    } else {
+        Err(error.bot())
     }
 }
 
@@ -352,6 +368,25 @@ mod tests {
             }
             .into(),
         ))
+    }
+    #[test]
+    fn duplicate_edits_complete_without_hiding_other_callback_rejections() {
+        assert_eq!(
+            accept_unchanged_edit(remote_error(400, "MESSAGE_NOT_MODIFIED")),
+            Ok(())
+        );
+        assert_eq!(
+            accept_unchanged_edit(remote_error(400, "BUTTON_DATA_INVALID")),
+            Err(BotError::Rpc(400))
+        );
+        assert_eq!(
+            accept_unchanged_edit(remote_error(500, "INTERNAL")),
+            Err(BotError::Rpc(500))
+        );
+        assert_eq!(
+            accept_unchanged_edit(remote_error(401, "SESSION_REVOKED")),
+            Err(BotError::Authorization)
+        );
     }
     #[tokio::test]
     async fn rich_inline_rejections_fall_back_once_to_the_same_plain_result() {

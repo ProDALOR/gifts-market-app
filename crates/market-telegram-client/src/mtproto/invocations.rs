@@ -126,6 +126,13 @@ impl Executor {
         .await
         .inspect_err(|error| {
             if let CallError::Remote(InvocationError::Rpc(error)) = error {
+                if error.code == 400 && error.name == "MESSAGE_NOT_MODIFIED" {
+                    tracing::debug!(
+                        method = std::any::type_name::<R>(),
+                        "Telegram message was already current"
+                    );
+                    return;
+                }
                 tracing::warn!(
                     method = std::any::type_name::<R>(),
                     rpc_code = error.code,

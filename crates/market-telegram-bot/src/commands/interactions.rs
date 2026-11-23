@@ -1,21 +1,16 @@
 //! Parse entry points into common commands; callback tokens retain only bounded public report state.
+use super::views::View;
 use super::*;
-use super::{history::HistoryRequest, report::Report};
 use market_telegram::Event;
 use std::{
     collections::{VecDeque, hash_map::RandomState},
     hash::BuildHasher,
     sync::{
-        Arc, Mutex,
+        Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
-#[derive(Clone)]
-pub(super) struct View {
-    pub report: Arc<Report>,
-    pub history: HistoryRequest,
-}
 #[derive(Default)]
 pub(super) struct Views {
     entries: Mutex<VecDeque<(u64, Instant, View)>>,
@@ -100,24 +95,13 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
     })
 }
 
-impl MarketCommands {
-    pub(super) async fn view(&self, id: u64) -> Reply {
-        match self.views.get(id) {
-            Some(view) => self.history(view.report, view.history).await,
-            None => Reply::text(
-                "This report has expired. Send the gift link again for a fresh valuation.",
-            ),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn callbacks_expire_even_when_recently_accessed() {
         let views = Views::default();
-        let token = views.insert(super::super::tests::history_view());
+        let token = views.insert(super::super::tests::report_view());
         let id = u64::from_str_radix(std::str::from_utf8(&token[2..]).unwrap(), 16).unwrap();
         let created = views.entries.lock().unwrap()[0].1;
         assert!(views.get(id).is_some());

@@ -7,11 +7,16 @@ use market_gifts::*;
 use market_valuation::*;
 use std::sync::Arc;
 
+#[derive(Default)]
+pub(super) struct FloorQuotes {
+    pub gram: Option<Arc<CatalogFloorValuation>>,
+    pub stars: Option<Arc<CatalogFloorValuation>>,
+}
 pub(super) struct Report {
     pub query: ValueRequest,
     pub value: Arc<ValuationReport>,
     pub catalog: Option<GiftCollectionCatalog>,
-    pub floors: Option<Arc<CatalogFloorValuation>>,
+    pub floors: FloorQuotes,
     pub artwork: Option<market_media::GiftCover>,
     pub icons: Arc<ReportIcons>,
 }
@@ -80,6 +85,9 @@ impl Report {
         });
     }
     pub fn render(&self) -> Reply {
+        self.render_panel(true, "", "")
+    }
+    pub fn render_panel(&self, floors_visible: bool, navigation: &str, refresh: &str) -> Reply {
         let title = self
             .catalog
             .as_ref()
@@ -89,46 +97,8 @@ impl Report {
             .expect("validated slug");
         let mut html = format!("<h3><a href=\"{}\">{}</a></h3>", gift_url, escape(&title));
         let mut lines = vec![title.clone()];
-        if let (Some(catalog), Some(gift)) = (&self.catalog, self.gift()) {
-            let names = [
-                gift.traits
-                    .model
-                    .as_ref()
-                    .and_then(|id| catalog.models.iter().find(|v| &v.id == id))
-                    .map(|v| (ReportIcon::Model, v.name.as_str())),
-                gift.traits
-                    .backdrop
-                    .as_ref()
-                    .and_then(|id| catalog.backdrops.iter().find(|v| &v.id == id))
-                    .map(|v| (ReportIcon::Backdrop, v.name.as_str())),
-                gift.traits
-                    .pattern
-                    .as_ref()
-                    .and_then(|id| catalog.patterns.iter().find(|v| &v.id == id))
-                    .map(|v| (ReportIcon::Symbol, v.name.as_str())),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-            if !names.is_empty() {
-                html.push_str(&format!(
-                    "<p>{}</p>",
-                    names
-                        .iter()
-                        .map(|(icon, name)| format!("{} {}", self.icons.html(*icon), escape(name)))
-                        .collect::<Vec<_>>()
-                        .join(" · ")
-                ));
-                lines.push(
-                    names
-                        .iter()
-                        .map(|(icon, name)| format!("{} {}", self.icons.text(*icon), name))
-                        .collect::<Vec<_>>()
-                        .join(" · "),
-                );
-            }
-        }
         let mut summaries = Vec::new();
+        let mut refresh = refresh;
         for result in &self.value.results {
             let strategy_name =
                 strategy(result.strategy()).map_or(result.strategy(), |meta| meta.name);
@@ -148,81 +118,26 @@ impl Report {
                 };
                 let (value, value_html) = display(&field.value, &self.icons);
                 html.push_str(&format!(
-                    "<p>{} <b>{}</b>　<b>{}</b></p>",
+                    "<p>{} <b>{}</b> {}</p>",
                     self.icons.html(ReportIcon::Estimate),
                     escape(&label),
-                    value_html
+                    refresh
                 ));
+                refresh = "";
+                match &field.value {
+                    DisplayValue::Unavailable { .. } => {
+                        html.push_str(&format!("<p>{value_html}</p>"));
+                    }
+                    _ => html.push_str(&format!("<h1>{value_html}</h1>")),
+                }
                 summaries.push(format!("{label}: {value}"));
             }
         }
+        html.push_str(refresh);
         lines.extend(summaries.iter().cloned());
-        if let (Some(gift), Some(floors)) = (self.gift(), &self.floors)
-            && let Some(collection) = floors
-                .collections
-                .iter()
-                .find(|row| row.collection_id == gift.collection_id)
-        {
-            let traits = collection.traits.as_ref();
-            let rows = [
-                (
-                    ReportIcon::Collection,
-                    "Collection",
-                    Some(&collection.floor),
-                ),
-                (
-                    ReportIcon::ModelBackdrop,
-                    "Model + backdrop",
-                    traits.and_then(|t| t.pair.as_ref().map(|p| &p.floor)),
-                ),
-                (
-                    ReportIcon::Model,
-                    "Model",
-                    gift.traits
-                        .model
-                        .as_ref()
-                        .and_then(|id| traits.and_then(|t| t.models.get(id))),
-                ),
-                (
-                    ReportIcon::Backdrop,
-                    "Backdrop",
-                    gift.traits
-                        .backdrop
-                        .as_ref()
-                        .and_then(|id| traits.and_then(|t| t.backdrops.get(id))),
-                ),
-                (
-                    ReportIcon::Symbol,
-                    "Symbol",
-                    gift.traits
-                        .pattern
-                        .as_ref()
-                        .and_then(|id| traits.and_then(|t| t.patterns.get(id))),
-                ),
-            ]
-            .into_iter()
-            .filter_map(|(icon, label, floor)| {
-                floor
-                    .and_then(|floor| floor.value())
-                    .map(|value| (icon, label, amount(value)))
-            })
-            .collect::<Vec<_>>();
-            if !rows.is_empty() {
-                html.push_str(&format!(
-                    "<table compact><tr><th align=\"left\">Ask floors</th><th align=\"right\">{}</th></tr>",
-                    self.icons.currency_html(self.value.currency_id.as_str())
-                ));
-                lines.push(format!("\nAsk floors · {}", self.value.currency_id));
-                for (icon, label, value) in rows {
-                    html.push_str(&format!(
-                        "<tr><td>{} {label}</td><td align=\"right\">{}</td></tr>",
-                        self.icons.html(icon),
-                        escape(&value)
-                    ));
-                    lines.push(format!("{} {label}: {value}", self.icons.text(icon)));
-                }
-                html.push_str("</table>");
-            }
+        html.push_str(navigation);
+        if floors_visible {
+            self.render_attributes(&mut html, &mut lines);
         }
         if self.value.stale {
             html.push_str(&format!(
@@ -253,6 +168,120 @@ impl Report {
             }]);
         reply
     }
+    fn reference_floor<'a>(
+        &self,
+        icon: ReportIcon,
+        quotes: Option<&'a CatalogFloorValuation>,
+    ) -> Option<&'a FloorValuation> {
+        let gift = self.gift()?;
+        let collection = quotes?
+            .collections
+            .iter()
+            .find(|row| row.collection_id == gift.collection_id)?;
+        if icon == ReportIcon::Collection {
+            return Some(&collection.floor);
+        }
+        let traits = collection.traits.as_ref()?;
+        match icon {
+            ReportIcon::ModelBackdrop => traits
+                .pair
+                .as_ref()
+                .filter(|pair| {
+                    Some(&pair.model_id) == gift.traits.model.as_ref()
+                        && Some(&pair.backdrop_id) == gift.traits.backdrop.as_ref()
+                })
+                .map(|pair| &pair.floor),
+            ReportIcon::Model => traits.models.get(gift.traits.model.as_ref()?),
+            ReportIcon::Backdrop => traits.backdrops.get(gift.traits.backdrop.as_ref()?),
+            ReportIcon::Symbol => traits.patterns.get(gift.traits.pattern.as_ref()?),
+            _ => None,
+        }
+    }
+    fn render_attributes(&self, html: &mut String, lines: &mut Vec<String>) {
+        let Some(gift) = self.gift() else { return };
+        let model = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| {
+                gift.traits
+                    .model
+                    .as_ref()
+                    .and_then(|id| catalog.models.iter().find(|v| &v.id == id))
+            })
+            .map(|v| v.name.as_str());
+        let backdrop = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| {
+                gift.traits
+                    .backdrop
+                    .as_ref()
+                    .and_then(|id| catalog.backdrops.iter().find(|v| &v.id == id))
+            })
+            .map(|v| v.name.as_str());
+        let symbol = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| {
+                gift.traits
+                    .pattern
+                    .as_ref()
+                    .and_then(|id| catalog.patterns.iter().find(|v| &v.id == id))
+            })
+            .map(|v| v.name.as_str());
+        let gram = self.icons.currency_html("GRAM");
+        let stars = format!("{} Stars", self.icons.html(ReportIcon::Stars));
+        html.push_str(&format!("<table compact><tr><th align=\"left\">Attribute</th><th align=\"right\">{gram}</th><th align=\"right\">{stars}</th></tr>"));
+        lines.push("\nFloors · GRAM | Stars".into());
+        for (icon, label, visible) in [
+            (ReportIcon::Collection, "Collection", true),
+            (
+                ReportIcon::ModelBackdrop,
+                "Model + backdrop",
+                gift.traits.model.is_some() && gift.traits.backdrop.is_some(),
+            ),
+            (
+                ReportIcon::Model,
+                model.unwrap_or("Model"),
+                gift.traits.model.is_some(),
+            ),
+            (
+                ReportIcon::Backdrop,
+                backdrop.unwrap_or("Backdrop"),
+                gift.traits.backdrop.is_some(),
+            ),
+            (
+                ReportIcon::Symbol,
+                symbol.unwrap_or("Symbol"),
+                gift.traits.pattern.is_some(),
+            ),
+        ] {
+            if !visible {
+                continue;
+            }
+            let values =
+                [self.floors.gram.as_deref(), self.floors.stars.as_deref()].map(|quotes| {
+                    self.reference_floor(icon, quotes)
+                        .and_then(|floor| floor.value())
+                        .map(amount)
+                        .unwrap_or_else(|| "—".into())
+                });
+            html.push_str(&format!(
+                "<tr><td>{} {}</td><td align=\"right\">{}</td><td align=\"right\">{}</td></tr>",
+                self.icons.html(icon),
+                escape(label),
+                values[0],
+                values[1]
+            ));
+            lines.push(format!(
+                "{} {label}: {} GRAM · {} Stars",
+                self.icons.text(icon),
+                values[0],
+                values[1]
+            ));
+        }
+        html.push_str("</table>");
+    }
     pub fn preview_payload(&self) -> String {
         let mut params = url::form_urlencoded::Serializer::new(String::new());
         if let Some(gift) = self.gift() {
@@ -266,6 +295,15 @@ impl Report {
 }
 impl MarketCommands {
     pub(super) async fn value(&self, query: ValueRequest) -> Reply {
+        match self.load_report(query).await {
+            Ok(report) => self.open_report(report),
+            Err(error) => render::error_reply(report_error(&error)),
+        }
+    }
+    pub(super) async fn load_report(
+        &self,
+        query: ValueRequest,
+    ) -> Result<Arc<Report>, ValuationError> {
         let request = ValuationQuery {
             target: ValuationTarget::Gift {
                 gift: query.gift.clone().into(),
@@ -277,21 +315,12 @@ impl MarketCommands {
                 .collect(),
             period: None,
         };
-        let value = match self.valuation.query(request).await {
-            Ok(value) => value,
-            Err(error) => {
-                return render::error_reply(if error.code() == ValuationErrorCode::Unavailable {
-                    "Valuations are temporarily unavailable"
-                } else {
-                    error.message()
-                });
-            }
-        };
+        let value = self.valuation.query(request).await?;
         let mut report = Report {
             query,
             value,
             catalog: None,
-            floors: None,
+            floors: FloorQuotes::default(),
             artwork: None,
             icons: self.icons.clone(),
         };
@@ -305,15 +334,16 @@ impl MarketCommands {
                     model_id,
                     backdrop_id,
                 });
-            let request = ValuationQuery {
-                target: ValuationTarget::Catalog(CatalogSelection {
-                    collection_ids: vec![gift.collection_id.clone()],
-                    details: Some(CatalogDetails {
-                        collection_id: gift.collection_id.clone(),
-                        pair,
-                    }),
+            let target = ValuationTarget::Catalog(CatalogSelection {
+                collection_ids: vec![gift.collection_id.clone()],
+                details: Some(CatalogDetails {
+                    collection_id: gift.collection_id.clone(),
+                    pair,
                 }),
-                currency_id: report.query.currency_id.clone(),
+            });
+            let request = |currency: &'static str| ValuationQuery {
+                target: target.clone(),
+                currency_id: currency.into(),
                 strategies: vec![StrategyId::new("catalog_floor").expect("registered ID")],
                 period: None,
             };
@@ -343,25 +373,38 @@ impl MarketCommands {
                     };
                 tokio::join!(model, pattern)
             };
-            let (catalog, floors, artwork) = tokio::join!(
+            let (catalog, gram, stars, artwork) = tokio::join!(
                 self.market.collection_snapshot(gift.collection_id.clone()),
-                self.valuation.query(request),
+                self.valuation.query(request("GRAM")),
+                self.valuation.query(request("XTR")),
                 artwork
             );
             report.catalog = catalog.ok().map(|v| v.data);
             if let Some(model) = artwork.0 {
                 report.set_artwork(model, artwork.1);
             }
-            report.floors = floors.ok().and_then(|v| {
-                v.results.iter().find_map(|v| match v {
-                    StrategyOutcome::Value(StrategyValuation::CatalogFloor(value)) => {
-                        Some(value.clone())
-                    }
-                    _ => None,
-                })
-            });
+            report.floors = FloorQuotes {
+                gram: catalog_floors(gram),
+                stars: catalog_floors(stars),
+            };
         }
-        let report = Arc::new(report);
-        self.recent_sales(report).await
+        Ok(Arc::new(report))
     }
+}
+
+pub(super) fn report_error(error: &ValuationError) -> String {
+    if error.code() == ValuationErrorCode::Unavailable {
+        "Valuations are temporarily unavailable".into()
+    } else {
+        error.message().to_owned()
+    }
+}
+
+fn catalog_floors(
+    result: Result<Arc<ValuationReport>, ValuationError>,
+) -> Option<Arc<CatalogFloorValuation>> {
+    result.ok()?.results.iter().find_map(|result| match result {
+        StrategyOutcome::Value(StrategyValuation::CatalogFloor(value)) => Some(value.clone()),
+        _ => None,
+    })
 }

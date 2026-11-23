@@ -109,6 +109,7 @@ async fn command_menu_and_help_use_automatic_gift_detection() {
         ["start", "market", "help", "status"]
     );
     for command in [Command::Start, Command::Help, Command::GiftHelp] {
+        let is_help = matches!(command, Command::Help);
         let reply = handler
             .handle(CommandRequest {
                 command,
@@ -118,6 +119,7 @@ async fn command_menu_and_help_use_automatic_gift_detection() {
             .await
             .unwrap();
         assert!(reply.text.contains("gift link or slug"));
+        assert_eq!(reply.text.contains("history may be incomplete"), is_help);
         for old in ["/value", "/portfolio", "/floor", "/multiplier"] {
             assert!(!reply.text.contains(old));
         }

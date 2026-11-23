@@ -159,3 +159,16 @@ impl GiftOrderData {
         Ok(())
     }
 }
+
+/// Normalize public market links without admitting scripts, embedded credentials or controls.
+pub fn market_link(value: &str) -> Option<String> {
+    if value.chars().any(char::is_control) {
+        return None;
+    }
+    let url = url::Url::parse(value).ok()?;
+    (matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none())
+    .then(|| url.to_string())
+}

@@ -23,7 +23,7 @@ pub(super) fn view() -> Arc<report::Report> {
             currency_id: "GRAM".into(),
         },
         value: Arc::new(value),
-        floors: None,
+        floors: report::FloorQuotes::default(),
         artwork: None,
         icons: Default::default(),
         catalog: Some(GiftCollectionCatalog {
@@ -44,12 +44,10 @@ pub(super) fn view() -> Arc<report::Report> {
         }),
     })
 }
-pub(super) fn history_view() -> interactions::View {
-    let report = view();
-    let history = history::HistoryRequest::initial(&report).unwrap();
-    interactions::View { report, history }
+pub(super) fn report_view() -> views::View {
+    views::View::initial(view()).unwrap()
 }
-fn history_callback(html: &str, label: &str) -> u64 {
+fn callback(html: &str, label: &str) -> u64 {
     let end = html.find(&format!(">{label}</tg-button>")).unwrap();
     let start = html[..end].rfind("<tg-button ").unwrap();
     let token = html[start..end]
@@ -209,7 +207,7 @@ fn price_formatting_is_consistent_in_rich_plain_and_inline_summaries() {
         assert!(reply.text.contains(&format!("Estimate: {expected} GRAM")));
         assert!(reply.summary.unwrap().contains(&format!("{expected} GRAM")));
         let html = reply.rich_html.unwrap();
-        assert!(html.contains(&format!("<b>{expected} <tg-emoji")));
+        assert!(html.contains(&format!("<h1>{expected} <tg-emoji")));
         assert!(!html.contains("Bot preview test"));
         assert!(!html.contains("💎"));
     }
@@ -243,12 +241,8 @@ fn report_icons_keep_custom_emoji_fallbacks_and_one_artwork_reference() {
         !html.contains("<img"),
         "only the transport adds the single large artwork"
     );
-    let history = history::HistoryRequest::initial(report).unwrap();
     let views = interactions::Views::default();
-    let token = views.insert(interactions::View {
-        report: shared_report.clone(),
-        history,
-    });
+    let token = views.insert(views::View::initial(shared_report.clone()).unwrap());
     let id = u64::from_str_radix(std::str::from_utf8(&token[2..]).unwrap(), 16).unwrap();
     let restored = views.get(id).unwrap();
     assert!(Arc::ptr_eq(&shared_report.icons, &restored.report.icons));
@@ -264,7 +258,7 @@ fn report_icons_keep_custom_emoji_fallbacks_and_one_artwork_reference() {
 #[test]
 fn callback_cache_is_bounded_and_tokens_expire_without_sliding_their_deadline() {
     let views = interactions::Views::default();
-    let token = views.insert(history_view());
+    let token = views.insert(report_view());
     assert!(token.len() <= 64);
     let event = Event::Callback {
         id: 1,
@@ -281,7 +275,7 @@ fn callback_cache_is_bounded_and_tokens_expire_without_sliding_their_deadline() 
     };
     assert!(views.get(id).is_some());
     for _ in 0..256 {
-        views.insert(history_view());
+        views.insert(report_view());
     }
     assert!(views.get(id).is_none());
     assert!(
@@ -303,14 +297,13 @@ fn callback_cache_is_bounded_and_tokens_expire_without_sliding_their_deadline() 
 }
 #[test]
 fn similar_sales_are_bounded_executions_with_explicit_matching_and_fixed_period() {
-    use history::{HistoryRequest, Scope};
+    use history::{SalesState, Scope};
     let report = view();
     let gift = report.gift().unwrap();
-    let mut request = HistoryRequest {
+    let mut request = SalesState {
         scope: Scope::Pair,
-        start: None,
         until: report.value.evaluated_at,
-        page: 1,
+        starts: vec![],
     };
     let query = request.query(gift, "GRAM".into()).unwrap();
     assert_eq!(query.source, OrderSource::History);
@@ -323,12 +316,12 @@ fn similar_sales_are_bounded_executions_with_explicit_matching_and_fixed_period(
     request.scope = Scope::Collection;
     let query = request.query(gift, "GRAM".into()).unwrap();
     assert!(query.filters.models.is_empty() && query.filters.backdrops.is_empty());
-    request.page = 11;
+    request.starts = vec![OrderKey::try_from("00".to_owned()).unwrap(); 10];
     assert!(request.query(gift, "GRAM".into()).is_err());
 }
 
 #[actix::test]
-async fn valuation_buttons_load_and_paginate_actual_history_without_changing_scope() {
+async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_state() {
     use market_hub_protocol::wire as w;
     let dir = tempfile::tempdir().unwrap();
     let mut writer = market_replica::ReplicaWriter::open(dir.path(), "test").unwrap();
@@ -342,6 +335,11 @@ async fn valuation_buttons_load_and_paginate_actual_history_without_changing_sco
             id: "GRAM".into(),
             name: "TON".into(),
             decimals: 9,
+        })),
+        entity(w::entity::Entity::Currency(w::Currency {
+            id: "XTR".into(),
+            name: "Stars".into(),
+            decimals: 0,
         })),
         entity(w::entity::Entity::Venue(w::Venue {
             id: "v".into(),
@@ -443,6 +441,40 @@ async fn valuation_buttons_load_and_paginate_actual_history_without_changing_sco
             ..Default::default()
         })));
     }
+    let mut stars_ask = rows
+        .iter()
+        .find_map(|row| match row.change.as_ref()? {
+            w::change::Change::Upsert(entity) => match entity.entity.as_ref()? {
+                w::entity::Entity::Order(order) if order.mode == w::OrderMode::Ask as i32 => {
+                    Some(order.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    stars_ask.id = "stars-ask".into();
+    stars_ask.book.as_mut().unwrap().currency_id = "XTR".into();
+    stars_ask.price = "1500".into();
+    rows.push(entity(w::entity::Entity::Order(stars_ask)));
+    let mut exact_sale = rows
+        .iter()
+        .find_map(|row| match row.change.as_ref()? {
+            w::change::Change::Upsert(entity) => match entity.entity.as_ref()? {
+                w::entity::Entity::Order(order) if order.id == "o0" => Some(order.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    exact_sale.id = "exact-sale".into();
+    exact_sale.mode = w::OrderMode::Executed as i32;
+    exact_sale.executed_at_ms = Some(now - 500);
+    exact_sale.meta.insert(
+        "url".into(),
+        "https://example.com/sale?gift=123&venue=v".into(),
+    );
+    rows.push(entity(w::entity::Entity::Order(exact_sale)));
     let mut snapshot = writer.begin_snapshot().unwrap();
     snapshot.append(&rows).unwrap();
     writer
@@ -480,59 +512,219 @@ async fn valuation_buttons_load_and_paginate_actual_history_without_changing_sco
     assert!(html.contains("Gift #123"));
     assert!(html.contains("<table compact>"));
     assert!(html.contains("<th align=\"right\">"));
-    assert!(html.contains("<tr><td>🎁 Collection</td><td align=\"right\">10</td></tr>"));
-    assert!(
+    assert!(html.contains(
+        "<tr><td>🎁 Collection</td><td align=\"right\">10</td><td align=\"right\">1500</td></tr>"
+    ));
+    assert!(html.contains("Stars</th>"));
+    assert!(!html.contains(">GRAM</tg-button>"));
+    assert!(!html.contains(">Stars</tg-button>"));
+    assert_eq!(
         html.matches("<tg-emoji emoji-id=\"123\">🎨</tg-emoji>")
-            .count()
-            >= 2,
-        "attributes and floors share custom icons"
+            .count(),
+        1,
+        "attributes appear once in the table"
     );
     assert!(!html.contains("<td>1</td>"), "sample counts are omitted");
     for removed in ["How calculated", "Currency:", "multiplier", "premium"] {
         assert!(!reply.text.contains(removed));
     }
-    assert!(html.contains("<details><summary>🕘 Recent sales</summary>"));
-    assert!(!html.contains("<details open"));
-    assert!(html.contains("<b>Estimate</b>"));
-    assert!(html.contains("UTC"), "execution times remain meaningful");
-    assert!(reply.text.contains("#124"));
-    assert!(!reply.text.contains("#129"));
+    assert!(!html.contains("<details"));
     assert!(
-        !reply
-            .buttons
-            .iter()
-            .flatten()
-            .any(|button| matches!(button, ReplyButton::Callback { .. })),
-        "history controls stay inside disclosure"
+        !reply.text.contains("Recent sales"),
+        "valuation starts without a history read"
     );
-    let id = history_callback(html, "More sales");
-    let next = commands.view(id).await;
+    assert!(html.contains("type=\"disabled\" style=\"primary\">Floors</tg-button>"));
+    let sales_id = callback(html, "Sales");
+    let (sales, duplicate) = tokio::join!(commands.view(sales_id), commands.view(sales_id));
+    let sales_html = sales.rich_html.as_ref().unwrap();
+    assert_eq!(
+        sales.rich_html, duplicate.rich_html,
+        "duplicate clicks reuse one rendered result"
+    );
+    assert!(
+        !sales_html.contains("<th align=\"left\">Attribute</th>"),
+        "sales replace the floor table"
+    );
+    assert!(
+        !sales_html.contains("<details"),
+        "there is no disclosure to collapse on navigation"
+    );
+    assert!(sales_html.contains("UTC"));
+    assert_eq!(
+        sales_html.matches("UTC").count(),
+        1,
+        "timezone appears once"
+    );
+    assert!(sales_html.contains("<th>Date</th>"));
+    assert!(sales_html.contains("<th>Market</th>"));
+    assert!(sales_html.contains("<th align=\"right\">Price <tg-emoji"));
+    assert!(sales_html.contains("</tg-emoji> GRAM</th>"));
+    assert!(sales_html.contains("30 days · UTC"));
+    assert!(!sales_html.contains("This gift"));
+    assert!(!sales_html.contains("history may be incomplete"));
+    assert!(sales_html.contains("<b><a href=\"https://t.me/nft/Gift-123\">#123</a></b>"));
+    assert!(sales_html.contains("https://example.com/sale?gift=123&amp;venue=v"));
+    // Real typed ordering keys stay opaque to preview rendering. Captures are filtered,
+    // sorted and bounded using the same period and selected traits as live reads.
+    let source_view = commands.views.get(sales_id).unwrap();
+    let query = source_view
+        .state
+        .sales
+        .query(source_view.report.gift().unwrap(), "GRAM".into())
+        .unwrap();
+    let live = commands
+        .market
+        .query_orders(query.clone())
+        .await
+        .unwrap()
+        .result;
+    let mut captured = live.data.clone();
+    captured.reverse();
+    for time in [
+        query
+            .period
+            .as_ref()
+            .unwrap()
+            .from
+            .unwrap()
+            .checked_sub(jiff::SignedDuration::from_secs(1))
+            .unwrap(),
+        query.period.as_ref().unwrap().until.unwrap(),
+    ] {
+        let mut row = live.data[0].clone();
+        let mut draft = row.order.into_data();
+        draft.executed_at = Some(time);
+        draft.observed_at = time;
+        row.order = GiftOrder::try_from(draft).unwrap();
+        captured.push(row);
+    }
+    captured.push(live.data[0].clone());
+    let preview =
+        history::captured_page(&source_view.report, &source_view.state.sales, captured).unwrap();
+    assert_eq!(preview.data.len(), 5);
+    assert!(
+        preview
+            .data
+            .windows(2)
+            .all(|rows| rows[0].order.executed_at >= rows[1].order.executed_at)
+    );
+    assert!(preview.data.iter().all(|row| row.order.executed_at
+        >= query.period.as_ref().unwrap().from
+        && row.order.executed_at < query.period.as_ref().unwrap().until));
+
+    assert!(sales.text.contains("#124"));
+    assert!(!sales.text.contains("#129"));
+    assert!(sales_html.contains("type=\"disabled\">←</tg-button>"));
+    assert_eq!(sales.artwork, reply.artwork);
+    let next_id = callback(sales_html, "→");
+    let next = commands.view(next_id).await;
     assert!(next.text.contains("#129"));
     assert!(!next.text.contains("#124"));
     let next_html = next.rich_html.as_ref().unwrap();
-    assert!(next_html.contains("<b>Estimate</b>"));
-    assert!(next_html.contains("<tg-emoji emoji-id=\"123\">🎨</tg-emoji>"));
-    assert!(next_html.contains("<details><summary>🕘 Recent sales</summary>"));
-    assert!(!next_html.contains(">More sales</tg-button>"));
-    let scope = history_callback(next_html, "Collection");
-    let scoped = commands.view(scope).await;
+    assert!(next_html.contains(">2</tg-button>"));
+    assert!(next_html.contains("type=\"disabled\">→</tg-button>"));
+    let previous_id = callback(next_html, "←");
+    let back = commands.view(previous_id).await;
+    assert!(back.text.contains("#124"));
+    assert_eq!(
+        commands.view(next_id).await.rich_html,
+        next.rich_html,
+        "repeated Next does not advance twice"
+    );
+    let overview = commands.view(callback(next_html, "Floors")).await;
+    let overview_html = overview.rich_html.as_ref().unwrap();
+    assert!(overview_html.contains("<th align=\"left\">Attribute</th>"));
+    assert!(!overview.text.contains("Recent sales"));
+    let returned = commands.view(callback(overview_html, "Sales")).await;
+    assert!(
+        returned
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .contains(">2</tg-button>"),
+        "tabs preserve the visited sales page"
+    );
+    let scoped = commands.view(callback(next_html, "Collection")).await;
+    assert!(
+        scoped
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .contains(">1</tg-button>")
+    );
     assert!(scoped.text.contains("#124"));
-    assert!(scoped.text.contains("Estimate:"));
+    let refreshed = commands.view(callback(next_html, "↻")).await;
+    assert!(
+        refreshed
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .contains(">2</tg-button>")
+    );
+    assert!(refreshed.text.contains("#129"));
     task.shutdown().await.unwrap();
     let stop = tokio_util::sync::CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();
-    let fixture = view();
-    let retry = commands
-        .history(
-            fixture.clone(),
-            history::HistoryRequest::initial(&fixture).unwrap(),
-        )
+    // Previously visited pages and quote columns still work after their services stop.
+    let cached_back = commands
+        .view(callback(refreshed.rich_html.as_ref().unwrap(), "←"))
         .await;
-    let html = retry.rich_html.unwrap();
-    assert!(html.contains("<b>Estimate</b>"));
-    assert!(html.contains("<details><summary>🕘 Recent sales</summary>"));
-    assert!(html.contains(">Retry sales</tg-button>"));
+    assert!(cached_back.text.contains("#124"));
+    let cached_valuation = commands
+        .view(callback(cached_back.rich_html.as_ref().unwrap(), "Floors"))
+        .await;
+    assert!(
+        cached_valuation
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .contains("<th align=\"left\">Attribute</th>")
+    );
+    let cached_sales = commands
+        .view(callback(
+            cached_valuation.rich_html.as_ref().unwrap(),
+            "Sales",
+        ))
+        .await;
+    assert!(cached_sales.text.contains("#124"));
+    assert!(
+        !cached_sales
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .contains("Retry sales")
+    );
+    let failed_refresh = commands
+        .view(callback(refreshed.rich_html.as_ref().unwrap(), "↻"))
+        .await;
+    let failed_html = failed_refresh.rich_html.as_ref().unwrap();
+    assert!(!failed_html.contains("Retry valuation"));
+    assert_eq!(failed_html.matches(">↻</tg-button>").count(), 1);
+    assert!(failed_refresh.text.contains("unavailable"));
+    assert!(failed_html.contains(">2</tg-button>"));
+    assert!(
+        failed_refresh.text.contains("#129"),
+        "refresh failure retains report and page"
+    );
+    let retry_refresh = commands.view(callback(failed_html, "↻")).await;
+    assert!(retry_refresh.text.contains("unavailable"));
+    assert!(retry_refresh.text.contains("#129"));
+    let missing = commands
+        .view(callback(cached_back.rich_html.as_ref().unwrap(), "Model"))
+        .await;
+    let missing_html = missing.rich_html.as_ref().unwrap();
+    assert!(missing_html.contains("Retry sales"));
+    assert!(missing_html.contains("<b>Estimate</b>"));
+    assert!(missing_html.contains("type=\"disabled\" style=\"primary\">Sales</tg-button>"));
+    let retry_sales = commands.view(callback(missing_html, "Retry sales")).await;
+    assert!(
+        retry_sales
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .contains("Retry sales")
+    );
     reads.shutdown().await;
 }
 
@@ -594,16 +786,31 @@ async fn send_live_rich_preview_to_authorized_recipient() {
         &std::fs::read(std::env::var("MARKET_TEST_VALUATION").unwrap()).unwrap(),
     )
     .unwrap();
-    let floors: market_valuation::ValuationReport = serde_json::from_slice(
-        &std::fs::read(std::env::var("MARKET_TEST_FLOORS").unwrap()).unwrap(),
-    )
-    .unwrap();
-    let floors = floors.results.into_iter().find_map(|v| match v {
-        market_valuation::StrategyOutcome::Value(
-            market_valuation::StrategyValuation::CatalogFloor(value),
-        ) => Some(value),
-        _ => None,
-    });
+    let mut floors = report::FloorQuotes::default();
+    for path in [
+        std::env::var("MARKET_TEST_FLOORS").ok(),
+        std::env::var("MARKET_TEST_STARS_FLOORS").ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let captured: market_valuation::ValuationReport =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let values = captured
+            .results
+            .into_iter()
+            .find_map(|result| match result {
+                market_valuation::StrategyOutcome::Value(
+                    market_valuation::StrategyValuation::CatalogFloor(value),
+                ) => Some(value),
+                _ => None,
+            });
+        match captured.currency_id.as_str() {
+            "GRAM" => floors.gram = values,
+            "XTR" => floors.stars = values,
+            _ => panic!("preview floor currency is unsupported"),
+        }
+    }
     let slug = value.target.slug().unwrap().clone();
     // Optional public metadata captured by the read-only pack inspection test.
     // Preview mappings are explicit; never infer custom emoji validity from media IDs.
@@ -686,24 +893,18 @@ async fn send_live_rich_preview_to_authorized_recipient() {
                 order,
             });
         }
-        let request = history::HistoryRequest::initial(&report).unwrap();
-        let views = interactions::Views::default();
-        history::render(
-            &views,
-            report,
-            request,
-            Some(market_actors::OrderResult {
-                data: rows,
-                range: market_actors::KeyRange {
-                    start: None,
-                    end: None,
-                },
-            }),
-        )
-        .bounded()
+        let mut current = views::View::initial(report).unwrap();
+        current.state.tab = views::Tab::Sales;
+        let actions = interactions::Views::default();
+        let result = history::captured_page(&current.report, &current.state.sales, rows).unwrap();
+        views::render(&actions, &current, Some(&result), None).bounded()
     } else {
-        report.render().bounded()
+        let current = views::View::initial(report).unwrap();
+        views::render(&interactions::Views::default(), &current, None, None).bounded()
     };
+    // This one-shot sender does not run a callback worker or retain action state.
+    // Keep native layouts visible without sending buttons that would immediately expire.
+    let reply = static_preview(reply);
     if let Ok(path) = std::env::var("MARKET_TEST_COVER_OUTPUT") {
         let started = std::time::Instant::now();
         let asset = cache
@@ -753,5 +954,126 @@ async fn send_live_rich_preview_to_authorized_recipient() {
         } else {
             "Sent to the authorized recipient:"
         }
+    );
+}
+
+fn static_preview(mut reply: Reply) -> Reply {
+    if let Some(html) = reply.rich_html.take() {
+        let mut remaining = html.as_str();
+        let mut output = String::new();
+        while let Some(index) = remaining.find("<tg-button type=\"callback_data\"") {
+            output.push_str(&remaining[..index]);
+            let start = &remaining[index..];
+            let end = start.find('>').expect("rendered button tag");
+            output.push_str("<tg-button type=\"disabled\">");
+            remaining = &start[end + 1..];
+        }
+        output.push_str(remaining);
+        reply.rich_html = Some(output);
+    }
+    reply
+}
+#[test]
+fn one_shot_previews_preserve_tab_layout_without_expiring_callbacks() {
+    let current = views::View::initial(view()).unwrap();
+    let initial = views::render(&interactions::Views::default(), &current, None, None);
+    let preview = static_preview(initial.clone());
+    let html = preview.rich_html.unwrap();
+    assert!(!html.contains("callback_data"));
+    assert!(!html.contains("data=\"v:"));
+    assert!(html.contains("style=\"primary\">Floors</tg-button>"));
+    assert!(html.contains(">Sales</tg-button>"));
+    assert!(html.contains(">↻</tg-button>"));
+    assert_eq!(html.matches(">↻</tg-button>").count(), 1);
+    let refresh = html.find(">↻</tg-button>").unwrap();
+    let price = html.find("<h1>17.88 ").unwrap();
+    let tabs = html.find(">Floors</tg-button>").unwrap();
+    assert!(refresh < price && price < tabs);
+    for removed in ["Ask floors", "Refresh estimate", "Valuation</tg-button>"] {
+        assert!(!html.contains(removed), "{removed}");
+    }
+    assert!(html.contains("<th align=\"left\">Attribute</th>"));
+    assert!(preview.text.contains("Estimate: 17.88 GRAM"));
+    assert!(preview.text.contains("Floors · GRAM | Stars"));
+    assert_eq!(preview.text, initial.text);
+}
+
+#[test]
+fn attribute_table_keeps_native_quote_columns_names_and_missing_values_separate() {
+    use market_valuation::{
+        CatalogFloorValuation, CollectionFloors, FloorValuation, PairFloor, TraitFloors,
+        ValuationMetric,
+    };
+    let quotes = |price: &str| {
+        let floor = FloorValuation {
+            price: ValuationMetric::Value {
+                value: Amount::new(price).unwrap(),
+            },
+            count: 1,
+        };
+        Arc::new(CatalogFloorValuation {
+            collections: vec![CollectionFloors {
+                collection_id: "collection".into(),
+                evaluated_at: jiff::Timestamp::now(),
+                floor: floor.clone(),
+                traits: Some(TraitFloors {
+                    models: [("m".into(), floor.clone())].into(),
+                    backdrops: [("b".into(), floor.clone())].into(),
+                    patterns: [("p".into(), floor.clone())].into(),
+                    pair: Some(PairFloor {
+                        model_id: "m".into(),
+                        backdrop_id: "b".into(),
+                        floor,
+                    }),
+                }),
+            }],
+        })
+    };
+    let mut current = view();
+    let report = Arc::get_mut(&mut current).unwrap();
+    let catalog = report.catalog.as_mut().unwrap();
+    catalog.backdrops = Arc::new(vec![GiftBackdrop {
+        id: "b".into(),
+        name: "Green <&>".into(),
+        palette: None,
+        rarity: None,
+    }]);
+    catalog.patterns = Arc::new(vec![GiftPattern {
+        id: "p".into(),
+        name: "Sun & Moon".into(),
+        media: None,
+        rarity: None,
+    }]);
+    report.floors = report::FloorQuotes {
+        gram: Some(quotes("10.346")),
+        stars: Some(quotes("1500.00")),
+    };
+    let reply = report.render();
+    let html = reply.rich_html.unwrap();
+    let header = html.split("<table").next().unwrap();
+    assert!(!header.contains("&lt;b&gt;Model&lt;/b&gt;"));
+    assert!(!header.contains("Green"));
+    assert!(!header.contains("Sun &amp; Moon"));
+    assert!(html.contains("<td>🧸 &lt;b&gt;Model&lt;/b&gt;</td><td align=\"right\">10.35</td><td align=\"right\">1500</td>"));
+    assert!(html.contains("Green &lt;&amp;&gt;"));
+    assert!(html.contains("Sun &amp; Moon"));
+    assert!(html.contains("Stars</th>"));
+    assert!(reply.text.contains("10.35 GRAM · 1500 Stars"));
+    assert!(!html.contains(">GRAM</tg-button>"));
+    assert!(!html.contains(">Stars</tg-button>"));
+    report.floors.gram = None;
+    let html = report.render().rich_html.unwrap();
+    assert!(
+        html.contains("<td align=\"right\">—</td><td align=\"right\">1500</td>"),
+        "a missing native quote is not converted or copied"
+    );
+    report.floors.stars = None;
+    assert!(
+        report
+            .render()
+            .rich_html
+            .unwrap()
+            .contains("Sun &amp; Moon"),
+        "attributes remain visible when floor services are unavailable"
     );
 }

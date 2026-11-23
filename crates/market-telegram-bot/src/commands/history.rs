@@ -1,11 +1,13 @@
-//! Bounded comparable executions in a collapsed section of the gift report. This is an order read, not another valuation strategy.
-use super::*;
+//! On-demand comparable sales with fixed coverage and bounded, coalesced page reuse.
 use super::{
-    interactions::View,
     report::{Report, amount, escape},
+    *,
 };
 use market_gifts::*;
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
+
+pub(super) const MAX_PAGES: usize = 10;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Scope {
     Pair,
@@ -14,11 +16,12 @@ pub(super) enum Scope {
     Collection,
 }
 impl Scope {
+    pub const ALL: [Self; 4] = [Self::Pair, Self::Model, Self::Backdrop, Self::Collection];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Pair => "Same model + backdrop",
-            Self::Model => "Same model",
-            Self::Backdrop => "Same backdrop",
+            Self::Pair => "Model + backdrop",
+            Self::Model => "Model",
+            Self::Backdrop => "Backdrop",
             Self::Collection => "Collection",
         }
     }
@@ -31,37 +34,31 @@ impl Scope {
         }
     }
 }
-#[derive(Clone)]
-pub(super) struct HistoryRequest {
+/// Previous page starts belong to this view, not to the report or shared cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SalesState {
     pub scope: Scope,
-    pub start: Option<OrderKey>,
     pub until: jiff::Timestamp,
-    pub page: u8,
+    pub starts: Vec<OrderKey>,
 }
-impl HistoryRequest {
+impl SalesState {
     pub fn initial(report: &Report) -> Option<Self> {
         let gift = report.gift()?;
-        let scope = [
-            Scope::Pair,
-            Scope::Model,
-            Scope::Backdrop,
-            Scope::Collection,
-        ]
-        .into_iter()
-        .find(|scope| scope.supported(gift))?;
         Some(Self {
-            scope,
-            start: None,
+            scope: Scope::ALL.into_iter().find(|scope| scope.supported(gift))?,
             until: jiff::Timestamp::now(),
-            page: 1,
+            starts: Vec::new(),
         })
+    }
+    pub fn page(&self) -> usize {
+        self.starts.len() + 1
     }
     pub fn query(
         &self,
         gift: &CollectibleGift,
         currency: CurrencyId,
     ) -> Result<GiftOrderQuery, BotError> {
-        if !self.scope.supported(gift) || self.page > 10 {
+        if !self.scope.supported(gift) || self.page() > MAX_PAGES {
             return Err(BotError::InvalidResponse);
         }
         let mut filters = GiftFilters::new(gift.collection_id.clone(), currency);
@@ -83,181 +80,577 @@ impl HistoryRequest {
             ),
             until: Some(self.until),
         });
-        query.range.start = self.start.clone();
+        query.range.start = self.starts.last().cloned();
         Ok(query)
     }
 }
-impl MarketCommands {
-    pub(super) async fn recent_sales(&self, report: Arc<Report>) -> Reply {
-        let Some(request) = HistoryRequest::initial(&report) else {
-            return report.render();
+#[derive(Default)]
+pub(super) struct Pages(tokio::sync::Mutex<VecDeque<(GiftOrderQuery, PageSlot)>>);
+type PageSlot = Arc<tokio::sync::OnceCell<Arc<market_actors::OrderResult>>>;
+impl Pages {
+    pub async fn read<F, Fut>(
+        &self,
+        query: GiftOrderQuery,
+        load: F,
+    ) -> Option<Arc<market_actors::OrderResult>>
+    where
+        F: FnOnce(GiftOrderQuery) -> Fut,
+        Fut: std::future::Future<Output = Option<market_actors::OrderResult>>,
+    {
+        let slot = {
+            let mut entries = self.0.lock().await;
+            let slot = entries
+                .iter()
+                .position(|(key, _)| key == &query)
+                .and_then(|index| entries.remove(index))
+                .map(|(_, slot)| slot)
+                .unwrap_or_default();
+            entries.push_back((query.clone(), slot.clone()));
+            while entries.len() > 32 {
+                entries.pop_front();
+            }
+            slot
         };
-        self.history(report, request).await
-    }
-    pub(super) async fn history(&self, report: Arc<Report>, request: HistoryRequest) -> Reply {
-        let Some(gift) = report.gift() else {
-            return Reply::text("Gift identity is unavailable.");
-        };
-        let query = match request.query(gift, report.query.currency_id.clone()) {
-            Ok(query) => query,
-            Err(_) => return Reply::text("Request a fresh valuation to browse sales."),
-        };
-        // History is optional decoration; a slow read must not suppress the estimate.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            self.market.query_orders(query),
-        )
-        .await;
-        render(
-            &self.views,
-            report,
-            request,
-            result.ok().and_then(Result::ok).map(|read| read.result),
-        )
+        // Only identical reads wait for each other. Failure/cancellation leaves the slot retryable.
+        slot.get_or_try_init(|| async { load(query).await.map(Arc::new).ok_or(()) })
+            .await
+            .ok()
+            .cloned()
     }
 }
-impl super::interactions::Views {
-    fn history_button(&self, report: Arc<Report>, history: HistoryRequest, label: &str) -> String {
-        let data = self.insert(View { report, history });
-        let data = std::str::from_utf8(&data).expect("ASCII callback token");
-        format!(
-            "<tg-button type=\"callback_data\" style=\"link\" data=\"{}\">{}</tg-button>",
-            escape(data),
-            escape(label)
-        )
+/// SalesState supplies only collection/currency, one model/backdrop and a fixed period.
+/// Keep captured previews and defensive rendering consistent with that live query.
+fn matches_sale(query: &GiftOrderQuery, order: &GiftOrder) -> bool {
+    let Some(time) = order.executed_at else {
+        return false;
+    };
+    if order.kind != GiftOrderKind::Executed
+        || order.book.collection_id != query.filters.collection_id
+        || order.book.currency_id != query.filters.currency_id
+        || query.period.as_ref().is_none_or(|period| {
+            period.from.is_none_or(|from| time < from)
+                || period.until.is_none_or(|until| time >= until)
+        })
+    {
+        return false;
     }
+    let (model, backdrop) = match &order.target {
+        GiftTarget::Gift { gift } => (gift.traits.model.as_ref(), gift.traits.backdrop.as_ref()),
+        // Constraints with several accepted values cannot establish the executed gift's traits.
+        GiftTarget::Criteria { criteria } => (
+            (criteria.models.len() == 1).then(|| &criteria.models[0]),
+            (criteria.backdrops.len() == 1).then(|| &criteria.backdrops[0]),
+        ),
+        GiftTarget::Unsupported { .. } => return false,
+    };
+    query
+        .filters
+        .models
+        .first()
+        .is_none_or(|wanted| model == Some(wanted))
+        && query
+            .filters
+            .backdrops
+            .first()
+            .is_none_or(|wanted| backdrop == Some(wanted))
+}
+fn gift_number(order: &GiftOrder) -> Option<GiftNumber> {
+    match &order.target {
+        GiftTarget::Gift { gift } => gift.number,
+        GiftTarget::Criteria { criteria } if order.quantity == 1 => criteria
+            .number
+            .as_ref()
+            .and_then(|range| range.min.filter(|number| Some(*number) == range.max)),
+        _ => None,
+    }
+}
+fn venue_label(id: &str) -> String {
+    match id.to_ascii_lowercase().as_str() {
+        "mrkt" => "MRKT".into(),
+        "tonnel" => "Tonnel".into(),
+        "portals" => "Portals".into(),
+        "getgems" => "Getgems".into(),
+        "fragment" => "Fragment".into(),
+        "telegram" => "Telegram".into(),
+        _ => {
+            let mut label = id.chars().take(24).collect::<String>();
+            if id.chars().count() > 24 {
+                label.push('…');
+            }
+            label
+        }
+    }
+}
+fn short_date(time: jiff::Timestamp) -> String {
+    time.strftime("%d %b %H:%M").to_string()
+}
+#[cfg(test)]
+pub(super) fn captured_page(
+    report: &Report,
+    state: &SalesState,
+    mut rows: Vec<market_actors::OrderedEntry>,
+) -> Result<market_actors::OrderResult, BotError> {
+    let query = state.query(
+        report.gift().ok_or(BotError::InvalidResponse)?,
+        report.query.currency_id.clone(),
+    )?;
+    rows.retain(|row| matches_sale(&query, &row.order));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.order.executed_at));
+    rows.truncate(query.limit as usize);
+    Ok(market_actors::OrderResult {
+        data: rows,
+        range: market_actors::KeyRange {
+            start: None,
+            end: None,
+        },
+    })
+}
+fn render_sale(report: &Report, order: &GiftOrder, html: &mut String, text: &mut String) -> bool {
+    let time = order.executed_at.expect("checked execution time");
+    let number = gift_number(order);
+    let exact = number == Some(report.query.gift.number());
+    let label = number
+        .map(|number| format!("#{number}"))
+        .unwrap_or_else(|| "Gift".into());
+    let linked = number
+        .map(|number| {
+            format!(
+                "<a href=\"https://t.me/nft/{}-{number}\">{}</a>",
+                report.query.gift.collection(),
+                escape(&label)
+            )
+        })
+        .unwrap_or_else(|| escape(&label));
+    let price = amount(&order.price);
+    let when = short_date(time);
+    let (gift_html, price_html) = if exact {
+        (
+            format!(
+                "{} <b>{linked}</b>",
+                report.icons.html(crate::ReportIcon::CurrentGift)
+            ),
+            format!("<b>{price}</b>"),
+        )
+    } else {
+        (linked, price.clone())
+    };
+    let venue = venue_label(order.book.venue_id.as_str());
+    let market = order.market_url.as_deref().and_then(market_link);
+    let venue_html = market
+        .as_ref()
+        .map(|url| {
+            format!(
+                "<a href=\"{}\">{} {}</a>",
+                escape(url),
+                escape(&venue),
+                report.icons.html(crate::ReportIcon::MarketLink)
+            )
+        })
+        .unwrap_or_else(|| escape(&venue));
+    html.push_str(&format!("<tr><td>{gift_html}</td><td align=\"right\">{price_html}</td><td>{}</td><td>{venue_html}</td></tr>",when));
+    text.push_str(&format!(
+        "{}{label} · {price} {} · {} · {venue}{}\n",
+        if exact {
+            format!("{} ", report.icons.text(crate::ReportIcon::CurrentGift))
+        } else {
+            String::new()
+        },
+        order.book.currency_id,
+        when,
+        market.map(|url| format!(" · {url}")).unwrap_or_default()
+    ));
+    exact
 }
 pub(super) fn render(
-    views: &super::interactions::Views,
-    report: Arc<Report>,
-    request: HistoryRequest,
-    result: Option<market_actors::OrderResult>,
-) -> Reply {
-    let gift = report.gift().expect("resolved gift report");
-    let mut reply = report.render();
-    let mut html = reply.rich_html.take().unwrap_or_default();
-    html.push_str(&format!(
-        "<details><summary>{} Recent sales</summary>",
-        report.icons.html(crate::ReportIcon::History)
-    ));
-    let result = match result {
-        Some(result) => result,
-        _ => {
-            html.push_str("<p>Sales are temporarily unavailable.</p>");
-            html.push_str(&views.history_button(report, request, "Retry sales"));
-            html.push_str("</details>");
-            reply.rich_html = Some(html);
-            reply
-                .text
-                .push_str("\n\nRecent sales are temporarily unavailable.");
-            return reply;
-        }
+    report: &Report,
+    state: &SalesState,
+    result: &market_actors::OrderResult,
+    html: &mut String,
+    text: &mut String,
+) {
+    let Some(query) = report
+        .gift()
+        .and_then(|gift| state.query(gift, report.query.currency_id.clone()).ok())
+    else {
+        return;
     };
-    html.push_str(&format!(
-        "<p>{} · last 30 days · page {}</p>",
-        escape(request.scope.label()),
-        request.page
-    ));
-    let mut text = format!(
-        "{}\n\nRecent sales · {} · last 30 days\n",
-        reply.text,
-        request.scope.label()
+    let period = query.period.as_ref().expect("checked sales period");
+    let from = period.from.unwrap();
+    let until = period.until.unwrap();
+    let same_year = from.strftime("%Y").to_string() == until.strftime("%Y").to_string();
+    let coverage = format!(
+        "{} – {} · UTC",
+        from.strftime(if same_year { "%d %b" } else { "%d %b %Y" }),
+        until.strftime("%d %b %Y")
     );
-    if result.data.is_empty() {
+    html.push_str("<p>30 days · UTC</p>");
+    text.push_str(&format!(
+        "\n\nRecent sales · {} · page {}\n{coverage}\n",
+        state.scope.label(),
+        state.page()
+    ));
+    let mut rows = result
+        .data
+        .iter()
+        .filter(|row| matches_sale(&query, &row.order))
+        .take(query.limit as usize)
+        .peekable();
+    if rows.peek().is_none() {
         html.push_str("<p>No observed executions in this period.</p>");
         text.push_str("No observed executions in this period.\n");
     } else {
-        html.push_str("<table compact><tr><th>Gift</th><th align=\"right\">Paid</th><th>Executed</th><th>Venue</th></tr>");
-        for row in &result.data {
-            let order = &row.order;
-            let Some(time) = order.executed_at else {
-                continue;
-            };
-            let number = match &order.target {
-                GiftTarget::Gift { gift } => gift.number,
-                GiftTarget::Criteria { criteria } => criteria
-                    .number
-                    .as_ref()
-                    .and_then(|range| range.min.filter(|v| Some(*v) == range.max)),
-                _ => None,
-            };
-            let label = number
-                .map(|n| format!("#{n}"))
-                .unwrap_or_else(|| "Gift".into());
-            let link = number.and_then(|number| {
-                report
-                    .catalog
-                    .as_ref()
-                    .and_then(|catalog| catalog.collection.slug.as_ref())
-                    .map(|slug| format!("https://t.me/nft/{slug}-{number}"))
-            });
-            let label_html = link
-                .map(|url| format!("<a href=\"{}\">{}</a>", escape(&url), escape(&label)))
-                .unwrap_or_else(|| escape(&label));
-            html.push_str(&format!(
-                "<tr><td>{label_html}</td><td align=\"right\">{} {}</td><td>{}</td><td>{}</td></tr>",
-                escape(&amount(&order.price)),
-                escape(order.book.currency_id.as_str()),
-                time.strftime("%d %b %H:%M UTC"),
-                escape(order.book.venue_id.as_str())
-            ));
-            text.push_str(&format!(
-                "{label} · {} {} · {} · {}\n",
-                amount(&order.price),
-                order.book.currency_id,
-                time.strftime("%d %b %H:%M UTC"),
-                order.book.venue_id
-            ));
+        html.push_str(&format!("<table compact><tr><th>Gift</th><th align=\"right\">Price {}</th><th>Date</th><th>Market</th></tr>",report.icons.currency_html(report.query.currency_id.as_str())));
+        for row in rows {
+            render_sale(report, &row.order, html, text);
         }
         html.push_str("</table>");
     }
-    html.push_str("<p><i>Observed executions only. Market history may be incomplete.</i></p>");
-    let scopes = [
-        Scope::Pair,
-        Scope::Model,
-        Scope::Backdrop,
-        Scope::Collection,
-    ]
-    .into_iter()
-    .filter(|scope| scope.supported(gift))
-    .collect::<Vec<_>>();
-    for row in scopes.chunks(2) {
-        html.push_str("<tg-button-row>");
-        for scope in row {
-            let label = format!(
-                "{}{}",
-                if *scope == request.scope { "✓ " } else { "" },
-                scope.label()
-            );
-            html.push_str(&views.history_button(
-                report.clone(),
-                HistoryRequest {
-                    scope: *scope,
-                    start: None,
-                    until: request.until,
-                    page: 1,
-                },
-                &label,
-            ));
-        }
-        html.push_str("</tg-button-row>");
-    }
-    if let Some(next) = result.range.end
-        && request.page < 10
-        && let Ok(start) = next.encode().try_into()
-    {
-        html.push_str(&views.history_button(
-            report,
-            HistoryRequest {
-                start: Some(start),
-                page: request.page + 1,
-                ..request
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::Cell, time::Duration};
+    fn empty_page() -> market_actors::OrderResult {
+        market_actors::OrderResult {
+            data: vec![],
+            range: market_actors::KeyRange {
+                start: None,
+                end: None,
             },
-            "More sales",
+        }
+    }
+    fn sale(time: jiff::Timestamp) -> GiftOrder {
+        let report = super::super::tests::view();
+        GiftOrder::try_from(GiftOrderData {
+            id: "sale".into(),
+            book: GiftBook {
+                venue_id: "tonnel".into(),
+                collection_id: "collection".into(),
+                currency_id: "GRAM".into(),
+            },
+            kind: GiftOrderKind::Executed,
+            target: GiftTarget::Gift {
+                gift: report.gift().unwrap().clone(),
+            },
+            price: Amount::new("1234.5600").unwrap(),
+            quantity: 1,
+            observed_at: time,
+            executed_at: Some(time),
+            expires_at: None,
+            market_url: Some("https://example.com/sale?gift=123&venue=tonnel".into()),
+        })
+        .unwrap()
+    }
+    #[test]
+    fn sales_validation_matches_half_open_period_currency_collection_and_explicit_traits() {
+        let report = super::super::tests::view();
+        let until = "2026-11-23T12:00:00Z".parse::<jiff::Timestamp>().unwrap();
+        let state = SalesState {
+            scope: Scope::Pair,
+            until,
+            starts: vec![],
+        };
+        let query = state.query(report.gift().unwrap(), "GRAM".into()).unwrap();
+        let from = query.period.as_ref().unwrap().from.unwrap();
+        assert!(matches_sale(&query, &sale(from)));
+        assert!(!matches_sale(
+            &query,
+            &sale(
+                from.checked_sub(jiff::SignedDuration::from_millis(1))
+                    .unwrap()
+            )
+        ));
+        assert!(!matches_sale(&query, &sale(until)));
+        let time = until
+            .checked_sub(jiff::SignedDuration::from_secs(1))
+            .unwrap();
+        assert!(matches_sale(&query, &sale(time)));
+        for changed in [
+            "currency",
+            "collection",
+            "model",
+            "backdrop",
+            "kind",
+            "ambiguous",
+        ] {
+            let mut draft = sale(time).into_data();
+            match changed {
+                "currency" => draft.book.currency_id = "XTR".into(),
+                "collection" => {
+                    draft.book.collection_id = "another".into();
+                    let GiftTarget::Gift { gift } = &mut draft.target else {
+                        panic!()
+                    };
+                    gift.collection_id = "another".into();
+                }
+                "model" => {
+                    let GiftTarget::Gift { gift } = &mut draft.target else {
+                        panic!()
+                    };
+                    gift.traits.model = Some("different".into());
+                }
+                "backdrop" => {
+                    let GiftTarget::Gift { gift } = &mut draft.target else {
+                        panic!()
+                    };
+                    gift.traits.backdrop = None;
+                }
+                "kind" => {
+                    draft.kind = GiftOrderKind::Ask;
+                    draft.executed_at = None;
+                }
+                "ambiguous" => {
+                    draft.target = GiftTarget::Criteria {
+                        criteria: GiftCriteria {
+                            models: vec!["m".into(), "different".into()],
+                            backdrops: vec!["b".into()],
+                            ..Default::default()
+                        },
+                    }
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                !matches_sale(&query, &GiftOrder::try_from(draft).unwrap()),
+                "{changed}"
+            );
+        }
+        let mut collection = state.clone();
+        collection.scope = Scope::Collection;
+        let mut draft = sale(time).into_data();
+        draft.target = GiftTarget::Criteria {
+            criteria: GiftCriteria::default(),
+        };
+        assert!(matches_sale(
+            &collection
+                .query(report.gift().unwrap(), "GRAM".into())
+                .unwrap(),
+            &GiftOrder::try_from(draft).unwrap()
         ));
     }
-    html.push_str("</details>");
-    reply.rich_html = Some(html);
-    reply.text = text;
-    reply
+    #[test]
+    fn sales_rows_link_exact_gifts_and_safe_venues_with_compact_native_amounts() {
+        let report = super::super::tests::view();
+        let time = "2026-11-23T12:34:56Z".parse().unwrap();
+        let mut html = String::new();
+        let mut text = String::new();
+        assert!(render_sale(&report, &sale(time), &mut html, &mut text));
+        assert!(html.contains("● <b><a href=\"https://t.me/nft/Gift-123\">#123</a></b>"));
+        assert!(html.contains("<td align=\"right\"><b>1234.56</b></td>"));
+        assert!(html.contains("23 Nov 12:34"));
+        assert!(
+            !html.contains("UTC"),
+            "UTC belongs to the table's period caption"
+        );
+        assert!(html.contains("https://example.com/sale?gift=123&amp;venue=tonnel"));
+        assert!(html.contains("Tonnel ↗</a>"));
+        assert!(text.contains("1234.56 GRAM"));
+        for url in [
+            "javascript:alert(1)",
+            "https://user:private@example.com/sale",
+            "not-a-url",
+            "https://example.com/a\nb",
+        ] {
+            let mut draft = sale(time).into_data();
+            draft.market_url = Some(url.into());
+            let GiftTarget::Gift { gift } = &mut draft.target else {
+                panic!()
+            };
+            gift.number = Some(GiftNumber::new(124).unwrap());
+            let mut html = String::new();
+            let mut text = String::new();
+            assert!(!render_sale(
+                &report,
+                &GiftOrder::try_from(draft).unwrap(),
+                &mut html,
+                &mut text
+            ));
+            assert!(!html.contains("Tonnel ↗"));
+            assert!(!html.contains("<b>"));
+            assert!(html.contains("https://t.me/nft/Gift-124"));
+            assert!(!text.contains("private"));
+        }
+        assert_eq!(venue_label("MRKT"), "MRKT");
+        assert_eq!(venue_label("PORTALS"), "Portals");
+        assert!(venue_label(&"a".repeat(40)).ends_with('…'));
+    }
+    #[test]
+    fn sales_period_caption_keeps_year_boundaries_and_bulk_criteria_do_not_claim_one_gift() {
+        let report = super::super::tests::view();
+        let until = "2027-01-07T12:00:00Z".parse().unwrap();
+        let state = SalesState {
+            scope: Scope::Collection,
+            until,
+            starts: vec![],
+        };
+        let mut html = String::new();
+        let mut text = String::new();
+        render(&report, &state, &empty_page(), &mut html, &mut text);
+        assert!(text.contains("08 Dec 2026 – 07 Jan 2027 · UTC"));
+        assert!(html.contains("30 days · UTC"));
+        assert!(html.contains("No observed executions"));
+        let mut draft = sale(until).into_data();
+        draft.quantity = 2;
+        draft.target = GiftTarget::Criteria {
+            criteria: GiftCriteria {
+                number: Some(GiftNumberRange {
+                    min: Some(GiftNumber::new(123).unwrap()),
+                    max: Some(GiftNumber::new(123).unwrap()),
+                }),
+                ..Default::default()
+            },
+        };
+        let bulk = GiftOrder::try_from(draft).unwrap();
+        assert_eq!(gift_number(&bulk), None);
+        let mut html = String::new();
+        let mut text = String::new();
+        assert!(!render_sale(&report, &bulk, &mut html, &mut text));
+        assert!(!html.contains("t.me/nft"));
+    }
+    #[tokio::test]
+    async fn visited_pages_coalesce_and_queries_isolate_traits_scope_currency_period_and_boundary()
+    {
+        let pages = Pages::default();
+        let report = super::super::tests::view();
+        let state = SalesState::initial(&report).unwrap();
+        let query = state.query(report.gift().unwrap(), "GRAM".into()).unwrap();
+        let count = Cell::new(0);
+        let load = |_| async {
+            count.set(count.get() + 1);
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            Some(empty_page())
+        };
+        let (a, b) = tokio::join!(
+            pages.read(query.clone(), load),
+            pages.read(query.clone(), load)
+        );
+        assert!(Arc::ptr_eq(&a.unwrap(), &b.unwrap()));
+        assert_eq!(count.get(), 1, "concurrent visits share one read");
+        let mut other = query.clone();
+        other.filters.models.clear();
+        other.filters.backdrops.clear();
+        pages.read(other, load).await.unwrap();
+        let mut other = query.clone();
+        other.filters.currency_id = "XTR".into();
+        pages.read(other, load).await.unwrap();
+        let mut other = query.clone();
+        other.period.as_mut().unwrap().until = Some(
+            state
+                .until
+                .checked_sub(jiff::SignedDuration::from_secs(1))
+                .unwrap(),
+        );
+        pages.read(other, load).await.unwrap();
+        let mut other = query.clone();
+        other.range.start = Some("00".to_owned().try_into().unwrap());
+        pages.read(other, load).await.unwrap();
+        let mut other = query.clone();
+        other.filters.models = vec!["updated-model".into()];
+        pages.read(other, load).await.unwrap();
+        assert_eq!(
+            count.get(),
+            6,
+            "updated resolved traits must not reuse old scope results"
+        );
+        pages
+            .read(query, |_| async {
+                panic!("returning to a visited page must not reread")
+            })
+            .await
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn slow_page_reads_do_not_block_cached_pages_or_other_scopes() {
+        let pages = Pages::default();
+        let report = super::super::tests::view();
+        let state = SalesState::initial(&report).unwrap();
+        let query = state.query(report.gift().unwrap(), "GRAM".into()).unwrap();
+        let cached = pages
+            .read(query.clone(), |_| async { Some(empty_page()) })
+            .await
+            .unwrap();
+        let mut slow_query = query.clone();
+        slow_query.filters.models.clear();
+        let started = tokio::sync::Notify::new();
+        let finished = tokio::sync::Notify::new();
+        let slow = pages.read(slow_query, |_| async {
+            started.notify_one();
+            finished.notified().await;
+            Some(empty_page())
+        });
+        tokio::pin!(slow);
+        tokio::select! {
+            biased;
+            _ = &mut slow => panic!("read must wait until released"),
+            _ = started.notified() => {}
+        }
+        let reused = tokio::time::timeout(
+            Duration::from_secs(1),
+            pages.read(query.clone(), |_| async { panic!("cached page reread") }),
+        )
+        .await
+        .expect("a pending scope must not block a cached page")
+        .unwrap();
+        assert!(Arc::ptr_eq(&cached, &reused));
+        let mut other = query;
+        other.filters.backdrops.clear();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            pages.read(other, |_| async { Some(empty_page()) }),
+        )
+        .await
+        .expect("different scopes must load independently")
+        .unwrap();
+        finished.notify_one();
+        slow.await.unwrap();
+    }
+    #[tokio::test]
+    async fn cancelled_failed_loads_release_the_cache_and_lru_is_bounded() {
+        let pages = Pages::default();
+        let report = super::super::tests::view();
+        let state = SalesState::initial(&report).unwrap();
+        let query = state.query(report.gift().unwrap(), "GRAM".into()).unwrap();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(1),
+                pages.read(query.clone(), |_| std::future::pending())
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            pages
+                .read(query.clone(), |_| async { None })
+                .await
+                .is_none()
+        );
+        pages
+            .read(query.clone(), |_| async { Some(empty_page()) })
+            .await
+            .unwrap();
+        for i in 1..=32 {
+            let mut next = query.clone();
+            next.period.as_mut().unwrap().until = Some(
+                state
+                    .until
+                    .checked_sub(jiff::SignedDuration::from_secs(i))
+                    .unwrap(),
+            );
+            pages
+                .read(next, |_| async { Some(empty_page()) })
+                .await
+                .unwrap();
+        }
+        assert_eq!(pages.0.lock().await.len(), 32);
+        let calls = Cell::new(0);
+        pages
+            .read(query, |_| async {
+                calls.set(calls.get() + 1);
+                Some(empty_page())
+            })
+            .await
+            .unwrap();
+        assert_eq!(calls.get(), 1, "an evicted page can be loaded again");
+    }
 }
