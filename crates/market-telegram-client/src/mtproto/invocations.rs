@@ -99,6 +99,23 @@ impl Executor {
         R: tl::RemoteCall + Send + Sync + 'static,
         R::Return: Send + 'static,
     {
+        self.rpc_call(client, request, group, priority, replay)
+            .await
+            .map_err(CallError::bot)
+    }
+    /// Keep the remote rejection available for route-specific, explicitly rejected fallbacks.
+    pub async fn rpc_call<R>(
+        &self,
+        client: &Client,
+        request: R,
+        group: Group,
+        priority: Priority,
+        replay: Replay,
+    ) -> Result<R::Return, CallError>
+    where
+        R: tl::RemoteCall + Send + Sync + 'static,
+        R::Return: Send + 'static,
+    {
         let request = Arc::new(request);
         let client = client.clone();
         self.run(group, priority, replay, move || {
@@ -107,9 +124,63 @@ impl Executor {
             async move { client.invoke(&*request).await }
         })
         .await
-        .map_err(CallError::bot)
+        .inspect_err(|error| {
+            if let CallError::Remote(InvocationError::Rpc(error)) = error {
+                tracing::warn!(
+                    method = std::any::type_name::<R>(),
+                    rpc_code = error.code,
+                    rpc_name = safe_rpc_name(&error.name),
+                    "Telegram application RPC rejected"
+                );
+            }
+        })
     }
 }
+// Never log arbitrary server descriptions, request bodies, IDs or credential-bearing errors.
+fn safe_rpc_name(name: &str) -> &str {
+    match name {
+        "QUERY_ID_INVALID"
+        | "SEND_MESSAGE_TYPE_INVALID"
+        | "SEND_MESSAGE_MEDIA_INVALID"
+        | "RICH_MESSAGE_INVALID"
+        | "RICH_MESSAGE_PARSE_ERROR"
+        | "RICH_MESSAGE_TOO_LONG"
+        | "MESSAGE_EMPTY"
+        | "MESSAGE_TOO_LONG"
+        | "MESSAGE_NOT_MODIFIED"
+        | "PHOTO_INVALID"
+        | "DOCUMENT_INVALID"
+        | "FILE_REFERENCE_EXPIRED"
+        | "FILE_REFERENCE_INVALID"
+        | "ENTITY_BOUNDS_INVALID"
+        | "ENTITIES_TOO_LONG"
+        | "CUSTOM_EMOJI_INVALID"
+        | "BUTTON_DATA_INVALID"
+        | "BUTTON_TYPE_INVALID"
+        | "BUTTON_URL_INVALID"
+        | "REPLY_MARKUP_INVALID"
+        | "REPLY_MARKUP_TOO_LONG"
+        | "START_PARAM_INVALID"
+        | "ARTICLE_TITLE_EMPTY"
+        | "RESULT_TYPE_INVALID"
+        | "RESULT_ID_INVALID"
+        | "RESULT_ID_DUPLICATE"
+        | "RESULTS_TOO_MUCH"
+        | "NEXT_OFFSET_INVALID"
+        | "BOT_INLINE_DISABLED"
+        | "BOT_RESPONSE_TIMEOUT"
+        | "BOT_DOMAIN_INVALID"
+        | "PREMIUM_ACCOUNT_REQUIRED"
+        | "USER_IS_BLOCKED"
+        | "CHAT_WRITE_FORBIDDEN"
+        | "PEER_ID_INVALID"
+        | "FLOOD_WAIT"
+        | "SLOWMODE_WAIT"
+        | "INTERNAL" => name,
+        _ => "UNRECOGNIZED_RPC_ERROR",
+    }
+}
+
 pub(super) fn policy(account: u64, group: Group, replay: Replay) -> Policy {
     let (name, interval, concurrency) = match group {
         Group::Control => ("control", 100, 1),
@@ -246,6 +317,22 @@ mod tests {
             }
             .into(),
         )
+    }
+    #[test]
+    fn rpc_diagnostics_name_known_failures_without_exposing_arbitrary_descriptions() {
+        assert_eq!(safe_rpc_name("QUERY_ID_INVALID"), "QUERY_ID_INVALID");
+        assert_eq!(
+            safe_rpc_name("SEND_MESSAGE_TYPE_INVALID"),
+            "SEND_MESSAGE_TYPE_INVALID"
+        );
+        for name in [
+            "private-api-hash",
+            "AUTH_KEY_SECRET",
+            "400:PRIVATE_TOKEN",
+            "bad html: <p>private message</p>",
+        ] {
+            assert_eq!(safe_rpc_name(name), "UNRECOGNIZED_RPC_ERROR");
+        }
     }
     #[tokio::test]
     async fn classifies_rate_scopes_permanent_rejections_and_owner_lifetime() {

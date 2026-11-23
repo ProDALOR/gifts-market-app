@@ -10,7 +10,7 @@ use velato::{
 pub(super) fn composition(mut source: Json) -> Result<Composition, MediaError> {
     super::budget::validate_source(&source)?;
     defaults(&mut source);
-    // Retain only paint patches before consuming JSON in Velato; geometry/keyframes aren't cloned.
+    // Retain only paint and group-position patches; path geometry is never cloned.
     let layers = layer_styles(&source["layers"])?;
     let source_assets: std::collections::HashMap<_, _> = source
         .get("assets")
@@ -28,6 +28,7 @@ pub(super) fn composition(mut source: Json) -> Result<Composition, MediaError> {
             ))
         })
         .collect::<Result<_, MediaError>>()?;
+    normalize_group_positions(&mut source);
     let mut model = Composition::from_json(source).map_err(|_| MediaError::InvalidMedia)?;
     super::budget::validate(&model)?;
     let originals = std::mem::take(&mut model.assets);
@@ -45,14 +46,14 @@ pub(super) fn composition(mut source: Json) -> Result<Composition, MediaError> {
 }
 struct Instances<'a> {
     originals: &'a std::collections::HashMap<String, Vec<model::Layer>>,
-    source: &'a std::collections::HashMap<String, Vec<Vec<Json>>>,
+    source: &'a std::collections::HashMap<String, Vec<Vec<ShapePatch>>>,
     repaired: std::collections::HashMap<(String, u64), String>,
     result: std::collections::HashMap<String, Vec<model::Layer>>,
     stack: Vec<String>,
     next: usize,
 }
 fn repair_layers(
-    source: &[Vec<Json>],
+    source: &[Vec<ShapePatch>],
     layers: &mut [model::Layer],
     frame: f64,
     context: &mut Instances,
@@ -90,16 +91,12 @@ fn repair_layers(
             *name = instance_name;
         }
         if let Content::Shape(shapes) = &mut layer.content {
-            let mut styles = source.iter();
-            repair_shapes(shapes, &mut styles, frame)?;
-            if styles.next().is_some() {
-                return Err(MediaError::InvalidMedia);
-            }
+            repair_shapes(shapes, source, frame)?;
         }
     }
     Ok(())
 }
-fn layer_styles(layers: &Json) -> Result<Vec<Vec<Json>>, MediaError> {
+fn layer_styles(layers: &Json) -> Result<Vec<Vec<ShapePatch>>, MediaError> {
     layers
         .as_array()
         .ok_or(MediaError::InvalidMedia)?
@@ -113,29 +110,90 @@ fn layer_styles(layers: &Json) -> Result<Vec<Vec<Json>>, MediaError> {
         })
         .collect()
 }
-fn collect_styles(shapes: &[Json], out: &mut Vec<Json>) {
+// Keep only the small patches needed after import, never a second copy of path geometry.
+enum ShapePatch {
+    Group(Vec<Self>, Option<Json>),
+    Paint(Json),
+    Other,
+}
+fn collect_styles(shapes: &[Json], out: &mut Vec<ShapePatch>) {
     for shape in shapes {
         match shape.get("ty").and_then(Json::as_str) {
             Some("gr") => {
-                if let Some(items) = shape.get("it").and_then(Json::as_array) {
-                    collect_styles(items, out);
+                let Some(items) = shape.get("it").and_then(Json::as_array) else {
+                    continue;
+                };
+                let mut children = Vec::new();
+                collect_styles(items, &mut children);
+                if !children.is_empty() {
+                    let split = items
+                        .iter()
+                        .rev()
+                        .find(|item| item["ty"] == "tr")
+                        .map(|item| &item["p"])
+                        .filter(|p| p.get("s").is_some_and(|s| s == true || s == 1))
+                        .cloned();
+                    out.push(ShapePatch::Group(children, split));
                 }
             }
-            Some("gf" | "gs" | "fl" | "st") => out.push(shape.clone()),
+            Some("gf" | "gs" | "fl" | "st") => out.push(ShapePatch::Paint(shape.clone())),
+            Some("rc" | "el" | "sr" | "sh" | "tm") => out.push(ShapePatch::Other),
+            Some("rp") if shape["hd"] != true => out.push(ShapePatch::Other),
             _ => {}
         }
     }
 }
-fn repair_shapes<'a>(
+// Velato accepts split layer/repeater positions but panics on split shape transforms.
+// Import those group transforms with zero translation, then apply their independent axes
+// at each instance's local first frame, retaining the original anchor/scale/rotation/skew.
+fn normalize_group_positions(source: &mut Json) {
+    match source {
+        Json::Object(object) => {
+            if object.get("ty").is_some_and(|ty| ty == "tr")
+                && object
+                    .get("p")
+                    .and_then(|p| p.get("s"))
+                    .is_some_and(|s| s == true || s == 1)
+            {
+                object.insert("p".into(), json!({"a":0,"k":[0,0,0]}));
+            }
+            for value in object.values_mut() {
+                normalize_group_positions(value);
+            }
+        }
+        Json::Array(values) => {
+            for value in values {
+                normalize_group_positions(value);
+            }
+        }
+        _ => {}
+    }
+}
+fn repair_shapes(
     shapes: &mut [Shape],
-    styles: &mut impl Iterator<Item = &'a Json>,
+    patches: &[ShapePatch],
     frame: f64,
 ) -> Result<(), MediaError> {
-    for shape in shapes {
-        match shape {
-            Shape::Group(shapes, _) => repair_shapes(shapes, styles, frame)?,
-            Shape::Draw(draw) => {
-                let source = styles.next().ok_or(MediaError::InvalidMedia)?;
+    if shapes.len() != patches.len() {
+        return Err(MediaError::InvalidMedia);
+    }
+    for (shape, patch) in shapes.iter_mut().zip(patches) {
+        match (shape, patch) {
+            (Shape::Group(shapes, transform), ShapePatch::Group(children, position)) => {
+                repair_shapes(shapes, children, frame)?;
+                if let Some(position) = position {
+                    let transform = transform.as_mut().ok_or(MediaError::InvalidMedia)?;
+                    let x = channels(&position["x"], frame)?;
+                    let y = channels(&position["y"], frame)?;
+                    let ([x], [y]) = (x.as_slice(), y.as_slice()) else {
+                        return Err(MediaError::InvalidMedia);
+                    };
+                    let matrix = kurbo::Affine::translate((*x, *y))
+                        * transform.transform.evaluate(frame).into_owned();
+                    transform.transform = model::Transform::Fixed(matrix);
+                }
+            }
+            (Shape::Draw(draw), ShapePatch::Paint(source)) => {
                 let kind = source["ty"].as_str().ok_or(MediaError::InvalidMedia)?;
                 if draw.stroke.is_some() != matches!(kind, "gs" | "st") {
                     return Err(MediaError::InvalidMedia);
@@ -188,7 +246,8 @@ fn repair_shapes<'a>(
                     *stroke = model::Stroke::Fixed(fixed);
                 }
             }
-            _ => {}
+            (Shape::Geometry(_) | Shape::Repeater(_) | Shape::Trim(_), ShapePatch::Other) => {}
+            _ => return Err(MediaError::InvalidMedia),
         }
     }
     Ok(())

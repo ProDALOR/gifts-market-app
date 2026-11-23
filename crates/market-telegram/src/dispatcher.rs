@@ -160,6 +160,7 @@ async fn process<A: TelegramActions, H: MessageHandler>(
     limits: Limits,
 ) -> Result<(), BotError> {
     actions.answer_callback(&event, request.is_some()).await?;
+    let started = tokio::time::Instant::now();
     // Inline queries arrive while typing; only evaluate the latest completed input.
     if matches!(event, Event::Inline { .. }) {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -216,7 +217,12 @@ async fn process<A: TelegramActions, H: MessageHandler>(
         match result {
             Ok(()) => return Ok(()),
             Err(error) if error.disposition() == ErrorDisposition::Rejected => {
-                tracing::warn!(%error,"bot reply rejected; completing this delivery without a reply");
+                tracing::warn!(
+                    %error,
+                    route = match &event { Event::Message(_) => "message", Event::Inline { .. } => "inline", Event::Guest { .. } => "guest", Event::Callback { .. } => "callback" },
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "bot reply rejected; completing this delivery without a reply"
+                );
                 return Ok(());
             }
             Err(error) => retry(error, &mut backoff).await?,

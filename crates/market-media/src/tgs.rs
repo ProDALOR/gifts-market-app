@@ -8,11 +8,11 @@ fn invalid(reason: &'static str) -> MediaError {
     MediaError::InvalidMedia
 }
 
-/// Keep ordinary originals byte-for-byte. Exporters sometimes leave expressions
-/// next to baked keyframes; remove those before caching or serving any client.
+/// Keep ordinary originals byte-for-byte. Remove expression metadata beside baked
+/// keyframes and supply empty shape arrays before caching or serving any client.
 pub(crate) fn normalize(bytes: Vec<u8>) -> Result<Vec<u8>, MediaError> {
-    let (data, removed) = parse(&decode(&bytes)?)?;
-    if removed == 0 {
+    let (data, changes) = parse(&decode(&bytes)?)?;
+    if changes == 0 {
         return Ok(bytes);
     }
     let json = serde_json::to_vec(&data).map_err(|_| invalid("encoding"))?;
@@ -26,8 +26,8 @@ pub(crate) fn normalize(bytes: Vec<u8>) -> Result<Vec<u8>, MediaError> {
         return Err(invalid("compressed_size"));
     }
     tracing::debug!(
-        removed_expressions = removed,
-        "using baked animation keyframes"
+        normalized_fields = changes,
+        "using normalized animation keyframes and layer defaults"
     );
     Ok(bytes)
 }
@@ -103,7 +103,7 @@ fn parse(json: &[u8]) -> Result<(Value, usize), MediaError> {
     if !data["v"].is_string() || !data["layers"].is_array() {
         return Err(invalid("composition"));
     }
-    let mut removed = 0;
+    let mut changes = 0;
     let mut pending = vec![&mut data];
     while let Some(value) = pending.pop() {
         match value {
@@ -124,7 +124,16 @@ fn parse(json: &[u8]) -> Result<(Value, usize), MediaError> {
                         return Err(invalid("expression_without_keyframes"));
                     }
                     object.remove("x");
-                    removed += 1;
+                    changes += 1;
+                }
+                // Retain empty shape layers as transform parents. Both Velato and
+                // Lottie-web require an explicit array even when there is no artwork.
+                if object.get("ty").is_some_and(|ty| ty == 4)
+                    && object.contains_key("ks")
+                    && !object.contains_key("shapes")
+                {
+                    object.insert("shapes".into(), Value::Array(Vec::new()));
+                    changes += 1;
                 }
                 pending.extend(object.values_mut());
             }
@@ -132,7 +141,7 @@ fn parse(json: &[u8]) -> Result<(Value, usize), MediaError> {
             _ => {}
         }
     }
-    Ok((data, removed))
+    Ok((data, changes))
 }
 
 #[cfg(test)]
@@ -153,6 +162,28 @@ mod tests {
                 {"ty":"sh","ks":{"a":1,"k":[{"t":0,"s":[{"i":[[0,0],[0,0],[0,0]],"o":[[0,0],[0,0],[0,0]],"v":[[100,100],[300,100],[300,300]],"c":true}]}],
                     "x":"var $bm_rt; $bm_rt = thisComp.layer('klub').content('Group 5').content('Path 1').path;"}},
                 {"ty":"fl","c":{"a":0,"k":[1,0,0,1]},"o":{"a":0,"k":100},"r":1}]}]})
+    }
+    #[test]
+    fn empty_shape_layers_are_normalized_once_without_dropping_parent_identity() {
+        let mut source = fixture();
+        source["layers"][0]["shapes"][0]["ks"]
+            .as_object_mut()
+            .unwrap()
+            .remove("x");
+        source["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"ty":4,"ind":2,"ip":0,"op":180,"ks":{"p":{"a":0,"k":[10,20]}}}));
+        let bytes = compressed(&source);
+        let normalized = normalize(bytes.clone()).unwrap();
+        assert_ne!(bytes, normalized);
+        source["layers"][1]["shapes"] = json!([]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&decode(&normalized).unwrap()).unwrap(),
+            source
+        );
+        assert_eq!(normalize(normalized.clone()).unwrap(), normalized);
+        assert!(first_frame_svg(&normalized).is_ok());
     }
     #[test]
     fn baked_wise_owl_path_removes_expression_without_altering_keyframes() {

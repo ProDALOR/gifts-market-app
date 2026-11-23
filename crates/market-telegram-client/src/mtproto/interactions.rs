@@ -1,5 +1,9 @@
 //! Rich payloads and route-specific responses share the ordinary invocation scheduler.
-use super::{client::MtProtoActions, invocations::Group, requests::reply_request};
+use super::{
+    client::MtProtoActions,
+    invocations::{CallError, Group},
+    requests::reply_request,
+};
 use crate::{
     BotError, LaunchButton, Reply, ReplyButton,
     interactions::{CallbackTarget, Event, InlineMessageId},
@@ -194,34 +198,36 @@ impl MtProtoActions {
                     .await?;
             }
             Event::Inline { id, .. } => {
-                self.invocations
-                    .rpc(
+                answer_inline(prepared.is_some(), |use_rich| {
+                    let request = tl::functions::messages::SetInlineBotResults {
+                        gallery: false,
+                        private: true,
+                        query_id: *id,
+                        results: reply
+                            .map(|reply| {
+                                vec![inline_result(
+                                    reply,
+                                    username,
+                                    launch,
+                                    prepared.clone().filter(|_| use_rich),
+                                    inline_enabled,
+                                )]
+                            })
+                            .unwrap_or_default(),
+                        cache_time: 15,
+                        next_offset: Some(String::new()),
+                        switch_pm: None,
+                        switch_webview: None,
+                    };
+                    self.invocations.rpc_call(
                         &self.client,
-                        tl::functions::messages::SetInlineBotResults {
-                            gallery: false,
-                            private: true,
-                            query_id: *id,
-                            results: reply
-                                .map(|reply| {
-                                    vec![inline_result(
-                                        reply,
-                                        username,
-                                        launch,
-                                        prepared.clone(),
-                                        inline_enabled,
-                                    )]
-                                })
-                                .unwrap_or_default(),
-                            cache_time: 15,
-                            next_offset: Some(String::new()),
-                            switch_pm: None,
-                            switch_webview: None,
-                        },
+                        request,
                         Group::Inline,
                         Priority::Interactive,
                         Replay::Safe,
                     )
-                    .await?;
+                })
+                .await?;
             }
             Event::Guest { id, .. } => {
                 let Some(reply) = reply else { return Ok(()) };
@@ -310,9 +316,136 @@ impl MtProtoActions {
     }
 }
 
+// A rejected rich payload can safely fall back once. Expired queries, invalid buttons,
+// authorization errors and ambiguous transport failures must not trigger another answer.
+async fn answer_inline<F, Fut>(has_rich: bool, mut send: F) -> Result<(), BotError>
+where
+    F: FnMut(bool) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, CallError>>,
+{
+    match send(has_rich).await {
+        Err(error) if has_rich && rejected_rich_inline(&error) => {
+            tracing::warn!("Inline rich result rejected; answering with plain valuation");
+            send(false).await.map(|_| ()).map_err(CallError::bot)
+        }
+        result => result.map(|_| ()).map_err(CallError::bot),
+    }
+}
+fn rejected_rich_inline(error: &CallError) -> bool {
+    matches!(error, CallError::Remote(grammers_client::sender::InvocationError::Rpc(error))
+        if error.code == 400 && matches!(error.name.as_str(),
+            "SEND_MESSAGE_TYPE_INVALID" | "SEND_MESSAGE_MEDIA_INVALID"
+            | "RICH_MESSAGE_INVALID" | "RICH_MESSAGE_PARSE_ERROR" | "RICH_MESSAGE_TOO_LONG"
+            | "PHOTO_INVALID" | "DOCUMENT_INVALID" | "FILE_REFERENCE_EXPIRED"
+            | "FILE_REFERENCE_INVALID" | "ENTITY_BOUNDS_INVALID" | "ENTITIES_TOO_LONG"
+            | "MESSAGE_EMPTY" | "MESSAGE_TOO_LONG"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn remote_error(code: i32, name: &str) -> CallError {
+        CallError::Remote(grammers_client::sender::InvocationError::Rpc(
+            tl::types::RpcError {
+                error_code: code,
+                error_message: name.into(),
+            }
+            .into(),
+        ))
+    }
+    #[tokio::test]
+    async fn rich_inline_rejections_fall_back_once_to_the_same_plain_result() {
+        use std::cell::RefCell;
+        for name in [
+            "SEND_MESSAGE_TYPE_INVALID",
+            "RICH_MESSAGE_INVALID",
+            "PHOTO_INVALID",
+            "MESSAGE_EMPTY",
+        ] {
+            let attempts = RefCell::new(Vec::new());
+            answer_inline(true, |rich| {
+                attempts.borrow_mut().push(rich);
+                std::future::ready(if rich {
+                    Err(remote_error(400, name))
+                } else {
+                    Ok(true)
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(*attempts.borrow(), [true, false]);
+        }
+        let reply = Reply {
+            text: "Gift-123 · Estimate 18 GRAM".into(),
+            rich_html: Some("<p>Estimate</p>".into()),
+            ..Default::default()
+        };
+        let tl::enums::InputBotInlineResult::Result(result) =
+            inline_result(&reply, None, None, None, true)
+        else {
+            panic!()
+        };
+        let tl::enums::InputBotInlineMessage::Text(message) = result.send_message else {
+            panic!()
+        };
+        assert_eq!(message.message, reply.text);
+        assert_eq!(result.id, "valuation");
+    }
+    #[tokio::test]
+    async fn inline_expiry_buttons_and_ambiguous_failures_do_not_send_fallbacks() {
+        use std::cell::Cell;
+        for (code, name) in [
+            (400, "QUERY_ID_INVALID"),
+            (400, "BUTTON_DATA_INVALID"),
+            (400, "private-secret"),
+            (500, "INTERNAL"),
+            (401, "SESSION_REVOKED"),
+            (420, "FLOOD_WAIT_30"),
+        ] {
+            let count = Cell::new(0);
+            assert!(
+                answer_inline(true, |_| {
+                    count.set(count.get() + 1);
+                    std::future::ready(Err(remote_error(code, name)))
+                })
+                .await
+                .is_err()
+            );
+            assert_eq!(count.get(), 1);
+        }
+        let count = Cell::new(0);
+        assert!(
+            answer_inline(false, |_| {
+                count.set(count.get() + 1);
+                std::future::ready(Err(remote_error(400, "SEND_MESSAGE_TYPE_INVALID")))
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(count.get(), 1);
+        let count = Cell::new(0);
+        assert!(
+            answer_inline(true, |_| {
+                count.set(count.get() + 1);
+                std::future::ready(Err(remote_error(400, "SEND_MESSAGE_TYPE_INVALID")))
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(count.get(), 2, "a rejected plain fallback cannot loop");
+        let count = Cell::new(0);
+        assert!(
+            answer_inline(true, |_| {
+                count.set(count.get() + 1);
+                std::future::ready(Err(CallError::Remote(
+                    grammers_client::sender::InvocationError::Dropped("ambiguous connection loss"),
+                )))
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(count.get(), 1);
+    }
     #[test]
     fn rich_inline_and_guest_payloads_share_html_and_use_url_preview_buttons() {
         let reply = Reply {

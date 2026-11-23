@@ -162,3 +162,106 @@ fn svg_output_stops_growing_when_its_budget_is_exhausted() {
     assert!(sink.body.len() + sink.defs.len() <= crate::MAX_PREVIEW_BYTES);
     assert!(sink.finish().is_err());
 }
+
+fn grouped_fixture() -> Value {
+    let mut source = fixture();
+    let mut shapes = source["layers"][0]["shapes"].as_array().unwrap().clone();
+    shapes.push(json!({"ty":"tr","a":{"a":0,"k":[13,17]},"p":{"a":0,"k":[42,73]},"s":{"a":0,"k":[120,80]},"r":{"a":0,"k":25},"o":{"a":0,"k":100}}));
+    source["layers"][0]["shapes"] = json!([{"ty":"gr","it":shapes}]);
+    source
+}
+#[test]
+fn split_shape_positions_match_vector_positions_with_anchor_scale_and_rotation() {
+    let expected = grouped_fixture();
+    for position in [
+        json!({"s":true,"x":{"a":0,"k":42},"y":{"a":0,"k":73}}),
+        json!({"s":1,"x":{"a":1,"k":[{"t":0,"s":[42]}]},"y":{"a":1,"k":[{"t":-10,"s":[73]},{"t":0}]}}),
+    ] {
+        let mut split = expected.clone();
+        split["layers"][0]["shapes"][0]["it"][2]["p"] = position;
+        assert_eq!(
+            first_frame_svg(&serde_json::to_vec(&split).unwrap()).unwrap(),
+            first_frame_svg(&serde_json::to_vec(&expected).unwrap()).unwrap()
+        );
+    }
+}
+#[test]
+fn split_shape_axes_sample_each_shared_precomposition_instance_at_its_local_frame() {
+    let mut source = grouped_fixture();
+    let child = &mut source["layers"][0];
+    child["shapes"][0]["it"][2] = json!({"ty":"tr","p":{"s":true,
+        "x":{"a":1,"k":[{"t":0,"s":[10],"h":1},{"t":5,"s":[20],"h":1},{"t":15,"s":[40]}]},
+        "y":{"a":1,"k":[{"t":-10,"s":[30],"h":1},{"t":10,"s":[50]}]}}});
+    source["assets"] = json!([{"id":"shared","layers":[child.clone()]}]);
+    source["layers"] = json!([
+        {"ty":0,"w":512,"h":512,"ind":1,"refId":"shared","ip":0,"op":60,"st":0,"sr":1,"ks":{}},
+        {"ty":0,"w":512,"h":512,"ind":2,"refId":"shared","ip":0,"op":60,"st":-10,"sr":1,"ks":{}}
+    ]);
+    let composition = adapter::composition(source.clone()).unwrap();
+    let mut positions = Vec::new();
+    for layer in &composition.layers {
+        let velato::model::Content::Instance { name, .. } = &layer.content else {
+            panic!()
+        };
+        let velato::model::Content::Shape(shapes) = &composition.assets[name][0].content else {
+            panic!()
+        };
+        let velato::model::Shape::Group(_, Some(transform)) = &shapes[0] else {
+            panic!()
+        };
+        positions.push(transform.transform.evaluate(0.0).into_owned() * kurbo::Point::ZERO);
+    }
+    assert_eq!(
+        positions,
+        [kurbo::Point::new(10.0, 30.0), kurbo::Point::new(20.0, 50.0)]
+    );
+    assert!(first_frame_svg(&serde_json::to_vec(&source).unwrap()).is_ok());
+}
+#[test]
+fn empty_and_nested_groups_keep_patches_aligned() {
+    let mut source = grouped_fixture();
+    let shapes = source["layers"][0]["shapes"].as_array_mut().unwrap();
+    shapes.insert(
+        0,
+        json!({"ty":"gr","it":[{"ty":"tr","p":{"s":true,"x":{"a":0,"k":1},"y":{"a":0,"k":2}}}]}),
+    );
+    let nested = shapes.pop().unwrap();
+    shapes.push(json!({"ty":"gr","it":[nested,{"ty":"tr","p":{"s":true,"x":{"a":0,"k":3},"y":{"a":0,"k":4}}}]}));
+    assert!(first_frame_svg(&serde_json::to_vec(&source).unwrap()).is_ok());
+}
+
+#[test]
+fn omitted_empty_shape_layers_remain_transform_parents() {
+    let mut explicit = fixture();
+    explicit["layers"][0]["parent"] = json!(2);
+    explicit["layers"].as_array_mut().unwrap().push(
+        json!({"ty":4,"ind":2,"ip":0,"op":60,"st":0,"ks":{"p":{"a":0,"k":[50,70]}},"shapes":[]}),
+    );
+    let mut omitted = explicit.clone();
+    omitted["layers"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("shapes");
+    let expected = first_frame_svg(&serde_json::to_vec(&explicit).unwrap()).unwrap();
+    let actual = first_frame_svg(&serde_json::to_vec(&omitted).unwrap()).unwrap();
+    assert_eq!(actual, expected);
+    assert_ne!(
+        actual,
+        first_frame_svg(&serde_json::to_vec(&fixture()).unwrap()).unwrap()
+    );
+}
+#[test]
+fn malformed_split_axes_are_rejected_instead_of_silently_defaulting_to_zero() {
+    for x in [
+        json!(null),
+        json!({"a":0,"k":[1,2]}),
+        json!({"a":0,"k":"bad"}),
+    ] {
+        let mut source = grouped_fixture();
+        source["layers"][0]["shapes"][0]["it"][2]["p"] = json!({"s":true,"x":x,"y":{"a":0,"k":5}});
+        assert_eq!(
+            first_frame_svg(&serde_json::to_vec(&source).unwrap()),
+            Err(crate::MediaError::InvalidMedia)
+        );
+    }
+}
