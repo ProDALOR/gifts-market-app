@@ -50,6 +50,15 @@ pub struct MtProtoTransport {
     runner: Option<tokio::task::JoinHandle<()>>,
 }
 impl MtProtoTransport {
+    #[cfg(test)]
+    pub(super) fn take_test_updates(
+        &mut self,
+    ) -> tokio::sync::mpsc::Receiver<grammers_session::updates::UpdatesLike> {
+        // Live probes match their own queries without catch-up or checkpoint acknowledgement.
+        self.updates
+            .take()
+            .expect("unused live-test update receiver")
+    }
     pub(crate) fn new(
         session: Arc<DurableSession>,
         credentials: BotCredentials,
@@ -421,7 +430,7 @@ fn reference_text(message: &tl::enums::Message) -> Option<String> {
     text.truncate(text.floor_char_boundary(4096));
     Some(text)
 }
-fn guest_event(query: tl::types::UpdateBotGuestChatQuery) -> Option<Event> {
+pub(super) fn guest_event(query: tl::types::UpdateBotGuestChatQuery) -> Option<Event> {
     let tl::enums::Message::Message(message) = query.message else {
         return None;
     };

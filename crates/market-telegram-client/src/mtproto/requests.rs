@@ -30,6 +30,23 @@ pub(super) fn menu_request(launch: &LaunchButton) -> tl::functions::bots::SetBot
         .into(),
     }
 }
+pub(super) fn inline_request(
+    query_id: i64,
+    results: Vec<tl::enums::InputBotInlineResult>,
+) -> tl::functions::messages::SetInlineBotResults {
+    tl::functions::messages::SetInlineBotResults {
+        gallery: false,
+        private: true,
+        query_id,
+        results,
+        cache_time: 15,
+        // Inline lookup returns one report. Sales pagination lives inside that report.
+        // Omit the optional offset and its TL flag when there is no next result page.
+        next_offset: None,
+        switch_pm: None,
+        switch_webview: None,
+    }
+}
 pub(super) fn reply_request(
     bot_id: u64,
     message: &Message,

@@ -905,6 +905,24 @@ async fn send_live_rich_preview_to_authorized_recipient() {
     // This one-shot sender does not run a callback worker or retain action state.
     // Keep native layouts visible without sending buttons that would immediately expire.
     let reply = static_preview(reply);
+    if let Ok(path) = std::env::var("MARKET_TEST_REPLY_OUTPUT") {
+        std::fs::write(
+            path,
+            serde_json::to_vec(&serde_json::json!({
+                "text": reply.text,
+                "title": reply.title,
+                "summary": reply.summary,
+                "rich_html": reply.rich_html,
+                "artwork": reply.artwork.map(|cover| serde_json::json!({
+                    "model": cover.model.get(),
+                    "pattern": cover.pattern.map(market_media::DocumentId::get),
+                    "palette": cover.palette.map(|palette| [palette.center, palette.edge, palette.pattern]),
+                })),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
     if let Ok(path) = std::env::var("MARKET_TEST_COVER_OUTPUT") {
         let started = std::time::Instant::now();
         let asset = cache

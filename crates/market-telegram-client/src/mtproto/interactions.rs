@@ -2,7 +2,7 @@
 use super::{
     client::MtProtoActions,
     invocations::{CallError, Group},
-    requests::reply_request,
+    requests::{inline_request, reply_request},
 };
 use crate::{
     BotError, LaunchButton, Reply, ReplyButton,
@@ -199,11 +199,9 @@ impl MtProtoActions {
             }
             Event::Inline { id, .. } => {
                 answer_inline(prepared.is_some(), |use_rich| {
-                    let request = tl::functions::messages::SetInlineBotResults {
-                        gallery: false,
-                        private: true,
-                        query_id: *id,
-                        results: reply
+                    let request = inline_request(
+                        *id,
+                        reply
                             .map(|reply| {
                                 vec![inline_result(
                                     reply,
@@ -214,11 +212,7 @@ impl MtProtoActions {
                                 )]
                             })
                             .unwrap_or_default(),
-                        cache_time: 15,
-                        next_offset: Some(String::new()),
-                        switch_pm: None,
-                        switch_webview: None,
-                    };
+                    );
                     self.invocations.rpc_call(
                         &self.client,
                         request,
@@ -370,6 +364,34 @@ mod tests {
         ))
     }
     #[test]
+    fn inline_answers_omit_pagination_on_the_wire_for_rich_plain_and_empty_results() {
+        use tl::{Deserializable, Serializable};
+        let reply = Reply {
+            text: "Gift-123 · Estimate 18 GRAM".into(),
+            rich_html: Some(format!("<p>{}</p>", "Estimate ".repeat(100))),
+            ..Default::default()
+        };
+        let plain = inline_result(&reply, None, None, None, true);
+        let rich = inline_result(&reply, None, None, rich(&reply), true);
+        for results in [vec![rich], vec![plain], vec![]] {
+            let request = inline_request(123, results);
+            let encoded = request.to_bytes();
+            let flags = u32::from_le_bytes(encoded[4..8].try_into().unwrap());
+            assert_eq!(
+                flags & (1 << 2),
+                0,
+                "next_offset must be absent on the wire"
+            );
+            let decoded = tl::functions::messages::SetInlineBotResults::from_boxed_bytes(&encoded)
+                .expect("the complete nested inline request must decode");
+            assert_eq!(decoded, request);
+            assert_eq!(decoded.next_offset, None);
+            assert_eq!(decoded.query_id, 123);
+            assert!(decoded.private);
+            assert_eq!(decoded.cache_time, 15);
+        }
+    }
+    #[test]
     fn duplicate_edits_complete_without_hiding_other_callback_rejections() {
         assert_eq!(
             accept_unchanged_edit(remote_error(400, "MESSAGE_NOT_MODIFIED")),
@@ -431,6 +453,7 @@ mod tests {
         use std::cell::Cell;
         for (code, name) in [
             (400, "QUERY_ID_INVALID"),
+            (400, "NEXT_OFFSET_INVALID"),
             (400, "BUTTON_DATA_INVALID"),
             (400, "private-secret"),
             (500, "INTERNAL"),

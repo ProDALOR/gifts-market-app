@@ -502,4 +502,6 @@ async fn run_account(
 }
 
 #[cfg(test)]
+mod inline_tests;
+#[cfg(test)]
 mod tests;
