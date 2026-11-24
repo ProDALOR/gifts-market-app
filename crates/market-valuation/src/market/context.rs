@@ -42,6 +42,18 @@ impl<'a> ValuationContext<'a> {
         &self,
         collection: &CollectionId,
     ) -> Result<Arc<Statistics>, ValuationError> {
+        self.snapshot.check_cancelled()?;
+        // This context already pins its observations. Do not revisit the bounded
+        // global LRU (or rescan an evicted book) for another appearance in the same read.
+        if let Some(stats) = self
+            .reads
+            .borrow()
+            .statistics
+            .iter()
+            .find(|stats| &stats.scope.collection == collection && stats.traits_prepared())
+        {
+            return Ok(stats.clone());
+        }
         let result = self.books.get(
             self.snapshot,
             &BookScope {
@@ -69,6 +81,16 @@ impl<'a> ValuationContext<'a> {
         &self,
         collection: &CollectionId,
     ) -> Result<Arc<Statistics>, ValuationError> {
+        self.snapshot.check_cancelled()?;
+        if let Some(stats) = self
+            .reads
+            .borrow()
+            .statistics
+            .iter()
+            .find(|stats| &stats.scope.collection == collection)
+        {
+            return Ok(stats.clone());
+        }
         let stats = self.books.collection(
             self.snapshot,
             &BookScope {

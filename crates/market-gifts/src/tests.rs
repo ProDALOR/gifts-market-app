@@ -390,6 +390,21 @@ fn one_range_query_resolves_defaults_and_rejects_legacy_navigation_and_invalid_v
     );
     let key: OrderKey = serde_json::from_str("\"0123ab\"").unwrap();
     assert_eq!(key.as_str(), "0123ab");
+    assert_eq!(
+        serde_json::to_value(&key).unwrap(),
+        serde_json::json!("0123ab")
+    );
+    let snapshot = "00000000-0000-0000-0000-000000000001";
+    let id: ReadSnapshotId = serde_json::from_value(serde_json::json!(snapshot)).unwrap();
+    assert_eq!(
+        serde_json::to_value(&id).unwrap(),
+        serde_json::json!(snapshot)
+    );
+    assert_eq!(
+        serde_json::to_value(ReadView::Snapshot { id: Some(id) }).unwrap(),
+        serde_json::json!({"kind":"snapshot","id":snapshot})
+    );
+
     for raw in ["", "g-g", "ab ", &"ff".repeat(4097)] {
         assert!(OrderKey::try_from(raw.to_owned()).is_err());
     }

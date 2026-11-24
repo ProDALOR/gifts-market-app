@@ -1,25 +1,10 @@
 //! A generation, rather than the client ID alone, identifies one operation lifetime.
-use crate::error::{ApiError, Result};
+use crate::{
+    error::{ApiError, Result},
+    protocol::OperationId,
+};
 use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct OperationId(String);
-impl OperationId {
-    pub fn parse(value: String) -> Result<Self> {
-        if value.is_empty()
-            || value.len() > 64
-            || !value
-                .bytes()
-                .all(|value| value.is_ascii_alphanumeric() || b"_.-".contains(&value))
-        {
-            return Err(ApiError::invalid("invalid operation ID"));
-        }
-        Ok(Self(value))
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Key {
     pub id: OperationId,
@@ -121,20 +106,6 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn operation_ids_reject_empty_overlong_and_non_ascii_values() {
-        for value in [
-            "".to_owned(),
-            "x".repeat(65),
-            "gift/id".into(),
-            "with space".into(),
-            "😀".into(),
-        ] {
-            assert!(OperationId::parse(value).is_err());
-        }
-        assert!(OperationId::parse("a".repeat(64)).is_ok());
-        assert!(OperationId::parse("op_1.next-2".into()).is_ok());
-    }
     #[test]
     fn requests_have_an_independent_budget_but_share_identity_and_cancellation() {
         let mut registry = Registry::new(1, 1);

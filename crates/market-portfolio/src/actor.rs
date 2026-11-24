@@ -517,7 +517,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
         let gifts = Arc::new(inventory.gifts.clone());
         let generation = e.inventory_id;
         let provider = self.valuation.clone();
-        let timeout = self.config.valuation_timeout;
+        let idle_timeout = self.config.valuation_idle_timeout;
         let (progress, mut received) = watch::channel(0usize);
         let addr = ctx.address();
         let progress_currency = currency.clone();
@@ -527,25 +527,33 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
             async move {
                 let work = provider.value(gifts, request_currency, progress);
                 tokio::pin!(work);
+                let stalled = tokio::time::sleep(idle_timeout);
+                tokio::pin!(stalled);
+                let mut completed = 0;
+                let mut receiving = true;
                 loop {
                     tokio::select! {
+                        biased;
                         result = &mut work => break result,
-                        update = received.changed() => {
+                        update = received.changed(), if receiving => {
                             if update.is_err() {
-                                break work.await;
+                                receiving = false;
+                                continue;
                             }
-                            addr.do_send(Valued {
-                                user,
-                                currency: progress_currency.clone(),
-                                generation,
-                                count: *received.borrow_and_update(),
-                            });
+                            let count = *received.borrow_and_update();
+                            if count > completed {
+                                completed = count;
+                                stalled.as_mut().reset(Instant::now() + idle_timeout);
+                                addr.do_send(Valued { user, currency: progress_currency.clone(), generation, count });
+                            }
                         }
+                        _ = &mut stalled => break Err(market_valuation::ValuationError::timed_out(
+                            "Portfolio valuation made no progress",
+                        )),
                     }
                 }
             }
             .into_actor(self)
-            .timeout(timeout)
             .map(move |result, actor, _| {
                 let e = actor.entries.get_mut(&user).unwrap();
                 if e.inventory_id != generation {
@@ -553,11 +561,9 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 }
                 let v = e.views.get_mut(&result_currency).unwrap();
                 v.job = None;
-                match result.unwrap_or_else(|_| {
-                    Err(market_valuation::ValuationError::timed_out(
-                        "Portfolio valuation timed out",
-                    ))
-                }) {
+                // A slow completed/stalled run must not immediately start another full pass.
+                v.attempted = Some(Instant::now());
+                match result {
                     Ok(report) => {
                         v.progress = report.items.len();
                         v.report = Some(report);

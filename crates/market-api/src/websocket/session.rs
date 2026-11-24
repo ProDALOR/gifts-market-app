@@ -1,9 +1,11 @@
 use super::{
     operations::{self, End},
     queue::{self, Scope},
-    registry::{Key, OperationId, Registry},
+    registry::{Key, Registry},
 };
-use crate::{MarketApi, config::WebSocketLimits, error::ApiError, models::Command};
+use crate::{
+    MarketApi, config::WebSocketLimits, error::ApiError, models::Command, protocol::OperationId,
+};
 use actix_ws::{AggregatedMessage, CloseCode, CloseReason};
 use futures_util::{
     FutureExt, Stream, StreamExt, future::LocalBoxFuture, stream::FuturesUnordered,
@@ -215,19 +217,17 @@ fn reject_invalid(
     tx: &queue::Sender,
 ) -> Result<(), queue::QueueError> {
     // Preserve correlation on validation failures without disturbing an existing operation.
-    let id = serde_json::from_str::<serde_json::Value>(text)
+    #[derive(serde::Deserialize)]
+    struct Correlation {
+        id: OperationId,
+    }
+    let id = serde_json::from_str::<Correlation>(text)
         .ok()
-        .and_then(|value| {
-            value
-                .get("id")
-                .and_then(|id| id.as_str())
-                .map(str::to_owned)
-        })
-        .and_then(|id| OperationId::parse(id).ok());
+        .map(|value| value.id);
     let error = ApiError::invalid("invalid API message");
     match id {
         Some(id) => match registry.key(&id) {
-            Some(key) => tx.reject(Scope::Operation(key), error),
+            Some(key) => tx.reject(Scope::Operation(key.into()), error),
             None => tx.error(id, error),
         },
         None => tx.reject(Scope::Global, error),
@@ -255,13 +255,9 @@ fn schedule(
         }
         Command::Cancel { id } => (id, None),
         Command::Request(request) => (
-            request.id().to_owned(),
+            request.id().clone(),
             Some(operations::Operation::Request(request)),
         ),
-    };
-    let id = match OperationId::parse(id) {
-        Ok(id) => id,
-        Err(error) => return tx.reject(Scope::Global, error),
     };
     let Some(query) = query else {
         registry.remove(&id);
@@ -269,7 +265,7 @@ fn schedule(
     };
     if let Some(key) = registry.key(&id) {
         return tx.reject(
-            Scope::Operation(key),
+            Scope::Operation(key.into()),
             ApiError::invalid("duplicate operation ID"),
         );
     }

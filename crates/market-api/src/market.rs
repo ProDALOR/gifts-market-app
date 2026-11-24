@@ -50,25 +50,11 @@ impl MarketApi {
         self.portfolio = Some(portfolio);
         self
     }
-    pub(crate) async fn encode_portfolio(
-        &self,
-        data: Arc<market_portfolio::PortfolioState>,
-        envelope: crate::encoding::PortfolioEnvelope,
-    ) -> Result<actix_web::web::Bytes> {
-        self.encoder.portfolio(data, envelope).await
-    }
-    pub(crate) async fn encode_orders(
-        &self,
-        event: crate::encoding::OrderEvent,
-    ) -> Result<actix_web::web::Bytes> {
-        self.encoder.encode(event).await
-    }
-    pub(crate) async fn encode_valuation(
-        &self,
-        report: Arc<market_valuation::ValuationReport>,
-        envelope: crate::encoding::ValuationEnvelope,
-    ) -> Result<actix_web::web::Bytes> {
-        self.encoder.valuation(report, envelope).await
+    pub(crate) async fn encode_response<F>(&self, serialize: F) -> Result<actix_web::web::Bytes>
+    where
+        F: FnOnce(&mut crate::encoding::ResponseWriter) -> serde_json::Result<()> + Send + 'static,
+    {
+        self.encoder.encode(serialize).await
     }
     pub(crate) async fn watch_orders(
         &self,

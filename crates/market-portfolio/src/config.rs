@@ -5,7 +5,7 @@ pub struct PortfolioConfig {
     pub cached_users: usize,
     pub refresh_interval: Duration,
     pub request_timeout: Duration,
-    pub valuation_timeout: Duration,
+    pub valuation_idle_timeout: Duration,
     pub page_size: usize,
     pub max_gifts: usize,
     pub max_pages: usize,
@@ -17,7 +17,7 @@ impl Default for PortfolioConfig {
             cached_users: 64,
             refresh_interval: Duration::from_secs(60),
             request_timeout: Duration::from_secs(60),
-            valuation_timeout: Duration::from_secs(30),
+            valuation_idle_timeout: Duration::from_secs(60),
             page_size: 100,
             max_gifts: 10000,
             max_pages: 100,
@@ -38,10 +38,10 @@ impl PortfolioConfig {
             || self.max_pages > 1000
             || self.refresh_interval.is_zero()
             || self.request_timeout.is_zero()
-            || self.valuation_timeout.is_zero()
+            || self.valuation_idle_timeout.is_zero()
             || self.refresh_interval > Duration::from_secs(86400)
             || self.request_timeout > Duration::from_secs(300)
-            || self.valuation_timeout > Duration::from_secs(300)
+            || self.valuation_idle_timeout > Duration::from_secs(300)
         {
             return Err(crate::PortfolioError::InvalidConfig(
                 "Invalid portfolio limits",

@@ -15,6 +15,7 @@ pub mod models;
 mod orders;
 mod origin;
 mod portfolio;
+pub mod protocol;
 mod routes;
 mod schema;
 mod security;

@@ -1103,6 +1103,16 @@ async fn oversized_order_batches_report_terminal_errors_and_release_the_id() {
                 .contains("byte budget")
         );
     }
+    let (status, _, body) = http(
+        address,
+        "POST",
+        "/orders/query",
+        &slice_query().to_string(),
+        "Content-Type: application/json\r\n",
+    )
+    .await;
+    assert_eq!(status, 429);
+    assert_eq!(body["error"]["code"], "capacity_exceeded");
     let valuation = serde_json::json!({"target":{"kind":"selection","collection_id":"tg.gift.123","criteria":{}},"currency_id":"GRAM","strategies":["ask_floor"]});
     for method in ["valuation.query", "valuation.watch"] {
         let command = if method == "valuation.query" {

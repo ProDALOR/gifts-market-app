@@ -6,14 +6,26 @@ use std::sync::Arc;
 #[cfg(feature = "schema")]
 use utoipa::ToSchema;
 
-#[cfg_attr(feature = "schema", derive(ToSchema))]
+const MAX_USER_ID: u64 = 9_007_199_254_740_991;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "u64", into = "u64")]
-#[cfg_attr(feature="schema", schema(value_type=u64))]
 pub struct UserId(u64);
+#[cfg(feature = "schema")]
+impl utoipa::PartialSchema for UserId {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::Integer)
+            .minimum(Some(1u64))
+            .maximum(Some(MAX_USER_ID))
+            .into()
+    }
+}
+#[cfg(feature = "schema")]
+impl ToSchema for UserId {}
 impl UserId {
     pub fn new(value: u64) -> Result<Self, PortfolioError> {
-        if value == 0 || value > 9_007_199_254_740_991 {
+        if !(1..=MAX_USER_ID).contains(&value) {
             return Err(PortfolioError::InvalidData(
                 "invalid Telegram user ID".into(),
             ));

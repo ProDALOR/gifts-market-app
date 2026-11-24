@@ -1,5 +1,5 @@
-use super::registry::{Key, OperationId, Registry};
-use crate::{config::WebSocketLimits, error::ApiError, models::ServerFrame};
+use super::registry::{Key, Registry};
+use crate::{config::WebSocketLimits, error::ApiError, models::ServerFrame, protocol::OperationId};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -16,26 +16,25 @@ impl Payload {
     pub fn test_orders(result: Arc<str>) -> Self {
         Self::Encoded(serde_json::json!({"type":"orders.snapshot","id":"offers","sequence":0,"data":[],"range":{"start":null,"end":null},"padding":&*result}).to_string().into())
     }
-    pub fn bytes(&self, id: &str) -> actix_web::web::Bytes {
+    pub fn into_bytes(self, id: Option<&OperationId>) -> actix_web::web::Bytes {
         let text = match self {
-            Self::Encoded(encoded) => return encoded.clone(),
+            Self::Encoded(encoded) => return encoded,
             Self::MarketStatus(status) => {
-                serde_json::to_string(&ServerFrame::MarketStatus { status: *status })
+                serde_json::to_string(&ServerFrame::MarketStatus { status })
                     .expect("market status serializes")
             }
             Self::Catalog(versions) => serde_json::to_string(&ServerFrame::Catalog {
-                id: id.into(),
-                versions: crate::catalog::versions(versions.clone()),
+                id: id.expect("correlated operation frame"),
+                versions: crate::catalog::versions(versions),
             })
             .expect("catalog frame serializes"),
-            Self::CommandError(error) => serde_json::to_string(&ServerFrame::CommandError {
-                id: id.into(),
-                error: error.clone(),
-            })
-            .expect("command error serializes"),
+            Self::CommandError(error) => {
+                serde_json::to_string(&ServerFrame::CommandError { id, error: &error })
+                    .expect("command error serializes")
+            }
             Self::Error(error) => serde_json::to_string(&ServerFrame::Error {
-                id: id.into(),
-                error: error.clone(),
+                id: id.expect("correlated operation frame"),
+                error: &error,
             })
             .expect("public error serializes"),
         };
@@ -44,16 +43,16 @@ impl Payload {
 }
 #[derive(Clone)]
 pub(super) enum Scope {
-    Operation(Key),
+    Operation(Arc<Key>),
     Absent(OperationId),
     Global,
 }
 impl Scope {
-    pub fn id(&self) -> &str {
+    pub fn id(&self) -> Option<&OperationId> {
         match self {
-            Self::Operation(key) => key.id.as_str(),
-            Self::Absent(id) => id.as_str(),
-            Self::Global => "",
+            Self::Operation(key) => Some(&key.id),
+            Self::Absent(id) => Some(id),
+            Self::Global => None,
         }
     }
     pub fn current(&self, registry: &Registry) -> bool {
@@ -106,7 +105,7 @@ impl Sender {
         if cancel.is_cancelled() {
             return Err(QueueError::Cancelled);
         }
-        let text: actix_web::web::Bytes = payload.bytes(scope.id());
+        let text: actix_web::web::Bytes = payload.into_bytes(scope.id());
         let size = text.len();
         if size > self.limits.queue_bytes {
             return Err(QueueError::SlowConsumer);
@@ -137,7 +136,7 @@ impl Sender {
         self.try_payload(scope, Payload::CommandError(error))
     }
     fn try_payload(&self, scope: Scope, payload: Payload) -> Result<(), QueueError> {
-        let text: actix_web::web::Bytes = payload.bytes(scope.id());
+        let text: actix_web::web::Bytes = payload.into_bytes(scope.id());
         let size = text.len();
         let permit = self
             .bytes
@@ -157,11 +156,43 @@ impl Sender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn errors_keep_typed_correlation_and_the_uncorrelated_empty_id() {
+        let id: OperationId = "request.1".into();
+        for payload in [
+            Payload::Error(ApiError::invalid("failed")),
+            Payload::CommandError(ApiError::invalid("failed")),
+        ] {
+            let frame: serde_json::Value =
+                serde_json::from_slice(&payload.into_bytes(Some(&id))).unwrap();
+            assert_eq!(frame["id"], "request.1");
+            assert_eq!(
+                frame["error"],
+                serde_json::json!({"code":"invalid_query","message":"failed"})
+            );
+        }
+        let frame: serde_json::Value = serde_json::from_slice(
+            &Payload::CommandError(ApiError::invalid("invalid API message")).into_bytes(None),
+        )
+        .unwrap();
+        assert_eq!(
+            frame,
+            serde_json::json!({"type":"command_error","id":"","error":{"code":"invalid_query","message":"invalid API message"}})
+        );
+        let frame: serde_json::Value = serde_json::from_slice(
+            &Payload::MarketStatus(crate::models::MarketStatus::Available).into_bytes(None),
+        )
+        .unwrap();
+        assert_eq!(
+            frame,
+            serde_json::json!({"type":"market.status","status":"available"})
+        );
+    }
     #[tokio::test]
     async fn encoded_frames_share_the_serialization_buffer_through_the_queue() {
         let bytes = actix_web::web::Bytes::from(vec![b'x'; 1024]);
         let payload = Payload::Encoded(bytes.clone());
-        assert_eq!(payload.bytes("read").as_ptr(), bytes.as_ptr());
+        assert_eq!(payload.clone().into_bytes(None).as_ptr(), bytes.as_ptr());
         let (tx, mut rx) = channel(&WebSocketLimits::default());
         tx.send(Scope::Global, payload, false, &CancellationToken::new())
             .await
@@ -183,11 +214,24 @@ mod tests {
         let id = OperationId::parse("offers".into()).unwrap();
         let mut registry = Registry::new(1, 1);
         let (old, _) = registry.reserve(id.clone(), &stop).unwrap();
+        let identity = Arc::new(old);
         let payload = Payload::test_orders(Arc::from(" ".repeat(600)));
-        tx.send(Scope::Operation(old), payload.clone(), false, &stop)
-            .await
-            .unwrap();
+        tx.send(
+            Scope::Operation(identity.clone()),
+            payload.clone(),
+            false,
+            &stop,
+        )
+        .await
+        .unwrap();
         let inflight = rx.recv().await.unwrap();
+        let Scope::Operation(shared) = &inflight.scope else {
+            panic!("operation frame");
+        };
+        assert!(
+            Arc::ptr_eq(shared, &identity),
+            "frames retain the same operation identity"
+        );
         assert_eq!(
             tx.send(Scope::Global, payload.clone(), false, &stop).await,
             Err(QueueError::SlowConsumer)

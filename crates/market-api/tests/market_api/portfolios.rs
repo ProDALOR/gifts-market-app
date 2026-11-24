@@ -87,16 +87,29 @@ async fn portfolio_rest_and_ws_share_inventory_progress_and_reconnect_cache() {
     let idle: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(idle["progress"]["stage"], "idle");
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    for user in [
+        "0",
+        "-1",
+        "9007199254740992",
+        "not-a-user",
+        "18446744073709551616",
+    ] {
+        for request in [
+            test::TestRequest::get().uri(&format!("/portfolios/{user}?currency_id=GRAM")),
+            test::TestRequest::post()
+                .uri(&format!("/portfolios/{user}/refresh"))
+                .set_json(serde_json::json!({"currency_id":"GRAM"})),
+        ] {
+            let response = test::call_service(&app, request.to_request()).await;
+            assert_eq!(response.status(), 400, "{user}");
+            let error: serde_json::Value = test::read_body_json(response).await;
+            assert_eq!(error["error"]["code"], "invalid_query");
+        }
+    }
     assert_eq!(
-        test::call_service(
-            &app,
-            test::TestRequest::get()
-                .uri("/portfolios/0?currency_id=GRAM")
-                .to_request()
-        )
-        .await
-        .status(),
-        400
+        calls.load(Ordering::SeqCst),
+        0,
+        "invalid users never reach inventory"
     );
     let web_dir = peer._directory.path().join("portfolio-web");
     std::fs::create_dir_all(&web_dir).unwrap();

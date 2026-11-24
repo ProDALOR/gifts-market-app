@@ -53,7 +53,10 @@ pub(crate) fn order_result(result: market_replica::ReadBatch) -> Result<crate::O
             data,
             range: result.range,
         },
-        snapshot: result.snapshot,
+        snapshot: result
+            .snapshot
+            .map(|id| id.to_string().try_into().map_err(invalid))
+            .transpose()?,
     })
 }
 

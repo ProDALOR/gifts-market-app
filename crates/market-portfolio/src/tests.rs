@@ -441,3 +441,112 @@ async fn cached_queries_do_not_emit_duplicate_progress_or_move_the_cooldown_dead
     service.task.shutdown().await.unwrap();
     runtime.shutdown().await;
 }
+
+#[derive(Clone, Default)]
+struct ProgressQuotes(Arc<Mutex<Vec<(tokio::sync::watch::Sender<usize>, oneshot::Sender<()>)>>>);
+impl ValuationProvider for ProgressQuotes {
+    async fn value(
+        &self,
+        gifts: Arc<Vec<InventoryGift>>,
+        currency: market_gifts::CurrencyId,
+        progress: tokio::sync::watch::Sender<usize>,
+    ) -> Result<Arc<InventoryValuation>, market_valuation::ValuationError> {
+        let (finish, wait) = oneshot::channel();
+        self.0.lock().unwrap().push((progress.clone(), finish));
+        let _ = wait.await;
+        Quotes::default().value(gifts, currency, progress).await
+    }
+}
+async fn progress_service(
+    idle: Duration,
+) -> (PortfolioService, Source, ProgressQuotes, InvocationRuntime) {
+    let source = Source::default();
+    let quotes = ProgressQuotes::default();
+    let runtime = InvocationRuntime::start(Default::default()).unwrap();
+    let service = PortfolioService::start(
+        source.clone(),
+        quotes.clone(),
+        PortfolioConfig {
+            valuation_idle_timeout: idle,
+            refresh_interval: Duration::from_millis(1),
+            ..Default::default()
+        },
+        runtime.handle(),
+    )
+    .await
+    .unwrap();
+    (service, source, quotes, runtime)
+}
+async fn progress_calls(quotes: &ProgressQuotes, count: usize) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while quotes.0.lock().unwrap().len() < count {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+#[tokio::test]
+async fn valuation_keeps_running_beyond_the_idle_interval_while_progress_advances() {
+    let (service, source, quotes, runtime) = progress_service(Duration::from_millis(300)).await;
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1", "2", "3", "4"], None, 4)));
+    progress_calls(&quotes, 1).await;
+    let started = std::time::Instant::now();
+    for count in 1..=3 {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        quotes.0.lock().unwrap()[0].0.send_replace(count);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while watch.current().progress.valued != count {
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(watch.current().progress.stage, PortfolioStage::Valuing);
+    }
+    assert!(started.elapsed() > Duration::from_millis(300));
+    quotes.0.lock().unwrap().remove(0).1.send(()).unwrap();
+    let ready = stage(&mut watch, PortfolioStage::Ready).await;
+    assert_eq!(ready.valuation.as_ref().unwrap().priced, 4);
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn stalled_valuation_cancels_work_and_retains_the_previous_report() {
+    let (service, source, quotes, runtime) = progress_service(Duration::from_millis(100)).await;
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1"], None, 1)));
+    progress_calls(&quotes, 1).await;
+    quotes.0.lock().unwrap().remove(0).1.send(()).unwrap();
+    let first = stage(&mut watch, PortfolioStage::Ready).await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    service.handle.refresh(query(7, "GRAM")).await.unwrap();
+    calls(&source, 2).await;
+    source.reply(1, Ok(page(&["1", "2"], None, 2)));
+    progress_calls(&quotes, 1).await;
+    // Repeated identical counts must not keep a stalled job alive.
+    let sender = quotes.0.lock().unwrap()[0].0.clone();
+    let repeat = tokio::spawn(async move {
+        loop {
+            sender.send_replace(0);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let failed = stage(&mut watch, PortfolioStage::Failed).await;
+    repeat.abort();
+    assert!(failed.error.as_deref().unwrap().contains("no progress"));
+    assert!(Arc::ptr_eq(
+        failed.valuation.as_ref().unwrap(),
+        first.valuation.as_ref().unwrap()
+    ));
+    assert_eq!(failed.inventory, first.inventory);
+    assert!(
+        quotes.0.lock().unwrap()[0].1.is_closed(),
+        "stalled provider future is dropped"
+    );
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}

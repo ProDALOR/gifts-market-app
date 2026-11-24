@@ -4,7 +4,10 @@ use market_gifts::{GiftFilters, GiftOrderQuery};
 use market_hub_protocol::wire as w;
 fn admit(filters: &GiftFilters, limit: u32) -> Result<()> {
     if !(1..=market_gifts::ORDER_LIMIT).contains(&limit) {
-        return Err(DataError::invalid(format!("row count must be 1..={}", 100)));
+        return Err(DataError::invalid(format!(
+            "row count must be 1..={}",
+            market_gifts::ORDER_LIMIT
+        )));
     }
     if filters.models.len() + filters.backdrops.len() + filters.patterns.len() > 500 {
         return Err(DataError::invalid("at most 500 gift trait selections"));

@@ -112,10 +112,14 @@ impl Index {
     }
 }
 #[derive(Default)]
-pub(crate) struct BookCache(Mutex<Index>);
+pub(crate) struct BookCache {
+    index: Mutex<Index>,
+    #[cfg(test)]
+    pub(crate) preparations: std::sync::atomic::AtomicUsize,
+}
 impl BookCache {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Index>, ValuationError> {
-        self.0
+        self.index
             .lock()
             .map_err(|_| ValuationError::unavailable("Valuation cache is unavailable"))
     }
@@ -191,6 +195,9 @@ impl BookCache {
         };
         // Per-book coalescing allows independent collections to prepare in parallel.
         // Scans stay outside the global index lock; active books cannot be evicted.
+        #[cfg(test)]
+        self.preparations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let statistics = Arc::new(Statistics::read(snapshot, scope, preparation)?);
         let summary = if preparation == Preparation::Traits {
             match &previous {

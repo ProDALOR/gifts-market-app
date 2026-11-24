@@ -1,4 +1,4 @@
-//! Public order presentation shared by HTTP reads and cached WebSocket window encoding.
+//! Public order presentation shared by HTTP reads and WebSocket range encoding.
 use jiff::Timestamp;
 use market_gifts::{
     Amount, BackdropId, GiftBook, GiftId, GiftNumber, GiftNumberRange, GiftOrder, GiftOrderKind,
@@ -129,8 +129,7 @@ pub struct OrderReadResponse<'a> {
     #[serde(flatten)]
     pub orders: OrderSnapshotResponse<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type=Option<market_gifts::ReadSnapshotId>)]
-    pub snapshot: Option<String>,
+    pub snapshot: Option<&'a market_gifts::ReadSnapshotId>,
 }
 /// Ordered rows and the exact coverage reconciled by this result.
 #[derive(Debug, Serialize, ToSchema)]
@@ -154,7 +153,7 @@ impl<'a> From<&'a market_actors::OrderRead> for OrderReadResponse<'a> {
     fn from(read: &'a market_actors::OrderRead) -> Self {
         Self {
             orders: (&read.result).into(),
-            snapshot: read.snapshot.map(|id| id.to_string()),
+            snapshot: read.snapshot.as_ref(),
         }
     }
 }
@@ -169,6 +168,39 @@ mod tests {
     use super::*;
     use market_gifts::GiftCriteria;
     use serde_json::json;
+
+    #[test]
+    fn snapshot_responses_borrow_the_validated_actor_id_and_keep_the_string_wire_format() {
+        let id = "1210bdb3-a6cf-4cdf-8041-f0830ff2bbde";
+        let mut read = market_actors::OrderRead {
+            result: market_actors::OrderResult {
+                data: vec![],
+                range: market_actors::KeyRange {
+                    start: None,
+                    end: None,
+                },
+            },
+            snapshot: Some(id.to_owned().try_into().unwrap()),
+        };
+        let response = OrderReadResponse::from(&read);
+        assert!(std::ptr::eq(
+            response.snapshot.unwrap(),
+            read.snapshot.as_ref().unwrap()
+        ));
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({
+                "data":[],"range":{"start":null,"end":null},"snapshot":id,
+            })
+        );
+        read.snapshot = None;
+        assert!(
+            serde_json::to_value(OrderReadResponse::from(&read))
+                .unwrap()
+                .get("snapshot")
+                .is_none()
+        );
+    }
 
     #[test]
     fn target_schemas_describe_flat_payloads_without_strict_allof_wrappers() {

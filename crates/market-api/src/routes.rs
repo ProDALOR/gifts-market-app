@@ -61,7 +61,12 @@ pub(crate) async fn valuation(
 ) -> Result<HttpResponse> {
     let report = state.valuation(query.into_inner()).await?;
     let body = state
-        .encode_valuation(report, crate::encoding::ValuationEnvelope::Rest)
+        .encode_response(move |writer| {
+            serde_json::to_writer(
+                writer,
+                &crate::valuation::ValuationResponse::from(report.as_ref()),
+            )
+        })
         .await?;
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
@@ -74,9 +79,15 @@ pub(crate) async fn read_orders(
     query: web::Json<GiftOrderQuery>,
 ) -> Result<HttpResponse> {
     let result = state.query_orders(query.into_inner()).await?;
+    let body = state
+        .encode_response(move |writer| {
+            serde_json::to_writer(writer, &crate::orders::OrderReadResponse::from(&result))
+        })
+        .await?;
     Ok(HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
-        .json(crate::orders::OrderReadResponse::from(&result)))
+        .content_type("application/json")
+        .body(body))
 }
 #[utoipa::path(delete,path="/orders/query",tag="Orders",summary="Release a frozen read",request_body=market_gifts::ReleaseReadSnapshot,responses((status=204,description="Released or already expired"),(status=400,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn release_read(

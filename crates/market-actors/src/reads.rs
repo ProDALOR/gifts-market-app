@@ -12,7 +12,7 @@ pub struct OrderResult {
 #[derive(Debug)]
 pub struct OrderRead {
     pub result: OrderResult,
-    pub snapshot: Option<market_replica::SnapshotId>,
+    pub snapshot: Option<market_gifts::ReadSnapshotId>,
 }
 pub use market_replica::{KeyRange, ReadPosition, ReadRevision};
 

@@ -564,8 +564,8 @@ function PortfolioView({
                   <span>
                     {error
                       ? report
-                        ? "Recheck failed · previous data retained"
-                        : "Unable to check gifts"
+                        ? "Update failed · previous data retained"
+                        : "Unable to update portfolio"
                       : user
                         ? progressText(state)
                         : ""}

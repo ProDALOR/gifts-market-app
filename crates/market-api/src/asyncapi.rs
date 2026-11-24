@@ -161,7 +161,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
                 json!({"target":{"kind":"selection","collection_id":"tg.gift.123","criteria":{}},"currency_id":"GRAM","evaluated_at":"2026-11-18T12:00:00Z","stale":false,"results":[{"strategy":"ask_floor","data":{"value":"3","count":3}}]}),
             )?;
             serde_json::to_value(ServerFrame::Result(ApiResult::Valuation {
-                id: "request-1".into(),
+                id: &"request-1".into(),
                 data: crate::valuation::ValuationResponse::from(&report),
             }))?
         }
@@ -172,7 +172,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             )?),
         })?,
         "orders.snapshot" => serde_json::to_value(ServerFrame::OrdersSnapshot {
-            id: "orders.1".into(),
+            id: &"orders.1".into(),
             sequence: 0,
             data: OrderSnapshotResponse {
                 data: vec![],
@@ -183,7 +183,7 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             },
         })?,
         "orders.changed" => serde_json::to_value(ServerFrame::OrdersChanged {
-            id: "orders.1".into(),
+            id: &"orders.1".into(),
             sequence: 1,
             upserts: vec![],
             removed: vec![],
@@ -216,12 +216,12 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
                 json!({"target":{"kind":"catalog","collection_ids":["tg.gift.123"],"details":{"collection_id":"tg.gift.123"}},"currency_id":"GRAM","stale":false,"evaluated_at":"2026-11-18T12:00:00Z","results":[{"strategy":"catalog_floor","data":{"collections":[{"collection_id":"tg.gift.123","evaluated_at":"2026-11-18T12:00:00Z","floor":{"value":"3","count":3},"traits":{"models":{},"backdrops":{},"patterns":{}}}]}}]}),
             )?;
             serde_json::to_value(ServerFrame::ValuationSnapshot {
-                id: "prices".into(),
+                id: &"prices".into(),
                 data: crate::valuation::ValuationResponse::from(&data),
             })?
         }
         "catalog.versions" => serde_json::to_value(ServerFrame::Catalog {
-            id: "catalog".into(),
+            id: &"catalog".into(),
             versions: crate::catalog::versions(CatalogVersions {
                 directory: "directory".into(),
                 collections: [("tg.gift.123".into(), Some("collection".into()))].into(),
@@ -231,12 +231,12 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             status: MarketStatus::Available,
         })?,
         "command_error" => serde_json::to_value(ServerFrame::CommandError {
-            id: "offers".into(),
-            error: crate::error::ApiError::invalid("duplicate operation ID"),
+            id: Some(&"offers".into()),
+            error: &crate::error::ApiError::invalid("duplicate operation ID"),
         })?,
         "error" => serde_json::to_value(ServerFrame::Error {
-            id: "offers".into(),
-            error: crate::error::ApiError::invalid("Invalid subscription query"),
+            id: &"offers".into(),
+            error: &crate::error::ApiError::invalid("Invalid subscription query"),
         })?,
         _ => return Ok(vec![]),
     };

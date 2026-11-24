@@ -24,7 +24,7 @@ pub struct SyncStatus {
 /// Opaque ordering position, reusable across filters with the same sort/source.
 /// Compare in ordinary ASCII order. Price ranks use the supplied query's currency units.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[serde(try_from = "String")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "schema", schema(value_type = String, pattern="^[0-9A-Za-z_~]{2,8192}$"))]
 pub struct OrderKey(String);
@@ -54,7 +54,7 @@ impl From<OrderKey> for String {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[serde(try_from = "String")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "schema", schema(value_type = String, format="uuid"))]
 pub struct ReadSnapshotId(String);

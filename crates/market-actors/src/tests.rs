@@ -1161,7 +1161,7 @@ async fn frozen_windows_reject_overload_while_live_producers_wait_and_cleanup_st
     // Cleanup and cheap status do not require read slots.
     service
         .handle
-        .release_read_snapshot(first.snapshot.unwrap().to_string().try_into().unwrap())
+        .release_read_snapshot(first.snapshot.unwrap())
         .await
         .unwrap();
     assert!(service.handle.status().await.unwrap().ready);
@@ -1286,7 +1286,7 @@ impl MarketDataHandle {
                 .range
                 .end
                 .map(|k| k.encode().try_into().unwrap()),
-            snapshot: read.snapshot.map(|id| id.to_string().try_into().unwrap()),
+            snapshot: read.snapshot,
         })
     }
 }

@@ -56,15 +56,15 @@ impl MarketApi {
             .map_err(failure)
     }
 }
-#[utoipa::path(get,path="/portfolios/{user_id}",tag="Portfolios",params(("user_id"=u64,Path),("currency_id"=String,Query)),responses((status=200,body=PortfolioState),(status=503,body=crate::error::ErrorResponse)))]
+#[utoipa::path(get,path="/portfolios/{user_id}",tag="Portfolios",params(("user_id"=UserId,Path),CurrencyBody),responses((status=200,body=PortfolioState),(status=400,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn query(
     state: web::Data<MarketApi>,
-    user: web::Path<u64>,
+    user: web::Path<UserId>,
     currency: web::Query<CurrencyBody>,
 ) -> Result<HttpResponse> {
     let query = PortfolioQuery {
-        user_id: UserId::new(user.into_inner()).map_err(failure)?,
-        currency_id: currency.currency_id.clone(),
+        user_id: user.into_inner(),
+        currency_id: currency.into_inner().currency_id,
     };
     let result = state.portfolio_query(query).await?;
     Ok(HttpResponse::Ok()
@@ -72,19 +72,19 @@ pub(crate) async fn query(
         .content_type("application/json")
         .body(
             state
-                .encode_portfolio(result, crate::encoding::PortfolioEnvelope::Rest)
+                .encode_response(move |writer| serde_json::to_writer(writer, result.as_ref()))
                 .await?,
         ))
 }
-#[utoipa::path(post,path="/portfolios/{user_id}/refresh",tag="Portfolios",params(("user_id"=u64,Path)),request_body=CurrencyBody,responses((status=200,body=PortfolioState),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
+#[utoipa::path(post,path="/portfolios/{user_id}/refresh",tag="Portfolios",params(("user_id"=UserId,Path)),request_body=CurrencyBody,responses((status=200,body=PortfolioState),(status=400,body=crate::error::ErrorResponse),(status=429,body=crate::error::ErrorResponse),(status=503,body=crate::error::ErrorResponse)))]
 pub(crate) async fn refresh(
     state: web::Data<MarketApi>,
-    user: web::Path<u64>,
+    user: web::Path<UserId>,
     body: web::Json<CurrencyBody>,
 ) -> Result<HttpResponse> {
     let query = PortfolioQuery {
-        user_id: UserId::new(user.into_inner()).map_err(failure)?,
-        currency_id: body.currency_id.clone(),
+        user_id: user.into_inner(),
+        currency_id: body.into_inner().currency_id,
     };
     let result = state.portfolio_refresh(query).await?;
     Ok(HttpResponse::Ok()
@@ -92,12 +92,13 @@ pub(crate) async fn refresh(
         .content_type("application/json")
         .body(
             state
-                .encode_portfolio(result, crate::encoding::PortfolioEnvelope::Rest)
+                .encode_response(move |writer| serde_json::to_writer(writer, result.as_ref()))
                 .await?,
         ))
 }
-#[derive(Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
 pub struct CurrencyBody {
     pub currency_id: market_gifts::CurrencyId,
 }
