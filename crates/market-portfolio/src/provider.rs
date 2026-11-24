@@ -7,6 +7,8 @@ pub trait InventoryProvider: Send + Sync + 'static {
     ) -> impl market_invocations::Invocation<Output = InventoryPage, Error = InventoryError>;
 }
 pub trait ValuationProvider: Send + Sync + 'static {
+    /// Publish an increasing processed-gift count as work advances. The actor
+    /// cancels a stalled future; progress is not a heartbeat or a partial report.
     fn value(
         &self,
         gifts: Arc<Vec<InventoryGift>>,
