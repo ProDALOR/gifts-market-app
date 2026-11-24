@@ -119,3 +119,25 @@
 .floor-summary.stale .floor-evidence {
   opacity: 0.6;
 }
+
+/* Compact side-by-side quotes; identities can wrap without widening the modal. */
+.detail-attributes thead th {
+  font-size: 10px;
+  font-weight: 500;
+  text-align: right;
+  white-space: nowrap;
+  padding-block: 0 6px;
+}
+.detail-attributes thead th:first-child {
+  width: 48%;
+}
+.attribute-floor-table .detail-attributes td {
+  width: 26%;
+  padding-inline: 5px;
+}
+.detail-attributes .bid-value .floor-badge {
+  justify-content: flex-end;
+}
+.detail-attributes .bid-value.stale {
+  opacity: 0.6;
+}

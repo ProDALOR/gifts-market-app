@@ -35,6 +35,7 @@ pub struct ValuationContext<'a> {
     failed_books: RefCell<BTreeMap<CollectionId, ValuationError>>,
     pairs: RefCell<PairFloorCache>,
     matching_floors: RefCell<MatchingFloorCache>,
+    bids: RefCell<BTreeMap<CollectionId, Result<Arc<Vec<GiftOrder>>, ValuationError>>>,
     pub(super) reads: RefCell<super::read_set::ReadSet>,
 }
 impl<'a> ValuationContext<'a> {
@@ -51,6 +52,7 @@ impl<'a> ValuationContext<'a> {
             failed_books: Default::default(),
             pairs: Default::default(),
             matching_floors: Default::default(),
+            bids: Default::default(),
             reads: RefCell::new(super::read_set::ReadSet::new()),
         }
     }
@@ -155,7 +157,7 @@ impl<'a> ValuationContext<'a> {
     ) -> Result<crate::source::Page<GiftOrder>, ValuationError> {
         self.observe(query)?;
         let page = self.snapshot.valuation_orders(query, continuation)?;
-        if query.source == OrderSource::Asks {
+        if query.source != OrderSource::History {
             let now = jiff::Timestamp::now();
             if let Some(expiry) = page
                 .data
@@ -173,6 +175,64 @@ impl<'a> ValuationContext<'a> {
 
     fn observe(&self, query: &GiftOrderQuery) -> Result<(), ValuationError> {
         self.reads.borrow_mut().observe(self.snapshot, query)
+    }
+
+    /// Batches and all reference scopes share one bounded bid projection per collection.
+    /// It lives only for this admitted read; completed reports retain the small winning quotes.
+    pub(crate) fn bid_orders(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Arc<Vec<GiftOrder>>, ValuationError> {
+        self.snapshot.check_cancelled()?;
+        if let Some(result) = self.bids.borrow().get(collection) {
+            return result.clone();
+        }
+        let result = (|| {
+            let mut query = GiftOrderQuery::new(market_gifts::GiftFilters::new(
+                collection.clone(),
+                self.currency.clone(),
+            ));
+            query.source = OrderSource::Bids;
+            query.limit = 500;
+            let mut token = String::new();
+            let mut rows = Vec::new();
+            let mut memberships = 0usize;
+            let mut budget = market_replica::catalog_read::ScanBudget::default();
+            loop {
+                budget.page()?;
+                let page = self.orders(&query, token)?;
+                if rows.len() + page.data.len() > super::execution::MAX_OBSERVATIONS {
+                    return Err(ValuationError::capacity("bid observation budget exceeded"));
+                }
+                for order in &page.data {
+                    self.snapshot.check_cancelled()?;
+                    if let market_gifts::GiftTarget::Criteria { criteria } = &order.target {
+                        memberships += criteria.models.len()
+                            + criteria.backdrops.len()
+                            + criteria.patterns.len();
+                        if memberships > 200_000 {
+                            return Err(ValuationError::capacity("bid condition budget exceeded"));
+                        }
+                    }
+                }
+                rows.extend(page.data);
+                if page.next_page_token.is_empty() {
+                    break;
+                }
+                token = page.next_page_token;
+            }
+            let now = jiff::Timestamp::now();
+            rows.retain(|order| {
+                order.quantity > 0
+                    && order.price.decimal() > rust_decimal::Decimal::ZERO
+                    && order.expires_at.is_none_or(|expiry| expiry > now)
+            });
+            Ok(Arc::new(rows))
+        })();
+        self.bids
+            .borrow_mut()
+            .insert(collection.clone(), result.clone());
+        result
     }
 
     pub(super) fn matching_floor(

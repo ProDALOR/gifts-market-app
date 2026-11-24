@@ -152,6 +152,7 @@ pub struct ExecutionPriceValuation {
 pub enum StrategyValuation {
     CatalogFloor(std::sync::Arc<crate::CatalogFloorValuation>),
     AskFloor(FloorValuation),
+    BestBid(Box<BestBidValuation>),
     ExecutionMean(ExecutionPriceValuation),
     ExecutionMedian(ExecutionPriceValuation),
     GiftFloor(Box<GiftFloorValuation>),
@@ -161,6 +162,7 @@ impl StrategyValuation {
         match self {
             Self::CatalogFloor(_) => CatalogFloor::ID,
             Self::AskFloor(_) => AskFloor::ID,
+            Self::BestBid(_) => BestBid::ID,
             Self::ExecutionMean(_) => ExecutionMean::ID,
             Self::ExecutionMedian(_) => ExecutionMedian::ID,
             Self::GiftFloor(_) => GiftFloor::ID,

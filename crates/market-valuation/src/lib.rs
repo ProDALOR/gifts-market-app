@@ -6,7 +6,9 @@ pub use display::{
 };
 pub mod gift_floor;
 pub use gift_floor::{GiftFloor, GiftFloorBasis, GiftFloorValuation};
+mod best_bid;
 mod strategy;
+pub use best_bid::{BestBid, BestBidValuation, BidOrder, BidQuote, BidReferences};
 pub use strategy::{
     Strategy, StrategyMetadata, StrategyPurpose, strategies, strategies_for, strategy,
 };

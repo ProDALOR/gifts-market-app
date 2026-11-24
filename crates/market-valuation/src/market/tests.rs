@@ -465,7 +465,12 @@ async fn every_registered_strategy_runs_through_its_typed_input_for_the_same_gif
         panic!()
     };
     assert_eq!(ask.price.value().unwrap().as_str(), "100");
-    let StrategyOutcome::Value(StrategyValuation::GiftFloor(gift)) = &report.results[3] else {
+    let StrategyOutcome::Value(StrategyValuation::GiftFloor(gift)) = &report
+        .results
+        .iter()
+        .find(|row| row.strategy() == "gift_floor")
+        .unwrap()
+    else {
         panic!()
     };
     assert_eq!(gift.final_mark.value().unwrap().as_str(), "18");

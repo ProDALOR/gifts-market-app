@@ -48,6 +48,41 @@ pub struct GiftCriteria {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<GiftNumberRange>,
 }
+impl GiftCriteria {
+    /// True when these conditions accept every gift allowed by the selection.
+    /// An omitted selection dimension is unrestricted, not an unknown singleton.
+    pub fn covers(&self, selection: &Self) -> bool {
+        fn alternatives<T: PartialEq>(accepted: &[T], selected: &[T]) -> bool {
+            accepted.is_empty()
+                || (!selected.is_empty() && selected.iter().all(|v| accepted.contains(v)))
+        }
+        alternatives(&self.models, &selection.models)
+            && alternatives(&self.backdrops, &selection.backdrops)
+            && alternatives(&self.patterns, &selection.patterns)
+            && self.number.as_ref().is_none_or(|accepted| {
+                let selected = selection.number.as_ref();
+                accepted
+                    .min
+                    .is_none_or(|min| selected.and_then(|r| r.min).is_some_and(|v| v >= min))
+                    && accepted
+                        .max
+                        .is_none_or(|max| selected.and_then(|r| r.max).is_some_and(|v| v <= max))
+            })
+    }
+    /// Unknown gift attributes cannot satisfy a restricted bid dimension.
+    pub fn accepts(&self, traits: &crate::GiftTraits, number: Option<crate::GiftNumber>) -> bool {
+        fn alternative<T: PartialEq>(accepted: &[T], value: Option<&T>) -> bool {
+            accepted.is_empty() || value.is_some_and(|v| accepted.contains(v))
+        }
+        alternative(&self.models, traits.model.as_ref())
+            && alternative(&self.backdrops, traits.backdrop.as_ref())
+            && alternative(&self.patterns, traits.pattern.as_ref())
+            && self.number.as_ref().is_none_or(|range| {
+                range.min.is_none_or(|min| number.is_some_and(|v| v >= min))
+                    && range.max.is_none_or(|max| number.is_some_and(|v| v <= max))
+            })
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -123,7 +123,7 @@ impl ValuationSnapshot {
                 |entity| {
                     self.check_cancelled()?;
                     if let Some(w::entity::Entity::Order(order)) = &entity.entity
-                        && query.source == OrderSource::Asks
+                        && query.source != OrderSource::History
                     {
                         return market_gifts_hub::is_exhausted(order)
                             .map(|v| !v)

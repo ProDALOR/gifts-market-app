@@ -11,17 +11,21 @@ import { traitFloor } from "../valuation/floors-controller";
 import { FloorValue } from "./floor-value";
 import type { ValuationSubject } from "../order-target";
 import { criteriaPresentation, giftPresentation } from "../order-target";
+import type { OrderValuationState } from "../valuation/use-order-valuation";
+import { BidValue } from "./bid-value";
 
 export function OrderAttributes({
   order,
   options,
   names,
   collectionPreview,
+  valuation,
 }: {
   order: ValuationSubject;
   options: ReadonlyMap<string, CatalogOption>;
   names: ReadonlyMap<string, string>;
   collectionPreview?: GiftMedia;
+  valuation?: OrderValuationState;
 }) {
   const shared = useCollectionFloors(
     order.book.collection_id,
@@ -33,6 +37,20 @@ export function OrderAttributes({
   );
   const traits = giftPresentation(order)?.traits;
   const criteria = criteriaPresentation(order);
+  const bidResult = valuation?.report?.results.find(
+    (row) => row.strategy === "best_bid",
+  );
+  const bids =
+    bidResult && "data" in bidResult && bidResult.strategy === "best_bid"
+      ? bidResult.data.references
+      : undefined;
+  const bidState = valuation?.valuations.find(
+    (row) => row.strategy.id === "best_bid",
+  );
+  const bidError =
+    bidResult && "error" in bidResult
+      ? bidResult.error.message
+      : valuation?.error;
   const pair = shared?.traits?.pair;
   const matchingPair =
     pair &&
@@ -82,7 +100,15 @@ export function OrderAttributes({
     >
       <div className="attribute-floor-table">
         <table className="detail-attributes">
-          <caption>Ask floors</caption>
+          <thead>
+            <tr>
+              <th scope="col">
+                <span className="sr">Attribute</span>
+              </th>
+              <th scope="col">Best asks</th>
+              <th scope="col">Best bids</th>
+            </tr>
+          </thead>
           <tbody>
             {rows.map(({ label, value, attribute, visual, floor }) => (
               <tr key={label} data-attribute={attribute}>
@@ -120,6 +146,25 @@ export function OrderAttributes({
                     stale={shared?.stale}
                     loading={detail.pending}
                     error={detail.error}
+                  />
+                </td>
+                <td>
+                  <BidValue
+                    label={`${label} best bid`}
+                    bid={
+                      attribute === "collection"
+                        ? bids?.collection
+                        : attribute === "pair"
+                          ? bids?.model_backdrop
+                          : attribute
+                            ? bids?.[attribute]
+                            : undefined
+                    }
+                    currency={order.book.currency_id}
+                    stale={bidState?.stale}
+                    loading={valuation?.loading}
+                    error={bidError}
+                    names={names}
                   />
                 </td>
               </tr>

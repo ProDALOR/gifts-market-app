@@ -438,3 +438,146 @@ async fn batch_valuation_has_matching_rest_ws_results_and_independent_errors() {
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
+
+#[actix_web::test]
+async fn best_bid_quotes_share_rest_batch_and_websocket_contracts() {
+    let (state, runtime, peer, stop) = setup().await;
+    let mut page = slug_page(3);
+    let predicate = |value: w::attribute_value::Value| w::AttributePredicate {
+        predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+            value: Some(value),
+        })),
+    };
+    for (id, price, model, backdrop, number) in [
+        ("collection-bid", "3", None, None, None),
+        ("model-bid", "4", Some("model"), None, None),
+        ("pair-bid", "5", Some("model"), Some("b"), None),
+        ("number-bid", "9", Some("model"), Some("b"), Some(123)),
+        ("wrong-backdrop", "999", Some("model"), Some("base"), None),
+    ] {
+        let mut order = w::Order {
+            id: id.into(),
+            book: Some(book()),
+            mode: w::OrderMode::Bid as i32,
+            price: price.into(),
+            quantity: "2".into(),
+            ..Default::default()
+        };
+        for (key, value) in [("tg.model", model), ("tg.backdrop", backdrop)] {
+            if let Some(value) = value {
+                order.attributes.insert(
+                    key.into(),
+                    predicate(w::attribute_value::Value::OptionId(value.into())),
+                );
+            }
+        }
+        if let Some(number) = number {
+            order.attributes.insert(
+                "tg.number".into(),
+                predicate(w::attribute_value::Value::Integer(number)),
+            );
+        }
+        page.entities.push(w::Entity {
+            entity: Some(w::entity::Entity::Order(order)),
+        });
+    }
+    peer.page.send_replace(page);
+    wait_slug(&state).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let query = serde_json::json!({"target":{"kind":"gift","gift":"Gift-123"},"currency_id":"GRAM","strategies":["gift_floor","best_bid"]});
+    let rest: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/query")
+            .set_json(&query)
+            .to_request(),
+    )
+    .await;
+    let quote = &rest["results"][1];
+    assert_eq!(quote["strategy"], "best_bid");
+    let data = &quote["data"];
+    assert_eq!(data["best"]["value"], "9");
+    assert_eq!(data["best"]["order"]["id"], "number-bid");
+    assert_eq!(data["best"]["order"]["quantity"], 2);
+    for (scope, value) in [
+        ("collection", "3"),
+        ("model", "4"),
+        ("backdrop", "3"),
+        ("model_backdrop", "5"),
+    ] {
+        assert_eq!(data["references"][scope]["value"], value);
+    }
+    assert!(data["references"].get("pattern").is_none());
+    assert!(data["best"].get("count").is_none());
+    let discovery: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri("/valuations/strategies")
+            .to_request(),
+    )
+    .await;
+    let metadata = discovery
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "best_bid")
+        .unwrap();
+    assert_eq!(metadata["purpose"], "quote");
+    assert_eq!(metadata["revision"], quote["revision"]);
+    assert_eq!(metadata["display"]["fields"][0]["id"], "best");
+    let guide = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/valuations/strategies/best_bid/documentation")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(guide.status(), 200);
+    let batch: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/batch")
+            .set_json(serde_json::json!({"queries":[query.clone(), query.clone()]}))
+            .to_request(),
+    )
+    .await;
+    for item in batch["results"].as_array().unwrap() {
+        assert_eq!(item["data"]["results"], rest["results"]);
+    }
+    let web_dir = peer._directory.path().join("web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "fixture").unwrap();
+    let server = api_server(&runtime, web_dir);
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(server.run(api_stop.child_token()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    bid_filters::send(&mut socket, serde_json::json!({"type":"request","method":"valuation.query","id":"quote","params":query})).await;
+    let frame = bid_filters::frame(&mut socket, "quote", "result").await;
+    assert_eq!(frame["data"]["target"], rest["target"]);
+    assert_eq!(frame["data"]["results"], rest["results"]);
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"valuation.watch","id":"bid-watch","params":query}),
+    )
+    .await;
+    let frame = bid_filters::frame(&mut socket, "bid-watch", "valuation.snapshot").await;
+    assert_eq!(frame["data"]["results"], rest["results"]);
+    bid_filters::send(
+        &mut socket,
+        serde_json::json!({"type":"cancel","id":"bid-watch"}),
+    )
+    .await;
+    socket.close(None).await.unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}

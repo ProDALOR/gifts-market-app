@@ -1,6 +1,6 @@
 //! One typed registration table drives invocation, input validation and discovery.
 use crate::{
-    AskFloor, CatalogFloor, ExecutionMean, ExecutionMedian, ExecutionPeriod, GiftFloor,
+    AskFloor, BestBid, CatalogFloor, ExecutionMean, ExecutionMedian, ExecutionPeriod, GiftFloor,
     InputContract, ResolvedTarget, StrategyInput, StrategyValuation, ValuationContext,
     ValuationError,
 };
@@ -34,6 +34,8 @@ pub trait Strategy {
 pub enum StrategyPurpose {
     Estimate,
     Reference,
+    /// A directly observed eligible market quote, separate from estimates and reference floors.
+    Quote,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct StrategyMetadata {
@@ -84,6 +86,7 @@ macro_rules! register {
 static REGISTRY: &[Registration] = &[
     register!(CatalogFloor=>CatalogFloor),
     register!(AskFloor=>AskFloor),
+    register!(BestBid=>BestBid),
     register!(ExecutionMean=>ExecutionMean),
     register!(ExecutionMedian=>ExecutionMedian),
     register!(GiftFloor=>GiftFloor),

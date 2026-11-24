@@ -82,6 +82,7 @@ function StrategyRow({
   const primary =
     primaryFields.length === 1 ? primaryFields[0].value : undefined;
   const comparison =
+    strategy.purpose === "estimate" &&
     price &&
     !state.error &&
     !stale &&

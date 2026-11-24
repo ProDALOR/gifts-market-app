@@ -43,3 +43,14 @@ export function compatibleStrategies(
 }
 export const guideKey = (strategy: ValuationStrategy) =>
   JSON.stringify([strategy.documentation_url, strategy.documentation_revision]);
+
+/** Gift previews include observed quotes without bringing back reference-only floor strategies. */
+export function previewStrategies(
+  rows: readonly ValuationStrategy[],
+  target: ValuationQuery["target"]["kind"],
+  bid = false,
+) {
+  return compatibleStrategies(rows, target)
+    .filter((row) => bid || row.purpose !== "reference")
+    .sort((a, b) => a.input.targets.length - b.input.targets.length);
+}

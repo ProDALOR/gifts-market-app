@@ -32,7 +32,7 @@ export function validateDefinitions(rows: ValuationStrategy[]) {
       !record(row) ||
       !text(row.id) ||
       !text(row.name) ||
-      !["estimate", "reference"].includes(row.purpose) ||
+      !["estimate", "reference", "quote"].includes(row.purpose) ||
       !text(row.revision) ||
       !row.revision ||
       row.revision.length > 64 ||

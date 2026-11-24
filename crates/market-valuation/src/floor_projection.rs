@@ -52,7 +52,7 @@ impl Strategy for CatalogFloor {
     type Input = CatalogInput;
     type Output = Arc<CatalogFloorValuation>;
     const ID: &'static str = "catalog_floor";
-    const NAME: &'static str = "Catalog ask floors";
+    const NAME: &'static str = "Catalog best asks";
     const DESCRIPTION: &'static str = "Batched collection, model, backdrop and symbol ask floors.";
     const DOCUMENTATION: &'static str = include_str!("catalog_floor.md");
     fn evaluate(

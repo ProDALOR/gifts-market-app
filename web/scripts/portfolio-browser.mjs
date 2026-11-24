@@ -11,6 +11,7 @@ import {
   floorReport,
   fixtureDisplay,
   giftReport,
+  bestBidResult,
 } from "./valuation-fixture.mjs";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cacheDir = await mkdtemp(join(tmpdir(), "market-portfolio-"));
@@ -244,6 +245,20 @@ try {
             documentation_url: "/guide",
             documentation_revision: "r1",
           },
+          {
+            id: "best_bid",
+            revision: "r1",
+            purpose: "quote",
+            name: "Best bid",
+            description: "Bid quote",
+            input: {
+              targets: ["gift", "gift_attributes", "selection"],
+              period: "unsupported",
+            },
+            display: fixtureDisplay("best_bid"),
+            documentation_url: "/guide",
+            documentation_revision: "r1",
+          },
         ],
       }),
     );
@@ -385,6 +400,8 @@ try {
                   model_multiplier: { value: "2" },
                   backdrop_multiplier: { value: "1" },
                 });
+          if (params.strategies.includes("best_bid"))
+            data.results.push(bestBidResult());
           send(
             socket,
             frame.type === "request"
@@ -839,6 +856,35 @@ try {
       .getByRole("button", { name: "View Gift-1", exact: true })
       .click();
     await page.getByRole("dialog").waitFor();
+    const detailDialog = page.getByRole("dialog");
+    await detailDialog
+      .getByRole("columnheader", { name: "Best asks", exact: true })
+      .waitFor();
+    await detailDialog
+      .getByRole("columnheader", { name: "Best bids", exact: true })
+      .waitFor();
+    await detailDialog
+      .getByLabel("Collection best bid: 1.5 GRAM · venue · 3 available", {
+        exact: true,
+      })
+      .waitFor();
+    const quoteLayout = await detailDialog
+      .locator(".attribute-floor-table")
+      .evaluate((table) => ({
+        width: table.clientWidth,
+        scroll: table.scrollWidth,
+        bids: table.querySelectorAll(".bid-value").length,
+      }));
+    assert(
+      quoteLayout.scroll <= quoteLayout.width,
+      "side-by-side ask/bid quotes fit without horizontal scrolling",
+    );
+    assert(quoteLayout.bids >= 3);
+    await page.screenshot({
+      path: join(output, `portfolio-best-bids-${viewport.width}.png`),
+      fullPage: false,
+    });
+
     await page
       .getByRole("button", { name: "Close details", exact: true })
       .click();

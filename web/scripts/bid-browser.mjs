@@ -1,4 +1,4 @@
-import { fixtureDisplay } from "./valuation-fixture.mjs";
+import { fixtureDisplay, bestBidResult } from "./valuation-fixture.mjs";
 // Bid cards stay static; details share bounded playback with gift and filter previews.
 import assert from "node:assert/strict";
 import { gzipSync } from "node:zlib";
@@ -115,6 +115,20 @@ const server = await createServer({
                   documentation_url: "/guide",
                   documentation_revision: "1",
                 },
+                {
+                  purpose: "quote",
+                  id: "best_bid",
+                  revision: "r1",
+                  display: fixtureDisplay("best_bid"),
+                  name: "Best bid",
+                  description: "Fixture",
+                  input: {
+                    targets: ["selection", "gift", "gift_attributes"],
+                    period: "unsupported",
+                  },
+                  documentation_url: "/guide",
+                  documentation_revision: "1",
+                },
               ]),
             );
             return;
@@ -193,7 +207,21 @@ try {
             type: "result",
             id: command.id,
             method: command.method,
-            data: criteriaReport(command.params),
+            data: (() => {
+              const report =
+                command.params.target.kind === "selection"
+                  ? criteriaReport(command.params)
+                  : {
+                      target: command.params.target,
+                      currency_id: command.params.currency_id,
+                      evaluated_at: new Date().toISOString(),
+                      stale: false,
+                      results: [],
+                    };
+              if (command.params.strategies.includes("best_bid"))
+                report.results.push(bestBidResult());
+              return report;
+            })(),
           }),
         );
     });
@@ -254,7 +282,7 @@ try {
     /Model 7/,
   );
   assert.equal(await card.locator(".serial").textContent(), "×8");
-  assert.match(await card.locator(".bid-number").textContent(), /#1 – 1000/);
+  assert.match(await card.locator(".bid-number").textContent(), /#1 – 1\s000/);
   const any = page
     .locator(".gift-card")
     .filter({ has: page.locator('[data-order-id="any"]') });
@@ -510,7 +538,10 @@ try {
         .length === 8,
   );
   await details
-    .getByRole("button", { name: "How is this calculated?", exact: true })
+    .getByRole("button", {
+      name: "How is Matching asks calculated?",
+      exact: true,
+    })
     .click();
   await page
     .getByRole("dialog", { name: "Calculation guide", exact: true })
@@ -536,8 +567,19 @@ try {
   assert.equal(await details.locator(".detail-art").count(), 1);
   await details.getByText("/ gift", { exact: true }).waitFor();
   assert.equal(await details.locator(".detail-pricing > section").count(), 2);
+  await details
+    .getByRole("columnheader", { name: "Best asks", exact: true })
+    .waitFor();
+  await details
+    .getByRole("columnheader", { name: "Best bids", exact: true })
+    .waitFor();
+  await details
+    .getByLabel("Collection best bid: 1.5 GRAM · MRKT · 3 available", {
+      exact: true,
+    })
+    .waitFor();
   assert.equal(await details.locator(".matching-floor time").count(), 0);
-  await details.locator(".matching-floor .valuation-value").waitFor();
+  await details.locator(".matching-floor .valuation-value").first().waitFor();
   assert.equal(await details.locator(".detail-quantity").textContent(), "×8");
   assert.equal(
     await details.locator('[data-condition="model"] .condition-chip').count(),

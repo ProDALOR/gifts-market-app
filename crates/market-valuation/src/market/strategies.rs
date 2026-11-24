@@ -21,7 +21,7 @@ impl Strategy for AskFloor {
     };
     type Input = SelectionInput;
     const ID: &'static str = "ask_floor";
-    const NAME: &'static str = "Ask floor";
+    const NAME: &'static str = "Best ask";
     const DESCRIPTION: &'static str =
         "Lowest eligible ask for a collection, trait selection or individual gift.";
     const DOCUMENTATION: &'static str = include_str!("ask_floor.md");

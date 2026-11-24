@@ -13,9 +13,10 @@ import type {
   ValuationStrategy,
 } from "../market";
 import { useCollectionFloors } from "./floors";
-import { compatibleStrategies, strategyClient } from "./strategies";
+import { previewStrategies, strategyClient } from "./strategies";
 import { presentResult, type PresentedField } from "./presentation.ts";
 import { sameCriteria, sameGiftAttributes } from "./targets.ts";
+import { isBestBid } from "./best-bid";
 import { sameSlug } from "./slug.ts";
 import type { ValuationSubject } from "../order-target";
 import { criteriaPresentation, giftPresentation } from "../order-target.ts";
@@ -106,12 +107,11 @@ export function useOrderValuation(
       try {
         const rows = await strategyClient.list(stop.signal);
         stop.signal.throwIfAborted();
-        let strategies = compatibleStrategies(
+        let strategies = previewStrategies(
           rows,
           target.kind,
-          false,
-          order?.kind === "bid" ? undefined : "estimate",
-        ).sort((a, b) => a.input.targets.length - b.input.targets.length);
+          order?.kind === "bid",
+        );
         if (!strategies.length)
           throw new Error("No compatible valuation strategies are available.");
         const ids = strategies.map((row) => row.id);
@@ -126,6 +126,14 @@ export function useOrderValuation(
           stop.signal,
         );
         stop.signal.throwIfAborted();
+        for (const result of report.results) {
+          if (
+            result.strategy === "best_bid" &&
+            "data" in result &&
+            !isBestBid(result.data)
+          )
+            throw new Error("Invalid best-bid valuation response");
+        }
         const resolved = report.target;
         const matches =
           resolved.kind !== "catalog" &&
@@ -247,6 +255,7 @@ export function useOrderValuation(
       stale:
         outdated ||
         !!(
+          valuation.strategy.purpose === "estimate" &&
           shared &&
           (shared.stale ||
             (giftBasisChanged(report!, shared, valuation.strategy.id) ??

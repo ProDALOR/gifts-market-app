@@ -111,6 +111,12 @@ export function fixtureDisplay(id) {
     primary,
     format: { kind: "currency", decimals },
   });
+  if (id === "best_bid")
+    return {
+      fields: [currency("best", "Best bid", 2, true)],
+      evidence: [],
+      note: "Observed bid before fees.",
+    };
   return id === "gift_floor"
     ? {
         fields: [
@@ -142,4 +148,25 @@ export function fixtureDisplay(id) {
         evidence: [{ path: "/count", label: "gifts" }],
         note: "Current matching asks, before fees.",
       };
+}
+
+export function bestBidResult(value = "1.5") {
+  const quote = {
+    value,
+    order: { id: "bid-1", venue_id: "venue", quantity: 3 },
+  };
+  return {
+    strategy: "best_bid",
+    revision: "r1",
+    data: {
+      best: quote,
+      references: {
+        collection: quote,
+        model: quote,
+        backdrop: quote,
+        model_backdrop: quote,
+        pattern: quote,
+      },
+    },
+  };
 }

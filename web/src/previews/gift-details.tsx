@@ -66,7 +66,7 @@ export function GiftDetailsView({
     (selectedSerial &&
     collectionSlug &&
     /^[A-Za-z0-9]{1,128}$/.test(collectionSlug)
-      ? `${collectionSlug}-${selectedSerial}`
+      ? `${collectionSlug}-${giftPresentation(selected!)?.number}`
       : undefined);
   const telegramLink = telegramSlug
     ? `https://t.me/nft/${encodeURIComponent(telegramSlug)}`
@@ -221,6 +221,7 @@ export function GiftDetailsView({
               options={options}
               names={names}
               collectionPreview={collectionPreview}
+              valuation={state}
             />
           )}
           {removed && (
