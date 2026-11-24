@@ -26,6 +26,19 @@ pub(super) fn request(scope: &BookScope) -> w::ReadRequest {
 /// Gift projection over scoped generic active-order partitions, with no request token retained.
 pub(crate) struct AskBookSnapshot(market_replica::OrderBookSnapshot);
 impl AskBookSnapshot {
+    /// Project shared order references without cloning full paginated wire rows.
+    pub(crate) fn quotes(
+        &self,
+        now_ms: i64,
+    ) -> impl Iterator<Item = Result<Option<AskQuote>>> + '_ {
+        self.0.candidates(Default::default()).map(move |entity| {
+            let Some(w::entity::Entity::Order(order)) = &entity.entity else {
+                return Err(Status::data_loss("expected an active order"));
+            };
+            market_gifts_hub::ask_quote(order, now_ms)
+                .map_err(|error| Status::data_loss(error.to_string()))
+        })
+    }
     pub(crate) fn pair_quotes<'a>(
         &'a self,
         model: &ModelId,

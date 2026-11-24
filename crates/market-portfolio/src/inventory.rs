@@ -16,7 +16,7 @@ pub(crate) struct InventoryBuilder {
 impl InventoryBuilder {
     pub fn snapshot(self, completion: InventoryCompletion) -> InventorySnapshot {
         InventorySnapshot {
-            gifts: self.gifts.into_values().collect(),
+            gifts: std::sync::Arc::new(self.gifts.into_values().collect()),
             regular_gifts: self.regular,
             skipped: self.skipped,
             pages_read: self.pages,

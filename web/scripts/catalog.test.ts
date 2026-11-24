@@ -478,3 +478,151 @@ test("compact tokens retain selective refreshes and recover missed changes on re
   assert.match(f.controller.getSnapshot().optionsError, /no longer available/);
   assert.equal(choiceCalls(f, "b"), 3);
 });
+
+test("mixed portfolio previews share bounded reads, live versions and the selected picker cache", async (t) => {
+  const ids = Array.from({ length: 40 }, (_, i) => `c${i}`);
+  const revisions = new Map(ids.map((id) => [id, "v1"]));
+  const watches = new Map<
+    string,
+    { command: any; frame: (value: any) => void }
+  >();
+  const emit = () => {
+    for (const [id, watch] of watches)
+      watch.frame({
+        type: "catalog.versions",
+        id,
+        versions: {
+          directory: "directory",
+          collections: Object.fromEntries(
+            watch.command.collection_ids.map((key: string) => [
+              key,
+              revisions.get(key),
+            ]),
+          ),
+        },
+      });
+  };
+  const pending = gate();
+  let held = true,
+    running = 0,
+    maximum = 0,
+    directories = 0;
+  const calls: string[] = [];
+  const controller = new CatalogController({
+    socket: {
+      subscribe(command, frame) {
+        watches.set(command.id, { command, frame });
+        queueMicrotask(emit);
+        return () => {
+          watches.delete(command.id);
+        };
+      },
+      update(command) {
+        watches.get(command.id)!.command = command;
+        queueMicrotask(emit);
+      },
+      retry() {
+        queueMicrotask(emit);
+      },
+    },
+    catalog: async () => {
+      directories++;
+      return {
+        collections: ids.map((id) => ({
+          id,
+          name: id,
+          slug: null,
+          preview: null,
+        })),
+        currencies: [],
+        venues: [],
+        books: [],
+      };
+    },
+    collection: async (id, signal, received) => {
+      running++;
+      maximum = Math.max(maximum, running);
+      calls.push(id);
+      try {
+        if (held) await pending.promise;
+        assert(!signal.aborted);
+        received?.(revisions.get(id)!);
+        return {
+          collection: { id, name: id, slug: null, preview: null },
+          models: [
+            { id: `${id}.model`, name: revisions.get(id)!, media: null },
+          ],
+          backdrops: [],
+          patterns: [],
+        };
+      } finally {
+        running--;
+      }
+    },
+  });
+  t.after(() => controller.close());
+  controller.previews(ids);
+  controller.start();
+  await until(() => running === 2);
+  assert.equal(
+    calls.length,
+    2,
+    "remaining preview reads wait instead of cancelling or flooding",
+  );
+  held = false;
+  pending.release();
+  await until(() => controller.getSnapshot().previewOptions.size === 32);
+  assert.equal(maximum, 2);
+  assert.equal(calls.length, 32, "only the demanded bounded subset is loaded");
+  assert.equal(directories, 1);
+  assert.equal(watches.size, 4);
+  assert(
+    [...watches.values()].every((w) => w.command.collection_ids.length <= 8),
+  );
+  const previous = calls.length;
+  controller.select("c2");
+  await until(() => controller.getSnapshot().options.has("c2.model"));
+  assert.equal(
+    calls.length,
+    previous,
+    "opening a loaded collection reuses its preview request",
+  );
+  revisions.set("c1", "v2");
+  emit();
+  await until(
+    () =>
+      controller.getSnapshot().previewOptions.get("c1.model")?.name === "v2",
+  );
+  assert.equal(
+    calls.length,
+    previous + 1,
+    "an invalidation rereads only that collection",
+  );
+  assert.equal(
+    controller.getSnapshot().options.size,
+    1,
+    "picker choices stay collection-scoped",
+  );
+  assert.equal(controller.getSnapshot().names.get("c1.model"), "v2");
+  const first = watches.get("catalog")!,
+    other = watches.get("catalog.1")!;
+  first.frame({
+    type: "error",
+    id: "catalog",
+    error: { code: "unavailable", message: "first group disconnected" },
+  });
+  other.frame({
+    type: "catalog.versions",
+    id: "catalog.1",
+    versions: { directory: "directory", collections: {} },
+  });
+  assert.match(
+    controller.getSnapshot().startupError,
+    /first group disconnected/,
+    "another group's success cannot hide a failed watch",
+  );
+  emit();
+  await until(() => !controller.getSnapshot().startupError);
+  controller.close();
+  assert.equal(watches.size, 0);
+});

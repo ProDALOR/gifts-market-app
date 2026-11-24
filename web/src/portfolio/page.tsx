@@ -17,20 +17,20 @@ import { CurrencyPicker, SortPicker } from "../ui/pickers";
 import { Quote } from "../ui/market-controls";
 import { RelativeAge } from "../ui/relative-age";
 import { BrandMark } from "../brand/brand-mark";
-import { GiftCardView } from "../previews/gift-card";
-import { GiftDetailsView } from "../previews/gift-details";
 import { VirtualGiftGrid } from "../orderbook/virtual-gift-grid";
 import { BackToTop } from "../ui/back-to-top";
-import { useOrderValuation } from "../valuation/use-order-valuation";
-import type { TraitKey, CatalogOption, GiftMedia } from "../market";
-import type { ValuationSubject } from "../order-target";
+import type { TraitKey } from "../market";
+import {
+  PortfolioDetails,
+  PortfolioGiftCard,
+  portfolioSubject,
+} from "./previews";
 import { useMarketStatus } from "../use-market-status";
 import { usePortfolio } from "./use-portfolio";
 import { selectItems, progressText, portfolioSummary } from "./model";
 import type { PortfolioFilters, PortfolioItem, PortfolioState } from "./model";
 import "./portfolio.css";
 const keyOf = (item: PortfolioItem) => item.gift.gift.id;
-const visible = () => {};
 const emptyItems: PortfolioItem[] = [];
 const initialFilters: PortfolioFilters = {
   collection: "",
@@ -40,61 +40,6 @@ const initialFilters: PortfolioFilters = {
   max: "",
   sort: "value_desc",
 };
-function subject(
-  item: PortfolioItem,
-  currency: string,
-): ValuationSubject | undefined {
-  const g = item.resolved;
-  return g
-    ? {
-        book: { collection_id: g.collection_id, currency_id: currency },
-        target: { kind: "gift", id: g.id, number: g.number, traits: g.traits },
-      }
-    : undefined;
-}
-function modelMedia(item: PortfolioItem): GiftMedia | undefined {
-  const id = item.resolved?.traits.model;
-  if (!id) return;
-  const base = `/media/models/${encodeURIComponent(id)}`;
-  return {
-    thumbnail_url: `${base}/thumbnail`,
-    preview_url: `${base}/preview`,
-    animation_url: `${base}/animation`,
-  };
-}
-function PortfolioDetails({
-  item,
-  currency,
-  options,
-  names,
-  close,
-  share,
-}: {
-  item: PortfolioItem;
-  currency: string;
-  options: ReadonlyMap<string, CatalogOption>;
-  names: ReadonlyMap<string, string>;
-  close: () => void;
-  share?: (slug: string, currency: string) => void;
-}) {
-  const gift = subject(item, currency)!;
-  const valuation = useOrderValuation(gift);
-  return (
-    <GiftDetailsView
-      subject={gift}
-      valuation={valuation}
-      collectionId={gift.book.collection_id}
-      currency={currency}
-      collectionName={item.gift.gift.slug.split("-")[0]}
-      options={options}
-      names={names}
-      collectionPreview={modelMedia(item)}
-      slug={item.gift.gift.slug}
-      close={close}
-      share={share}
-    />
-  );
-}
 function RefreshButton({
   busy,
   after,
@@ -271,13 +216,27 @@ function PortfolioView({
     () => initialFilters,
   );
   const [open, setOpen] = useState<TraitKey>(),
-    [selected, setSelected] = useState<PortfolioItem>(),
+    [selectedId, setSelected] = useState<string>(),
+    [previewIds, setPreviewIds] = useState<string[]>([]),
     [ownerOpen, setOwnerOpen] = useState(!initialUser && !context.initData);
   const controls = useRef<HTMLElement>(null);
+  const portfolio = usePortfolio(user, currency);
+  const items = portfolio.state?.valuation?.items || emptyItems;
+  const selected = useMemo(
+    () =>
+      selectedId ? items.find((item) => keyOf(item) === selectedId) : undefined,
+    [items, selectedId],
+  );
+  useEffect(() => {
+    if (selectedId && !selected) setSelected(undefined);
+  }, [selectedId, selected]);
   const selectedCollection =
     selected?.resolved?.collection_id || filters.collection;
-  const catalog = useCatalog(0, selectedCollection),
-    portfolio = usePortfolio(user, currency),
+  const demanded = useMemo(
+    () => [selectedCollection, ...previewIds].filter(Boolean),
+    [selectedCollection, previewIds],
+  );
+  const catalog = useCatalog(0, filters.collection, demanded),
     availability = useMarketStatus(!!user);
   const self = portfolioUser(telegram.identity?.user.id);
   const chooseUser = (id: number, replace = false) => {
@@ -303,8 +262,25 @@ function PortfolioView({
     }
   }, [user, currency]);
   useNavigationBack(!!open, () => setOpen(undefined));
-  const items = portfolio.state?.valuation?.items || emptyItems;
   const filtered = useMemo(() => selectItems(items, filters), [items, filters]);
+  const visible = useCallback(
+    (start: number, end: number, anchor = start) => {
+      const ids = [
+        ...new Set(
+          [
+            ...filtered.slice(Math.max(start, anchor), end),
+            ...filtered.slice(start, Math.max(start, anchor)),
+          ].flatMap((item) =>
+            item.resolved ? [item.resolved.collection_id] : [],
+          ),
+        ),
+      ];
+      setPreviewIds((old) =>
+        JSON.stringify(old) === JSON.stringify(ids) ? old : ids,
+      );
+    },
+    [filtered],
+  );
   const summary = useMemo(() => portfolioSummary(filtered), [filtered]);
   const isFiltered = !!(
     filters.collection ||
@@ -314,9 +290,9 @@ function PortfolioView({
     Object.values(filters.traits).some((v) => v?.length)
   );
   const collections = useMemo(() => {
-    const owned = new Set(
-      items.flatMap((i) => (i.resolved ? [i.resolved.collection_id] : [])),
-    );
+    const owned = new Set<string>();
+    for (const item of items)
+      if (item.resolved) owned.add(item.resolved.collection_id);
     return catalog.types.filter((c) => owned.has(c.id));
   }, [catalog.types, items]);
   const collectionIds = useMemo(
@@ -355,7 +331,7 @@ function PortfolioView({
       currency={currency}
       collection={selectedCollection}
       collections={collectionIds}
-      order={selected ? subject(selected, currency) : undefined}
+      order={selected ? portfolioSubject(selected, currency) : undefined}
     >
       <div className="workspace">
         <main className="orderbook market-shell portfolio-shell">
@@ -610,46 +586,18 @@ function PortfolioView({
                 busy={busy}
                 visible={visible}
                 label="Portfolio gifts"
-                render={(item, index) => {
-                  const gift = subject(item, currency);
-                  return (
-                    <GiftCardView
-                      subject={gift}
-                      options={catalog.options}
-                      collectionName={
-                        catalog.names.get(item.resolved?.collection_id || "") ||
-                        item.gift.gift.slug.split("-")[0]
-                      }
-                      media={modelMedia(item)}
-                      identity={`#${item.gift.gift.number.toLocaleString()}`}
-                      price={item.estimate ?? undefined}
-                      currency={currency}
-                      format="rounded"
-                      position={index + 1}
-                      total={filtered.length}
-                      className="portfolio-card"
-                      selected={selected?.gift.gift.id === item.gift.gift.id}
-                      action={
-                        gift ? (
-                          <button
-                            className="card-open"
-                            aria-label={`View ${item.gift.gift.slug}`}
-                            onClick={() => setSelected(item)}
-                            aria-haspopup="dialog"
-                          />
-                        ) : (
-                          <a
-                            className="card-open"
-                            aria-label={`Open ${item.gift.gift.slug} in Telegram`}
-                            href={`https://t.me/nft/${encodeURIComponent(item.gift.gift.slug)}`}
-                            target="_blank"
-                            rel="noreferrer"
-                          />
-                        )
-                      }
-                    />
-                  );
-                }}
+                render={(item, index) => (
+                  <PortfolioGiftCard
+                    item={item}
+                    currency={currency}
+                    options={catalog.previewOptions}
+                    names={catalog.names}
+                    selected={selectedId === item.gift.gift.id}
+                    select={setSelected}
+                    position={index + 1}
+                    total={filtered.length}
+                  />
+                )}
               />
             )}
             {!busy && user && state?.inventory && filtered.length === 0 && (
@@ -666,7 +614,7 @@ function PortfolioView({
           <PortfolioDetails
             item={selected}
             currency={currency}
-            options={catalog.options}
+            options={catalog.previewOptions}
             names={catalog.names}
             close={() => setSelected(undefined)}
             share={share}

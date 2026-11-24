@@ -22,6 +22,7 @@ export type CatalogState = {
   directory: Catalog["books"];
   item?: Collection;
   options: ReadonlyMap<string, CatalogOption>;
+  previewOptions: ReadonlyMap<string, CatalogOption>;
   names: Map<string, string>;
   catalogLoading: boolean;
   startupError: string;
@@ -42,15 +43,21 @@ export class CatalogController {
   private collections = new Map<string, Entry>();
   private listeners = new Set<() => void>();
   private selectedId = "";
+  private previewIds: string[] = [];
+  private previewMaps: Options[] = [];
+  private watches = new Map<
+    string,
+    { signature: string; stop: () => void; error: string }
+  >();
   private sequence = 0;
   private manifest?: CatalogVersions;
   private fallback = false;
   private fallbackTimer?: ReturnType<typeof setTimeout>;
-  private unsubscribe?: () => void;
+
   private started = false;
   private closed = false;
   private liveError = "";
-  private watchSignature = "";
+
   private materialized = emptyCatalog;
   private types: Collection[] = [];
   private state: CatalogState = {
@@ -59,6 +66,7 @@ export class CatalogController {
     venues: [],
     directory: [],
     options: emptyOptions,
+    previewOptions: emptyOptions,
     names: new Map(),
     catalogLoading: true,
     startupError: "",
@@ -91,36 +99,7 @@ export class CatalogController {
   start() {
     if (this.started || this.closed) return;
     this.started = true;
-    this.watchSignature = this.watching();
-    this.unsubscribe = this.deps.socket.subscribe(
-      {
-        type: "catalog.watch",
-        id: "catalog",
-        collection_ids: JSON.parse(this.watchSignature),
-      },
-      (frame) => {
-        if (frame.type === "catalog.versions") {
-          this.liveError = "";
-          this.fallback = false;
-          this.manifest = frame.versions;
-          clearTimeout(this.fallbackTimer);
-          this.directory.setTarget(frame.versions.directory);
-          for (const [id, entry] of this.collections)
-            if (Object.hasOwn(frame.versions.collections, id))
-              entry.resource.setTarget(frame.versions.collections[id]);
-          this.reconcile();
-        } else if (frame.type === "error") {
-          this.liveError = `Catalog live updates: ${frame.error.message}`;
-          this.fallback = true;
-          this.reconcile();
-        }
-      },
-      (status) => {
-        if (status === "Reconnecting")
-          this.liveError = "Catalog live updates are reconnecting";
-        this.publish();
-      },
-    );
+    this.updateWatch();
     // HTTP remains usable when a proxy or older deployment cannot establish a catalog watch.
     this.fallbackTimer = setTimeout(() => {
       this.fallback = true;
@@ -136,45 +115,121 @@ export class CatalogController {
     this.updateWatch();
     this.reconcile();
   }
+  previews(ids: readonly string[]) {
+    const next = [...new Set(ids.filter(Boolean))].slice(0, 32);
+    if (JSON.stringify(next) === JSON.stringify(this.previewIds) || this.closed)
+      return;
+    this.previewIds = next;
+    for (const id of next) {
+      const entry = this.collections.get(id);
+      if (entry) entry.used = ++this.sequence;
+    }
+    this.updateWatch();
+    this.reconcile();
+  }
   retryCatalog = () => {
-    if (this.liveError) this.deps.socket.retry("catalog");
+    if (this.liveError)
+      for (const id of this.watches.keys()) this.deps.socket.retry(id);
     if (this.directory.error || this.directory.value === undefined)
       this.directory.reload();
   };
   retryOptions = () => {
-    if (this.liveError) this.deps.socket.retry("catalog");
+    if (this.liveError)
+      for (const id of this.watches.keys()) this.deps.socket.retry(id);
     this.collections.get(this.selectedId)?.resource.reload();
     if (this.directory.error) this.directory.reload();
   };
   close() {
     this.closed = true;
     clearTimeout(this.fallbackTimer);
-    this.unsubscribe?.();
+    for (const watch of this.watches.values()) watch.stop();
+    this.watches.clear();
     this.directory.dispose();
     for (const entry of this.collections.values()) entry.resource.dispose();
     this.listeners.clear();
   }
-  private watching() {
+  private wanted() {
+    return [
+      ...new Set([this.selectedId, ...this.previewIds].filter(Boolean)),
+    ].slice(0, 32);
+  }
+  private capacity() {
+    return Math.max(8, this.wanted().length);
+  }
+  private watchError() {
+    return [...this.watches.values()].find((watch) => watch.error)?.error || "";
+  }
+  private updateWatch() {
+    if (!this.started || this.closed) return;
     const retained = [...this.collections]
       .filter(([, entry]) => entry.resource.value !== undefined)
       .sort((a, b) => b[1].used - a[1].used)
       .map(([id]) => id);
-    return JSON.stringify(
-      [...new Set([this.selectedId, ...retained].filter(Boolean))]
-        .slice(0, 8)
-        .sort(),
-    );
-  }
-  private updateWatch() {
-    if (!this.started) return;
-    const signature = this.watching();
-    if (signature === this.watchSignature) return;
-    this.watchSignature = signature;
-    this.deps.socket.update({
-      type: "catalog.watch",
-      id: "catalog",
-      collection_ids: JSON.parse(signature),
-    });
+    const ids = [...new Set([...this.wanted(), ...retained])]
+      .slice(0, this.capacity())
+      .sort();
+    const count = Math.max(1, Math.ceil(ids.length / 8));
+    for (const [id, watch] of this.watches) {
+      const index = id === "catalog" ? 0 : Number(id.slice(8));
+      if (index >= count) {
+        watch.stop();
+        this.watches.delete(id);
+      }
+    }
+    this.liveError = this.watchError();
+    for (let i = 0; i < count; i++) {
+      const id = i ? `catalog.${i}` : "catalog";
+      const collection_ids = ids.slice(i * 8, i * 8 + 8);
+      const signature = JSON.stringify(collection_ids);
+      const command = { type: "catalog.watch" as const, id, collection_ids };
+      const watch = this.watches.get(id);
+      if (watch) {
+        if (watch.signature !== signature) {
+          watch.signature = signature;
+          this.deps.socket.update(command);
+        }
+        continue;
+      }
+      const entry = { signature, stop: () => {}, error: "" };
+      this.watches.set(id, entry);
+      entry.stop = this.deps.socket.subscribe(
+        command,
+        (frame) => {
+          if (this.closed || this.watches.get(id) !== entry) return;
+          if (frame.type === "catalog.versions") {
+            entry.error = "";
+            this.liveError = this.watchError();
+            this.fallback = !!this.liveError;
+            this.manifest = {
+              directory: frame.versions.directory,
+              collections: {
+                ...this.manifest?.collections,
+                ...frame.versions.collections,
+              },
+            };
+            clearTimeout(this.fallbackTimer);
+            this.directory.setTarget(frame.versions.directory);
+            for (const [key, resource] of this.collections)
+              if (Object.hasOwn(frame.versions.collections, key))
+                resource.resource.setTarget(frame.versions.collections[key]);
+            this.reconcile();
+          } else if (frame.type === "error") {
+            entry.error = `Catalog live updates: ${frame.error.message}`;
+            this.liveError = this.watchError();
+            this.fallback = true;
+            this.reconcile();
+          }
+        },
+        (status) => {
+          if (this.closed || this.watches.get(id) !== entry) return;
+          if (status === "Reconnecting") {
+            entry.error = "Catalog live updates are reconnecting";
+            this.liveError = this.watchError();
+          }
+          this.publish();
+        },
+      );
+    }
   }
   private entry(id: string) {
     let entry = this.collections.get(id);
@@ -201,6 +256,7 @@ export class CatalogController {
     const others = [...this.collections]
       .filter(([key, e]) => key !== id && e.resource.loading)
       .sort((a, b) => a[1].used - b[1].used);
+    if (id !== this.selectedId && others.length >= 2) return false;
     while (others.length >= 2) {
       const [key, entry] = others.shift()!;
       entry.resource.dispose();
@@ -210,7 +266,7 @@ export class CatalogController {
   private prune() {
     for (const [id, entry] of this.collections)
       if (
-        id !== this.selectedId &&
+        !this.wanted().includes(id) &&
         !entry.resource.loading &&
         entry.resource.value === undefined
       ) {
@@ -221,7 +277,7 @@ export class CatalogController {
       .filter(([, e]) => e.resource.value !== undefined)
       .sort((a, b) => a[1].used - b[1].used);
     for (const [id, entry] of retained)
-      if (id !== this.selectedId && entry.resource.value!.size > 10000) {
+      if (!this.wanted().includes(id) && entry.resource.value!.size > 10000) {
         entry.resource.dispose();
         this.collections.delete(id);
       }
@@ -232,8 +288,11 @@ export class CatalogController {
       (total, [, e]) => total + e.resource.value!.size,
       0,
     );
-    while (bounded.length > 8 || size > 10000) {
-      const index = bounded.findIndex(([id]) => id !== this.selectedId);
+    while (
+      bounded.length > this.capacity() ||
+      size > (this.capacity() > 8 ? 16000 : 10000)
+    ) {
+      const index = bounded.findIndex(([id]) => !this.wanted().includes(id));
       if (index < 0) break;
       const [id, entry] = bounded.splice(index, 1)[0];
       size -= entry.resource.value!.size;
@@ -261,22 +320,28 @@ export class CatalogController {
       }
       const allowed = this.started && (!!this.manifest || this.fallback);
       this.directory.activate(allowed);
+      const wanted = this.wanted();
       for (const [id, entry] of this.collections)
         if (
-          id !== this.selectedId ||
+          !wanted.includes(id) ||
           !allowed ||
           !this.types.some((row) => row.id === id)
         )
           entry.resource.activate(false);
-      if (directory && this.types.some((row) => row.id === this.selectedId)) {
-        const entry = this.entry(this.selectedId);
+      for (const id of wanted) {
+        if (!directory || !this.types.some((row) => row.id === id)) continue;
+        const entry = this.entry(id);
         const known = this.manifest?.collections;
-        if (known && Object.hasOwn(known, this.selectedId))
-          entry.resource.setTarget(known[this.selectedId]);
+        if (known && Object.hasOwn(known, id))
+          entry.resource.setTarget(known[id]);
+        const running = [...this.collections.values()].filter(
+          (e) => e.resource.loading,
+        ).length;
+        // The selected picker may replace abandoned work; previews wait their turn.
         entry.resource.activate(
           allowed &&
-            ((!!known && Object.hasOwn(known, this.selectedId)) ||
-              this.fallback),
+            (id === this.selectedId || entry.resource.loading || running < 2) &&
+            ((!!known && Object.hasOwn(known, id)) || this.fallback),
         );
       }
       this.prune();
@@ -295,15 +360,27 @@ export class CatalogController {
       : undefined;
     const options = resource?.value ?? emptyOptions;
     const previous = this.state;
+    const maps = [...this.collections.values()].flatMap((e) =>
+      e.resource.value ? [e.resource.value] : [],
+    );
+    const sameMaps =
+      maps.length === this.previewMaps.length &&
+      maps.every((map, i) => map === this.previewMaps[i]);
+    const previewOptions = sameMaps
+      ? previous.previewOptions
+      : new Map(maps.flatMap((map) => [...map]));
+    this.previewMaps = maps;
     const names =
       previous.types === this.types &&
       previous.venues === directory.venues &&
-      previous.options === options
+      previous.previewOptions === previewOptions
         ? previous.names
         : new Map(
-            [...this.types, ...directory.venues, ...options.values()].map(
-              (row) => [row.id, row.name],
-            ),
+            [
+              ...this.types,
+              ...directory.venues,
+              ...previewOptions.values(),
+            ].map((row) => [row.id, row.name]),
           );
     const next: CatalogState = {
       selectedId: this.selectedId,
@@ -312,6 +389,7 @@ export class CatalogController {
       directory: directory.books,
       item,
       options,
+      previewOptions,
       names,
       catalogLoading:
         this.directory.value === undefined && !this.directory.error,

@@ -242,11 +242,6 @@
   color: var(--muted);
   margin: 8px 0 0;
 }
-.portfolio-card .card-copy strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .portfolio-content {
   min-width: 0;
 }

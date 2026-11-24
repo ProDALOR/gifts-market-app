@@ -102,13 +102,16 @@ export function progressText(state?: PortfolioState) {
 }
 
 export function portfolioSummary(items: readonly PortfolioItem[]) {
-  const priced = items.flatMap((item) =>
-    item.estimate != null ? [item.estimate] : [],
-  );
+  const priced: string[] = [];
+  const collections = new Set<string>();
+  for (const item of items) {
+    if (item.estimate != null) priced.push(item.estimate);
+    collections.add(item.gift.gift.collection);
+  }
   return {
     count: items.length,
     unpriced: items.length - priced.length,
-    collections: new Set(items.map((item) => item.gift.gift.collection)).size,
+    collections: collections.size,
     total: priced.length || !items.length ? sumAmounts(priced) : undefined,
   };
 }

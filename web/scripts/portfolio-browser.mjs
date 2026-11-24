@@ -148,7 +148,10 @@ try {
         r.fulfill({
           headers: { etag: '"directory"' },
           json: {
-            collections: [collection],
+            collections: [
+              collection,
+              { ...collection, id: "other", name: "Other Gift" },
+            ],
             currencies: [
               { id: "GRAM", name: "GRAM", decimals: 9 },
               { id: "XTR", name: "Stars", decimals: 0 },
@@ -164,7 +167,27 @@ try {
         catalogDetails++;
         return r.fulfill({
           headers: { etag: '"details"' },
-          json: { collection, models, backdrops, patterns },
+          json: r.request().url().endsWith("/other")
+            ? {
+                collection: { ...collection, id: "other", name: "Other Gift" },
+                models: [
+                  { ...models[0], id: "other-model", name: "Other Model" },
+                ],
+                backdrops: [
+                  {
+                    ...backdrops[0],
+                    id: "other-back",
+                    name: "Blue",
+                    palette: {
+                      center: "#123456",
+                      edge: "#234567",
+                      pattern: "#345678",
+                    },
+                  },
+                ],
+                patterns: [],
+              }
+            : { collection, models, backdrops, patterns },
         });
       },
     );
@@ -412,6 +435,84 @@ try {
       .getByRole("button", { name: "Close details", exact: true })
       .click();
     await page.getByRole("dialog").waitFor({ state: "hidden" });
+    // All gifts must use the same resolved artwork and model labels as market asks.
+    await page.getByRole("button", { name: /^All gifts/ }).click();
+    report = state(7, 6000, 3);
+    report.valuation.items[1] = {
+      ...item(2),
+      gift: {
+        ...item(2).gift,
+        gift: { ...item(2).gift.gift, slug: "OtherGift-2", collection: "2" },
+      },
+      resolved: {
+        ...item(2).resolved,
+        collection_id: "other",
+        traits: { model: "other-model", backdrop: "other-back" },
+      },
+    };
+    send(peer, { type: "portfolio.snapshot", id: watchId, data: report });
+    await page.locator('.gift-grid[data-order-count="6000"]').waitFor();
+    const other = page
+      .locator(".portfolio-card")
+      .filter({
+        has: page.getByRole("button", {
+          name: "View OtherGift-2",
+          exact: true,
+        }),
+      });
+    await other.getByText("Other Model", { exact: true }).waitFor();
+    assert(
+      (await other.locator(".gift-backdrop").count()) > 0,
+      "mixed collection card has its backdrop",
+    );
+    const reads = catalogDetails;
+    await page
+      .getByRole("button", { name: "View OtherGift-2", exact: true })
+      .click();
+    await page
+      .getByRole("dialog")
+      .getByText("Other Model", { exact: true })
+      .first()
+      .waitFor();
+    assert.equal(
+      catalogDetails,
+      reads,
+      "opening details reuses visible card metadata",
+    );
+    assert.equal(
+      await page
+        .getByRole("dialog")
+        .getByText(/Unavailable (model|backdrop|symbol)/)
+        .count(),
+      0,
+    );
+    await page
+      .getByRole("button", { name: "Close details", exact: true })
+      .click();
+    assert((await page.locator(".portfolio-card").count()) < 150);
+    await page.evaluate(() =>
+      window.scrollTo(0, document.documentElement.scrollHeight),
+    );
+    await page.waitForTimeout(100);
+    assert(
+      (await page
+        .getByRole("button", { name: "View Gift-6000", exact: true })
+        .count()) > 0,
+    );
+    const bottomReads = catalogDetails;
+    send(peer, {
+      type: "portfolio.progress",
+      id: watchId,
+      refresh_id: 3,
+      progress: { ...report.progress, stage: "valuing", valued: 25 },
+    });
+    await page.waitForTimeout(50);
+    assert.equal(
+      catalogDetails,
+      bottomReads,
+      "progress does not refetch card catalogs",
+    );
+    await page.evaluate(() => window.scrollTo(0, 0));
     await page.locator(".portfolio-owner-trigger").click();
     await page.getByLabel("Telegram user ID").fill("8");
     await page.getByRole("button", { name: "Open", exact: true }).click();

@@ -86,7 +86,7 @@ impl Source {
     }
 }
 #[derive(Clone, Default)]
-struct Quotes(Arc<AtomicUsize>);
+struct Quotes(Arc<AtomicUsize>, Arc<Mutex<Vec<Arc<Vec<InventoryGift>>>>>);
 impl ValuationProvider for Quotes {
     async fn value(
         &self,
@@ -95,6 +95,7 @@ impl ValuationProvider for Quotes {
         progress: tokio::sync::watch::Sender<usize>,
     ) -> Result<Arc<InventoryValuation>, market_valuation::ValuationError> {
         self.0.fetch_add(1, Ordering::SeqCst);
+        self.1.lock().unwrap().push(gifts.clone());
         progress.send_replace(gifts.len());
         Ok(Arc::new(InventoryValuation {
             currency_id: currency,
@@ -220,6 +221,12 @@ async fn bot_and_gui_share_paginated_refresh_and_currency_changes_do_not_fetch()
     );
     assert_eq!(source.count(), 2);
     assert_eq!(quotes.0.load(Ordering::SeqCst), 2);
+    let inputs = quotes.1.lock().unwrap();
+    assert!(
+        Arc::ptr_eq(&inputs[0], &inputs[1]),
+        "currency views share one inventory allocation"
+    );
+    drop(inputs);
     assert!(matches!(
         service.handle.refresh(query(7, "GRAM")).await,
         Err(PortfolioError::Cooldown(_))
@@ -379,6 +386,10 @@ async fn inventory_and_prices_replace_atomically_and_old_generation_is_cancelled
     tokio::time::sleep(Duration::from_millis(15)).await;
     service.handle.refresh(query(7, "GRAM")).await.unwrap();
     calls(&source, 3).await;
+    assert!(
+        quotes.0.lock().unwrap()[0].is_closed(),
+        "recheck cancels superseded valuation before downloading inventory"
+    );
     source.reply(2, Ok(page(&["4", "5", "6"], None, 3)));
     quote_calls(&quotes, 2).await;
     assert!(

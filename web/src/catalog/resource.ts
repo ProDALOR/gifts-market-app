@@ -24,7 +24,7 @@ export class CatalogResource<T> {
   constructor(
     private query: Query<T>,
     private changed: () => void,
-    private admit: () => void,
+    private admit: () => void | boolean,
     private random: () => number,
   ) {}
   get fresh() {
@@ -87,7 +87,7 @@ export class CatalogResource<T> {
       this.changed();
       return;
     }
-    this.admit();
+    if (this.admit() === false) return;
     const stop = new AbortController();
     this.pending = stop;
     this.loading = true;

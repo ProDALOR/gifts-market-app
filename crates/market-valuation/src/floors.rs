@@ -207,86 +207,87 @@ impl Statistics {
             return Err(capacity());
         }
         let now = stats.evaluated_at.as_millisecond();
-        let mut token = String::new();
+        let asks = match stats.asks.take() {
+            Some(asks) => asks,
+            None => snapshot.ask_book(scope)?,
+        };
         let mut budget = market_replica::catalog_read::ScanBudget::default();
         let mut memberships = 0;
-        loop {
-            budget.page()?;
-            let page = snapshot.asks(scope, now, token)?;
-            for quote in page.data {
-                snapshot.check_cancelled()?;
-                let gift = quote.gift_id.map(Arc::new);
-                memberships += stats.collection.observe(&quote.price, gift.as_ref());
-                if let Some(at) = quote.expires_at {
-                    stats.expires_at_ms = stats.expires_at_ms.min(at.as_millisecond());
-                }
-                if preparation == Preparation::Collection {
-                    if memberships > GIFT_MEMBERSHIP_LIMIT {
-                        return Err(capacity());
-                    }
-                    continue;
-                }
-                let model = quote
-                    .model_id
-                    .as_ref()
-                    .filter(|id| stats.known_models.contains(*id));
-                let backdrop = quote
-                    .backdrop_id
-                    .as_ref()
-                    .filter(|id| stats.known_backdrops.contains(*id));
-                if let Some(id) = quote
-                    .pattern_id
-                    .as_ref()
-                    .filter(|id| stats.known_patterns.contains(*id))
-                {
-                    memberships += stats
-                        .patterns
-                        .entry(id.clone())
-                        .or_default()
-                        .observe(&quote.price, gift.as_ref());
-                }
-                if let Some(id) = model {
-                    memberships += stats
-                        .models
-                        .entry(id.clone())
-                        .or_default()
-                        .observe(&quote.price, gift.as_ref());
-                }
-                if let Some(id) = backdrop {
-                    memberships += stats
-                        .backdrops
-                        .entry(id.clone())
-                        .or_default()
-                        .observe(&quote.price, gift.as_ref());
-                }
-                if memberships > GIFT_MEMBERSHIP_LIMIT
-                    || stats.models.len()
-                        + stats.backdrops.len()
-                        + stats.patterns.len()
-                        + stats.known_models.len()
-                        + stats.known_backdrops.len()
-                        + stats.known_patterns.len()
-                        > STAT_LIMIT
-                {
+        for (scanned, quote) in asks.quotes(now).enumerate() {
+            snapshot.check_cancelled()?;
+            if scanned % 500 == 0 {
+                budget.page()?;
+            }
+            let Some(quote) = quote? else { continue };
+            let gift = quote.gift_id.map(Arc::new);
+            memberships += stats.collection.observe(&quote.price, gift.as_ref());
+            if let Some(at) = quote.expires_at {
+                stats.expires_at_ms = stats.expires_at_ms.min(at.as_millisecond());
+            }
+            if preparation == Preparation::Collection {
+                if memberships > GIFT_MEMBERSHIP_LIMIT {
                     return Err(capacity());
                 }
+                continue;
             }
-            if page.next_page_token.is_empty() {
-                // Identity sets are traversal scratch space. Cached statistics retain
-                // only prices and counts; cross-venue deduplication does not grow the cache.
-                for floor in std::iter::once(&mut stats.collection)
-                    .chain(stats.models.values_mut())
-                    .chain(stats.backdrops.values_mut())
-                    .chain(stats.patterns.values_mut())
-                {
-                    floor.identities = HashSet::new();
-                }
-                // Preserve the eligibility time used by this traversal for later pair reads.
-                tracing::debug!(collection=%scope.collection,currency=%scope.currency,?preparation,rows=stats.collection.observations,models=stats.models.len(),backdrops=stats.backdrops.len(),patterns=stats.patterns.len(),elapsed_ms=started.elapsed().as_millis(),"prepared valuation floors");
-                return Ok(stats);
+            let model = quote
+                .model_id
+                .as_ref()
+                .filter(|id| stats.known_models.contains(*id));
+            let backdrop = quote
+                .backdrop_id
+                .as_ref()
+                .filter(|id| stats.known_backdrops.contains(*id));
+            if let Some(id) = quote
+                .pattern_id
+                .as_ref()
+                .filter(|id| stats.known_patterns.contains(*id))
+            {
+                memberships += stats
+                    .patterns
+                    .entry(id.clone())
+                    .or_default()
+                    .observe(&quote.price, gift.as_ref());
             }
-            token = page.next_page_token;
+            if let Some(id) = model {
+                memberships += stats
+                    .models
+                    .entry(id.clone())
+                    .or_default()
+                    .observe(&quote.price, gift.as_ref());
+            }
+            if let Some(id) = backdrop {
+                memberships += stats
+                    .backdrops
+                    .entry(id.clone())
+                    .or_default()
+                    .observe(&quote.price, gift.as_ref());
+            }
+            if memberships > GIFT_MEMBERSHIP_LIMIT
+                || stats.models.len()
+                    + stats.backdrops.len()
+                    + stats.patterns.len()
+                    + stats.known_models.len()
+                    + stats.known_backdrops.len()
+                    + stats.known_patterns.len()
+                    > STAT_LIMIT
+            {
+                return Err(capacity());
+            }
         }
+        // Identity sets are scratch space; only counts and prices survive preparation.
+        for floor in std::iter::once(&mut stats.collection)
+            .chain(stats.models.values_mut())
+            .chain(stats.backdrops.values_mut())
+            .chain(stats.patterns.values_mut())
+        {
+            floor.identities = HashSet::new();
+        }
+        if preparation == Preparation::Traits {
+            stats.asks = Some(asks);
+        }
+        tracing::debug!(collection=%scope.collection,currency=%scope.currency,?preparation,rows=stats.collection.observations,models=stats.models.len(),backdrops=stats.backdrops.len(),patterns=stats.patterns.len(),elapsed_ms=started.elapsed().as_millis(),"prepared valuation floors");
+        Ok(stats)
     }
 }
 fn capacity() -> ValuationError {

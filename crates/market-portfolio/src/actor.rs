@@ -15,6 +15,7 @@ struct View {
     error: Option<String>,
     job: Option<SpawnHandle>,
     attempted: Option<Instant>,
+    attempt: u64,
 }
 struct Entry {
     inventory: Option<Arc<InventorySnapshot>>,
@@ -55,6 +56,7 @@ struct Valued {
     user: UserId,
     currency: market_gifts::CurrencyId,
     generation: u64,
+    attempt: u64,
     count: usize,
 }
 
@@ -162,8 +164,10 @@ impl<P: InventoryProvider, V: ValuationProvider> Handler<Valued> for PortfolioAc
     fn handle(&mut self, p: Valued, _: &mut Context<Self>) {
         if let Some(e) = self.entries.get_mut(&p.user)
             && e.inventory_id == p.generation
+            && !e.refreshing
             && let Some(v) = e.views.get_mut(&p.currency)
             && v.job.is_some()
+            && v.attempt == p.attempt
         {
             v.progress = p.count;
             self.publish(p.user);
@@ -303,6 +307,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                     error: None,
                     job: None,
                     attempted: None,
+                    attempt: 0,
                 },
             );
         }
@@ -344,6 +349,13 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
             .expect("bounded refresh interval"),
         );
         e.error = None;
+        // Rechecking inventory supersedes its old valuation immediately, not only
+        // after all Telegram pages arrive. Keep the last published report intact.
+        for view in e.views.values_mut() {
+            if let Some(job) = view.job.take() {
+                ctx.cancel_future(job);
+            }
+        }
         e.progress = PortfolioProgress {
             stage: PortfolioStage::Queued,
             ..Default::default()
@@ -514,7 +526,12 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
         v.progress = 0;
         v.error = None;
         let valued_inventory = inventory.clone();
-        let gifts = Arc::new(inventory.gifts.clone());
+        let gifts = inventory.gifts.clone();
+        v.attempt = v
+            .attempt
+            .checked_add(1)
+            .expect("valuation attempt exhausted");
+        let attempt = v.attempt;
         let generation = e.inventory_id;
         let provider = self.valuation.clone();
         let idle_timeout = self.config.valuation_idle_timeout;
@@ -544,7 +561,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                             if count > completed {
                                 completed = count;
                                 stalled.as_mut().reset(Instant::now() + idle_timeout);
-                                addr.do_send(Valued { user, currency: progress_currency.clone(), generation, count });
+                                addr.do_send(Valued { user, currency: progress_currency.clone(), generation, attempt, count });
                             }
                         }
                         _ = &mut stalled => break Err(market_valuation::ValuationError::timed_out(
@@ -560,6 +577,9 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                     return;
                 }
                 let v = e.views.get_mut(&result_currency).unwrap();
+                if v.attempt != attempt || e.refreshing {
+                    return;
+                }
                 v.job = None;
                 // A slow completed/stalled run must not immediately start another full pass.
                 v.attempted = Some(Instant::now());

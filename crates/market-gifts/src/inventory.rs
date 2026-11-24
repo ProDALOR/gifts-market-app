@@ -57,7 +57,7 @@ pub struct InventoryPage {
 }
 #[derive(Debug, Clone)]
 pub struct InventorySnapshot {
-    pub gifts: Vec<InventoryGift>,
+    pub gifts: std::sync::Arc<Vec<InventoryGift>>,
     pub regular_gifts: usize,
     pub skipped: BTreeMap<SkipReason, usize>,
     pub pages_read: usize,

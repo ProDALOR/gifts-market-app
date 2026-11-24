@@ -77,6 +77,53 @@ async fn benchmark_preparation() {
     let runtime =
         market_replica::ReadRuntime::new(writer.reader(), 2, CancellationToken::new()).unwrap();
     let source = ValuationSource::new(runtime.handle());
+    for shared in [false, true] {
+        let mut elapsed = vec![];
+        for _ in 0..5 {
+            let time = Instant::now();
+            let count = source
+                .prepare(move |snapshot| -> Result<usize, tonic::Status> {
+                    let scope = BookScope {
+                        collection: "gift".into(),
+                        currency: "GRAM".into(),
+                    };
+                    if shared {
+                        let book = snapshot.ask_book(&scope)?;
+                        let mut count = 0;
+                        for quote in book.quotes(jiff::Timestamp::now().as_millisecond()) {
+                            count += usize::from(quote?.is_some());
+                        }
+                        Ok(count)
+                    } else {
+                        let mut token = String::new();
+                        let mut count = 0;
+                        loop {
+                            let page = snapshot.asks(
+                                &scope,
+                                jiff::Timestamp::now().as_millisecond(),
+                                token,
+                            )?;
+                            count += page.data.len();
+                            if page.next_page_token.is_empty() {
+                                return Ok(count);
+                            }
+                            token = page.next_page_token;
+                        }
+                    }
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(count, 20_012);
+            elapsed.push(time.elapsed());
+        }
+        elapsed.sort();
+        println!(
+            "ask_projection_{}: median={:?}; 20,012 asks",
+            if shared { "shared" } else { "paged" },
+            elapsed[2]
+        );
+    }
     for (label, preparation) in [
         ("collection", crate::floors::Preparation::Collection),
         ("independent_traits", crate::floors::Preparation::Traits),

@@ -8,7 +8,12 @@ import { CatalogController } from "./controller";
 import type { CatalogOption } from "../market";
 const empty: ReadonlyMap<string, CatalogOption> = new Map();
 /** React renders controller state; requests and live-update recovery live in the controller. */
-export function useCatalog(refresh: number, selectedId: string) {
+const noPreviews: readonly string[] = [];
+export function useCatalog(
+  refresh: number,
+  selectedId: string,
+  previews: readonly string[] = noPreviews,
+) {
   const controller = useMemo(() => new CatalogController(), [refresh]);
   const state = useSyncExternalStore(
     controller.subscribe,
@@ -22,6 +27,7 @@ export function useCatalog(refresh: number, selectedId: string) {
     () => controller.select(selectedId),
     [controller, selectedId],
   );
+  useLayoutEffect(() => controller.previews(previews), [controller, previews]);
   const view =
     state.selectedId === selectedId
       ? state
