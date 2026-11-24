@@ -60,7 +60,14 @@ const models = [
       palette: { center: "#a6b67f", edge: "#62904b", pattern: "#37552a" },
     },
   ],
-  patterns = [];
+  patterns = [
+    {
+      kind: "pattern",
+      id: "symbol",
+      name: "Star",
+      media: { thumbnail_url: "/media/patterns/symbol/thumbnail" },
+    },
+  ];
 const item = (number) => ({
   gift: {
     gift: {
@@ -77,7 +84,7 @@ const item = (number) => ({
     id: String(number),
     number,
     collection_id: "gift",
-    traits: { model: "model", backdrop: "back" },
+    traits: { model: "model", backdrop: "back", pattern: "symbol" },
   },
   estimate: "2",
 });
@@ -119,7 +126,28 @@ try {
     { width: 1440, height: 900 },
     { width: 390, height: 844 },
   ]) {
-    const page = await browser.newPage({ viewport, reducedMotion: "reduce" });
+    const page = await browser.newPage({
+      viewport,
+      reducedMotion: "reduce",
+      ...(viewport.width < 960 ? { isMobile: true, hasTouch: true } : {}),
+    });
+    const symbol = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 96;
+      const context = canvas.getContext("2d");
+      context.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const angle = (i * Math.PI) / 5 - Math.PI / 2;
+        const radius = i % 2 ? 20 : 44;
+        context.lineTo(
+          48 + Math.cos(angle) * radius,
+          48 + Math.sin(angle) * radius,
+        );
+      }
+      context.closePath();
+      context.fill();
+      return canvas.toDataURL().split(",")[1];
+    });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     page.on("console", (m) => {
@@ -140,7 +168,14 @@ try {
       (r) =>
         r.request().url().endsWith("/animation")
           ? r.fulfill({ status: 404 })
-          : r.fulfill({ contentType: "image/svg+xml", body: artwork }),
+          : r.fulfill({
+              contentType: r.request().url().includes("/patterns/")
+                ? "image/png"
+                : "image/svg+xml",
+              body: r.request().url().includes("/patterns/")
+                ? Buffer.from(symbol, "base64")
+                : artwork,
+            }),
     );
     let catalogDetails = 0;
     await page.route(
@@ -219,6 +254,8 @@ try {
       refreshCount = 0,
       cancellations = 0,
       holdRefresh = false,
+      holdSummary = false,
+      releaseSummary,
       pendingRefreshId;
     const cancelledRequests = new Set();
     const pageReads = [];
@@ -244,24 +281,27 @@ try {
           peer = socket;
           watchId = frame.id;
           watchCount++;
-          send(socket, {
-            type: "portfolio.snapshot",
-            id: frame.id,
-            data:
-              report?.user_id === frame.params.user_id
-                ? portfolioSnapshot(report)
-                : {
-                    user_id: frame.params.user_id,
-                    refresh_id: 1,
-                    progress: {
-                      stage: "queued",
-                      checked: 0,
+          const snapshot = () =>
+            send(socket, {
+              type: "portfolio.snapshot",
+              id: frame.id,
+              data:
+                report?.user_id === frame.params.user_id
+                  ? portfolioSnapshot(report)
+                  : {
+                      user_id: frame.params.user_id,
+                      refresh_id: 1,
+                      progress: {
+                        stage: "queued",
+                        checked: 0,
 
-                      valued: 0,
-                      collectibles: 0,
+                        valued: 0,
+                        collectibles: 0,
+                      },
                     },
-                  },
-          });
+            });
+          if (holdSummary) releaseSummary = snapshot;
+          else snapshot();
         }
         if (frame.type === "request" && frame.method === "portfolio.query") {
           pageReads.push(frame.params);
@@ -443,6 +483,55 @@ try {
     await page.getByRole("button", { name: "Gift", exact: true }).click();
     await page.locator("#pick-models").waitFor();
     assert(catalogDetails >= 1);
+    await page
+      .locator(".portfolio-card .gift-model-image.loaded")
+      .first()
+      .waitFor();
+    const composition = await page
+      .locator(".portfolio-card")
+      .first()
+      .evaluate((card) => {
+        const image = card
+          .querySelector(".gift-model-image.loaded")
+          .getBoundingClientRect();
+        const copy = card
+          .querySelector(".card-copy strong")
+          .getBoundingClientRect();
+        return {
+          width: image.width,
+          height: image.height,
+          bottom: image.bottom,
+          labelTop: copy.top,
+          symbols: !!card.querySelector(".gift-backdrop"),
+        };
+      });
+    assert.equal(composition.width, viewport.width < 960 ? 64 : 112);
+    assert.equal(composition.width, composition.height);
+    assert(
+      composition.bottom <= composition.labelTop,
+      "artwork leaves the model name readable",
+    );
+    assert(composition.symbols);
+    await page
+      .locator(".portfolio-card")
+      .first()
+      .evaluate((card) => {
+        const label = card.querySelector(".card-copy strong");
+        const original = label.textContent;
+        label.textContent = "Very Long Collectible Model";
+        const image = card
+          .querySelector(".gift-model-image.loaded")
+          .getBoundingClientRect();
+        const text = label.getBoundingClientRect();
+        label.textContent = original;
+        if (image.bottom > text.top)
+          throw new Error("two-line model labels overlap artwork");
+      });
+    assert.equal(
+      await page.locator(".portfolio-relation").first().innerText(),
+      "",
+      "ownership does not crowd the artwork with a text badge",
+    );
     await page.locator("#pick-models").click();
     await page
       .locator("#trait-panel")
@@ -460,7 +549,34 @@ try {
         .count(),
       0,
     );
+    const numberBounds = await page
+      .getByLabel("Gift #", { exact: true })
+      .boundingBox();
+    const sortBounds = await page.locator(".portfolio-sort").boundingBox();
+    if (viewport.width < 960) {
+      assert(
+        Math.abs(numberBounds.y - sortBounds.y) < 1,
+        "mobile gift number and sort share a row",
+      );
+      assert.equal(
+        sortBounds.height,
+        44,
+        "mobile sorting has a comfortable touch target",
+      );
+      assert(numberBounds.x + numberBounds.width < sortBounds.x);
+    }
     await page.getByRole("combobox", { name: "Sort by", exact: true }).click();
+    const menuBounds = await page
+      .getByRole("listbox", { name: "Sort by options", exact: true })
+      .boundingBox();
+    assert(
+      menuBounds.x >= 0 && menuBounds.x + menuBounds.width <= viewport.width,
+      "sort menu stays inside the viewport",
+    );
+    await page.screenshot({
+      path: join(output, `portfolio-sort-${viewport.width}.png`),
+      fullPage: false,
+    });
     await page.getByRole("option", { name: "Position", exact: true }).click();
     assert.equal(
       (
@@ -496,6 +612,8 @@ try {
     );
     assert.equal(refreshCount, 1);
     const oldWatch = watchId;
+    const beforeReconnect = pageReads.length;
+    holdSummary = true;
     await page.evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
@@ -512,6 +630,25 @@ try {
     });
     await page.waitForTimeout(150);
     assert.equal(watchCount, 2, "visible tabs restore one cached watch");
+    await page.evaluate(() => {
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      window.dispatchEvent(new WheelEvent("wheel", { deltaY: 500 }));
+    });
+    await page.waitForTimeout(50);
+    assert.equal(
+      pageReads.length,
+      beforeReconnect,
+      "cached rows wait for a fresh summary before fetching more",
+    );
+    holdSummary = false;
+    releaseSummary();
+    await page.waitForTimeout(50);
+    assert.equal(
+      pageReads.length,
+      beforeReconnect,
+      "unchanged baseline reuses cached pages",
+    );
+    await page.evaluate(() => window.scrollTo(0, 0));
     send(peer, {
       type: "portfolio.progress",
       id: oldWatch,
@@ -641,6 +778,15 @@ try {
         .catch(async (error) => {
           console.log({
             loaded,
+            scroll: await page.evaluate(() => ({
+              y: window.scrollY,
+              height: document.documentElement.scrollHeight,
+              viewport: innerHeight,
+              sentinel: document
+                .querySelector(".scroll-loader")
+                ?.getBoundingClientRect()
+                .toJSON(),
+            })),
             reads: pageReads.slice(-3),
             errors,
             alerts: await page.locator(".error").allTextContents(),
@@ -663,6 +809,7 @@ try {
       "all scroll reads remain bounded",
     );
     const bottomReads = catalogDetails;
+    const bottomPageReads = pageReads.length;
     send(peer, {
       type: "portfolio.progress",
       id: watchId,
@@ -674,6 +821,11 @@ try {
       catalogDetails,
       bottomReads,
       "progress does not refetch card catalogs",
+    );
+    assert.equal(
+      pageReads.length,
+      bottomPageReads,
+      "progress does not fetch portfolio pages",
     );
     await page.evaluate(() => window.scrollTo(0, 0));
     send(peer, {

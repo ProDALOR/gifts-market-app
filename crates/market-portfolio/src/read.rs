@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,9 +233,9 @@ pub struct PortfolioPage {
     #[cfg_attr(feature = "schema", schema(max_items = 100))]
     pub items: Vec<InventoryValue>,
     pub has_more: bool,
-    pub selection: PortfolioSelection,
+    pub selection: Arc<PortfolioSelection>,
 }
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct Key {
     user: UserId,
     currency: CurrencyId,
@@ -245,12 +245,70 @@ struct Key {
 }
 struct Index {
     positions: Vec<usize>,
-    selection: PortfolioSelection,
+    selection: Arc<PortfolioSelection>,
+}
+#[derive(Default)]
+struct ReadCache {
+    entries: VecDeque<(Key, Arc<Index>)>,
+    builds: Vec<(Key, Weak<Mutex<()>>)>,
+}
+impl ReadCache {
+    fn get(&mut self, key: &Key) -> Option<Arc<Index>> {
+        let position = self.entries.iter().position(|(old, _)| old == key)?;
+        let entry = self.entries.remove(position).expect("located read index");
+        let index = entry.1.clone();
+        self.entries.push_back(entry);
+        Some(index)
+    }
 }
 /// At most 32 compact indexes; this cache retains no inventory/report snapshots.
 #[derive(Default)]
-pub struct PortfolioReadCache(Mutex<VecDeque<(Key, Arc<Index>)>>);
+pub struct PortfolioReadCache(Mutex<ReadCache>);
 impl PortfolioReadCache {
+    fn index(
+        &self,
+        report: &InventoryValuation,
+        key: Key,
+        check: &mut impl FnMut() -> Result<(), PortfolioError>,
+    ) -> Result<Arc<Index>, PortfolioError> {
+        let build = {
+            let mut cache = self.0.lock().map_err(|_| PortfolioError::Stopped)?;
+            if let Some(index) = cache.get(&key) {
+                return Ok(index);
+            }
+            cache.builds.retain(|(_, build)| build.strong_count() > 0);
+            if let Some(build) = cache
+                .builds
+                .iter()
+                .find_map(|(old, build)| (old == &key).then(|| build.upgrade()).flatten())
+            {
+                build
+            } else {
+                let build = Arc::new(Mutex::new(()));
+                cache.builds.push((key.clone(), Arc::downgrade(&build)));
+                build
+            }
+        };
+        // Coalesce identical selections; unrelated reads never wait on a scan or sort.
+        let _building = build.lock().map_err(|_| PortfolioError::Stopped)?;
+        check()?;
+        if let Some(index) = self
+            .0
+            .lock()
+            .map_err(|_| PortfolioError::Stopped)?
+            .get(&key)
+        {
+            return Ok(index);
+        }
+        let index = Arc::new(build_index(report, &key, check)?);
+        check()?;
+        let mut cache = self.0.lock().map_err(|_| PortfolioError::Stopped)?;
+        cache.entries.push_back((key, index.clone()));
+        if cache.entries.len() > 32 {
+            cache.entries.pop_front();
+        }
+        Ok(index)
+    }
     pub fn read(
         &self,
         state: &PortfolioState,
@@ -286,22 +344,7 @@ impl PortfolioReadCache {
             filters: query.filters,
             sort: query.sort,
         };
-        let index = {
-            // Projection is bounded to 10k rows and runs on the caller's bounded CPU worker.
-            // Coalesce concurrent pages while building a selection, without touching actors.
-            let mut entries = self.0.lock().map_err(|_| PortfolioError::Stopped)?;
-            check()?;
-            let index = if let Some(position) = entries.iter().position(|(old, _)| old == &key) {
-                entries.remove(position).expect("located read index").1
-            } else {
-                Arc::new(build_index(report, &key, &mut check)?)
-            };
-            entries.push_back((key, index.clone()));
-            if entries.len() > 32 {
-                entries.pop_front();
-            }
-            index
-        };
+        let index = self.index(report, key, &mut check)?;
         check()?;
         let end = query
             .offset
@@ -372,7 +415,7 @@ fn build_index(
     check()?;
     Ok(Index {
         positions,
-        selection,
+        selection: Arc::new(selection),
     })
 }
 
@@ -453,14 +496,15 @@ mod tests {
         assert_eq!(first.items[0].gift.gift.number.get(), 6000);
         assert_eq!(first.selection.count, 6000);
         assert_eq!(first.selection.priced, 5400);
-        let index = cache.0.lock().unwrap().back().unwrap().1.clone();
+        let index = cache.0.lock().unwrap().entries.back().unwrap().1.clone();
         let mut next = query();
         next.offset = 100;
         next.version = Some(first.version.clone());
         let page = cache.read(&state, next, || Ok(())).unwrap();
         assert_eq!(page.items[0].gift.gift.number.get(), 5900);
+        assert!(Arc::ptr_eq(&first.selection, &page.selection));
         assert!(
-            Arc::ptr_eq(&index, &cache.0.lock().unwrap().back().unwrap().1),
+            Arc::ptr_eq(&index, &cache.0.lock().unwrap().entries.back().unwrap().1),
             "adjacent pages share their filtered/sorted index"
         );
         let mut filtered = query();
@@ -473,7 +517,7 @@ mod tests {
         exact.filters.number = Some(GiftNumber::new(1).unwrap());
         let page = cache.read(&state, exact, || Ok(())).unwrap();
         assert_eq!(page.items.len(), 1);
-        assert_eq!(page.selection.total.unwrap().as_str(), "1.01");
+        assert_eq!(page.selection.total.as_ref().unwrap().as_str(), "1.01");
         let mut reverse = query();
         reverse.sort = PortfolioSort::PositionDesc;
         assert_eq!(
@@ -522,7 +566,7 @@ mod tests {
             assert_eq!(page.items[0].gift.gift.number.get(), first);
             assert_eq!(page.items[2].gift.gift.number.get(), 1);
             assert_eq!(
-                page.selection.total.unwrap().as_str(),
+                page.selection.total.as_ref().unwrap().as_str(),
                 "19999999999999998.03"
             );
         }
@@ -544,9 +588,90 @@ mod tests {
                 .unwrap()
                 .selection
                 .total
+                .as_ref()
                 .unwrap()
                 .as_str(),
             "0"
+        );
+    }
+
+    #[test]
+    fn building_one_selection_does_not_block_other_reads_and_coalesces_identical_reads() {
+        use std::{sync::mpsc, thread, time::Duration};
+        let state = Arc::new(state(6000));
+        let cache = Arc::new(PortfolioReadCache::default());
+        let (started, start) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let first = thread::spawn({
+            let state = state.clone();
+            let cache = cache.clone();
+            move || {
+                let mut checks = 0;
+                cache.read(&state, query(), || {
+                    checks += 1;
+                    // Initial validation and build admission precede the first scanned row.
+                    if checks == 3 {
+                        started.send(()).unwrap();
+                        released.recv().unwrap();
+                    }
+                    Ok(())
+                })
+            }
+        });
+        start.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (finished, finish) = mpsc::channel();
+        let independent = thread::spawn({
+            let state = state.clone();
+            let cache = cache.clone();
+            move || {
+                let mut other = query();
+                other.sort = PortfolioSort::NumberAsc;
+                let page = cache.read(&state, other, || Ok(()));
+                finished.send(()).unwrap();
+                page
+            }
+        });
+        let identical = thread::spawn({
+            let state = state.clone();
+            let cache = cache.clone();
+            move || cache.read(&state, query(), || Ok(()))
+        });
+        let progressed = finish.recv_timeout(Duration::from_secs(5)).is_ok();
+        release.send(()).unwrap();
+        let first = first.join().unwrap().unwrap();
+        let identical = identical.join().unwrap().unwrap();
+        let independent = independent.join().unwrap().unwrap();
+        assert!(
+            progressed,
+            "unrelated selections must progress during a build"
+        );
+        assert_eq!(independent.items[0].gift.gift.number.get(), 1);
+        assert!(Arc::ptr_eq(&first.selection, &identical.selection));
+        assert_eq!(cache.0.lock().unwrap().entries.len(), 2);
+    }
+
+    #[test]
+    fn cancelled_builds_are_not_published_and_can_be_retried() {
+        let state = state(6000);
+        let cache = PortfolioReadCache::default();
+        let mut checks = 0;
+        let result = cache.read(&state, query(), || {
+            checks += 1;
+            if checks == 50 {
+                Err(PortfolioError::Stopped)
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(result, Err(PortfolioError::Stopped)));
+        assert!(cache.0.lock().unwrap().entries.is_empty());
+        assert_eq!(
+            cache
+                .read(&state, query(), || Ok(()))
+                .unwrap()
+                .selection
+                .count,
+            6000
         );
     }
 
@@ -578,7 +703,7 @@ mod tests {
             q.filters.number = Some(GiftNumber::new(number).unwrap());
             cache.read(&state, q, || Ok(())).unwrap();
         }
-        assert_eq!(cache.0.lock().unwrap().len(), 32);
+        assert_eq!(cache.0.lock().unwrap().entries.len(), 32);
         let mut last = query();
         last.offset = 200;
         last.version = state.version.clone();

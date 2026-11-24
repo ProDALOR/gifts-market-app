@@ -37,6 +37,30 @@ export type PortfolioFilters = {
   number: string;
   sort: PortfolioSort;
 };
+/** Canonical request identity matches the server's set semantics for trait alternatives. */
+export function portfolioQuery(
+  user: number | undefined,
+  currency: string,
+  filters: PortfolioFilters,
+) {
+  if (!user) return undefined;
+  const alternatives = (values?: string[]) => [...new Set(values)].sort();
+  return {
+    user_id: user,
+    currency_id: currency,
+    sort: filters.sort,
+    filters: {
+      collection_id: filters.collection || undefined,
+      models: alternatives(filters.traits.models),
+      backdrops: alternatives(filters.traits.backdrops),
+      patterns: alternatives(filters.traits.patterns),
+      number: filters.number ? Number(filters.number) : undefined,
+    },
+  } satisfies Omit<
+    components["schemas"]["PortfolioReadQuery"],
+    "offset" | "limit" | "version"
+  >;
+}
 export function progressText(state?: PortfolioState) {
   const p = state?.progress;
   if (!p) return "Connecting…";

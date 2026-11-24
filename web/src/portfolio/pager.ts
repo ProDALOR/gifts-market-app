@@ -26,17 +26,21 @@ type Options = {
   refreshSummary: () => void;
   initial?: PortfolioRows;
 };
-/** Only explicit scroll demand grows coverage. A changed version replaces it atomically. */
+const PAGE_SIZE = 100;
+/** Desired coverage survives cancellation and version changes. Rows commit atomically. */
 export class PortfolioPager {
   private rows: PortfolioRows;
   private version?: string;
   private request?: AbortController;
-  private intent: "reset" | "more" = "reset";
   private waiting?: string;
   private paused = false;
   private disposed = false;
+  private desired: number;
+  private ids: Set<string>;
   constructor(private options: Options) {
     this.rows = options.initial ?? emptyRows();
+    this.desired = Math.max(PAGE_SIZE, this.rows.items.length);
+    this.ids = new Set(this.rows.items.map((item) => item.gift.gift.id));
   }
   current() {
     return this.rows;
@@ -46,36 +50,35 @@ export class PortfolioPager {
     this.options.changed(this.rows);
   }
   update(version: string) {
-    if (this.disposed || this.waiting === version) return;
+    if (this.disposed) return;
+    const resuming = this.paused;
     this.paused = false;
+    if (this.waiting === version) return;
     this.waiting = undefined;
-    if (version !== this.version) {
+    const changed = version !== this.version;
+    if (changed) {
       this.request?.abort();
       this.request = undefined;
       this.version = version;
-      if (this.rows.version === version && this.rows.selection) return;
-      this.intent = "reset";
-      void this.run();
-    } else if (
-      !this.request &&
-      (this.rows.loading || this.rows.error || !this.rows.selection)
-    ) {
-      void this.run();
     }
+    if (changed || resuming || !this.rows.error) void this.run();
   }
   loadMore = () => {
     if (
+      this.disposed ||
       this.request ||
       this.waiting ||
       this.paused ||
+      !this.version ||
       !this.rows.hasMore ||
       this.rows.error
     )
       return;
-    this.intent = "more";
+    this.desired = Math.max(this.desired, this.rows.items.length + PAGE_SIZE);
     void this.run();
   };
   retry = () => {
+    if (this.disposed || this.paused || this.request) return;
     if (this.waiting) this.options.refreshSummary();
     else void this.run();
   };
@@ -83,7 +86,6 @@ export class PortfolioPager {
     this.paused = true;
     this.request?.abort();
     this.request = undefined;
-    // Keep pending intent. A fresh summary after resume authorizes its retry.
   }
   dispose() {
     this.disposed = true;
@@ -99,10 +101,19 @@ export class PortfolioPager {
       !this.version
     )
       return;
+    const version = this.version;
+    const reset = this.rows.version !== version || !this.rows.selection;
+    if (
+      !reset &&
+      this.rows.items.length >=
+        Math.min(this.desired, this.rows.selection!.count)
+    ) {
+      if (this.rows.loading || this.rows.error)
+        this.publish({ loading: false, error: "" });
+      return;
+    }
     const stop = new AbortController();
     this.request = stop;
-    const version = this.version;
-    const reset = this.intent === "reset";
     const current = () =>
       !this.disposed &&
       !stop.signal.aborted &&
@@ -110,34 +121,29 @@ export class PortfolioPager {
       this.version === version;
     const read = async (offset: number) => {
       const page = await this.options.request(
-        { ...this.options.query, offset, limit: 100, version },
+        { ...this.options.query, offset, limit: PAGE_SIZE, version },
         stop.signal,
       );
       stop.signal.throwIfAborted();
       if (
         page.version !== version ||
         page.offset !== offset ||
-        page.items.length > 100 ||
+        page.items.length > PAGE_SIZE ||
         page.selection.count < offset + page.items.length ||
         page.has_more !== offset + page.items.length < page.selection.count ||
-        (page.has_more && page.items.length !== 100)
+        (page.has_more && page.items.length !== PAGE_SIZE)
       )
         throw new Error("Portfolio page did not match the requested coverage");
       return page;
     };
     this.publish({ loading: true, error: "" });
     try {
-      const offset = reset ? 0 : this.rows.items.length;
-      const first = await read(offset);
+      const first = await read(reset ? 0 : this.rows.items.length);
       const pages = [first];
       if (reset) {
-        const target = Math.min(
-          Math.max(100, this.rows.items.length),
-          first.selection.count,
-        );
-        // Refresh only visited coverage, with at most two page requests in flight.
-        for (let start = 100; start < target; start += 200) {
-          const offsets = [start, start + 100].filter(
+        const target = Math.min(this.desired, first.selection.count);
+        for (let start = PAGE_SIZE; start < target; start += PAGE_SIZE * 2) {
+          const offsets = [start, start + PAGE_SIZE].filter(
             (offset) => offset < target,
           );
           pages.push(...(await Promise.all(offsets.map(read))));
@@ -146,17 +152,24 @@ export class PortfolioPager {
         throw new Error("Portfolio count changed within one version");
       }
       if (!current()) return;
-      if (pages.some((page) => page.selection.count !== first.selection.count))
-        throw new Error("Portfolio count changed within one version");
-      const items = [
-        ...(reset ? [] : this.rows.items),
-        ...pages.flatMap((page) => page.items),
-      ];
-      if (new Set(items.map((item) => item.gift.gift.id)).size !== items.length)
-        throw new Error("Portfolio pages contained duplicate gifts");
+      const additions: PortfolioPage["items"] = [];
+      const addedIds = new Set<string>();
+      for (const page of pages) {
+        if (page.selection.count !== first.selection.count)
+          throw new Error("Portfolio count changed within one version");
+        for (const item of page.items) {
+          const id = item.gift.gift.id;
+          if (addedIds.has(id) || (!reset && this.ids.has(id)))
+            throw new Error("Portfolio pages contained duplicate gifts");
+          addedIds.add(id);
+          additions.push(item);
+        }
+      }
+      if (reset) this.ids = addedIds;
+      else for (const id of addedIds) this.ids.add(id);
       this.publish({
-        items,
-        selection: first.selection,
+        items: reset ? additions : this.rows.items.concat(additions),
+        selection: reset ? first.selection : this.rows.selection,
         version,
         hasMore: pages[pages.length - 1].has_more,
         loading: false,
@@ -165,12 +178,15 @@ export class PortfolioPager {
     } catch (error) {
       if (!current()) return;
       stop.abort();
-      if ((error as { code?: string }).code === "restart_read") {
+      if (
+        error &&
+        typeof error === "object" &&
+        (error as { code?: string }).code === "restart_read"
+      ) {
         this.waiting = version;
-        this.intent = "reset";
         this.publish({ loading: true, error: "" });
         this.options.refreshSummary();
-      } else {
+      } else
         this.publish({
           loading: false,
           error:
@@ -178,7 +194,6 @@ export class PortfolioPager {
               ? error.message
               : "Could not load portfolio gifts",
         });
-      }
     } finally {
       if (this.request === stop) this.request = undefined;
     }

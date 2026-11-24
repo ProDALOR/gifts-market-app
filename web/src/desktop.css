@@ -207,8 +207,8 @@
     gap: 12px;
   }
   .market-results .card-preview {
-    --card-art-size: 96px;
-    --card-art-top: 20px;
+    --card-art-size: 112px;
+    --card-art-top: 6px;
     padding: 8px;
     border-radius: 16px;
   }

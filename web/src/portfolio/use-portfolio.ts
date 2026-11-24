@@ -22,6 +22,7 @@ export function usePortfolio(user: number | undefined, currency: string) {
   );
   const received = useRef(state);
   const [error, setError] = useState("");
+  const [ready, setReady] = useState(false);
   const generation = useRef(0);
   const refreshing = useRef<AbortController | undefined>(undefined);
   const watchId = useRef<string | undefined>(undefined);
@@ -37,6 +38,7 @@ export function usePortfolio(user: number | undefined, currency: string) {
     setError("");
     let unsubscribe: (() => void) | undefined;
     const detach = () => {
+      setReady(false);
       ++generation.current;
       refreshing.current?.abort();
       refreshing.current = undefined;
@@ -64,6 +66,7 @@ export function usePortfolio(user: number | undefined, currency: string) {
                 frame.data.valuation.currency_id === currency)
             ) {
               accept(frame.data);
+              setReady(true);
               setError("");
             }
           } else if (frame.type === "portfolio.progress") {
@@ -76,7 +79,13 @@ export function usePortfolio(user: number | undefined, currency: string) {
                 refresh_after: frame.refresh_after,
                 error: frame.error,
               });
-          } else if (frame.type === "error") setError(frame.error.message);
+          } else if (frame.type === "error") {
+            setReady(false);
+            setError(frame.error.message);
+          }
+        },
+        () => {
+          if (generation.current === current) setReady(false);
         },
       );
     };
@@ -118,5 +127,5 @@ export function usePortfolio(user: number | undefined, currency: string) {
   const resubscribe = useCallback(() => {
     if (watchId.current && !document.hidden) liveSocket.retry(watchId.current);
   }, []);
-  return { state: currentState, error, refresh, resubscribe };
+  return { state: currentState, ready, error, refresh, resubscribe };
 }

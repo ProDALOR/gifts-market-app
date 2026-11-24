@@ -106,7 +106,10 @@ export const PortfolioGiftCard = memo(function PortfolioGiftCard({
             title={relation.description}
             aria-label={relation.description}
           >
-            {relation.label}
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="10" cy="10" r="7.5" />
+              <path d="M10 9v5M10 6h.01" />
+            </svg>
           </span>
         )
       }

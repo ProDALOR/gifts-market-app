@@ -234,9 +234,10 @@ function PortfolioView({
     filters,
     portfolio.state?.valuation,
     portfolio.resubscribe,
+    portfolio.ready,
     !!selectedId,
   );
-  const filterKey = JSON.stringify([filters, currency]);
+  const filterKey = rows.queryKey;
   const previousFilter = useRef({ user, key: filterKey });
   useLayoutEffect(() => {
     if (
@@ -431,33 +432,33 @@ function PortfolioView({
                   }
                 />
               </label>
-            </div>
-            <div className="sort-control portfolio-sort">
-              <SortPicker
-                options={portfolioSortOptions}
-                value={sortKey}
-                change={(key) =>
-                  setFilters({
-                    ...filters,
-                    sort: portfolioSort(
-                      key,
-                      key === "position" ? true : ascending,
-                    ),
-                  })
-                }
-              />
-              <button
-                className="sort-direction"
-                aria-label={ascending ? "Sort descending" : "Sort ascending"}
-                onClick={() =>
-                  setFilters({
-                    ...filters,
-                    sort: portfolioSort(sortKey, !ascending),
-                  })
-                }
-              >
-                {ascending ? "↑" : "↓"}
-              </button>
+              <div className="sort-control portfolio-sort">
+                <SortPicker
+                  options={portfolioSortOptions}
+                  value={sortKey}
+                  change={(key) =>
+                    setFilters({
+                      ...filters,
+                      sort: portfolioSort(
+                        key,
+                        key === "position" ? true : ascending,
+                      ),
+                    })
+                  }
+                />
+                <button
+                  className="sort-direction"
+                  aria-label={ascending ? "Sort descending" : "Sort ascending"}
+                  onClick={() =>
+                    setFilters({
+                      ...filters,
+                      sort: portfolioSort(sortKey, !ascending),
+                    })
+                  }
+                >
+                  {ascending ? "↑" : "↓"}
+                </button>
+              </div>
             </div>
           </aside>
           <section className="market-results portfolio-content">

@@ -4,6 +4,7 @@ import {
   progressText,
   portfolioRelation,
   portfolioSort,
+  portfolioQuery,
 } from "../src/portfolio/model.ts";
 import { parseFrame } from "../src/ws-protocol.ts";
 import { PortfolioPager } from "../src/portfolio/pager.ts";
@@ -338,7 +339,11 @@ test("expired page versions wait for a fresh summary without mixing rows", async
   pager.update(portfolioVersion(source));
   await settled(pager);
   assert.equal(pager.current().version, portfolioVersion(source));
-  assert.equal(pager.current().items.length, 100);
+  assert.equal(
+    pager.current().items.length,
+    200,
+    "expired scroll demand survives the version restart",
+  );
   pager.dispose();
 });
 test("failed next pages retain data and retry the same offset", async () => {
@@ -363,9 +368,166 @@ test("failed next pages retain data and retry the same offset", async () => {
   assert.equal(pager.current().items.length, 100);
   assert.equal(pager.current().error, "temporary");
   fail = false;
+  pager.update(portfolioVersion(source));
+  pager.loadMore();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(
+    offsets,
+    [0, 100],
+    "unchanged summaries and scroll events do not retry failed pages",
+  );
   pager.retry();
   await settled(pager);
   assert.deepEqual(offsets, [0, 100, 100]);
   assert.equal(pager.current().items.length, 200);
+  pager.dispose();
+});
+
+test("canonical selections share identity without changing picker order", () => {
+  const filters = {
+    collection: "gift",
+    traits: { models: ["b", "a", "b"] },
+    number: "0002",
+    sort: "position_asc" as const,
+  };
+  assert.deepEqual(
+    portfolioQuery(7, "GRAM", filters),
+    portfolioQuery(7, "GRAM", {
+      ...filters,
+      traits: { models: ["a", "b"] },
+      number: "2",
+    }),
+  );
+  assert.deepEqual(filters.traits.models, ["b", "a", "b"]);
+  assert.equal(portfolioQuery(undefined, "GRAM", filters), undefined);
+});
+
+test("refresh during a pending append preserves coverage and ignores late rows", async () => {
+  let source = report(),
+    finish,
+    signal;
+  const calls = [];
+  const pager = new PortfolioPager({
+    query,
+    request: (q, stop) => {
+      calls.push(q);
+      const page = portfolioPage(source, q);
+      if (calls.length === 2) {
+        signal = stop;
+        return new Promise((resolve) => {
+          finish = () => resolve(page);
+        });
+      }
+      return Promise.resolve(page);
+    },
+    changed: () => {},
+    refreshSummary: () => assert.fail(),
+  });
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  pager.loadMore();
+  source = report(6000, 2);
+  source.valuation.items.reverse();
+  pager.update(portfolioVersion(source));
+  assert(signal.aborted);
+  await settled(pager);
+  assert.deepEqual(
+    calls.map((q) => q.offset),
+    [0, 100, 0, 100],
+  );
+  assert.equal(pager.current().items.length, 200);
+  assert.equal(pager.current().items[0].gift.gift.number, 6000);
+  const rows = pager.current();
+  finish();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(pager.current(), rows);
+  pager.dispose();
+});
+
+test("pause resumes scroll demand and disposal discards late responses", async () => {
+  const source = report();
+  let calls = 0,
+    finish;
+  const pager = new PortfolioPager({
+    query,
+    request: async (q) => {
+      if (++calls === 2)
+        return new Promise((resolve) => {
+          finish = () => resolve(portfolioPage(source, q));
+        });
+      return portfolioPage(source, q);
+    },
+    changed: () => {},
+    refreshSummary: () => {},
+  });
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  pager.loadMore();
+  pager.pause();
+  assert.equal(calls, 2);
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  assert.equal(pager.current().items.length, 200);
+  const rows = pager.current();
+  pager.dispose();
+  finish();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(pager.current(), rows);
+  assert.equal(calls, 3);
+});
+
+test("returning to cached coverage clears loading without another read", async () => {
+  const source = report();
+  let calls = 0,
+    signal;
+  const pager = new PortfolioPager({
+    query,
+    request: async (q, stop) => {
+      if (++calls === 1) return portfolioPage(source, q);
+      signal = stop;
+      return new Promise(() => {});
+    },
+    changed: () => {},
+    refreshSummary: () => {},
+  });
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  pager.update(portfolioVersion(report(6000, 2)));
+  assert(pager.current().loading);
+  pager.pause();
+  assert(signal.aborted);
+  pager.update(portfolioVersion(source));
+  assert.equal(pager.current().loading, false);
+  assert.equal(pager.current().error, "");
+  assert.equal(calls, 2);
+  pager.dispose();
+});
+
+test("duplicate page failures do not poison subsequent append validation", async () => {
+  const source = report();
+  let duplicate = false;
+  const pager = new PortfolioPager({
+    query,
+    request: async (q) => {
+      const page = portfolioPage(source, q);
+      if (duplicate) page.items[1] = page.items[0];
+      return page;
+    },
+    changed: () => {},
+    refreshSummary: () => {},
+  });
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  const rows = pager.current();
+  duplicate = true;
+  pager.loadMore();
+  await settled(pager);
+  assert.match(pager.current().error, /duplicate/);
+  assert.equal(pager.current().items, rows.items);
+  duplicate = false;
+  pager.retry();
+  await settled(pager);
+  assert.equal(pager.current().items.length, 200);
+  assert.equal(pager.current().selection, rows.selection);
   pager.dispose();
 });

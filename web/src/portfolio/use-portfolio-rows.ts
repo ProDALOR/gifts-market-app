@@ -1,9 +1,13 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePageSlot } from "../app/navigation";
 import { liveSocket } from "../live-socket";
 import { PortfolioPager, emptyRows } from "./pager";
-import type { PortfolioRows, PortfolioReadQuery } from "./pager";
-import type { PortfolioFilters, PortfolioState } from "./model";
+import type { PortfolioRows } from "./pager";
+import {
+  portfolioQuery,
+  type PortfolioFilters,
+  type PortfolioState,
+} from "./model";
 
 export function usePortfolioRows(
   user: number | undefined,
@@ -11,21 +15,13 @@ export function usePortfolioRows(
   filters: PortfolioFilters,
   summary: PortfolioState["valuation"],
   refreshSummary: () => void,
+  ready: boolean,
   hold = false,
 ) {
-  const query = {
-    user_id: user ?? 1,
-    currency_id: currency,
-    sort: filters.sort,
-    filters: {
-      collection_id: filters.collection || undefined,
-      models: filters.traits.models || [],
-      backdrops: filters.traits.backdrops || [],
-      patterns: filters.traits.patterns || [],
-      number: filters.number ? Number(filters.number) : undefined,
-    },
-  } satisfies Omit<PortfolioReadQuery, "offset" | "limit" | "version">;
-  const key = JSON.stringify([user, query]);
+  const { query, key } = useMemo(() => {
+    const query = portfolioQuery(user, currency, filters);
+    return { query, key: query ? JSON.stringify(query) : "" };
+  }, [user, currency, filters]);
   const cache = usePageSlot<Map<string, PortfolioRows>>(
     "portfolio.pages",
     () => new Map(),
@@ -38,6 +34,10 @@ export function usePortfolioRows(
   refresh.current = refreshSummary;
   useLayoutEffect(() => {
     const initial = cache.current.get(key);
+    if (!query) {
+      setView({ key, rows: emptyRows() });
+      return;
+    }
     const controller = new PortfolioPager({
       query,
       initial,
@@ -46,7 +46,7 @@ export function usePortfolioRows(
       refreshSummary: () => refresh.current(),
       changed: (rows) => {
         setView({ key, rows });
-        if (!rows.loading && rows.version && rows.selection) {
+        if (!rows.loading && !rows.error && rows.version && rows.selection) {
           cache.current.delete(key);
           cache.current.set(key, rows);
           while (cache.current.size > 2)
@@ -68,16 +68,19 @@ export function usePortfolioRows(
   }, [key]);
   useLayoutEffect(() => {
     // Keep the inspected card stable until details close; its valuation has its own lifecycle.
-    if (hold) {
+    if (hold || !ready || !summary?.version) {
       pager.current?.pause();
       return;
     }
     if (user && summary?.version && !document.hidden)
       pager.current?.update(summary.version);
-  }, [key, summary, user, hold]);
+  }, [key, summary, user, hold, ready]);
+  const loadMore = useCallback(() => pager.current?.loadMore(), []);
+  const retry = useCallback(() => pager.current?.retry(), []);
   return {
     ...(view.key === key ? view.rows : emptyRows()),
-    loadMore: () => pager.current?.loadMore(),
-    retry: () => pager.current?.retry(),
+    queryKey: key,
+    loadMore,
+    retry,
   };
 }
