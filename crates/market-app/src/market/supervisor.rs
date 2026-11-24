@@ -40,11 +40,15 @@ fn stopped() -> anyhow::Error {
     anyhow!("Application is stopping")
 }
 impl TaskSupervisor {
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_stop(CancellationToken::new())
+    }
+    pub fn with_stop(stop: CancellationToken) -> Self {
         let (failure, _) = watch::channel(None);
         Self {
             tracker: TaskTracker::new(),
-            stop: CancellationToken::new(),
+            stop,
             runtime: Handle::current(),
             admission: Mutex::default(),
             failure,
@@ -152,11 +156,36 @@ impl TaskSupervisor {
     }
 }
 
+impl Drop for TaskSupervisor {
+    fn drop(&mut self) {
+        self.stop.cancel();
+        self.tracker.close();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{sync::Arc, time::Duration};
 
+    #[tokio::test]
+    async fn abandoning_a_partially_started_supervisor_cancels_its_workers() {
+        let supervisor = TaskSupervisor::new();
+        let stop = supervisor.token();
+        let (cleaned, complete) = tokio::sync::oneshot::channel();
+        supervisor
+            .spawn_critical(TaskKind::Diagnostics, async move {
+                stop.cancelled().await;
+                let _ = cleaned.send(());
+                Ok(())
+            })
+            .unwrap();
+        drop(supervisor);
+        tokio::time::timeout(Duration::from_secs(2), complete)
+            .await
+            .unwrap()
+            .unwrap();
+    }
     #[tokio::test]
     async fn shutdown_drains_workers_and_rejects_new_tasks() {
         let supervisor = Arc::new(TaskSupervisor::new());

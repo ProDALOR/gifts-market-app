@@ -125,8 +125,28 @@ impl State {
         .entity
         .as_ref()
     }
+    #[cfg(test)]
     pub fn upsert(&mut self, entity: w::Entity) -> Result<(), Status> {
         self.upsert_entity(Cow::Owned(entity))
+    }
+    /// Restore unique, checked storage identities into a fresh state without replacement lookups.
+    pub(crate) fn insert_restored(&mut self, key: Key, entity: w::Entity) -> Result<(), Status> {
+        if order(&entity)
+            .map(|value| OrderMode::try_from(value.mode))
+            .transpose()?
+            == Some(OrderMode::Executed)
+        {
+            return Ok(());
+        }
+        let entity = Arc::new(entity);
+        if key.kind == EntityKind::Order {
+            return self.books.insert_restored(key, &entity);
+        }
+        if let Some(w::entity::Entity::Feed(feed)) = &entity.entity {
+            self.books.upsert_feed(&key, feed);
+        }
+        self.metadata.insert(key, entity);
+        Ok(())
     }
     fn upsert_entity(&mut self, entity: Cow<'_, w::Entity>) -> Result<(), Status> {
         let key = entity_key(&entity)?;
@@ -145,7 +165,7 @@ impl State {
         }
         let entity = Arc::new(entity.into_owned());
         if key.kind == EntityKind::Order {
-            return self.books.upsert_order(&key, &entity);
+            return self.books.upsert_order(key, &entity);
         }
         if let Some(w::entity::Entity::Feed(feed)) = &entity.entity {
             self.books.upsert_feed(&key, feed);

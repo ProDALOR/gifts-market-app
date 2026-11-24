@@ -81,32 +81,42 @@ impl PartitionState {
     }
     fn replace(
         &mut self,
-        key: &Key,
-        previous: Option<[Decimal; 3]>,
+        key: &Arc<Key>,
+        previous: [Decimal; 3],
         next: [Decimal; 3],
         entity: &Arc<w::Entity>,
     ) {
-        self.attributes
-            .replace(self.orders.get(&key.id).map(AsRef::as_ref), entity);
+        self.attributes.replace(
+            key,
+            self.orders.get(&key.id).expect("located order"),
+            entity,
+        );
         for (i, (index, rank)) in self.indexes_mut().into_iter().zip(next).enumerate() {
-            if let Some(previous) = previous
-                && previous[i] != rank
-            {
-                index.remove(&RankKey::new(previous[i], key.clone()));
+            if previous[i] != rank {
+                index.remove(&RankKey::shared(previous[i], Arc::clone(key)));
             }
-            // Equal ranks still need the new record, including metadata-only updates.
-            index.insert(RankKey::new(rank, key.clone()), Arc::clone(entity));
         }
-        self.orders.insert(key.id.clone(), Arc::clone(entity));
+        self.insert_records(key, next, entity);
     }
-    fn remove(&mut self, key: &Key, ranks: [Decimal; 3]) {
+    fn remove(&mut self, key: &Arc<Key>, ranks: [Decimal; 3]) {
         if let Some(entity) = self.orders.get(&key.id) {
-            self.attributes.remove(entity);
+            self.attributes.remove(key, entity);
         }
         for (index, rank) in self.indexes_mut().into_iter().zip(ranks) {
-            index.remove(&RankKey::new(rank, key.clone()));
+            index.remove(&RankKey::shared(rank, Arc::clone(key)));
         }
         self.orders.remove(&key.id);
+    }
+    fn insert(&mut self, key: &Arc<Key>, ranks: [Decimal; 3], entity: &Arc<w::Entity>) {
+        self.attributes.insert(key, entity);
+        self.insert_records(key, ranks, entity);
+    }
+    fn insert_records(&mut self, key: &Arc<Key>, ranks: [Decimal; 3], entity: &Arc<w::Entity>) {
+        // Equal ranks still need the new record, including metadata-only updates.
+        for (index, rank) in self.indexes_mut().into_iter().zip(ranks) {
+            index.insert(RankKey::shared(rank, Arc::clone(key)), Arc::clone(entity));
+        }
+        self.orders.insert(key.id.clone(), Arc::clone(entity));
     }
     fn is_empty(&self) -> bool {
         self.orders.is_empty()
@@ -190,7 +200,7 @@ pub struct BookIndex {
     // Copy-on-write at the partition boundary keeps unrelated index roots shared.
     partitions: OrdMap<Arc<BookPartition>, Arc<PartitionState>>,
     // Location keys preserve the legacy global identity order. Partition keys are interned.
-    locations: OrdMap<Key, Arc<BookPartition>>,
+    locations: OrdMap<Arc<Key>, Arc<BookPartition>>,
     groups: OrdMap<BookGroup, OrdSet<Book>>,
     declared: OrdMap<Key, OrdSet<Book>>,
     references: OrdMap<Book, usize>,
@@ -289,62 +299,72 @@ impl BookIndex {
         &self,
         bounds: (Bound<Key>, Bound<Key>),
     ) -> impl DoubleEndedIterator<Item = (&Key, &Arc<w::Entity>)> {
-        self.locations.range(bounds).map(|(key, partition)| {
-            (
-                key,
-                self.record(partition, key)
-                    .expect("order location must reference a stored order"),
-            )
-        })
+        self.locations
+            .range::<_, Key>(bounds)
+            .map(|(key, partition)| {
+                (
+                    key.as_ref(),
+                    self.record(partition, key)
+                        .expect("order location must reference a stored order"),
+                )
+            })
     }
-    pub fn upsert_order(&mut self, key: &Key, entity: &Arc<w::Entity>) -> Result<(), Status> {
+    pub fn upsert_order(&mut self, key: Key, entity: &Arc<w::Entity>) -> Result<(), Status> {
         let value = order(entity).ok_or_else(|| Status::data_loss("missing order"))?;
         let next = OrderPlacement::new(value)?;
-        let previous = self.locations.get(key).cloned();
-        let previous_ranks = previous
-            .as_ref()
-            .map(|location| {
-                let stored = self
-                    .record(location, key)
-                    .ok_or_else(|| Status::data_loss("missing located order"))?;
-                ranks(order(stored).ok_or_else(|| Status::data_loss("missing order"))?)
-            })
-            .transpose()?;
-        if previous
-            .as_ref()
-            .is_some_and(|location| location.as_ref() == &next.partition)
-        {
-            let partition = self
-                .partitions
-                .get_mut(&next.partition)
-                .ok_or_else(|| Status::data_loss("missing order partition"))?;
-            Arc::make_mut(partition).replace(key, previous_ranks, next.ranks, entity);
-            return Ok(());
+        let previous = self
+            .locations
+            .get_key_value(&key)
+            .map(|(key, location)| (Arc::clone(key), Arc::clone(location)));
+        if let Some((identity, location)) = previous {
+            let stored = self
+                .record(&location, &identity)
+                .ok_or_else(|| Status::data_loss("missing located order"))?;
+            let previous_ranks =
+                ranks(order(stored).ok_or_else(|| Status::data_loss("missing order"))?)?;
+            if location.as_ref() == &next.partition {
+                let partition = self
+                    .partitions
+                    .get_mut(&next.partition)
+                    .ok_or_else(|| Status::data_loss("missing order partition"))?;
+                Arc::make_mut(partition).replace(&identity, previous_ranks, next.ranks, entity);
+            } else {
+                self.remove_order(&identity, &location, previous_ranks);
+                self.insert_placed(identity, entity, next);
+            }
+        } else {
+            self.insert_placed(Arc::new(key), entity, next);
         }
-        if let Some(previous) = previous {
-            self.remove_order(
-                key,
-                &previous,
-                previous_ranks.expect("located order has ranks"),
-            );
-        }
-        let book = &next.partition.book;
-        if !self.active(book) {
-            self.add_book(book.clone());
-            self.groups
-                .entry(book.group())
-                .or_default()
-                .insert(book.clone());
-        }
-        let location = self
-            .partitions
-            .get_key_value(&next.partition)
-            .map(|(location, _)| Arc::clone(location))
-            .unwrap_or_else(|| Arc::new(next.partition));
-        let partition = self.partitions.entry(Arc::clone(&location)).or_default();
-        Arc::make_mut(partition).replace(key, None, next.ranks, entity);
-        self.locations.insert(key.clone(), location);
         Ok(())
+    }
+    /// Only used for unique, identity-checked rows restored into an empty State.
+    pub(crate) fn insert_restored(
+        &mut self,
+        key: Key,
+        entity: &Arc<w::Entity>,
+    ) -> Result<(), Status> {
+        let next =
+            OrderPlacement::new(order(entity).ok_or_else(|| Status::data_loss("missing order"))?)?;
+        self.insert_placed(Arc::new(key), entity, next);
+        Ok(())
+    }
+    fn insert_placed(&mut self, key: Arc<Key>, entity: &Arc<w::Entity>, next: OrderPlacement) {
+        let location = if let Some((location, _)) = self.partitions.get_key_value(&next.partition) {
+            Arc::clone(location)
+        } else {
+            let book = &next.partition.book;
+            if !self.active(book) {
+                self.add_book(book.clone());
+                self.groups
+                    .entry(book.group())
+                    .or_default()
+                    .insert(book.clone());
+            }
+            Arc::new(next.partition)
+        };
+        let partition = self.partitions.entry(Arc::clone(&location)).or_default();
+        Arc::make_mut(partition).insert(&key, next.ranks, entity);
+        self.locations.insert(key, location);
     }
     pub fn upsert_feed(&mut self, key: &Key, feed: &w::Feed) {
         self.remove_feed(key);
@@ -354,7 +374,7 @@ impl BookIndex {
         }
         self.declared.insert(key.clone(), books);
     }
-    fn remove_order(&mut self, key: &Key, previous: &BookPartition, ranks: [Decimal; 3]) {
+    fn remove_order(&mut self, key: &Arc<Key>, previous: &BookPartition, ranks: [Decimal; 3]) {
         if let Some(partition) = self.partitions.get_mut(previous) {
             Arc::make_mut(partition).remove(key, ranks);
             if partition.is_empty() {
@@ -381,12 +401,16 @@ impl BookIndex {
         }
     }
     pub fn remove(&mut self, key: &Key) -> Result<(), Status> {
-        if let Some(location) = self.locations.get(key).cloned() {
+        if let Some((identity, location)) = self
+            .locations
+            .get_key_value(key)
+            .map(|(key, location)| (Arc::clone(key), Arc::clone(location)))
+        {
             let stored = self
                 .record(&location, key)
                 .ok_or_else(|| Status::data_loss("missing located order"))?;
             let ranks = ranks(order(stored).ok_or_else(|| Status::data_loss("missing order"))?)?;
-            self.remove_order(key, &location, ranks);
+            self.remove_order(&identity, &location, ranks);
             self.locations.remove(key);
         }
         Ok(())
@@ -482,12 +506,11 @@ impl BookIndex {
                         candidate_budget -= count;
                         let mut rows: Vec<RankedOrder<'a>> = Vec::with_capacity(count);
                         for id in sets.into_iter().flatten() {
-                            let entity = &partition.orders[id];
+                            let entity = &partition.orders[&id.id];
                             let rank = sort
                                 .rank(order(entity).expect("indexed order"), false)
                                 .expect("validated order rank");
-                            let lookup =
-                                RankKey::new(rank, Key::order(b.venue_id.clone(), id.clone()));
+                            let lookup = RankKey::shared(rank, Arc::clone(id));
                             let (key, entity) = partition
                                 .index(sort)
                                 .get_key_value(&lookup)

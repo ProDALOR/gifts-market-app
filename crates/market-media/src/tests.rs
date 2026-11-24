@@ -418,3 +418,17 @@ async fn shutdown_wakes_active_readers_without_waiting_for_transport_timeout() {
     worker.abort();
     let _ = worker.await;
 }
+
+#[tokio::test]
+async fn already_cancelled_media_startup_creates_no_cache_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("media");
+    let stop = tokio_util::sync::CancellationToken::new();
+    stop.cancel();
+    let error = MediaCache::open_with_cancellation(&path, stop)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    assert!(!path.exists());
+}

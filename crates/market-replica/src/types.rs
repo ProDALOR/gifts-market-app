@@ -2,6 +2,7 @@
 use market_hub_protocol::wire as w;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tonic::Status;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -203,7 +204,7 @@ impl From<Position> for (i64, String, String) {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum RankIdentity {
     First,
-    Entity(Key),
+    Entity(Arc<Key>),
     Last,
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -213,6 +214,9 @@ pub struct RankKey {
 }
 impl RankKey {
     pub fn new(value: Decimal, key: Key) -> Self {
+        Self::shared(value, Arc::new(key))
+    }
+    pub(crate) fn shared(value: Decimal, key: Arc<Key>) -> Self {
         Self {
             value,
             identity: RankIdentity::Entity(key),

@@ -18,12 +18,32 @@ impl MarketRuntime {
         query_limit: usize,
         subscription_limit: usize,
     ) -> Result<Self> {
+        Self::open_with_cancellation(
+            directory,
+            source,
+            query_limit,
+            subscription_limit,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
+    pub async fn open_with_cancellation(
+        directory: &std::path::Path,
+        source: &str,
+        query_limit: usize,
+        subscription_limit: usize,
+        stop: tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
         ensure!(
             query_limit > 0 && subscription_limit > 0,
             "Market limits must be positive"
         );
-        let market = market_replica::ReplicaRuntime::open(directory, source).await?;
-        let supervisor = Arc::new(TaskSupervisor::new());
+        let stop = stop.child_token();
+        let cancel = stop.clone().drop_guard();
+        let market =
+            market_replica::ReplicaRuntime::open_with_cancellation(directory, source, stop.clone())
+                .await?;
+        let supervisor = Arc::new(TaskSupervisor::with_stop(stop));
         let diagnostics_stop = supervisor.token();
         supervisor.spawn_critical(
             TaskKind::Diagnostics,
@@ -31,43 +51,62 @@ impl MarketRuntime {
         )?;
         let stop = supervisor.token();
         let reads = market_replica::ReadRuntime::new(market.reader, query_limit, stop.clone())?;
-        let starting = std::time::Instant::now();
-        tracing::info!("starting market data actors");
-        let data = market_actors::MarketDataService::start_with_shutdown(
-            reads.handle(),
-            subscription_limit,
-            stop.clone(),
-        )
-        .await?;
-        tracing::info!(
-            elapsed_ms = starting.elapsed().as_millis(),
-            "market data actors started"
-        );
-        let starting = std::time::Instant::now();
-        tracing::info!("starting valuation service");
-        let (registry, valuation_task) =
-            market_valuation::ValuationHandle::start(&data.arbiter(), reads.handle()).await?;
-        tracing::info!(
-            elapsed_ms = starting.elapsed().as_millis(),
-            "valuation service started"
-        );
-        let valuation_stop = supervisor.token();
-        supervisor.spawn_critical(TaskKind::Valuation("valuation"), async move {
-            valuation_task.run(valuation_stop).await.map_err(|error| {
-                tracing::error!(%error,"valuation service stopped");
-            })
-        })?;
-        supervisor.spawn_critical(TaskKind::MarketData, async move {
-            if let Err(error) = data.task.run(stop).await {
-                tracing::error!(code=?error.code(),"market data actor stopped");
-                return Err(());
+        let services = async {
+            ensure!(!supervisor.is_stopping(), "Application is stopping");
+            let starting = std::time::Instant::now();
+            tracing::info!("starting market data actors");
+            let data = market_actors::MarketDataService::start_with_shutdown(
+                reads.handle(),
+                subscription_limit,
+                stop.clone(),
+            )
+            .await?;
+            tracing::info!(
+                elapsed_ms = starting.elapsed().as_millis(),
+                "market data actors started"
+            );
+            let arbiter = data.arbiter();
+            let handle = data.handle;
+            supervisor.spawn_critical(TaskKind::MarketData, async move {
+                if let Err(error) = data.task.run(stop).await {
+                    tracing::error!(code=?error.code(),"market data actor stopped");
+                    return Err(());
+                }
+                Ok(())
+            })?;
+            let starting = std::time::Instant::now();
+            tracing::info!("starting valuation service");
+            let (registry, valuation_task) =
+                market_valuation::ValuationHandle::start(&arbiter, reads.handle()).await?;
+            tracing::info!(
+                elapsed_ms = starting.elapsed().as_millis(),
+                "valuation service started"
+            );
+            let valuation_stop = supervisor.token();
+            supervisor.spawn_critical(TaskKind::Valuation("valuation"), async move {
+                valuation_task.run(valuation_stop).await.map_err(|error| {
+                    tracing::error!(%error,"valuation service stopped");
+                })
+            })?;
+
+            ensure!(!supervisor.is_stopping(), "Application is stopping");
+            Ok::<_, anyhow::Error>((handle, registry))
+        }
+        .await;
+        let (handle, valuation) = match services {
+            Ok(services) => services,
+            Err(error) => {
+                let _ = supervisor.shutdown().await;
+                reads.shutdown().await;
+                tokio::task::spawn_blocking(move || drop(market.replication)).await?;
+                return Err(error);
             }
-            Ok(())
-        })?;
+        };
+        cancel.disarm();
         Ok(Self {
-            handle: data.handle,
+            handle,
             reads,
-            valuation: registry,
+            valuation,
             supervisor,
             replication: Mutex::new(Some(market.replication)),
         })
@@ -142,11 +181,20 @@ impl MarketRuntime {
             Ok(())
         })
     }
+    pub fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+        self.supervisor.token()
+    }
     pub async fn cancelled(&self) {
         self.supervisor.cancelled().await;
     }
     pub async fn shutdown(&self) -> Result<()> {
         let result = self.supervisor.shutdown().await;
+        let unused = self
+            .replication
+            .lock()
+            .map_err(|_| anyhow!("Replication worker state is unavailable"))?
+            .take();
+        tokio::task::spawn_blocking(move || drop(unused)).await?;
         self.reads.shutdown().await;
         result
     }
@@ -163,6 +211,24 @@ impl Drop for MarketRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn shutdown_before_replication_drains_services_and_preserves_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = market_replica::ReplicaWriter::open(directory.path(), "test").unwrap();
+        let snapshot = writer.begin_snapshot().unwrap().finish("saved").unwrap();
+        writer.install_snapshot(snapshot).unwrap();
+        drop(writer);
+        let runtime = MarketRuntime::open(directory.path(), "test", 1, 1)
+            .await
+            .unwrap();
+        let handle = runtime.handle();
+        runtime.shutdown().await.unwrap();
+        assert!(runtime.replication.lock().unwrap().is_none());
+        assert!(handle.status().await.is_err());
+        drop(runtime);
+        let reopened = market_replica::ReplicaWriter::open(directory.path(), "test").unwrap();
+        assert_eq!(reopened.cursor().unwrap(), "saved");
+    }
     #[tokio::test]
     async fn dropping_runtime_immediately_closes_data_access_and_drains_the_actor() {
         let directory = tempfile::tempdir().unwrap();

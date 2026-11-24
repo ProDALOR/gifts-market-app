@@ -7,7 +7,7 @@ use market_hub_protocol::wire as w;
 use prost::Message;
 use redb::{
     Database, Durability, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata,
-    TableDefinition, WriteTransaction,
+    TableDefinition, TableError, TableHandle, WriteTransaction,
 };
 use std::time::{Duration, Instant};
 use std::{collections::BTreeSet, path::Path, sync::Arc};
@@ -86,8 +86,81 @@ fn value(
         .map(|v| v.value().to_vec())
         .unwrap_or_default())
 }
+// Validate one committed schema before exposing a Store. Only a truly empty
+// database can be initialized; saved checkpoints must not adopt missing data.
+fn initialized(database: &Database, source: &str) -> Result<bool, Status> {
+    let read = database.begin_read().map_err(failure)?;
+    let meta = match read.open_table(META) {
+        Ok(meta) => meta,
+        Err(TableError::TableDoesNotExist(_)) => {
+            if read.list_tables().map_err(failure)?.next().is_some() {
+                return Err(Status::data_loss(
+                    "replica database is missing its service identity",
+                ));
+            }
+            return Ok(false);
+        }
+        Err(error) => return Err(failure(error)),
+    };
+    let stored = meta.get("source").map_err(failure)?;
+    let stored = stored
+        .as_ref()
+        .map(|value| value.value())
+        .unwrap_or_default();
+    if stored.is_empty() {
+        return Err(Status::data_loss(
+            "replica database is missing its service identity",
+        ));
+    }
+    if stored != source.as_bytes() {
+        return Err(Status::failed_precondition(
+            "data directory belongs to another hub or service identity",
+        ));
+    }
+    macro_rules! exists {
+        ($table:expr) => {
+            match read.open_table($table) {
+                Ok(_) => true,
+                Err(TableError::TableDoesNotExist(_)) => false,
+                Err(error) => return Err(failure(error)),
+            }
+        };
+    }
+    for (present, name) in [
+        (exists!(CURRENT), CURRENT.name()),
+        (exists!(EXECUTIONS), EXECUTIONS.name()),
+        (exists!(IDENTITIES), IDENTITIES.name()),
+        (exists!(INDEX), INDEX.name()),
+    ] {
+        if !present {
+            return Err(Status::data_loss(format!(
+                "replica database is missing required table {name}"
+            )));
+        }
+    }
+    // Missing staging journals can be created; ranked history can be rebuilt.
+    // Validate every existing table's type even when the rebuild marker is absent.
+    let journal = exists!(JOURNAL);
+    let ranked = exists!(SORTED);
+    let ready = meta
+        .get("execution_ranks_v1")
+        .map_err(failure)?
+        .is_some_and(|v| !v.value().is_empty());
+    Ok(journal && ranked && ready)
+}
 impl Store {
     pub fn open(path: &Path, source: &str) -> Result<Self, Status> {
+        Self::open_checked(path, source, &|| Ok(()))
+    }
+    pub(crate) fn open_checked(
+        path: &Path,
+        source: &str,
+        check: &impl Fn() -> Result<(), Status>,
+    ) -> Result<Self, Status> {
+        check()?;
+        if source.is_empty() {
+            return Err(Status::invalid_argument("empty replica service identity"));
+        }
         std::fs::create_dir_all(
             path.parent()
                 .ok_or_else(|| failure("missing data directory"))?,
@@ -100,17 +173,26 @@ impl Store {
             elapsed_ms = started.elapsed().as_millis(),
             "replica database opened"
         );
-        let tx = database.begin_write().map_err(failure)?;
-        {
-            let mut meta = tx.open_table(META).map_err(failure)?;
-            let stored = value(&meta, "source")?;
-            if !stored.is_empty() && stored != source.as_bytes() {
-                return Err(Status::failed_precondition(
-                    "data directory belongs to another hub or service identity",
-                ));
-            }
-            meta.insert("source", source.as_bytes()).map_err(failure)?;
+        check()?;
+        if initialized(&database, source)? {
+            tracing::info!(
+                elapsed_ms = started.elapsed().as_millis(),
+                "replica storage validated"
+            );
+            return Ok(Self(
+                Arc::new(database),
+                #[cfg(test)]
+                Arc::default(),
+            ));
         }
+        check()?;
+        let tx = database.begin_write().map_err(failure)?;
+        // No database handle is shared until open returns, so the read-only
+        // identity/schema inspection cannot race another application writer.
+        tx.open_table(META)
+            .map_err(failure)?
+            .insert("source", source.as_bytes())
+            .map_err(failure)?;
         tx.open_table(CURRENT).map_err(failure)?;
         tx.open_table(EXECUTIONS).map_err(failure)?;
         tx.open_table(IDENTITIES).map_err(failure)?;
@@ -118,16 +200,36 @@ impl Store {
         tx.open_table(JOURNAL).map_err(failure)?;
         {
             let mut meta = tx.open_table(META).map_err(failure)?;
-            let mut ranked = tx.open_table(SORTED).map_err(failure)?;
-            if value(&meta, "execution_ranks_v1")?.is_empty() {
+            let ranks_present = tx
+                .list_tables()
+                .map_err(failure)?
+                .any(|table| table.name() == SORTED.name());
+            if !ranks_present || value(&meta, "execution_ranks_v1")?.is_empty() {
+                // Replace the entire derived index in this transaction. A failed
+                // rebuild restores the old table and marker together on rollback.
+                tx.delete_table(SORTED).map_err(failure)?;
+                let mut ranked = tx.open_table(SORTED).map_err(failure)?;
                 let executions = tx.open_table(EXECUTIONS).map_err(failure)?;
                 let rows = executions.len().map_err(failure)?;
                 let indexing = Instant::now();
                 let mut progress = Instant::now();
                 tracing::info!(rows, "building missing execution ranks");
                 for (index, row) in executions.iter().map_err(failure)?.enumerate() {
-                    let (_, raw) = row.map_err(failure)?;
+                    check()?;
+                    let (stored, raw) = row.map_err(failure)?;
                     let order = w::Order::decode(raw.value()).map_err(failure)?;
+                    let identity = order
+                        .book
+                        .as_ref()
+                        .zip(order.executed_at_ms)
+                        .map(|(book, time)| (time, book.venue_id.as_str(), order.id.as_str()));
+                    if order.mode != w::OrderMode::Executed as i32
+                        || identity != Some(stored.value())
+                    {
+                        return Err(Status::data_loss(
+                            "stored execution identity does not match payload",
+                        ));
+                    }
                     insert_ranks(&mut ranked, &order)?;
                     let indexed = index + 1;
                     if indexed.is_multiple_of(10_000)
@@ -151,6 +253,7 @@ impl Store {
                     .map_err(failure)?;
             }
         }
+        check()?;
         tx.commit().map_err(failure)?;
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis(),
@@ -616,6 +719,13 @@ impl Snapshot {
         Ok(Checkpoint { cursor, updated_at })
     }
     pub fn state(&self) -> Result<State, Status> {
+        self.state_checked(&|| Ok(()))
+    }
+    pub(crate) fn state_checked(
+        &self,
+        check: &impl Fn() -> Result<(), Status>,
+    ) -> Result<State, Status> {
+        check()?;
         let table = self.read.open_table(CURRENT).map_err(failure)?;
         let rows = table.len().map_err(failure)?;
         let started = Instant::now();
@@ -623,8 +733,16 @@ impl Snapshot {
         tracing::info!(rows, "restoring replica state and order indexes");
         let mut state = State::default();
         for (index, row) in table.iter().map_err(failure)?.enumerate() {
-            let (_, payload) = row.map_err(failure)?;
-            state.upsert(w::Entity::decode(payload.value()).map_err(failure)?)?;
+            check()?;
+            let (stored, payload) = row.map_err(failure)?;
+            let entity = w::Entity::decode(payload.value()).map_err(failure)?;
+            let key = state::entity_key(&entity)?;
+            if key.stored() != stored.value() {
+                return Err(Status::data_loss(
+                    "stored entity identity does not match payload",
+                ));
+            }
+            state.insert_restored(key, entity)?;
             let restored = index + 1;
             if restored.is_multiple_of(10_000) && progress.elapsed() >= Duration::from_secs(5) {
                 tracing::info!(
@@ -1242,3 +1360,11 @@ mod tests {
         assert_eq!(replica.read(query(3, 0)).unwrap().page.entities.len(), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "startup_benchmark.rs"]
+mod startup_benchmark;
+
+#[cfg(test)]
+#[path = "startup_tests.rs"]
+mod startup_tests;

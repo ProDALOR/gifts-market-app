@@ -52,13 +52,13 @@ impl StorageJobs {
 /// Returned blocking results can wait in async prefetch buffers. Abandoning a
 /// large builder/view must release its indexes, database and lease off-thread,
 /// and recovery must drain that cleanup before starting another build.
-pub(super) struct StorageValue<T: Send + 'static> {
+pub(crate) struct StorageValue<T: Send + 'static> {
     value: Option<T>,
     token: Option<TaskTrackerToken>,
     jobs: StorageJobs,
 }
 impl<T: Send + 'static> StorageValue<T> {
-    pub(super) fn new(value: T, jobs: &StorageJobs) -> Self {
+    pub(crate) fn new(value: T, jobs: &StorageJobs) -> Self {
         Self {
             value: Some(value),
             token: Some(jobs.tracker.token()),
@@ -68,8 +68,8 @@ impl<T: Send + 'static> StorageValue<T> {
     pub(super) fn get(&mut self) -> &mut T {
         self.value.as_mut().expect("storage value is present")
     }
-    /// Transfer only inside a storage job so cancellation never drops it on async workers.
-    pub(super) fn take(mut self) -> T {
+    /// Transfer only when no await can abandon the unguarded result, or inside a storage job.
+    pub(crate) fn take(mut self) -> T {
         self.value.take().expect("storage value is present")
     }
 }
@@ -77,9 +77,14 @@ impl<T: Send + 'static> Drop for StorageValue<T> {
     fn drop(&mut self) {
         if let Some(value) = self.value.take() {
             let token = self.token.take().expect("storage value is tracked");
+            // Keep the executor alive until queued destruction actually runs.
+            // Otherwise dropping its last owner could cancel this cleanup job
+            // and destroy the database/result on the caller's async thread.
+            let cleanup = self.jobs.clone();
             self.jobs.pool.spawn(move || {
                 drop(value);
                 drop(token);
+                drop(cleanup);
             });
         }
     }
@@ -88,6 +93,63 @@ impl<T: Send + 'static> Drop for StorageValue<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn queued_cleanup_survives_dropping_its_last_async_owner() {
+        struct Notify(Option<tokio::sync::oneshot::Sender<String>>);
+        impl Drop for Notify {
+            fn drop(&mut self) {
+                let _ = self
+                    .0
+                    .take()
+                    .unwrap()
+                    .send(std::thread::current().name().unwrap().to_string());
+            }
+        }
+        let jobs = StorageJobs::new().unwrap();
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let blocked = jobs.pool.spawn(move || {
+            entered.send(()).unwrap();
+            wait.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        });
+        ready.await.unwrap();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        drop(StorageValue::new(Notify(Some(send)), &jobs));
+        drop(jobs);
+        release.send(()).unwrap();
+        blocked.await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), receive)
+                .await
+                .unwrap()
+                .unwrap(),
+            "market-storage"
+        );
+    }
+    #[tokio::test]
+    async fn abandoned_output_is_destroyed_on_the_storage_worker_before_drain_completes() {
+        struct Probe(Option<tokio::sync::oneshot::Sender<String>>);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                let _ = self
+                    .0
+                    .take()
+                    .unwrap()
+                    .send(std::thread::current().name().unwrap().to_string());
+            }
+        }
+        let jobs = StorageJobs::new().unwrap();
+        let cleanup = jobs.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let output = jobs
+            .run(move || Ok(StorageValue::new(Probe(Some(send)), &cleanup)))
+            .await
+            .unwrap();
+        drop(output);
+        jobs.shutdown().await;
+        assert_eq!(receive.await.unwrap(), "market-storage");
+    }
     #[tokio::test]
     async fn storage_is_serial_and_cleanup_uses_the_same_worker() {
         let jobs = StorageJobs::new().unwrap();

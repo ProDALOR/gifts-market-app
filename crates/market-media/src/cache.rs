@@ -66,6 +66,13 @@ impl MediaCache {
     pub async fn open(directory: impl AsRef<Path>) -> std::io::Result<(Self, MediaDownloader)> {
         Self::with_limits(directory, MediaLimits::default()).await
     }
+    pub async fn open_with_cancellation(
+        directory: impl AsRef<Path>,
+        stop: tokio_util::sync::CancellationToken,
+    ) -> std::io::Result<(Self, MediaDownloader)> {
+        let renderer = std::env::current_exe()?.with_file_name("market-media-render");
+        Self::with_renderer_checked(directory, MediaLimits::default(), renderer, stop).await
+    }
     pub async fn with_limits(
         directory: impl AsRef<Path>,
         limits: MediaLimits,
@@ -78,12 +85,41 @@ impl MediaCache {
         limits: MediaLimits,
         renderer: std::path::PathBuf,
     ) -> std::io::Result<(Self, MediaDownloader)> {
+        Self::with_renderer_checked(
+            directory,
+            limits,
+            renderer,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
+    async fn with_renderer_checked(
+        directory: impl AsRef<Path>,
+        limits: MediaLimits,
+        renderer: std::path::PathBuf,
+        stop: tokio_util::sync::CancellationToken,
+    ) -> std::io::Result<(Self, MediaDownloader)> {
         limits.validate()?;
+        let stop = stop.child_token();
+        let _cancel = stop.clone().drop_guard();
+        let check = move || {
+            if stop.is_cancelled() {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "Media startup cancelled",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
         let directory = directory.as_ref().to_owned();
         let disk_limits = limits.clone();
-        let disk = tokio::task::spawn_blocking(move || DiskStore::open(directory, disk_limits))
-            .await
-            .map_err(std::io::Error::other)??;
+        let disk = tokio::task::spawn_blocking(move || {
+            DiskStore::open_checked(directory, disk_limits, &check)
+        })
+        .await
+        .map_err(std::io::Error::other)??;
         let cache = Self(Arc::new(Shared {
             limits,
             disk: Arc::new(disk),

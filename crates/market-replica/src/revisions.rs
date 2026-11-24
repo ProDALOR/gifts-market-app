@@ -104,20 +104,34 @@ fn affected<'a>(entity: &'a w::Entity, books: &mut BTreeMap<Book<'a>, bool>) {
 }
 impl Revisions {
     pub fn replaced(previous: Option<&ReplicaView>, state: &State) -> Self {
+        Self::replaced_checked(previous, state, &|| Ok(()))
+            .expect("unchecked revision restore cannot fail")
+    }
+    pub(crate) fn replaced_checked(
+        previous: Option<&ReplicaView>,
+        state: &State,
+        check: &impl Fn() -> Result<(), Status>,
+    ) -> Result<Self, Status> {
+        check()?;
         let sequence = previous.map_or(1, |view| view.revisions.sequence + 1);
         let mut option_groups = OrdMap::<String, OptionGroup>::new();
         for (_, entity) in state.range(None, Some(EntityKind::AttributeOption)) {
+            check()?;
             if let Some(attribute) = option_group(entity) {
-                let group = option_groups
-                    .entry(attribute.to_owned())
-                    .or_insert(OptionGroup {
-                        count: 0,
-                        revision: sequence,
-                    });
-                group.count += 1;
+                if let Some(group) = option_groups.get_mut(attribute) {
+                    group.count += 1;
+                } else {
+                    option_groups.insert(
+                        attribute.to_owned(),
+                        OptionGroup {
+                            count: 1,
+                            revision: sequence,
+                        },
+                    );
+                }
             }
         }
-        Self {
+        Ok(Self {
             instance: previous.map_or_else(uuid::Uuid::new_v4, |view| view.revisions.instance),
             sequence,
             dataset: sequence,
@@ -127,7 +141,7 @@ impl Revisions {
             metadata: [sequence; 5],
             option_groups,
             books: OrdMap::new(),
-        }
+        })
     }
     pub fn updated<'a>(
         &self,

@@ -117,6 +117,14 @@ pub struct ReplicaWriter {
 }
 impl ReplicaWriter {
     pub fn open(directory: &Path, source: &str) -> Result<Self, Status> {
+        Self::open_checked(directory, source, &|| Ok(()))
+    }
+    fn open_checked(
+        directory: &Path,
+        source: &str,
+        check: &impl Fn() -> Result<(), Status>,
+    ) -> Result<Self, Status> {
+        check()?;
         std::fs::create_dir_all(directory).map_err(storage::failure)?;
         let directory_lock = std::fs::File::options()
             .read(true)
@@ -132,7 +140,9 @@ impl ReplicaWriter {
             std::fs::TryLockError::Error(error) => storage::failure(error),
         })?;
         let path = directory.join("replica.redb");
-        let store = Store::open(&path, source)?;
+        check()?;
+        let store = Store::open_checked(&path, source, check)?;
+        check()?;
         let building = directory.join("building.redb");
         if building.exists() {
             let started = std::time::Instant::now();
@@ -148,10 +158,10 @@ impl ReplicaWriter {
         let published = if cursor.is_empty() {
             None
         } else {
-            let state = history.state()?;
+            let state = history.state_checked(check)?;
             let started = std::time::Instant::now();
             tracing::info!("rebuilding replica revision indexes");
-            let revisions = revisions::Revisions::replaced(None, &state);
+            let revisions = revisions::Revisions::replaced_checked(None, &state, check)?;
             tracing::info!(
                 elapsed_ms = started.elapsed().as_millis(),
                 "replica revision indexes restored"
@@ -164,6 +174,7 @@ impl ReplicaWriter {
                 updated_at,
             }))
         };
+        check()?;
         let ready = published.is_some();
         let (status, _) = watch::channel(SyncStatus {
             ready,

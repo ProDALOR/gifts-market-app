@@ -85,3 +85,98 @@ fn partition_owned_orders_preserve_global_identity_ranges_and_kind_boundaries() 
             .is_none()
     );
 }
+
+#[test]
+fn restored_state_matches_live_indexes_through_updates_and_pinned_reads() {
+    use crate::{query::Scope, types::Sort};
+    let rows = crate::benchmarks::fixture(512);
+    let mut live = State::default();
+    live.apply(&rows).unwrap();
+    let mut restored = State::default();
+    // CURRENT is unique and sorted by identity, irrespective of input order.
+    for (key, entity) in live.range(None, None) {
+        restored
+            .insert_restored(key.clone(), entity.as_ref().clone())
+            .unwrap();
+    }
+    let pinned = restored.clone();
+    let verify = |a: &State, b: &State| {
+        assert!(a.range(None, None).eq(b.range(None, None)));
+        assert_eq!(a.books().page(None, 100), b.books().page(None, 100));
+        for collection in ["gift0", "gift1", "gift.moved"] {
+            for currency in ["GRAM", "XTR"] {
+                for modes in [vec![1], vec![2], vec![1, 2]] {
+                    for attributes in [
+                        BTreeMap::new(),
+                        [(
+                            "tg.model".into(),
+                            w::AttributePredicate {
+                                predicate: Some(w::attribute_predicate::Predicate::Eq(
+                                    w::AttributeValue {
+                                        value: Some(w::attribute_value::Value::OptionId(
+                                            "model0".into(),
+                                        )),
+                                    },
+                                )),
+                            },
+                        )]
+                        .into(),
+                    ] {
+                        let scope = Scope::try_from(w::Scope {
+                            item_type_id: Some(collection.into()),
+                            currency_id: Some(currency.into()),
+                            modes: modes.clone(),
+                            attributes,
+                            ..Default::default()
+                        })
+                        .unwrap();
+                        for sort in [
+                            Sort::PriceAsc,
+                            Sort::PriceDesc,
+                            Sort::TimeAsc,
+                            Sort::TimeDesc,
+                            Sort::NumberAsc,
+                            Sort::NumberDesc,
+                        ] {
+                            let a: Vec<_> = a.books().ranked(&scope, None, sort).collect();
+                            let b: Vec<_> = b.books().ranked(&scope, None, sort).collect();
+                            assert_eq!(a, b);
+                        }
+                    }
+                }
+            }
+        }
+    };
+    verify(&live, &restored);
+    let original = live.clone();
+    let orders: Vec<_> = live
+        .range(None, Some(EntityKind::Order))
+        .take(100)
+        .map(|(_, e)| e.as_ref().clone())
+        .collect();
+    for (i, mut entity) in orders.into_iter().enumerate() {
+        let key = entity_key(&entity).unwrap();
+        if i % 5 == 0 {
+            live.remove(&key).unwrap();
+            restored.remove(&key).unwrap();
+            continue;
+        }
+        if let Some(E::Order(order)) = &mut entity.entity {
+            match i % 5 {
+                1 => order.price = "999.5".into(),
+                2 => {
+                    order.mode = if order.mode == 1 { 2 } else { 1 };
+                    order.book.as_mut().unwrap().item_type_id = "gift.moved".into();
+                }
+                3 => order.attributes.clear(),
+                _ => {
+                    order.meta.insert("changed".into(), "same rank".into());
+                }
+            }
+        }
+        live.upsert(entity.clone()).unwrap();
+        restored.upsert(entity).unwrap();
+    }
+    verify(&live, &restored);
+    verify(&original, &pinned);
+}

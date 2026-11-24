@@ -112,7 +112,7 @@ fn mix(mut n: u64) -> u64 {
     n = (n ^ (n >> 27)).wrapping_mul(0x94d049bb133111eb);
     n ^ (n >> 31)
 }
-fn query(sort: i32, venue: Option<&str>, sparse: bool) -> w::ReadRequest {
+fn query(sort: w::ReadSort, venue: Option<&str>, sparse: bool) -> w::ReadRequest {
     w::ReadRequest {
         selection: Some(w::Selection {
             source: Some(w::selection::Source::Scope(w::Scope {
@@ -133,7 +133,7 @@ fn query(sort: i32, venue: Option<&str>, sparse: bool) -> w::ReadRequest {
             })),
             ..Default::default()
         }),
-        sort,
+        sort: sort as i32,
         mode: w::ReadMode::Live as i32,
         limit: 200,
         ..Default::default()
@@ -208,21 +208,35 @@ fn orderbooks_benchmark() {
         .install_snapshot(snapshot.finish("bench").unwrap())
         .unwrap();
     let reader = writer.reader();
-    for (name, request) in [
-        ("price_multi", query(1, None, false)),
-        ("price_single", query(1, Some("v0"), false)),
-        ("time_desc_multi", query(4, None, false)),
-        ("number_desc_multi", query(6, None, false)),
-        ("price_sparse", query(1, None, true)),
-        ("identity_control", query(0, None, false)),
+    for (name, sort, venue, sparse) in [
+        ("price_multi", Sort::PriceAsc, None, false),
+        ("price_single", Sort::PriceAsc, Some("v0"), false),
+        ("time_desc_multi", Sort::TimeDesc, None, false),
+        ("number_desc_multi", Sort::NumberDesc, None, false),
+        ("price_sparse", Sort::PriceAsc, None, true),
+        ("identity_control", Sort::Identity, None, false),
     ] {
+        let request = query(w::ReadSort::Identity, venue, sparse);
+        let options = ReadOptions {
+            sort: Some(sort),
+            ..Default::default()
+        };
         assert_eq!(
-            reader.read(request.clone()).unwrap().page.entities.len(),
+            reader
+                .read_with_options(request.clone(), options)
+                .unwrap()
+                .page
+                .entities
+                .len(),
             200,
             "{name}: fixture must fill a page"
         );
         measure(&label, name, iterations, || {
-            black_box(reader.read(black_box(request.clone())).unwrap());
+            black_box(
+                reader
+                    .read_with_options(black_box(request.clone()), options)
+                    .unwrap(),
+            );
         });
     }
     let explicit_keys = rows
@@ -282,7 +296,7 @@ fn orderbooks_benchmark() {
             black_box(reader.read(black_box(request.clone())).unwrap());
         });
     }
-    let mut continuation = query(1, None, false);
+    let mut continuation = query(w::ReadSort::PriceAsc, None, false);
     for _ in 0..5 {
         let page = reader.read(continuation.clone()).unwrap().page;
         assert!(!page.next_page_token.is_empty());

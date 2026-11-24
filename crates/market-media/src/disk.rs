@@ -37,7 +37,16 @@ impl Drop for Temporary {
     }
 }
 impl DiskStore {
+    #[cfg(test)]
     pub fn open(directory: PathBuf, limits: MediaLimits) -> std::io::Result<Self> {
+        Self::open_checked(directory, limits, &|| Ok(()))
+    }
+    pub(crate) fn open_checked(
+        directory: PathBuf,
+        limits: MediaLimits,
+        check: &impl Fn() -> std::io::Result<()>,
+    ) -> std::io::Result<Self> {
+        check()?;
         fs::create_dir_all(&directory)?;
         let store = Self {
             directory,
@@ -50,9 +59,10 @@ impl DiskStore {
             }),
         };
         let mut index = store.index.lock().unwrap();
-        store.scan(&mut index)?;
-        store.prune_previews(&mut index)?;
-        store.trim(&mut index, 0, None)?;
+        store.scan_checked(&mut index, check)?;
+        store.prune_previews_checked(&mut index, check)?;
+        store.trim_checked(&mut index, 0, None, check)?;
+        check()?;
         drop(index);
         Ok(store)
     }
@@ -61,11 +71,20 @@ impl DiskStore {
             .join(format!("{}.{}", key.document().get(), key.extension()))
     }
     fn scan(&self, index: &mut Index) -> std::io::Result<()> {
+        self.scan_checked(index, &|| Ok(()))
+    }
+    fn scan_checked(
+        &self,
+        index: &mut Index,
+        check: &impl Fn() -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        check()?;
         let mut files = HashMap::new();
         let mut previews = HashMap::<DocumentId, (SystemTime, MediaKey)>::new();
         let mut originals = HashMap::new();
         let mut bytes = 0;
         for item in fs::read_dir(&self.directory)? {
+            check()?;
             let item = item?;
             let metadata = match item.metadata() {
                 Ok(metadata) => metadata,
@@ -111,6 +130,7 @@ impl DiskStore {
         }
         let mut sources = HashMap::new();
         for (document, (_, preview)) in &previews {
+            check()?;
             sources.insert(
                 *document,
                 Source {
@@ -120,6 +140,7 @@ impl DiskStore {
             );
         }
         for (document, stamp) in originals {
+            check()?;
             let previous = index.sources.get(&document).copied();
             if previous.is_none() && !previews.contains_key(&document) {
                 continue;
@@ -175,6 +196,14 @@ impl DiskStore {
             .is_none_or(|source| source.digest == digest)
     }
     fn prune_previews(&self, index: &mut Index) -> std::io::Result<()> {
+        self.prune_previews_checked(index, &|| Ok(()))
+    }
+    fn prune_previews_checked(
+        &self,
+        index: &mut Index,
+        check: &impl Fn() -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        check()?;
         let obsolete: Vec<_> = index
             .files
             .keys()
@@ -188,6 +217,7 @@ impl DiskStore {
             })
             .collect();
         for key in obsolete {
+            check()?;
             match fs::remove_file(self.path(key)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -206,6 +236,16 @@ impl DiskStore {
         incoming: u64,
         replacing: Option<MediaKey>,
     ) -> std::io::Result<()> {
+        self.trim_checked(index, incoming, replacing, &|| Ok(()))
+    }
+    fn trim_checked(
+        &self,
+        index: &mut Index,
+        incoming: u64,
+        replacing: Option<MediaKey>,
+        check: &impl Fn() -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        check()?;
         let previous = replacing
             .and_then(|key| index.files.get(&key))
             .map_or(0, |entry| entry.bytes);
@@ -223,6 +263,7 @@ impl DiskStore {
             .collect();
         victims.sort_unstable_by_key(|(_, accessed)| *accessed);
         for (key, _) in victims {
+            check()?;
             if !over_budget(index.bytes) {
                 break;
             }
@@ -517,6 +558,33 @@ mod tests {
     }
     fn image() -> MediaAsset {
         MediaAsset::thumbnail(b"\x89PNG\r\n\x1a\nsynthetic".to_vec()).unwrap()
+    }
+    #[test]
+    fn interrupted_open_stops_scanning_and_can_be_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        for id in 1..=64 {
+            fs::write(dir.path().join(format!("{id}.tgs")), b"cached original").unwrap();
+        }
+        let calls = std::cell::Cell::new(0);
+        let error = DiskStore::open_checked(dir.path().into(), MediaLimits::default(), &|| {
+            let n = calls.get();
+            calls.set(n + 1);
+            if n == 10 {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "test stop",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(calls.get(), 11);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 64);
+        let reopened = DiskStore::open(dir.path().into(), MediaLimits::default()).unwrap();
+        assert_eq!(reopened.index.lock().unwrap().files.len(), 64);
     }
     #[test]
     fn retired_outlines_are_removed_on_open_and_maintenance_without_touching_other_assets() {

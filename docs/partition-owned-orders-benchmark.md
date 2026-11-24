@@ -11,10 +11,10 @@ State.books.partitions: Arc<BookPartition> → Arc<PartitionState>
     PartitionState.prices:  RankKey → Arc<Entity>
     PartitionState.times:   RankKey → Arc<Entity>
     PartitionState.numbers: RankKey → Arc<Entity>
-State.books.locations: Key → Arc<BookPartition>      ordered routing directory
+State.books.locations: Arc<Key> → Arc<BookPartition>      ordered routing directory
 ```
 
-Partition keys are interned and shared by location entries. The local order map needs only the order ID because venue is part of the partition key. The final implementation uses compact persistent ordered maps: the measured hash-map alternative used considerably more retained memory. All maps are immutable across pinned views and use copy-on-write for updates. Indexed records share the same payload as the owning partition; locations contain no order payloads.
+Partition keys are interned and shared by location entries. Following the [startup optimization](startup-benchmark.md), each order identity is also shared by its location, three rank keys and attribute memberships; rank comparisons still use identity values. The benchmark results below describe the original partition-ownership change, before that follow-up. The local order map needs only the order ID because venue is part of the partition key. The final implementation uses compact persistent ordered maps: the measured hash-map alternative used considerably more retained memory. All maps are immutable across pinned views and use copy-on-write for updates. Indexed records share the same payload as the owning partition; locations contain no order payloads.
 
 `State::entity`, `State::range`, `State::get` and the read-only `State::books` accessor hide storage layout from readers and revision/dependency tracking. Both underlying State fields are private. Metadata scans avoid the order directory. Generic identity scans concatenate metadata and the ordered location directory, preserving the previous `(kind, venue, ID)` ordering; order records are resolved inside their partitions. Order remains the final entity kind in this legacy ordering.
 
