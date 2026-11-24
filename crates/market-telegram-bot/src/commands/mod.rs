@@ -1,5 +1,7 @@
 //! Typed command requests, services and reply rendering.
 mod history;
+mod portfolio;
+pub use portfolio::PortfolioRequest;
 mod interactions;
 mod parse;
 mod render;
@@ -19,6 +21,7 @@ pub enum Command {
     Gift(ValueRequest),
     GiftHelp,
     View(u64),
+    Portfolio(PortfolioRequest),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueRequest {
@@ -33,6 +36,7 @@ pub struct CommandRequest {
     pub message_id: i32,
 }
 pub struct MarketCommands {
+    portfolio: Option<market_portfolio::PortfolioHandle>,
     market: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
     views: interactions::Views,
@@ -43,9 +47,14 @@ impl MarketCommands {
         Self {
             market,
             valuation,
+            portfolio: None,
             views: Default::default(),
             icons: Default::default(),
         }
+    }
+    pub fn with_portfolio(mut self, portfolio: market_portfolio::PortfolioHandle) -> Self {
+        self.portfolio = Some(portfolio);
+        self
     }
     /// Configure presentation once for private, inline, guest and callback reports.
     pub fn with_report_icons(mut self, icons: crate::ReportIcons) -> Self {
@@ -71,6 +80,17 @@ impl MessageHandler for MarketCommands {
     ) -> Option<CommandRequest> {
         interactions::parse_event(event, usernames)
     }
+    async fn handle_with_progress(
+        &self,
+        request: CommandRequest,
+        updates: tokio::sync::watch::Sender<Reply>,
+    ) -> Result<Reply, BotError> {
+        if let Command::Portfolio(query) = request.command {
+            Ok(self.portfolio_reply(query, Some(updates)).await)
+        } else {
+            self.handle(request).await
+        }
+    }
     async fn handle(&self, request: CommandRequest) -> Result<Reply, BotError> {
         match request.command {
             Command::Status => Ok(match self.market.status().await {
@@ -83,6 +103,7 @@ impl MessageHandler for MarketCommands {
                     },
                 ),
             }),
+            Command::Portfolio(query) => Ok(self.portfolio_reply(query, None).await),
             Command::Gift(query) => Ok(self.value(query).await),
             Command::View(id) => Ok(self.view(id).await),
             command => {

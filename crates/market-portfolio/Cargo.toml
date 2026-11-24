@@ -3,19 +3,18 @@ name = "market-portfolio"
 version.workspace = true
 edition.workspace = true
 description = "Queued portfolio actor with shared inventory and market valuation"
+[features]
+default = []
+schema = ["dep:utoipa", "market-gifts/schema", "market-valuation/schema"]
 [dependencies]
-market-valuation = { workspace = true, features = ["portfolio"] }
+market-valuation.workspace = true
 market-invocations.workspace = true
 market-gifts.workspace = true
+serde.workspace = true
+utoipa = { workspace = true, optional = true }
 actix.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-[dev-dependencies]
-market-actors.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
-market-replica.workspace = true
-market-hub-protocol.workspace = true
-tempfile = "3"
 [lints]
 workspace = true

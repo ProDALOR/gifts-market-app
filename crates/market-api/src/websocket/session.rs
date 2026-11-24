@@ -243,6 +243,9 @@ fn schedule(
     start: &Start,
 ) -> Result<(), queue::QueueError> {
     let (id, query) = match command {
+        Command::WatchPortfolio { id, params } => {
+            (id, Some(operations::Operation::Portfolio(params)))
+        }
         Command::WatchValuation { id, params } => {
             (id, Some(operations::Operation::Valuation(params)))
         }

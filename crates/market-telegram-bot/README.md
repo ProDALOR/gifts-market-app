@@ -45,3 +45,7 @@ For the ignored live preview, build `market-media-render` and place it beside th
 One-shot rich preview tests disable temporary callback controls. `MARKET_TEST_STARS_FLOORS` can supply an additional captured native Stars valuation report; fixtures are assigned by their declared currency.
 
 Captured Sales previews use the live view’s collection, native currency, model/backdrop selection and half-open execution period. They drop nonmatching rows, sort newest first and cap the result at five. Captured metadata is not an authoritative continuation, so preview navigation remains disabled.
+
+## Portfolios
+
+`/portfolio [user_id] [GRAM|XTR]` uses the authenticated sender by default, or an explicit known numeric peer. `MarketCommands::with_portfolio` receives the same optional `PortfolioHandle` as the API. No inventory RPC or valuation formula lives in the command handler. The service supplies paginated Telegram scan progress and shared estimates. Private-message progress is coalesced and edited at most once every three seconds, then replaced by the final report. The previous successful report is retained during a recheck or failure. Ten-item page navigation uses cached inventory; **Refresh gifts** explicitly rechecks it with the service cooldown. **Open portfolio** links to `portfolio_<user_id>` in the Mini App or `/portfolio/<user_id>` in the GUI. Only provider-visible gifts are included; wallet-hosted gifts do not imply ownership. This command is private-chat only; inline/guest gift reports keep their existing behavior.

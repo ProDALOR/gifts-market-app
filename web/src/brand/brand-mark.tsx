@@ -1,3 +1,4 @@
+import { AppLink } from "../app/navigation";
 import { GiftArtwork } from "../previews/gift-artwork";
 import poster from "./liberty-figure.svg?url";
 import animation from "./liberty-figure.tgs?url";
@@ -13,13 +14,18 @@ const media = {
 
 export function BrandMark({ animated = false }: { animated?: boolean }) {
   return (
-    <a className="brand" href="/" aria-label="IGIFTS home" title="IGIFTS">
+    <AppLink
+      page="market"
+      className="brand"
+      aria-label="IGIFTS home"
+      title="IGIFTS"
+    >
       <GiftArtwork
         media={media}
         fallback=""
         label="Liberty Figure · Columbus"
         playback={animated ? "collection" : "static"}
       />
-    </a>
+    </AppLink>
   );
 }

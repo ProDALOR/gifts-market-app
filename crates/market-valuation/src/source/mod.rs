@@ -2,6 +2,7 @@
 mod catalog;
 mod dependencies;
 mod gift;
+mod inventory;
 mod orders;
 #[cfg(feature = "portfolio")]
 mod resolve;

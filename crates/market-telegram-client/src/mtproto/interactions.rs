@@ -167,6 +167,75 @@ impl From<&tl::enums::InputBotInlineMessageId> for InlineMessageId {
     }
 }
 impl MtProtoActions {
+    async fn send_chat_reply(
+        &self,
+        message: &crate::transport::Message,
+        reply: &Reply,
+        prepared: Option<tl::enums::InputRichMessage>,
+        buttons: Option<tl::enums::ReplyMarkup>,
+        launch: Option<&LaunchButton>,
+        progress: bool,
+    ) -> Result<Option<Event>, BotError> {
+        let mut request = reply_request(self.credentials.bot_id(), message, reply, launch);
+        request.reply_markup = buttons.or(request.reply_markup);
+        request.rich_message = prepared;
+        // Progress has a distinct stable delivery ID. If Telegram omits the sent
+        // message identity, the final reply can still be delivered independently.
+        if progress {
+            request.random_id ^= i64::MIN;
+        }
+        let random = request.random_id;
+        let updates = self
+            .invocations
+            .rpc(
+                &self.client,
+                request,
+                Group::Reply(message.peer.id.bare_id().ok_or(BotError::InvalidResponse)?),
+                Priority::Interactive,
+                Replay::Deduplicated,
+            )
+            .await?;
+        let id = sent_id(updates, random);
+        Ok(id.map(|id| Event::Callback {
+            id: 0,
+            user_id: 0,
+            data: vec![],
+            target: CallbackTarget::Message(crate::transport::Message {
+                peer: message.peer,
+                id,
+                outgoing: true,
+                text: String::new(),
+            }),
+        }))
+    }
+    pub(super) async fn progress_reply(
+        &self,
+        event: &Event,
+        reply: &Reply,
+        launch: Option<&LaunchButton>,
+    ) -> Result<Option<Event>, BotError> {
+        if let Event::Message(message) = event {
+            let prepared = self.prepare_rich(Some(reply)).await;
+            let username = self
+                .profile
+                .get()
+                .filter(|u| u.has_main_web_app)
+                .map(|u| u.username.as_str());
+            let buttons = markup(
+                reply,
+                username,
+                launch,
+                self.profile.get().is_some_and(|u| u.inline_enabled),
+            );
+            self.send_chat_reply(message, reply, prepared, buttons, launch, true)
+                .await
+        } else if matches!(event, Event::Callback { .. }) {
+            self.respond(event, Some(reply), launch).await?;
+            Ok(Some(event.clone()))
+        } else {
+            Ok(None)
+        }
+    }
     pub(super) async fn respond(
         &self,
         event: &Event,
@@ -183,19 +252,15 @@ impl MtProtoActions {
         match event {
             Event::Message(message) => {
                 let Some(reply) = reply else { return Ok(()) };
-                let mut request = reply_request(self.credentials.bot_id(), message, reply, launch);
-                request.reply_markup =
-                    markup(reply, username, launch, inline_enabled).or(request.reply_markup);
-                request.rich_message = prepared;
-                self.invocations
-                    .rpc(
-                        &self.client,
-                        request,
-                        Group::Reply(message.peer.id.bare_id().ok_or(BotError::InvalidResponse)?),
-                        Priority::Interactive,
-                        Replay::Deduplicated,
-                    )
-                    .await?;
+                self.send_chat_reply(
+                    message,
+                    reply,
+                    prepared,
+                    markup(reply, username, launch, inline_enabled),
+                    launch,
+                    false,
+                )
+                .await?;
             }
             Event::Inline { id, .. } => {
                 answer_inline(prepared.is_some(), |use_rich| {
@@ -324,9 +389,38 @@ fn rejected_rich_inline(error: &CallError) -> bool {
             | "MESSAGE_EMPTY" | "MESSAGE_TOO_LONG"))
 }
 
+fn sent_id(updates: tl::enums::Updates, random: i64) -> Option<i32> {
+    let updates = match updates {
+        tl::enums::Updates::UpdateShortSentMessage(v) => return Some(v.id),
+        tl::enums::Updates::Updates(v) => v.updates,
+        tl::enums::Updates::Combined(v) => v.updates,
+        tl::enums::Updates::UpdateShort(v) => vec![v.update],
+        _ => return None,
+    };
+    updates.iter().find_map(|u| match u {
+        tl::enums::Update::MessageId(v) if v.random_id == random => Some(v.id),
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn progress_edits_only_use_the_identity_of_the_sent_request() {
+        let update = |random| {
+            tl::enums::Updates::UpdateShort(tl::types::UpdateShort {
+                update: tl::types::UpdateMessageId {
+                    id: 99,
+                    random_id: random,
+                }
+                .into(),
+                date: 0,
+            })
+        };
+        assert_eq!(sent_id(update(42), 42), Some(99));
+        assert_eq!(sent_id(update(43), 42), None);
+    }
     fn remote_error(code: i32, name: &str) -> CallError {
         CallError::Remote(grammers_client::sender::InvocationError::Rpc(
             tl::types::RpcError {

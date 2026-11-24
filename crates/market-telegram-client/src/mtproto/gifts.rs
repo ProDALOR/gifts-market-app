@@ -66,6 +66,7 @@ impl InventoryClient {
     ) -> impl Invocation<Output = InventoryPage, Error = InventoryError> + use<> {
         Page {
             live: self.live.borrow().clone(),
+            account: self.account,
             user,
             offset,
             limit,
@@ -74,6 +75,7 @@ impl InventoryClient {
     }
 }
 struct Page {
+    account: u64,
     live: Option<Arc<Live>>,
     user: u64,
     offset: String,
@@ -94,6 +96,9 @@ impl Invocation for Page {
             error,
             retry: Retry::Never,
         };
+        if self.user == self.account {
+            return Err(permanent(InventoryError::Forbidden));
+        }
         if self.limit == 0
             || self.limit > 100
             || self.offset.len() > 4096
@@ -215,14 +220,36 @@ fn map_gift(
         })
         .and_then(|id| TelegramDocumentId::new(id).ok())
         .ok_or(SkipReason::MissingModel)?;
+    let slug = market_gifts::GiftSlug::new(gift.slug).map_err(|_| SkipReason::MissingGiftId)?;
+    let number = u32::try_from(gift.num)
+        .ok()
+        .and_then(|n| market_gifts::GiftNumber::new(n).ok())
+        .ok_or(SkipReason::MissingGiftId)?;
+    if slug.number() != number {
+        return Err(SkipReason::MissingGiftId);
+    }
+    let backdrop = gift.attributes.iter().find_map(|a| match a {
+        tl::enums::StarGiftAttribute::Backdrop(v) => Some(v.backdrop_id),
+        _ => None,
+    });
+    let pattern = gift.attributes.iter().find_map(|a| match a {
+        tl::enums::StarGiftAttribute::Pattern(v) => TelegramDocumentId::new(v.document.id()).ok(),
+        _ => None,
+    });
     Ok(Some(InventoryGift {
-        id: gift
-            .id
-            .to_string()
-            .try_into()
-            .map_err(|_| SkipReason::MissingGiftId)?,
-        collection_id,
-        model_document_id: model,
+        gift: market_gifts::TelegramGiftDetails {
+            id: gift
+                .id
+                .to_string()
+                .try_into()
+                .map_err(|_| SkipReason::MissingGiftId)?,
+            slug,
+            number,
+            collection: collection_id,
+            model,
+            backdrop,
+            pattern,
+        },
         relation,
     }))
 }
@@ -315,8 +342,8 @@ pub(crate) mod tests {
     fn profile_mapping_validates_source_ids_before_inventory_and_preserves_all_64_bits() {
         let id = 9_007_199_254_740_993;
         let gift = map_gift(saved_gift(id, id + 1), Some(7)).unwrap().unwrap();
-        assert_eq!(gift.collection_id.get(), id);
-        assert_eq!(gift.model_document_id.get(), id + 1);
+        assert_eq!(gift.gift.collection.get(), id);
+        assert_eq!(gift.gift.model.get(), id + 1);
         assert_eq!(gift.relation, GiftRelation::Unverified);
         for invalid in [0, -1, i64::MIN] {
             assert_eq!(

@@ -120,6 +120,15 @@ fn summary(name: &str) -> &'static str {
         "catalog.watch" => {
             "Watch catalog content revisions for up to eight collections, without polling."
         }
+        "portfolio.watch" => {
+            "Watch a public Telegram portfolio and progress. First visit loads inventory; subsequent Telegram rechecks are explicit and coalesced. Active estimates refresh once per minute without Telegram calls."
+        }
+        "portfolio.snapshot" => {
+            "Atomic inventory and valuation snapshot. Previous successful data remains visible during refreshes and failures."
+        }
+        "portfolio.progress" => {
+            "Lightweight progress update; merge into the last snapshot without replacing inventory or valuations."
+        }
         "valuation.watch" => {
             "Watch any explicitly selected strategies using the same ValuationQuery as HTTP and finite WebSocket requests. Data changes and expiry are sampled once per minute; cached values are retained between refreshes. Availability changes update the status promptly. Unchanged refreshes do not emit duplicate snapshots."
         }
@@ -179,6 +188,19 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             upserts: vec![],
             removed: vec![],
         })?,
+        "portfolio.watch" => serde_json::to_value(Command::WatchPortfolio {
+            id: "portfolio.1".into(),
+            params: market_portfolio::PortfolioQuery {
+                user_id: market_portfolio::UserId::new(123).expect("example user"),
+                currency_id: "GRAM".into(),
+            },
+        })?,
+        "portfolio.snapshot" => {
+            json!({"type":"portfolio.snapshot","id":"portfolio.1","data":{"user_id":123,"refresh_id":1,"progress":{"stage":"queued","checked":0,"pages":0,"valued":0,"collectibles":0}}})
+        }
+        "portfolio.progress" => {
+            json!({"type":"portfolio.progress","id":"portfolio.1","refresh_id":1,"progress":{"stage":"loading_inventory","checked":100,"total":700,"pages":1,"valued":0,"collectibles":0}})
+        }
         "catalog.watch" => serde_json::to_value(Command::WatchCatalog {
             id: "catalog".into(),
             collection_ids: vec!["tg.gift.123".into()],
@@ -268,7 +290,13 @@ mod tests {
             versions["collections"]["tg.gift.123"],
             crate::catalog::revision("collection")
         );
-        for command in ["catalog.watch", "orders.watch", "request", "cancel"] {
+        for command in [
+            "catalog.watch",
+            "orders.watch",
+            "portfolio.watch",
+            "request",
+            "cancel",
+        ] {
             serde_json::from_value::<Command>(
                 spec["components"]["messages"][command]["examples"][0]["payload"].clone(),
             )
@@ -279,14 +307,14 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            5
+            6
         );
         assert_eq!(
             spec["operations"]["sendUpdates"]["messages"]
                 .as_array()
                 .unwrap()
                 .len(),
-            8
+            10
         );
     }
 }

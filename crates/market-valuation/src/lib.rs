@@ -47,3 +47,6 @@ mod test_support;
 
 #[cfg(test)]
 mod preparation_benchmark;
+
+mod inventory;
+pub use inventory::{InventoryValuation, InventoryValue};

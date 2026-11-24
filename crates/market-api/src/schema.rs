@@ -4,6 +4,8 @@ use utoipa::OpenApi;
 #[derive(OpenApi)]
 #[openapi(
     paths(
+        crate::portfolio::query,
+        crate::portfolio::refresh,
         crate::routes::catalog,
         crate::routes::collection,
         crate::routes::valuation,
@@ -17,6 +19,7 @@ use utoipa::OpenApi;
     tags(
         (name="Catalog",description="Discover gift collections and their traits."),
         (name="Orders",description="Asks, bids and confirmed executions with exact prices and stable pagination."),
+        (name="Portfolios",description="Visible Telegram inventories, cached gift estimates and explicit refresh progress. Requires the bot to know the requested peer."),
         (name="Valuations",description="Catalog, collection, trait and gift targets with explicitly selected typed strategies, coherent reports and independent evidence/errors."),
         (name="Media",description="Cached gift thumbnails, first-frame SVGs, original TGS animations and transparent loading silhouettes."),
         (name="WebSocket",description="See /docs/ws for live-message documentation and a test console.")

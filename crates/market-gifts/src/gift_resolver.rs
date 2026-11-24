@@ -2,7 +2,8 @@
 use crate::{GiftId, GiftNumber, GiftSlug, TelegramDocumentId, TelegramGiftId};
 use std::{future::Future, pin::Pin};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct TelegramGiftDetails {
     pub id: GiftId,
     pub slug: GiftSlug,

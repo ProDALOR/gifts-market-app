@@ -11,7 +11,7 @@ pub(crate) struct InventoryBuilder {
     skipped: BTreeMap<SkipReason, usize>,
     pub pages: usize,
     pub scanned: usize,
-    total: Option<usize>,
+    pub total: Option<usize>,
 }
 impl InventoryBuilder {
     pub fn snapshot(self, completion: InventoryCompletion) -> InventorySnapshot {
@@ -57,7 +57,7 @@ impl InventoryBuilder {
             *self.skipped.entry(reason).or_default() += count;
         }
         for gift in page.gifts {
-            self.gifts.entry(gift.id.clone()).or_insert(gift);
+            self.gifts.entry(gift.gift.id.clone()).or_insert(gift);
         }
         let Some(next) = page.next_cursor.filter(|cursor| !cursor.is_empty()) else {
             return Ok(Some(

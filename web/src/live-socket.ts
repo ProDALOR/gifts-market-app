@@ -363,6 +363,9 @@ export class LiveSocket {
       }
       if (
         value.type === "result" ||
+        ((value.type === "portfolio.snapshot" ||
+          value.type === "portfolio.progress") &&
+          operation.command.type !== "portfolio.watch") ||
         (value.type === "valuation.snapshot" &&
           operation.command.type !== "valuation.watch") ||
         (value.type === "catalog.versions" &&

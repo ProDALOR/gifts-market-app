@@ -30,7 +30,7 @@ impl Default for Limits {
         Self {
             parallelism: 8,
             pending: 64,
-            handler_timeout: Duration::from_secs(40),
+            handler_timeout: Duration::from_secs(90),
             handler_attempts: 3,
             send_timeout: Duration::from_secs(15),
         }
@@ -168,10 +168,14 @@ async fn process<A: TelegramActions, H: MessageHandler>(
     let Some(request) = request else {
         return actions.send(&event, None, url).await;
     };
+    let (progress, mut updates) = tokio::sync::watch::channel(Reply::default());
     let work = async move {
         let mut backoff = 1;
         for attempt in 0..limits.handler_attempts {
-            match handler.handle(request.clone()).await {
+            match handler
+                .handle_with_progress(request.clone(), progress.clone())
+                .await
+            {
                 Ok(reply) => return Ok(reply),
                 Err(error) if error.fatal() => return Err(error),
                 Err(error)
@@ -188,12 +192,30 @@ async fn process<A: TelegramActions, H: MessageHandler>(
             ..Default::default()
         })
     };
-    let reply = match tokio::time::timeout(
+    let mut target = event.clone();
+    let result = tokio::time::timeout(
         limits.handler_timeout,
         AssertUnwindSafe(work).catch_unwind(),
-    )
-    .await
-    {
+    );
+    tokio::pin!(result);
+    let mut pending = None;
+    let mut open = true;
+    let mut editable = true;
+    let mut ticks = tokio::time::interval(Duration::from_secs(3));
+    let completed = loop {
+        tokio::select! {biased;
+            result=&mut result=>break result,
+            change=updates.changed(),if open=>{if change.is_err(){open=false;}else{pending=Some(updates.borrow_and_update().clone());}},
+            _=ticks.tick(),if editable && pending.is_some()=>{
+                let reply=pending.take().unwrap().bounded();
+                match tokio::time::timeout(limits.send_timeout,actions.send_progress(&target,&reply,url)).await {
+                    Ok(Ok(Some(next)))=>target=next,
+                    _=>editable=false,
+                }
+            }
+        }
+    };
+    let reply = match completed {
         Ok(Ok(result)) => result?,
         Ok(Err(_)) => {
             tracing::error!("bot command handler panicked");
@@ -210,10 +232,12 @@ async fn process<A: TelegramActions, H: MessageHandler>(
     .bounded();
     let mut backoff = 1;
     loop {
-        let result =
-            tokio::time::timeout(limits.send_timeout, actions.send(&event, Some(&reply), url))
-                .await
-                .unwrap_or(Err(BotError::Transport));
+        let result = tokio::time::timeout(
+            limits.send_timeout,
+            actions.send(&target, Some(&reply), url),
+        )
+        .await
+        .unwrap_or(Err(BotError::Transport));
         match result {
             Ok(()) => return Ok(()),
             Err(error) if error.disposition() == ErrorDisposition::Rejected => {
@@ -237,4 +261,98 @@ pub(super) async fn retry(error: BotError, backoff: &mut u64) -> Result<(), BotE
     tokio::time::sleep(error.delay(*backoff)).await;
     *backoff = (*backoff * 2).min(30);
     Ok(())
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone, Default)]
+    struct Actions(Arc<Mutex<Vec<(String, bool)>>>);
+    impl TelegramActions for Actions {
+        async fn identity(&self) -> Result<crate::BotUser, BotError> {
+            Err(BotError::Transport)
+        }
+        async fn configure(
+            &self,
+            _: &[crate::MenuCommand],
+            _: Option<&LaunchButton>,
+        ) -> Result<(), BotError> {
+            Ok(())
+        }
+        async fn send_progress(
+            &self,
+            event: &Event,
+            reply: &Reply,
+            _: Option<&LaunchButton>,
+        ) -> Result<Option<Event>, BotError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((reply.text.clone(), matches!(event, Event::Callback { .. })));
+            let mut message = crate::tests::message(99, "");
+            message.outgoing = true;
+            Ok(Some(Event::Callback {
+                id: 0,
+                user_id: 7,
+                data: vec![],
+                target: crate::CallbackTarget::Message(message),
+            }))
+        }
+        async fn send(
+            &self,
+            event: &Event,
+            reply: Option<&Reply>,
+            _: Option<&LaunchButton>,
+        ) -> Result<(), BotError> {
+            self.0.lock().unwrap().push((
+                reply.unwrap().text.clone(),
+                matches!(event, Event::Callback { .. }),
+            ));
+            Ok(())
+        }
+    }
+    struct Handler;
+    impl MessageHandler for Handler {
+        type Request = ();
+        fn parse(&self, _: crate::IncomingMessage<'_>, _: &[String]) -> Option<()> {
+            Some(())
+        }
+        async fn handle(&self, _: ()) -> Result<Reply, BotError> {
+            Ok(Reply::text("done"))
+        }
+        async fn handle_with_progress(
+            &self,
+            _: (),
+            updates: tokio::sync::watch::Sender<Reply>,
+        ) -> Result<Reply, BotError> {
+            updates.send_replace(Reply::text("page 1"));
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            updates.send_replace(Reply::text("page 2"));
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            Ok(Reply::text("done"))
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn progress_uses_one_message_then_edits_the_same_target_for_the_final_report() {
+        let actions = Actions::default();
+        process(
+            &actions,
+            &Handler,
+            Some(()),
+            Event::Message(crate::tests::message(1, "/portfolio")),
+            None,
+            Limits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *actions.0.lock().unwrap(),
+            vec![
+                ("page 1".into(), false),
+                ("page 2".into(), true),
+                ("done".into(), true)
+            ]
+        );
+    }
 }

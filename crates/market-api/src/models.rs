@@ -23,6 +23,12 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    #[serde(rename = "portfolio.watch")]
+    WatchPortfolio {
+        #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
+        id: String,
+        params: market_portfolio::PortfolioQuery,
+    },
     #[serde(rename = "valuation.watch")]
     WatchValuation {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
@@ -51,6 +57,16 @@ pub enum Command {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "method", deny_unknown_fields)]
 pub enum ApiRequest {
+    #[serde(rename = "portfolio.query")]
+    PortfolioQuery {
+        id: String,
+        params: market_portfolio::PortfolioQuery,
+    },
+    #[serde(rename = "portfolio.refresh")]
+    PortfolioRefresh {
+        id: String,
+        params: market_portfolio::PortfolioQuery,
+    },
     #[serde(rename = "valuation.query")]
     Valuation {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
@@ -66,13 +82,30 @@ pub enum ApiRequest {
 impl ApiRequest {
     pub(crate) fn id(&self) -> &str {
         match self {
-            Self::Orders { id, .. } | Self::Valuation { id, .. } => id,
+            Self::Orders { id, .. }
+            | Self::Valuation { id, .. }
+            | Self::PortfolioQuery { id, .. }
+            | Self::PortfolioRefresh { id, .. } => id,
         }
     }
 }
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame<'a> {
+    #[serde(rename = "portfolio.snapshot")]
+    PortfolioSnapshot {
+        id: String,
+        data: &'a market_portfolio::PortfolioState,
+    },
+    #[serde(rename = "portfolio.progress")]
+    PortfolioProgress {
+        id: String,
+        refresh_id: u64,
+        progress: &'a market_portfolio::PortfolioProgress,
+        #[schema(value_type=Option<String>,format=DateTime)]
+        refresh_after: Option<jiff::Timestamp>,
+        error: Option<&'a str>,
+    },
     #[serde(rename = "valuation.snapshot")]
     ValuationSnapshot {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]
@@ -118,6 +151,16 @@ pub enum ServerFrame<'a> {
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "method")]
 pub enum ApiResult<'a> {
+    #[serde(rename = "portfolio.query")]
+    PortfolioQuery {
+        id: String,
+        data: &'a market_portfolio::PortfolioState,
+    },
+    #[serde(rename = "portfolio.refresh")]
+    PortfolioRefresh {
+        id: String,
+        data: &'a market_portfolio::PortfolioState,
+    },
     #[serde(rename = "valuation.query")]
     Valuation {
         #[schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_.-]+$")]

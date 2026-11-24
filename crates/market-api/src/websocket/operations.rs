@@ -7,6 +7,7 @@ use crate::{MarketApi, config::WebSocketLimits, error::ApiError};
 use market_actors::DataUpdate;
 use tokio_util::sync::CancellationToken;
 pub(super) enum Operation {
+    Portfolio(market_portfolio::PortfolioQuery),
     Valuation(Box<market_valuation::ValuationQuery>),
     Request(crate::models::ApiRequest),
     Orders(Box<market_gifts::GiftOrderQuery>),
@@ -35,6 +36,60 @@ pub(super) async fn run(
     limits: WebSocketLimits,
 ) -> End {
     let _cancel_on_exit = cancel.clone().drop_guard();
+    if let Operation::Portfolio(query) = query {
+        let setup = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=market.portfolio_watch(query)=>result};
+        let mut watch = match setup {
+            Ok(w) => w,
+            Err(e) => {
+                return end(tx
+                    .send(Scope::Operation(key), Payload::Error(e), true, &cancel)
+                    .await);
+            }
+        };
+        let mut value = watch.current();
+        let mut previous: Option<std::sync::Arc<market_portfolio::PortfolioState>> = None;
+        loop {
+            let progress =
+                previous
+                    .as_ref()
+                    .is_some_and(|p| match (&p.valuation, &value.valuation) {
+                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    })
+                    && previous
+                        .as_ref()
+                        .and_then(|p| p.inventory.as_ref().map(|i| i.checked_at))
+                        == value.inventory.as_ref().map(|i| i.checked_at);
+            let envelope = if progress {
+                crate::encoding::PortfolioEnvelope::Progress(key.id.as_str().into())
+            } else {
+                crate::encoding::PortfolioEnvelope::Snapshot(key.id.as_str().into())
+            };
+            let encoded = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,v=market.encode_portfolio(value.clone(),envelope)=>v};
+            let encoded = match encoded {
+                Ok(v) => v,
+                Err(e) => {
+                    return end(tx
+                        .send(Scope::Operation(key), Payload::Error(e), true, &cancel)
+                        .await);
+                }
+            };
+            if let Err(e) = tx
+                .send(
+                    Scope::Operation(key.clone()),
+                    Payload::Encoded(encoded),
+                    false,
+                    &cancel,
+                )
+                .await
+            {
+                return end(Err(e));
+            }
+            previous = Some(value);
+            value = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,v=watch.changed()=>match v{Ok(v)=>v,Err(e)=>return end(tx.send(Scope::Operation(key),Payload::Error(ApiError::unavailable(e.to_string())),true,&cancel).await)}};
+        }
+    }
     if let Operation::Valuation(request) = query {
         let setup = tokio::select! {biased;_=cancel.cancelled()=>return End::Cancelled,result=tokio::time::timeout(limits.setup_timeout,market.watch_valuation(*request))=>result.unwrap_or_else(|_|Err(ApiError::timed_out("Valuation watch setup timed out")))};
         let mut watch = match setup {
@@ -86,6 +141,20 @@ pub(super) async fn run(
     if let Operation::Request(request) = query {
         let work = async {
             match request {
+                crate::models::ApiRequest::PortfolioQuery { id, params } => {
+                    let data = market.portfolio_query(params).await?;
+                    market
+                        .encode_portfolio(data, crate::encoding::PortfolioEnvelope::Query(id))
+                        .await
+                        .map(Payload::Encoded)
+                }
+                crate::models::ApiRequest::PortfolioRefresh { id, params } => {
+                    let data = market.portfolio_refresh(params).await?;
+                    market
+                        .encode_portfolio(data, crate::encoding::PortfolioEnvelope::Refresh(id))
+                        .await
+                        .map(Payload::Encoded)
+                }
                 crate::models::ApiRequest::Valuation { id, params } => {
                     let report = market.valuation(*params).await?;
                     market
@@ -114,6 +183,7 @@ pub(super) async fn run(
     }
     let setup = async {
         match query {
+            Operation::Portfolio(_) => unreachable!("portfolios handled above"),
             Operation::Valuation(_) => unreachable!("values handled above"),
             Operation::Request(_) => unreachable!("requests handled above"),
             Operation::Orders(query) => market.watch_orders(*query).await,

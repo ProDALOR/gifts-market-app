@@ -1,3 +1,4 @@
+import { useNavigationBack } from "../app/navigation";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
@@ -84,6 +85,7 @@ export function SelectPicker<T extends string>({
     setOpen(false);
     trigger.current?.focus({ preventScroll: true });
   }
+  useNavigationBack(open && !disabled, close, 15);
   return (
     <div
       className={`select-picker ${className}`}

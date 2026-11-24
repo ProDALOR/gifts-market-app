@@ -98,6 +98,10 @@ async fn serve(args: Cli, stop: tokio_util::sync::CancellationToken) -> anyhow::
         {
             runtime.start_accounts(accounts)?;
         }
+        #[cfg(feature = "bot")]
+        if let Some(bot) = bot.as_ref() {
+            runtime.start_portfolio(bot.inventory()).await?;
+        }
         let media_dir = args
             .media_dir
             .clone()
@@ -131,6 +135,12 @@ async fn serve(args: Cli, stop: tokio_util::sync::CancellationToken) -> anyhow::
         )
         .await?
         .with_media(media);
+        #[cfg(feature = "bot")]
+        let api = if let Some(portfolio) = runtime.portfolio() {
+            api.with_portfolio(portfolio)
+        } else {
+            api
+        };
         runtime.start_replication(hub)?;
         #[cfg(feature = "bot")]
         if let Some(bot) = bot {

@@ -49,6 +49,16 @@ pub trait TelegramActions: Clone + Send + Sync {
     ) -> impl Future<Output = Result<(), BotError>> + Send {
         async { Ok(()) }
     }
+    /// Send an initial progress reply or edit its returned target. Unsupported
+    /// transports return None and the dispatcher sends only the final reply.
+    fn send_progress(
+        &self,
+        _event: &crate::interactions::Event,
+        _reply: &Reply,
+        _launch: Option<&LaunchButton>,
+    ) -> impl Future<Output = Result<Option<crate::interactions::Event>, BotError>> + Send {
+        async { Ok(None) }
+    }
     fn send(
         &self,
         event: &crate::interactions::Event,

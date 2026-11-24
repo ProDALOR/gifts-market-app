@@ -18,6 +18,10 @@ impl BotService {
             commands: MarketCommands::new(data, valuation),
         }
     }
+    pub fn with_portfolio(mut self, portfolio: market_portfolio::PortfolioHandle) -> Self {
+        self.commands = self.commands.with_portfolio(portfolio);
+        self
+    }
     pub fn with_report_icons(mut self, icons: crate::ReportIcons) -> Self {
         self.commands = self.commands.with_report_icons(icons);
         self

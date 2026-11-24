@@ -1,113 +1,97 @@
 use crate::{
-    cache::{Cache, Snapshot},
-    queue::Queue,
-    service::{Cancel, Submit},
+    service::{Action, Request},
     *,
 };
 use actix::prelude::*;
-use market_gifts::{CurrencyId, ModelLookup};
-use market_invocations::{
-    Control, Error as InvocationError, Handle as InvocationHandle, Options, RuntimeError,
-};
-use market_valuation::{ModelPosition, ValuationRequest};
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use tokio::sync::{Semaphore, watch};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct QuoteKey {
-    user: UserId,
-    currency: CurrencyId,
-    snapshot: u64,
-    strategy: market_valuation::StrategyId,
+struct View {
+    tx: watch::Sender<Arc<PortfolioState>>,
+    report: Option<Arc<InventoryValuation>>,
+    inventory: Option<Arc<InventorySnapshot>>,
+    progress: usize,
+    error: Option<String>,
+    job: Option<SpawnHandle>,
+    attempted: Option<Instant>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Work {
-    Inventory(UserId),
-    Value(QuoteKey),
-}
-struct Pending {
-    submit: Submit,
-    work: Work,
-}
-struct InventoryJob {
-    waiters: Vec<u64>,
-    data: crate::inventory::InventoryBuilder,
-}
-impl InventoryJob {
-    fn new(id: u64) -> Self {
-        Self {
-            waiters: vec![id],
-            data: Default::default(),
-        }
-    }
-}
-struct ValuationJob {
-    waiters: Vec<u64>,
-    snapshot: Snapshot,
+struct Entry {
+    inventory: Option<Arc<InventorySnapshot>>,
+    inventory_id: u64,
+    refresh_id: u64,
+    refreshing: bool,
+    last_refresh: Option<Instant>,
+    refresh_after: Option<jiff::Timestamp>,
+    progress: PortfolioProgress,
+    error: Option<String>,
+    views: BTreeMap<market_gifts::CurrencyId, View>,
+    used: u64,
 }
 struct PortfolioActor<P, V> {
     provider: Arc<P>,
     valuation: Arc<V>,
     config: PortfolioConfig,
-    pending: HashMap<u64, Pending>,
-    inventories: HashMap<UserId, InventoryJob>,
-    values: HashMap<QuoteKey, ValuationJob>,
-    queue: Queue<Work>,
-    cache: Cache,
-    next_snapshot: u64,
-    fetch: HashMap<UserId, (SpawnHandle, Control)>,
-    invocations: InvocationHandle,
-    value: Option<(QuoteKey, SpawnHandle)>,
+    invocations: market_invocations::Handle,
+    entries: BTreeMap<UserId, Entry>,
+    clock: u64,
+    next: u64,
     stop: CancellationToken,
     closed: CancellationToken,
+    fetch_slots: Arc<Semaphore>,
 }
+#[derive(Message)]
+#[rtype(result = "()")]
+struct Progress {
+    user: UserId,
+    refresh: u64,
+    checked: usize,
+    pages: usize,
+    total: Option<usize>,
+}
+#[derive(Message)]
+#[rtype(result = "()")]
+struct Valued {
+    user: UserId,
+    currency: market_gifts::CurrencyId,
+    generation: u64,
+    count: usize,
+}
+
 pub(crate) fn start<P: InventoryProvider, V: ValuationProvider>(
     provider: P,
     valuation: V,
     config: PortfolioConfig,
-    invocations: InvocationHandle,
+    invocations: market_invocations::Handle,
     stop: CancellationToken,
     closed: CancellationToken,
 ) -> PortfolioHandle {
+    let mut context = Context::new();
+    context.set_mailbox_capacity(config.max_requests);
+    let slots = Arc::new(Semaphore::new(config.max_requests));
     let actor = PortfolioActor {
         provider: Arc::new(provider),
         valuation: Arc::new(valuation),
-        cache: Cache::new(config.cached_users, config.inventory_ttl),
-        config: config.clone(),
-        pending: HashMap::new(),
-        inventories: HashMap::new(),
-        values: HashMap::new(),
-        queue: Queue::default(),
-        next_snapshot: 0,
-        fetch: HashMap::new(),
+        config,
         invocations,
-        value: None,
+        entries: BTreeMap::new(),
+        clock: 0,
+        next: 0,
         stop: stop.clone(),
         closed: closed.clone(),
+        fetch_slots: Arc::new(Semaphore::new(2)),
     };
-    let mut context = Context::new();
-    context.set_mailbox_capacity(config.max_requests);
-    let actor = context.run(actor);
-    PortfolioHandle::new(
-        actor.clone().recipient(),
-        actor.recipient(),
-        &config,
+    let address = context.run(actor);
+    PortfolioHandle {
+        address: address.recipient(),
+        slots,
         stop,
         closed,
-    )
+    }
 }
 impl<P: InventoryProvider, V: ValuationProvider> Actor for PortfolioActor<P, V> {
     type Context = Context<Self>;
     fn started(&mut self, ctx: &mut Self::Context) {
-        let invocations = self.invocations.clone();
-        ctx.spawn(
-            async move { invocations.closed().await }
-                .into_actor(self)
-                .map(|_, _, ctx| ctx.stop()),
-        );
         ctx.spawn(
             self.stop
                 .clone()
@@ -115,6 +99,32 @@ impl<P: InventoryProvider, V: ValuationProvider> Actor for PortfolioActor<P, V> 
                 .into_actor(self)
                 .map(|_, _, ctx| ctx.stop()),
         );
+        ctx.spawn(
+            {
+                let calls = self.invocations.clone();
+                async move { calls.closed().await }
+            }
+            .into_actor(self)
+            .map(|_, _, ctx| ctx.stop()),
+        );
+        ctx.run_interval(Duration::from_secs(1), |actor, ctx| {
+            let active: Vec<_> = actor
+                .entries
+                .iter()
+                .flat_map(|(user, e)| {
+                    e.views
+                        .iter()
+                        .filter(|(_, v)| v.tx.receiver_count() > 0)
+                        .map(|(c, _)| (*user, c.clone()))
+                })
+                .collect();
+            for (user, currency) in active {
+                actor.value(user, currency, ctx);
+            }
+        });
+    }
+    fn stopped(&mut self, _: &mut Self::Context) {
+        self.closed.cancel();
     }
 }
 impl<P, V> Drop for PortfolioActor<P, V> {
@@ -122,361 +132,449 @@ impl<P, V> Drop for PortfolioActor<P, V> {
         self.closed.cancel();
     }
 }
-impl<P: InventoryProvider, V: ValuationProvider> Handler<Submit> for PortfolioActor<P, V> {
+impl<P: InventoryProvider, V: ValuationProvider> Handler<Request> for PortfolioActor<P, V> {
     type Result = ();
-    fn handle(&mut self, submit: Submit, ctx: &mut Context<Self>) {
-        if self.stop.is_cancelled() || submit.reply.is_closed() {
-            let _ = submit.reply.send(Err(PortfolioError::Stopped));
+    fn handle(&mut self, request: Request, ctx: &mut Context<Self>) {
+        if request.reply.is_closed() {
             return;
         }
-        let id = submit.id;
-        let user = submit.request.user;
-        let work = Work::Inventory(user);
-        self.pending.insert(
-            id,
-            Pending {
-                submit,
-                work: work.clone(),
-            },
-        );
-        if let Some(snapshot) = self.cache.get(user) {
-            self.enqueue_value(id, snapshot);
-        } else if let Some(job) = self.inventories.get_mut(&user) {
-            job.waiters.push(id);
-            self.requeue(work);
-        } else {
-            self.inventories.insert(user, InventoryJob::new(id));
-            self.requeue(work);
-        }
-        self.pump(ctx);
+        let result = self.request(&request.query, request.action, ctx);
+        let _ = request.reply.send(result);
     }
 }
-impl<P: InventoryProvider, V: ValuationProvider> Handler<Cancel> for PortfolioActor<P, V> {
+impl<P: InventoryProvider, V: ValuationProvider> Handler<Progress> for PortfolioActor<P, V> {
     type Result = ();
-    fn handle(&mut self, Cancel(id): Cancel, ctx: &mut Context<Self>) {
-        self.cancel_request(id, ctx);
-        self.pump(ctx);
+    fn handle(&mut self, p: Progress, _: &mut Context<Self>) {
+        if let Some(e) = self.entries.get_mut(&p.user)
+            && e.refreshing
+            && e.refresh_id == p.refresh
+        {
+            e.progress.stage = PortfolioStage::LoadingInventory;
+            e.progress.checked = p.checked;
+            e.progress.pages = p.pages;
+            e.progress.total = p.total;
+            self.publish(p.user);
+        }
+    }
+}
+impl<P: InventoryProvider, V: ValuationProvider> Handler<Valued> for PortfolioActor<P, V> {
+    type Result = ();
+    fn handle(&mut self, p: Valued, _: &mut Context<Self>) {
+        if let Some(e) = self.entries.get_mut(&p.user)
+            && e.inventory_id == p.generation
+            && let Some(v) = e.views.get_mut(&p.currency)
+            && v.job.is_some()
+        {
+            v.progress = p.count;
+            self.publish(p.user);
+        }
     }
 }
 impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
-    fn cancel_request(&mut self, id: u64, ctx: &mut Context<Self>) {
-        let Some(pending) = self.pending.remove(&id) else {
-            return;
-        };
-        match pending.work {
-            Work::Inventory(user) => {
-                if let Some(job) = self.inventories.get_mut(&user) {
-                    job.waiters.retain(|waiter| *waiter != id);
-                    if job.waiters.is_empty() {
-                        self.inventories.remove(&user);
-                        self.queue.remove(&Work::Inventory(user));
-                        if let Some((handle, _)) = self.fetch.remove(&user) {
-                            ctx.cancel_future(handle);
-                        }
-                    } else {
-                        self.requeue(Work::Inventory(user));
-                    }
-                }
-            }
-            Work::Value(key) => {
-                if let Some(job) = self.values.get_mut(&key) {
-                    job.waiters.retain(|waiter| *waiter != id);
-                    // An active actor read retains its capacity until completion, even without waiters.
-                    if job.waiters.is_empty()
-                        && !self
-                            .value
-                            .as_ref()
-                            .is_some_and(|(active, _)| *active == key)
-                    {
-                        self.values.remove(&key);
-                        self.queue.remove(&Work::Value(key));
-                    } else {
-                        self.requeue(Work::Value(key));
-                    }
-                }
-            }
-        }
-    }
-    fn requeue(&mut self, work: Work) {
-        if self
-            .value
-            .as_ref()
-            .is_some_and(|(key, _)| work == Work::Value(key.clone()))
-        {
-            return;
-        }
-        let waiters = match &work {
-            Work::Inventory(user) => self.inventories.get(user).map(|j| &j.waiters),
-            Work::Value(key) => self.values.get(key).map(|j| &j.waiters),
-        };
-        let priority = waiters
-            .into_iter()
-            .flatten()
-            .filter_map(|id| self.pending.get(id))
-            .map(|p| p.submit.request.priority)
-            .min();
-        if let Some(priority) = priority {
-            if let Work::Inventory(user) = &work
-                && let Some((_, control)) = self.fetch.get(user)
-            {
-                control.set_priority(priority);
+    fn state(user: UserId, e: &Entry, v: &View) -> Arc<PortfolioState> {
+        let mut progress = e.progress.clone();
+        if !e.refreshing {
+            progress.stage = if v.job.is_some() {
+                PortfolioStage::Valuing
+            } else if e.error.is_some() || v.error.is_some() {
+                PortfolioStage::Failed
+            } else if v.report.is_some() {
+                PortfolioStage::Ready
             } else {
-                self.queue.insert(work, priority);
-            }
+                PortfolioStage::Idle
+            };
+            progress.valued = v.progress;
+            progress.collectibles = e.inventory.as_ref().map_or(0, |i| i.gifts.len());
         }
+        let inventory = v.inventory.as_ref().map(|i| InventorySummary {
+            checked_at: i.fetched_at,
+            count: i.gifts.len(),
+            scanned: i.gifts_scanned,
+            regular: i.regular_gifts,
+            skipped: i.skipped_count(),
+            complete: i.completion == InventoryCompletion::Complete,
+        });
+        Arc::new(PortfolioState {
+            user_id: user,
+            refresh_id: e.refresh_id,
+            progress,
+            inventory,
+            valuation: v.report.clone(),
+            refresh_after: e.refresh_after,
+            error: e.error.clone().or_else(|| v.error.clone()),
+        })
     }
-    fn enqueue_value(&mut self, id: u64, snapshot: Snapshot) {
-        let Some(pending) = self.pending.get_mut(&id) else {
-            return;
-        };
-        let key = QuoteKey {
-            user: pending.submit.request.user,
-            currency: pending.submit.request.currency_id.clone(),
-            snapshot: snapshot.id,
-            strategy: pending.submit.request.strategy.clone(),
-        };
-        pending.work = Work::Value(key.clone());
-        self.values
-            .entry(key.clone())
-            .or_insert_with(|| ValuationJob {
-                waiters: vec![],
-                snapshot,
-            })
-            .waiters
-            .push(id);
-        self.requeue(Work::Value(key));
-    }
-    fn finish(&mut self, id: u64, result: Result<Portfolio, PortfolioError>) {
-        if let Some(pending) = self.pending.remove(&id) {
-            let _ = pending.submit.reply.send(result);
-        }
-    }
-    fn pump(&mut self, ctx: &mut Context<Self>) {
-        let abandoned: Vec<_> = self
-            .pending
-            .iter()
-            .filter(|(_, pending)| pending.submit.reply.is_closed())
-            .map(|(id, _)| *id)
-            .collect();
-        for id in abandoned {
-            self.cancel_request(id, ctx);
-        }
-        if self.stop.is_cancelled() {
-            ctx.stop();
-            return;
-        }
-        loop {
-            let value_ready = self.value.is_none();
-            let work = self.queue.pop_ready(|work| match work {
-                Work::Inventory(user) => !self.fetch.contains_key(user),
-                Work::Value(_) => value_ready,
-            });
-            match work {
-                Some(Work::Inventory(user)) => self.fetch_page(user, ctx),
-                Some(Work::Value(key)) => self.value_snapshot(key, ctx),
-                None => break,
-            }
-        }
-    }
-    fn fetch_page(&mut self, user: UserId, ctx: &mut Context<Self>) {
-        let job = &self.inventories[&user];
-        let request = InventoryPageRequest {
-            user,
-            cursor: job.data.cursor.clone(),
-            limit: self
-                .config
-                .page_size
-                .min(self.config.max_gifts - job.data.scanned),
-        };
-        let limit = request.limit;
-        let priority = job
-            .waiters
-            .iter()
-            .filter_map(|id| self.pending.get(id))
-            .map(|p| p.submit.request.priority)
-            .min()
-            .unwrap_or_default();
-        let ticket = self.invocations.submit(
-            self.provider.page(request),
-            Options {
-                priority,
-                timeout: self.config.request_timeout,
-                cancellation: self.stop.clone(),
-            },
-        );
-        let ticket = match ticket {
-            Ok(ticket) => ticket,
-            Err(error) => {
-                let error = match error {
-                    RuntimeError::Busy => PortfolioError::Busy,
-                    _ => PortfolioError::Stopped,
-                };
-                if let Some(job) = self.inventories.remove(&user) {
-                    for id in job.waiters {
-                        self.finish(id, Err(error.clone()));
+    fn publish(&self, user: UserId) {
+        if let Some(e) = self.entries.get(&user) {
+            for v in e.views.values() {
+                let next = Self::state(user, e, v);
+                v.tx.send_if_modified(|current| {
+                    let same_report = match (&current.valuation, &next.valuation) {
+                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    if same_report
+                        && current.refresh_id == next.refresh_id
+                        && current.progress == next.progress
+                        && current.inventory == next.inventory
+                        && current.refresh_after == next.refresh_after
+                        && current.error == next.error
+                    {
+                        return false;
                     }
-                }
-                return;
+                    *current = next;
+                    true
+                });
             }
+        }
+    }
+    fn request(
+        &mut self,
+        q: &PortfolioQuery,
+        action: Action,
+        ctx: &mut Context<Self>,
+    ) -> Result<watch::Receiver<Arc<PortfolioState>>, PortfolioError> {
+        if self.stop.is_cancelled() {
+            return Err(PortfolioError::Stopped);
+        }
+        if !self.entries.contains_key(&q.user_id) {
+            if self.entries.len() >= self.config.cached_users {
+                let oldest = self
+                    .entries
+                    .iter()
+                    .filter(|(_, e)| {
+                        !e.refreshing
+                            && e.views
+                                .values()
+                                .all(|v| v.job.is_none() && v.tx.receiver_count() == 0)
+                    })
+                    .min_by_key(|(_, e)| e.used)
+                    .map(|(u, _)| *u)
+                    .ok_or(PortfolioError::Busy)?;
+                self.entries.remove(&oldest);
+            }
+            self.entries.insert(
+                q.user_id,
+                Entry {
+                    inventory: None,
+                    inventory_id: 0,
+                    refresh_id: 0,
+                    refreshing: false,
+                    last_refresh: None,
+                    refresh_after: None,
+                    progress: Default::default(),
+                    error: None,
+                    views: BTreeMap::new(),
+                    used: 0,
+                },
+            );
+        }
+        self.clock = self.clock.saturating_add(1);
+        let e = self.entries.get_mut(&q.user_id).unwrap();
+        e.used = self.clock;
+        if !e.views.contains_key(&q.currency_id) {
+            if e.views.len() >= 8 {
+                let old = e
+                    .views
+                    .iter()
+                    .find(|(_, v)| v.job.is_none() && v.tx.receiver_count() == 0)
+                    .map(|(c, _)| c.clone())
+                    .ok_or(PortfolioError::Busy)?;
+                e.views.remove(&old);
+            }
+            let empty = Arc::new(PortfolioState {
+                user_id: q.user_id,
+                refresh_id: e.refresh_id,
+                progress: Default::default(),
+                inventory: None,
+                valuation: None,
+                refresh_after: None,
+                error: None,
+            });
+            let (tx, _) = watch::channel(empty);
+            e.views.insert(
+                q.currency_id.clone(),
+                View {
+                    tx,
+                    report: None,
+                    inventory: None,
+                    progress: 0,
+                    error: None,
+                    job: None,
+                    attempted: None,
+                },
+            );
+        }
+        let initial = matches!(action, Action::Watch) && e.last_refresh.is_none();
+        let receiver = e.views[&q.currency_id].tx.subscribe();
+        if matches!(action, Action::Refresh) || initial {
+            self.refresh(q.user_id, ctx)?;
+        }
+        self.value(q.user_id, q.currency_id.clone(), ctx);
+        self.publish(q.user_id);
+        Ok(receiver)
+    }
+    fn refresh(&mut self, user: UserId, ctx: &mut Context<Self>) -> Result<(), PortfolioError> {
+        let e = self.entries.get_mut(&user).unwrap();
+        if e.refreshing {
+            return Ok(());
+        }
+        if let Some(t) = e.last_refresh
+            && t.elapsed() < self.config.refresh_interval
+        {
+            return Err(PortfolioError::Cooldown(
+                self.config
+                    .refresh_interval
+                    .saturating_sub(t.elapsed())
+                    .as_secs()
+                    + 1,
+            ));
+        }
+        self.next = self.next.checked_add(1).ok_or(PortfolioError::Busy)?;
+        let refresh = self.next;
+        e.refresh_id = refresh;
+        e.refreshing = true;
+        e.last_refresh = Some(Instant::now());
+        e.refresh_after = Some(
+            jiff::Timestamp::from_millisecond(
+                jiff::Timestamp::now().as_millisecond()
+                    + self.config.refresh_interval.as_millis() as i64,
+            )
+            .expect("bounded refresh interval"),
+        );
+        e.error = None;
+        e.progress = PortfolioProgress {
+            stage: PortfolioStage::Queued,
+            ..Default::default()
         };
-        let control = ticket.control();
-        let handle = ctx.spawn(
+        let provider = self.provider.clone();
+        let calls = self.invocations.clone();
+        let config = self.config.clone();
+        let address = ctx.address();
+        let stop = self.stop.clone();
+        let slots = self.fetch_slots.clone();
+        ctx.spawn(
             async move {
-                ticket.await.map_err(|error| match error {
-                    InvocationError::Operation(error) => PortfolioError::Inventory(error),
-                    InvocationError::Runtime(error) => match error {
-                        RuntimeError::Deadline { .. } => PortfolioError::TimedOut,
-                        RuntimeError::Busy => PortfolioError::Busy,
-                        RuntimeError::Stopped | RuntimeError::Cancelled => PortfolioError::Stopped,
-                        _ => PortfolioError::Inventory(InventoryError::Unavailable),
-                    },
-                })
+                let work = async {
+                    let _permit = slots
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| PortfolioError::Stopped)?;
+                    let mut builder = crate::inventory::InventoryBuilder::default();
+                    loop {
+                        let limit = config.page_size.min(config.max_gifts - builder.scanned);
+                        let ticket = calls
+                            .submit(
+                                provider.page(InventoryPageRequest {
+                                    user,
+                                    cursor: builder.cursor.clone(),
+                                    limit,
+                                }),
+                                market_invocations::Options {
+                                    priority: market_invocations::Priority::Interactive,
+                                    timeout: config.request_timeout,
+                                    cancellation: stop.clone(),
+                                },
+                            )
+                            .map_err(|_| PortfolioError::Busy)?;
+                        let page = match ticket.await {
+                            Ok(page) => page,
+                            Err(market_invocations::Error::Operation(error)) => {
+                                if builder.pages > 0
+                                    && !matches!(
+                                        error,
+                                        InventoryError::Forbidden | InventoryError::Authorization
+                                    )
+                                {
+                                    return Ok(builder.snapshot(InventoryCompletion::Partial(
+                                        PartialReason::ReadFailed(error),
+                                    )));
+                                }
+                                return Err(PortfolioError::Inventory(error));
+                            }
+                            Err(_) => return Err(PortfolioError::TimedOut),
+                        };
+                        let completion = builder
+                            .merge(page, limit, &config)
+                            .map_err(PortfolioError::Inventory)?;
+                        address.do_send(Progress {
+                            user,
+                            refresh,
+                            checked: builder.scanned,
+                            pages: builder.pages,
+                            total: builder.total,
+                        });
+                        if let Some(completion) = completion {
+                            return Ok(builder.snapshot(completion));
+                        }
+                    }
+                };
+                tokio::time::timeout(config.request_timeout, work)
+                    .await
+                    .unwrap_or(Err(PortfolioError::TimedOut))
             }
             .into_actor(self)
             .map(move |result, actor, ctx| {
-                actor.fetch.remove(&user);
+                let fits = result
+                    .as_ref()
+                    .is_ok_and(|i| actor.fit_inventory(user, i.gifts.len()));
+                let e = actor.entries.get_mut(&user).unwrap();
+                if e.refresh_id != refresh {
+                    return;
+                }
+                e.refreshing = false;
                 match result {
-                    Ok(page) => actor.page_finished(user, limit, Ok(page)),
-                    Err(PortfolioError::Inventory(error)) => {
-                        actor.page_finished(user, limit, Err(error))
+                    Ok(_) if !fits => {
+                        e.error = Some(
+                            "Portfolio cache capacity reached; previous inventory retained".into(),
+                        );
                     }
-                    Err(error) => {
-                        if let Some(job) = actor.inventories.remove(&user) {
-                            for id in job.waiters {
-                                actor.finish(id, Err(error.clone()));
+                    Ok(inventory) => {
+                        let complete = inventory.completion == InventoryCompletion::Complete;
+                        if !complete
+                            && e.inventory
+                                .as_ref()
+                                .is_some_and(|i| i.completion == InventoryCompletion::Complete)
+                        {
+                            e.error = Some(
+                                "Refresh was partial; the previous complete inventory is retained"
+                                    .into(),
+                            );
+                        } else {
+                            e.inventory_id = refresh;
+                            e.progress.checked = inventory.gifts_scanned;
+                            e.progress.total = inventory.reported_total;
+                            e.progress.pages = inventory.pages_read;
+                            e.inventory = Some(Arc::new(inventory));
+                            for view in e.views.values_mut() {
+                                if let Some(job) = view.job.take() {
+                                    ctx.cancel_future(job);
+                                }
+                                view.attempted = None;
+                                view.progress = 0;
                             }
                         }
                     }
+                    Err(error) => e.error = Some(error.to_string()),
                 }
-                actor.pump(ctx);
+                let currencies: Vec<_> = e.views.keys().cloned().collect();
+                for currency in currencies {
+                    actor.value(user, currency, ctx);
+                }
+                actor.publish(user);
             }),
         );
-        self.fetch.insert(user, (handle, control));
+        Ok(())
     }
-    fn page_finished(
-        &mut self,
-        user: UserId,
-        limit: usize,
-        result: Result<InventoryPage, InventoryError>,
-    ) {
-        let completion = match result {
-            Err(error) => Err(error),
-            Ok(page) => {
-                self.inventories
-                    .get_mut(&user)
-                    .unwrap()
-                    .data
-                    .merge(page, limit, &self.config)
+    fn fit_inventory(&mut self, user: UserId, incoming: usize) -> bool {
+        loop {
+            let used: usize = self
+                .entries
+                .iter()
+                .filter(|(u, _)| **u != user)
+                .map(|(_, e)| e.inventory.as_ref().map_or(0, |i| i.gifts.len()))
+                .sum();
+            if used.saturating_add(incoming) <= 50000 {
+                return true;
             }
-        };
-        match completion {
-            Ok(None) => self.requeue(Work::Inventory(user)),
-            Ok(Some(completion)) => self.inventory_finished(user, Ok(completion)),
-            Err(error) => self.inventory_finished(user, Err(error)),
-        }
-    }
-    fn inventory_finished(
-        &mut self,
-        user: UserId,
-        completion: Result<InventoryCompletion, InventoryError>,
-    ) {
-        let Some(mut job) = self.inventories.remove(&user) else {
-            return;
-        };
-        self.queue.remove(&Work::Inventory(user));
-        let completion = match completion {
-            Ok(completion) => completion,
-            Err(error)
-                if job.data.pages > 0
-                    && error != InventoryError::Authorization
-                    && error != InventoryError::Forbidden =>
-            {
-                InventoryCompletion::Partial(PartialReason::ReadFailed(error))
-            }
-            Err(error) => {
-                for id in job.waiters {
-                    self.finish(id, Err(PortfolioError::Inventory(error.clone())));
-                }
-                return;
-            }
-        };
-        let waiters = std::mem::take(&mut job.waiters);
-        let Some(next) = self.next_snapshot.checked_add(1) else {
-            for id in waiters {
-                self.finish(id, Err(PortfolioError::Stopped));
-            }
-            return;
-        };
-        self.next_snapshot = next;
-        let complete = completion == InventoryCompletion::Complete;
-        let snapshot = Snapshot {
-            id: next,
-            inventory: Arc::new(job.data.snapshot(completion)),
-        };
-        if complete {
-            self.cache.insert(user, snapshot.clone());
-        }
-        for id in waiters {
-            self.enqueue_value(id, snapshot.clone());
-        }
-    }
-    fn value_snapshot(&mut self, key: QuoteKey, ctx: &mut Context<Self>) {
-        let job = &self.values[&key];
-        let snapshot = job.snapshot.clone();
-        let backend = self.valuation.clone();
-        let timeout = self.config.valuation_timeout;
-        let mut positions: BTreeMap<ModelLookup, u32> = BTreeMap::new();
-        for gift in &snapshot.inventory.gifts {
-            *positions
-                .entry(ModelLookup::Telegram {
-                    gift_id: gift.collection_id,
-                    document_id: gift.model_document_id,
+            let old = self
+                .entries
+                .iter()
+                .filter(|(u, e)| {
+                    **u != user
+                        && !e.refreshing
+                        && e.views
+                            .values()
+                            .all(|v| v.job.is_none() && v.tx.receiver_count() == 0)
                 })
-                .or_default() += 1;
+                .min_by_key(|(_, e)| e.used)
+                .map(|(u, _)| *u);
+            if let Some(old) = old {
+                self.entries.remove(&old);
+            } else {
+                return false;
+            }
         }
-        let request = ValuationRequest {
-            strategy: key.strategy.clone(),
-            positions: positions
-                .into_iter()
-                .map(|(model, quantity)| ModelPosition { model, quantity })
-                .collect(),
-            currency_id: key.currency.clone(),
+    }
+    fn value(&mut self, user: UserId, currency: market_gifts::CurrencyId, ctx: &mut Context<Self>) {
+        let e = self.entries.get_mut(&user).unwrap();
+        let Some(inventory) = &e.inventory else {
+            return;
         };
-        let strategy = request.strategy.clone();
-        let currency = request.currency_id.clone();
-        let completed_key = key.clone();
+        let v = e.views.get_mut(&currency).unwrap();
+        if e.refreshing
+            || v.job.is_some()
+            || v.attempted
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
+        {
+            return;
+        }
+        v.attempted = Some(Instant::now());
+        v.progress = 0;
+        v.error = None;
+        let valued_inventory = inventory.clone();
+        let gifts = Arc::new(inventory.gifts.clone());
+        let generation = e.inventory_id;
+        let provider = self.valuation.clone();
+        let timeout = self.config.valuation_timeout;
+        let (progress, mut received) = watch::channel(0usize);
+        let addr = ctx.address();
+        let progress_currency = currency.clone();
+        let result_currency = currency.clone();
+        let request_currency = currency.clone();
         let handle = ctx.spawn(
             async move {
-                tokio::time::timeout(timeout, backend.mark(request))
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(market_valuation::ValuationError::timed_out(
-                            "portfolio valuation timed out",
-                        )
-                        .with_context(strategy, currency))
-                    })
+                let work = provider.value(gifts, request_currency, progress);
+                tokio::pin!(work);
+                loop {
+                    tokio::select! {
+                        result = &mut work => break result,
+                        update = received.changed() => {
+                            if update.is_err() {
+                                break work.await;
+                            }
+                            addr.do_send(Valued {
+                                user,
+                                currency: progress_currency.clone(),
+                                generation,
+                                count: *received.borrow_and_update(),
+                            });
+                        }
+                    }
+                }
             }
             .into_actor(self)
-            .map(move |result, actor, ctx| {
-                actor.value = None;
-                let job = actor.values.remove(&completed_key).unwrap();
-                actor.queue.remove(&Work::Value(completed_key.clone()));
-                for id in job.waiters {
-                    actor.finish(
-                        id,
-                        result
-                            .clone()
-                            .map(|valuation| Portfolio {
-                                user: completed_key.user,
-                                inventory: snapshot.inventory.clone(),
-                                valuation,
-                            })
-                            .map_err(PortfolioError::Valuation),
-                    );
+            .timeout(timeout)
+            .map(move |result, actor, _| {
+                let e = actor.entries.get_mut(&user).unwrap();
+                if e.inventory_id != generation {
+                    return;
                 }
-                actor.pump(ctx);
+                let v = e.views.get_mut(&result_currency).unwrap();
+                v.job = None;
+                match result.unwrap_or_else(|_| {
+                    Err(market_valuation::ValuationError::timed_out(
+                        "Portfolio valuation timed out",
+                    ))
+                }) {
+                    Ok(report) => {
+                        v.progress = report.items.len();
+                        v.report = Some(report);
+                        v.inventory = Some(valued_inventory);
+                        v.error = None;
+                    }
+                    Err(error) => v.error = Some(error.to_string()),
+                }
+                actor.publish(user);
             }),
         );
-        self.value = Some((key, handle));
+        self.entries
+            .get_mut(&user)
+            .unwrap()
+            .views
+            .get_mut(&currency)
+            .unwrap()
+            .job = Some(handle);
     }
 }

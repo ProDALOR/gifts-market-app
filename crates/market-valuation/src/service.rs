@@ -8,6 +8,8 @@ pub(crate) struct Work {
 }
 #[derive(Clone)]
 pub struct ValuationHandle {
+    pub(crate) source: ValuationSource,
+    pub(crate) books: Arc<crate::floors::BookCache>,
     native: Handle<Work, Arc<crate::market::ValuationRead>, ValuationError>,
     status: watch::Receiver<market_replica::SyncStatus>,
     watch_slots: Arc<tokio::sync::Semaphore>,
@@ -67,13 +69,17 @@ impl ValuationHandle {
         let status = reads.reader().status_updates();
         let gift_resolver: GiftResolverState = Default::default();
         let actor_resolver = gift_resolver.clone();
+        let source = ValuationSource::new(reads);
+        let books = Arc::new(crate::floors::BookCache::default());
+        let actor_source = source.clone();
+        let actor_books = books.clone();
         let service = Service::start_on(
             arbiter,
             "valuation",
             move |life| {
                 crate::market::MarketValuationActor::new(
-                    ValuationSource::new(reads),
-                    Arc::new(crate::floors::BookCache::default()),
+                    actor_source,
+                    actor_books,
                     life,
                     actor_resolver,
                 )
@@ -86,6 +92,8 @@ impl ValuationHandle {
         .await?;
         Ok((
             Self {
+                source,
+                books,
                 native: service.handle,
                 status,
                 watch_slots: Arc::new(tokio::sync::Semaphore::new(32)),

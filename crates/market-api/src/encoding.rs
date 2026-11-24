@@ -31,7 +31,18 @@ pub(crate) enum ValuationEnvelope {
     Query(String),
     Snapshot(String),
 }
+pub(crate) enum PortfolioEnvelope {
+    Rest,
+    Query(String),
+    Refresh(String),
+    Snapshot(String),
+    Progress(String),
+}
 enum ResponseEvent {
+    Portfolio {
+        data: Arc<market_portfolio::PortfolioState>,
+        envelope: PortfolioEnvelope,
+    },
     Orders(OrderEvent),
     Valuation {
         report: Arc<market_valuation::ValuationReport>,
@@ -64,6 +75,14 @@ impl ResponseEncoder {
         envelope: ValuationEnvelope,
     ) -> Result<Bytes> {
         self.encode_response(ResponseEvent::Valuation { report, envelope })
+            .await
+    }
+    pub async fn portfolio(
+        &self,
+        data: Arc<market_portfolio::PortfolioState>,
+        envelope: PortfolioEnvelope,
+    ) -> Result<Bytes> {
+        self.encode_response(ResponseEvent::Portfolio { data, envelope })
             .await
     }
     async fn encode_response(&self, event: ResponseEvent) -> Result<Bytes> {
@@ -140,6 +159,31 @@ fn encode_response(
         stop,
     };
     let encoded = match event {
+        ResponseEvent::Portfolio { data, envelope } => match envelope {
+            PortfolioEnvelope::Rest => serde_json::to_writer(&mut writer, data.as_ref()),
+            PortfolioEnvelope::Query(id) => serde_json::to_writer(
+                &mut writer,
+                &ServerFrame::Result(ApiResult::PortfolioQuery { id, data: &data }),
+            ),
+            PortfolioEnvelope::Refresh(id) => serde_json::to_writer(
+                &mut writer,
+                &ServerFrame::Result(ApiResult::PortfolioRefresh { id, data: &data }),
+            ),
+            PortfolioEnvelope::Snapshot(id) => serde_json::to_writer(
+                &mut writer,
+                &ServerFrame::PortfolioSnapshot { id, data: &data },
+            ),
+            PortfolioEnvelope::Progress(id) => serde_json::to_writer(
+                &mut writer,
+                &ServerFrame::PortfolioProgress {
+                    id,
+                    refresh_id: data.refresh_id,
+                    progress: &data.progress,
+                    refresh_after: data.refresh_after,
+                    error: data.error.as_deref(),
+                },
+            ),
+        },
         ResponseEvent::Valuation { report, envelope } => {
             let data = crate::valuation::ValuationResponse::from(report.as_ref());
             match envelope {

@@ -32,6 +32,7 @@ export default defineConfig({
         "/collections",
         "/valuations",
         "/orders",
+        "/portfolios",
         "/history",
         "/openapi.json",
         "/asyncapi.json",

@@ -5,6 +5,18 @@ use market_hub_protocol::wire as w;
 impl ValuationSnapshot {
     /// Match transport facts through catalog aliases, without assuming hub ID formats.
     pub(crate) fn telegram_gift(&self, facts: &TelegramGiftDetails) -> Result<CollectibleGift> {
+        let mut gift = self.telegram_traits(facts)?;
+        match self.gift(&GiftLookup::Catalog {
+            collection_id: gift.collection_id.clone(),
+            number: facts.number,
+        }) {
+            Ok(observed) => gift.id = observed.id,
+            Err(e) if e.code() == tonic::Code::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        Ok(gift)
+    }
+    pub(crate) fn telegram_traits(&self, facts: &TelegramGiftDetails) -> Result<CollectibleGift> {
         self.check_cancelled()?;
         let items = market_replica::catalog_read::entities_cancellable(
             &self.reader,
@@ -81,11 +93,7 @@ impl ValuationSnapshot {
                 })
                 .transpose()?,
         };
-        let id = match self.gift_by_number(item, facts.number) {
-            Ok(gift) => gift.id,
-            Err(error) if error.code() == tonic::Code::NotFound => facts.id.clone(),
-            Err(error) => return Err(error),
-        };
+        let id = facts.id.clone();
         Ok(CollectibleGift {
             id,
             collection_id,

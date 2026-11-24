@@ -7,6 +7,7 @@ edition.workspace = true
 market-valuation = { workspace = true, features = ["schema"] }
 market-gifts = { workspace = true, features = ["schema"] }
 market-media.workspace = true
+market-portfolio = { workspace = true, features = ["schema"] }
 market-actors.workspace = true
 market-miniapp = { workspace = true, optional = true, features = ["schema"] }
 actix-web.workspace = true
@@ -36,6 +37,7 @@ name = "miniapp_api"
 required-features = ["miniapp"]
 
 [dev-dependencies]
+market-invocations.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 actix.workspace = true
 flate2.workspace = true

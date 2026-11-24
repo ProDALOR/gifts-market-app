@@ -286,6 +286,14 @@ impl TelegramActions for MtProtoActions {
             Err(error) => Err(error),
         }
     }
+    async fn send_progress(
+        &self,
+        event: &Event,
+        reply: &Reply,
+        launch: Option<&LaunchButton>,
+    ) -> Result<Option<Event>, BotError> {
+        self.progress_reply(event, reply, launch).await
+    }
     async fn send(
         &self,
         event: &Event,

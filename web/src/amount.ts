@@ -79,3 +79,18 @@ export function listingAmount(value: string) {
     (fraction && fraction.length > 2 ? ".." : "")
   );
 }
+
+/** Sum quoted amounts without passing through binary floating point. */
+export function sumAmounts(values: Iterable<string>): string {
+  const scale = 10n ** 28n;
+  let total = 0n;
+  for (const value of values) {
+    formatDecimal(value);
+    const [whole, fraction = ""] = value.split(".");
+    if (fraction.length > 28) throw new Error("Unsupported decimal precision");
+    total += BigInt(whole) * scale + BigInt(fraction.padEnd(28, "0"));
+  }
+  return trimDecimalZeros(
+    `${total / scale}.${String(total % scale).padStart(28, "0")}`,
+  );
+}

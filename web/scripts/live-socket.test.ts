@@ -820,3 +820,28 @@ test("generic valuation watches reuse query params, ignore old generations and r
   stop();
   assert.equal(second.closed, true);
 });
+
+for (const type of ["portfolio.snapshot", "portfolio.progress"] as const) {
+  test(`${type} cannot be delivered to an unrelated catalog subscription`, (t) => {
+    const { Socket, live } = setup(t);
+    const stop = live.subscribe(catalog(), () => assert.fail("Wrong channel"));
+    t.after(stop);
+    const socket = Socket.all[0];
+    socket.open();
+    const progress = {
+      stage: "queued",
+      checked: 0,
+      pages: 0,
+      valued: 0,
+      collectibles: 0,
+    };
+    socket.receive({
+      type,
+      id: socket.sent[0].id,
+      ...(type === "portfolio.snapshot"
+        ? { data: { user_id: 7, refresh_id: 1, progress } }
+        : { refresh_id: 1, progress }),
+    });
+    assert.equal(socket.closed, true);
+  });
+}

@@ -1,0 +1,304 @@
+.portfolio-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  min-height: 32px;
+}
+.portfolio-heading h1 {
+  font-size: 19px;
+  margin: 0;
+  line-height: 1.3;
+}
+.portfolio-owner {
+  position: relative;
+  min-width: 0;
+}
+.portfolio-owner-trigger {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  padding: 4px 0;
+  overflow-wrap: anywhere;
+}
+.portfolio-owner-trigger svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  flex: none;
+}
+.portfolio-owner-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 12;
+  width: min(320px, calc(100vw - 48px));
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+  box-shadow: 0 8px 26px #0005;
+  display: grid;
+  gap: 8px;
+}
+.portfolio-owner-menu label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.portfolio-owner-menu > div {
+  display: flex;
+  gap: 8px;
+}
+.portfolio-owner-menu input {
+  min-width: 0;
+  width: 100%;
+  flex: 1;
+}
+.portfolio-owner-menu button {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--tint);
+  color: var(--accent);
+}
+.portfolio-self {
+  justify-self: start;
+}
+.portfolio-owner input,
+.portfolio-filters input {
+  background: var(--surface);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px;
+}
+.portfolio-any {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 9px;
+  margin-bottom: 8px;
+}
+.portfolio-any span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.portfolio-any[aria-pressed="true"] {
+  background: var(--tint);
+  color: var(--accent);
+}
+.portfolio-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 0;
+}
+.portfolio-filters label {
+  display: grid;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.portfolio-filters input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.portfolio-sort {
+  margin-top: 3px;
+}
+.portfolio-summary {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+  margin: 0 0 16px;
+}
+.portfolio-summary-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.portfolio-estimate-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+.portfolio-total {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 30px;
+  font-weight: 750;
+  line-height: 1.2;
+  min-width: 0;
+}
+.portfolio-total .currency-symbol {
+  width: 25px;
+  height: 25px;
+}
+.portfolio-total .quote-amount {
+  overflow-wrap: anywhere;
+}
+.portfolio-total .quote-amount.precise {
+  font-size: clamp(17px, 2.4vw, 26px);
+}
+.portfolio-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.portfolio-checked {
+  font-size: 11px;
+  white-space: nowrap;
+}
+.portfolio-refresh {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.portfolio-refresh svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.portfolio-cooldown {
+  position: absolute;
+  top: calc(100% + 2px);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 12px;
+}
+.portfolio-refresh.busy svg {
+  animation: portfolio-refresh 1.5s linear infinite;
+}
+@keyframes portfolio-refresh {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.portfolio-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 12px;
+}
+.portfolio-full-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.portfolio-full-total .currency-symbol {
+  width: 12px;
+  height: 12px;
+}
+.portfolio-unpriced {
+  color: #d9bd8d;
+}
+.portfolio-progress {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.portfolio-progress.quiet {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  margin: 0;
+}
+.portfolio-progress progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+}
+.portfolio-delayed {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+.portfolio-card .card-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.portfolio-content {
+  min-width: 0;
+}
+@media (min-width: 960px) {
+  .portfolio-shell .market-sidebar .collection-rail {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 320px;
+  }
+  .portfolio-shell .portfolio-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+  .portfolio-shell .portfolio-sort {
+    margin-top: 8px;
+  }
+}
+@media (max-width: 959px) {
+  .portfolio-heading {
+    margin: 10px 0;
+  }
+  .portfolio-heading h1 {
+    font-size: 17px;
+  }
+  .portfolio-total {
+    font-size: 27px;
+  }
+  .portfolio-summary {
+    padding: 13px;
+  }
+  .portfolio-shell .portfolio-sort {
+    margin-bottom: 12px;
+  }
+  .portfolio-filters label {
+    font-size: 11px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .portfolio-refresh.busy svg {
+    animation: none;
+  }
+}
+
+@media (max-width: 959px) and (pointer: coarse) {
+  .portfolio-owner-menu input,
+  .portfolio-filters input {
+    font-size: 16px;
+  }
+  .portfolio-owner-trigger,
+  .portfolio-refresh {
+    min-height: 44px;
+  }
+  .portfolio-refresh {
+    width: 44px;
+  }
+}

@@ -992,7 +992,17 @@ try {
     await sidebar.locator('.sidebar-heading [role="combobox"]').count(),
     1,
   );
-  assert.equal(await sidebar.getByText("Market", { exact: true }).count(), 0);
+  assert.equal(
+    await sidebar
+      .locator(".sidebar-heading")
+      .getByText("Market", { exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await sidebar.getByRole("link", { name: "Market", exact: true }).count(),
+    1,
+  );
   assert.equal(await sidebar.locator(".feed-actions").count(), 0);
   assert.equal(
     await sidebar

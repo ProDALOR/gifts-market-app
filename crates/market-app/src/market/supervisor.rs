@@ -15,6 +15,8 @@ pub(crate) enum TaskKind {
     Bot,
     #[cfg(feature = "bot")]
     TelegramAccounts,
+    #[cfg(feature = "bot")]
+    Portfolio,
     Api,
 }
 #[derive(Debug, Clone, Copy)]

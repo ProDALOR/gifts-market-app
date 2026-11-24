@@ -55,3 +55,20 @@ test("item cards hide fractional digits after two places without altering the pr
   ])
     assert.equal(listingAmount(value), expected);
 });
+
+test("portfolio totals sum exact decimal amounts beyond JavaScript numeric precision", async () => {
+  const { sumAmounts } = await import("../src/amount.ts");
+  assert.equal(
+    sumAmounts(["9999999999999999.01", "0.02"]),
+    "9999999999999999.03",
+  );
+  assert.equal(sumAmounts(["0.1", "0.2"]), "0.3");
+  assert.equal(sumAmounts([]), "0");
+  assert.equal(
+    sumAmounts([
+      "0.0000000000000000000000000001",
+      "0.0000000000000000000000000001",
+    ]),
+    "0.0000000000000000000000000002",
+  );
+});

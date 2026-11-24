@@ -1,16 +1,21 @@
 use market_gifts::CurrencyId;
-use market_valuation::Valuation;
-use market_valuation::ValuationError;
-use std::{fmt, sync::Arc};
+pub use market_gifts::inventory::*;
+pub use market_valuation::InventoryValuation;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+#[cfg(feature = "schema")]
+use utoipa::ToSchema;
 
-/// Canonical source user identity. Authorization belongs to the calling application.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "schema", derive(ToSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u64", into = "u64")]
+#[cfg_attr(feature="schema", schema(value_type=u64))]
 pub struct UserId(u64);
 impl UserId {
     pub fn new(value: u64) -> Result<Self, PortfolioError> {
-        if value == 0 || value > i64::MAX as u64 {
+        if value == 0 || value > 9_007_199_254_740_991 {
             return Err(PortfolioError::InvalidData(
-                "user ID must be a positive signed 64-bit integer".into(),
+                "invalid Telegram user ID".into(),
             ));
         }
         Ok(Self(value))
@@ -19,26 +24,90 @@ impl UserId {
         self.0
     }
 }
-pub use market_gifts::inventory::*;
-pub use market_invocations::Priority;
+impl TryFrom<u64> for UserId {
+    type Error = PortfolioError;
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+impl From<UserId> for u64 {
+    fn from(value: UserId) -> u64 {
+        value.0
+    }
+}
 #[derive(Debug, Clone)]
 pub struct InventoryPageRequest {
     pub user: UserId,
     pub cursor: Option<String>,
     pub limit: usize,
 }
-#[derive(Debug, Clone)]
-pub struct Portfolio {
-    pub user: UserId,
-    pub inventory: Arc<InventorySnapshot>,
-    pub valuation: Arc<market_valuation::Mark<Valuation>>,
-}
-#[derive(Debug, Clone)]
-pub struct PortfolioRequest {
-    pub strategy: market_valuation::StrategyId,
-    pub user: UserId,
+#[cfg_attr(feature = "schema", derive(ToSchema))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortfolioQuery {
+    pub user_id: UserId,
     pub currency_id: CurrencyId,
-    pub priority: Priority,
+}
+#[cfg_attr(feature = "schema", derive(ToSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortfolioStage {
+    Idle,
+    Queued,
+    LoadingInventory,
+    Valuing,
+    Ready,
+    Failed,
+}
+#[cfg_attr(feature = "schema", derive(ToSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortfolioProgress {
+    pub stage: PortfolioStage,
+    pub checked: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    pub pages: usize,
+    pub valued: usize,
+    pub collectibles: usize,
+}
+impl Default for PortfolioProgress {
+    fn default() -> Self {
+        Self {
+            stage: PortfolioStage::Idle,
+            checked: 0,
+            total: None,
+            pages: 0,
+            valued: 0,
+            collectibles: 0,
+        }
+    }
+}
+#[cfg_attr(feature = "schema", derive(ToSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InventorySummary {
+    #[cfg_attr(feature="schema", schema(value_type=String, format=DateTime))]
+    pub checked_at: jiff::Timestamp,
+    pub count: usize,
+    pub scanned: usize,
+    pub regular: usize,
+    pub skipped: usize,
+    pub complete: bool,
+}
+#[cfg_attr(feature = "schema", derive(ToSchema))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortfolioState {
+    pub user_id: UserId,
+    pub refresh_id: u64,
+    pub progress: PortfolioProgress,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<InventorySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valuation: Option<Arc<InventoryValuation>>,
+    #[cfg_attr(feature="schema", schema(value_type=Option<String>, format=DateTime))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_after: Option<jiff::Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub enum PortfolioError {
@@ -48,18 +117,19 @@ pub enum PortfolioError {
     InvalidConfig(&'static str),
     InvalidData(String),
     Inventory(InventoryError),
-    Valuation(ValuationError),
+    Cooldown(u64),
 }
-impl fmt::Display for PortfolioError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for PortfolioError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Busy => f.write_str("portfolio capacity reached"),
-            Self::Stopped => f.write_str("portfolio service stopped"),
-            Self::TimedOut => f.write_str("portfolio request timed out"),
-            Self::InvalidConfig(message) => f.write_str(message),
-            Self::InvalidData(message) => f.write_str(message),
-            Self::Inventory(error) => write!(f, "inventory unavailable: {error:?}"),
-            Self::Valuation(error) => error.fmt(f),
+            Self::Busy => f.write_str("Portfolio capacity reached"),
+            Self::Stopped => f.write_str("Portfolio service unavailable"),
+            Self::TimedOut => f.write_str("Portfolio request timed out"),
+            Self::InvalidConfig(value) => f.write_str(value),
+            Self::InvalidData(value) => f.write_str(value),
+            Self::Cooldown(seconds) => write!(f, "Gift refresh is available in {seconds}s"),
+            Self::Inventory(InventoryError::Forbidden) => f.write_str("This user is not known to the connected Telegram session. Open the bot first or use a known public peer."),
+            Self::Inventory(_) => f.write_str("Telegram inventory is temporarily unavailable"),
         }
     }
 }

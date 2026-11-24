@@ -1,0 +1,80 @@
+.app-navigation {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+.app-navigation a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 13px;
+}
+.app-navigation a.active {
+  background: var(--plum);
+  color: white;
+}
+.app-navigation a:hover {
+  color: var(--ink);
+}
+.app-navigation svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+@media (max-width: 959px) {
+  .app-navigation {
+    position: fixed;
+    inset: auto max(8px, var(--tg-safe-right, 0px))
+      max(8px, var(--tg-safe-bottom, 0px), env(safe-area-inset-bottom))
+      max(8px, var(--tg-safe-left, 0px));
+    z-index: 9;
+    margin: 0;
+    padding: 4px 6px;
+    background: var(--paper);
+    border-color: var(--line);
+    border-radius: 15px;
+    box-shadow: 0 4px 20px #0004;
+  }
+  .app-navigation a {
+    min-height: 48px;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+  .app-navigation svg {
+    width: 20px;
+    height: 20px;
+  }
+  .workspace:has(.app-navigation) .market-shell {
+    padding-bottom: calc(
+      90px + max(var(--tg-safe-bottom, 0px), env(safe-area-inset-bottom))
+    );
+  }
+  .workspace:has(.app-navigation) .back-to-top {
+    bottom: calc(
+      86px + max(var(--tg-safe-bottom, 0px), env(safe-area-inset-bottom))
+    );
+  }
+  body:has(dialog[open], [role="listbox"]) .app-navigation,
+  .app-navigation.keyboard-open {
+    display: none;
+  }
+}

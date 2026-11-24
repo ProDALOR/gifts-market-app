@@ -18,6 +18,13 @@ pub trait MessageHandler: Send + Sync {
             None
         }
     }
+    fn handle_with_progress(
+        &self,
+        request: Self::Request,
+        _updates: tokio::sync::watch::Sender<Reply>,
+    ) -> impl Future<Output = Result<Reply, BotError>> + Send {
+        self.handle(request)
+    }
     fn handle(
         &self,
         request: Self::Request,

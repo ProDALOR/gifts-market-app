@@ -10,6 +10,10 @@ pub struct MarketRuntime {
     valuation: market_valuation::ValuationHandle,
     supervisor: Arc<TaskSupervisor>,
     replication: Mutex<Option<market_replica::ReplicationWorker>>,
+    #[cfg(feature = "bot")]
+    portfolio: std::sync::RwLock<Option<market_portfolio::PortfolioHandle>>,
+    #[cfg(feature = "bot")]
+    invocations: Mutex<Option<market_invocations::Runtime>>,
 }
 impl MarketRuntime {
     pub async fn open(
@@ -109,6 +113,10 @@ impl MarketRuntime {
             valuation,
             supervisor,
             replication: Mutex::new(Some(market.replication)),
+            #[cfg(feature = "bot")]
+            portfolio: std::sync::RwLock::new(None),
+            #[cfg(feature = "bot")]
+            invocations: Mutex::new(None),
         })
     }
     pub fn handle(&self) -> MarketDataHandle {
@@ -151,26 +159,85 @@ impl MarketRuntime {
         let stop = self.supervisor.token();
         let data = self.handle();
         let valuation = self.valuation();
+        let invocations = self.invocations()?;
+        let mut bot = market_telegram_bot::BotService::new(worker, data, valuation);
+        if let Some(portfolio) = self.portfolio() {
+            bot = bot.with_portfolio(portfolio);
+        }
         self.supervisor.spawn_optional(TaskKind::Bot, async move {
             super::worker::run("market-bot", stop, move |stop| async move {
-                let invocations =
-                    market_invocations::Runtime::start(Default::default()).map_err(|error| {
-                        tracing::error!(%error, "invocation runtime failed");
-                    })?;
-                let bot = market_telegram_bot::BotService::new(worker, data, valuation);
-                super::worker::with_cleanup(
-                    bot.run_with_invocations(stop, invocations.handle()),
-                    invocations.shutdown(),
-                )
-                .await
-                .map_err(|error| {
-                    tracing::error!(%error, "bot worker stopped");
-                })
+                bot.run_with_invocations(stop, invocations)
+                    .await
+                    .map_err(|error| {
+                        tracing::error!(%error, "bot worker stopped");
+                    })
             })
             .await
         })
     }
 
+    #[cfg(feature = "bot")]
+    fn invocations(&self) -> Result<market_invocations::Handle> {
+        let mut current = self
+            .invocations
+            .lock()
+            .map_err(|_| anyhow!("Invocation runtime unavailable"))?;
+        if current.is_none() {
+            *current = Some(
+                market_invocations::Runtime::start(Default::default())
+                    .map_err(|e| anyhow!("Invocation runtime: {e:?}"))?,
+            );
+        }
+        Ok(current.as_ref().unwrap().handle())
+    }
+    #[cfg(feature = "bot")]
+    pub fn portfolio(&self) -> Option<market_portfolio::PortfolioHandle> {
+        self.portfolio.read().ok()?.clone()
+    }
+    #[cfg(feature = "bot")]
+    pub async fn start_portfolio(
+        &self,
+        client: market_telegram_client::InventoryClient,
+    ) -> Result<()> {
+        struct Provider(market_telegram_client::InventoryClient);
+        impl market_portfolio::InventoryProvider for Provider {
+            fn page(
+                &self,
+                request: market_portfolio::InventoryPageRequest,
+            ) -> impl market_invocations::Invocation<
+                Output = market_portfolio::InventoryPage,
+                Error = market_portfolio::InventoryError,
+            > {
+                self.0.page_operation(
+                    request.user.get(),
+                    request.cursor.unwrap_or_default(),
+                    request.limit,
+                )
+            }
+        }
+        let service = market_portfolio::PortfolioService::start(
+            Provider(client),
+            self.valuation(),
+            Default::default(),
+            self.invocations()?,
+        )
+        .await?;
+        let handle = service.handle.clone();
+        let stop = self.supervisor.token();
+        self.supervisor
+            .spawn_optional(TaskKind::Portfolio, async move {
+                service
+                    .task
+                    .run(stop)
+                    .await
+                    .map_err(|e| tracing::warn!(%e,"Portfolio service stopped"))
+            })?;
+        *self
+            .portfolio
+            .write()
+            .map_err(|_| anyhow!("Portfolio state unavailable"))? = Some(handle);
+        Ok(())
+    }
     pub fn start_api(&self, server: market_api::ApiServer) -> Result<()> {
         let stop = self.supervisor.token();
         self.supervisor.spawn_critical(TaskKind::Api, async move {
@@ -195,6 +262,17 @@ impl MarketRuntime {
             .map_err(|_| anyhow!("Replication worker state is unavailable"))?
             .take();
         tokio::task::spawn_blocking(move || drop(unused)).await?;
+        #[cfg(feature = "bot")]
+        {
+            let invocations = self
+                .invocations
+                .lock()
+                .map_err(|_| anyhow!("Invocation runtime unavailable"))?
+                .take();
+            if let Some(invocations) = invocations {
+                invocations.shutdown().await;
+            }
+        }
         self.reads.shutdown().await;
         result
     }

@@ -8,11 +8,19 @@ pub enum CommandKind {
     Market,
     Help,
     Status,
+    Portfolio,
 }
 impl CommandKind {
-    pub const ALL: [Self; 4] = [Self::Start, Self::Market, Self::Help, Self::Status];
+    pub const ALL: [Self; 5] = [
+        Self::Start,
+        Self::Market,
+        Self::Help,
+        Self::Status,
+        Self::Portfolio,
+    ];
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Portfolio => "portfolio",
             Self::Start => "start",
             Self::Market => "market",
             Self::Help => "help",
@@ -21,6 +29,7 @@ impl CommandKind {
     }
     pub const fn description(self) -> &'static str {
         match self {
+            Self::Portfolio => "Visible gift portfolio",
             Self::Start => "Open gift markets",
             Self::Market => "Browse markets",
             Self::Help => "How to use the app",
@@ -60,6 +69,24 @@ pub(crate) fn parse<S: AsRef<str>>(
         .into_iter()
         .find(|kind| Some(kind.name()) == name.strip_prefix('/'))?;
     let command = match kind {
+        CommandKind::Portfolio => {
+            let mut words = text.split_whitespace().skip(1);
+            let user_id = words
+                .next()
+                .map(|v| v.parse::<u64>().ok())
+                .unwrap_or(message.user_id)?;
+            market_portfolio::UserId::new(user_id).ok()?;
+            let currency_id = words.next().unwrap_or("GRAM").to_owned().try_into().ok()?;
+            if words.next().is_some() {
+                return None;
+            }
+            Command::Portfolio(super::PortfolioRequest {
+                user_id,
+                currency_id,
+                refresh: false,
+                page: 0,
+            })
+        }
         CommandKind::Start => Command::Start,
         CommandKind::Market => Command::Market,
         CommandKind::Help => Command::Help,

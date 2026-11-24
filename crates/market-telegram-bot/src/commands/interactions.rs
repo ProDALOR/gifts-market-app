@@ -77,6 +77,13 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
         }
         Event::Callback { user_id, data, .. } => {
             let text = std::str::from_utf8(data).ok()?;
+            if let Some(query) = super::portfolio::callback(text) {
+                return Some(CommandRequest {
+                    command: Command::Portfolio(query),
+                    user_id: *user_id,
+                    message_id: 0,
+                });
+            }
             let token = text.strip_prefix("v:")?;
             if token.len() != 16 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return None;

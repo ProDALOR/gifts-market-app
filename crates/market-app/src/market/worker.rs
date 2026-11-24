@@ -57,21 +57,6 @@ where
     result
 }
 
-/// Drain service-owned work before forwarding a panic to the thread supervisor.
-#[cfg(feature = "bot")]
-pub(super) async fn with_cleanup<T>(
-    work: impl Future<Output = T>,
-    cleanup: impl Future<Output = ()>,
-) -> T {
-    use futures_util::FutureExt;
-    let result = std::panic::AssertUnwindSafe(work).catch_unwind().await;
-    cleanup.await;
-    match result {
-        Ok(value) => value,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }
-}
-
 pub(super) async fn monitor(name: &'static str, stop: CancellationToken) -> Result<(), ()> {
     let period = Duration::from_secs(1);
     let mut next = tokio::time::Instant::now() + period;
@@ -106,29 +91,6 @@ mod tests {
         assert_eq!(receive.await.unwrap(), "isolated-test");
         stop.cancel();
         task.await.unwrap().unwrap();
-    }
-    #[tokio::test]
-    async fn panicking_service_drains_cleanup_before_thread_completion() {
-        let cleaned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = cleaned.clone();
-        let result = run(
-            "cleanup-test",
-            CancellationToken::new(),
-            move |_| async move {
-                with_cleanup(
-                    async {
-                        panic!("service panic");
-                    },
-                    async {
-                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                    },
-                )
-                .await
-            },
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
     }
     #[tokio::test]
     async fn thread_panics_are_reported() {

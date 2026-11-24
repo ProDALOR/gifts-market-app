@@ -1,3 +1,4 @@
+import { useNavigationBack } from "../app/navigation";
 import { useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { usePreviewEnvironment } from "../previews/preview-environment";
@@ -95,6 +96,7 @@ export function Modal({
       if (phase.current === "closing") finish();
     }
   }, [pageVisible, reducedMotion]);
+  useNavigationBack(true, dismiss, 20);
   const closeButton = (
     <button
       className="modal-close"

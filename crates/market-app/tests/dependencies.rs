@@ -67,6 +67,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-telegram-bot",
                 "market-invocations",
                 "market-valuation",
+                "market-portfolio",
             ],
         ),
         (
@@ -77,6 +78,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-miniapp",
                 "market-media",
                 "market-valuation",
+                "market-portfolio",
             ],
         ),
         (
@@ -114,6 +116,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-invocations",
                 "market-media",
                 "market-valuation",
+                "market-portfolio",
             ],
         ),
         ("market-media", &[]),
@@ -178,8 +181,8 @@ fn production_dependencies_follow_the_service_boundaries() {
 }
 
 #[test]
-fn portfolio_floor_strategies_are_opt_in_for_portfolio_consumers() {
-    for (package, enabled) in [("market-app", false), ("market-portfolio", true)] {
+fn portfolio_workflows_use_shared_gift_strategy_without_legacy_floor_actors() {
+    for (package, enabled) in [("market-app", false), ("market-portfolio", false)] {
         let output = Command::new(env!("CARGO"))
             .args([
                 "tree",

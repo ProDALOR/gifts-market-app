@@ -1,13 +1,8 @@
 import { useEffect, useMemo } from "react";
 import type { CatalogOption, GiftMedia } from "../market";
 import type { ValuationSubject } from "../order-target";
-import { GiftArtwork } from "../previews/gift-artwork";
-import { GiftPreview } from "../previews/gift-preview";
-import { useBackgroundPlaybackSuspension } from "../previews/use-playback";
 import { useOrderValuation } from "../valuation/use-order-valuation";
-import { OrderValuationSummary } from "./order-valuation";
-import { OrderAttributes } from "./order-attributes";
-import { Modal } from "../ui/modal";
+import { GiftDetailsView } from "../previews/gift-details";
 
 /** Slug previews share artwork, floors and valuation lifecycle without inventing an order. */
 export function SlugDetails({
@@ -31,7 +26,6 @@ export function SlugDetails({
   close: () => void;
   share?: (slug: string, currency: string) => void;
 }) {
-  useBackgroundPlaybackSuspension(true);
   const state = useOrderValuation({ slug, collection, currency });
   const resolved = state.report?.target;
   const gift = resolved?.kind === "gift" ? resolved.gift : undefined;
@@ -54,77 +48,19 @@ export function SlugDetails({
     onGift(subject);
     return () => onGift(undefined);
   }, [subject, onGift]);
-  const model = gift?.traits.model ? options.get(gift.traits.model) : undefined;
   return (
-    <Modal
-      className="detail"
-      label="Gift details"
-      closeLabel="Close details"
-      viewportClose
-      describedBy="detail-title"
+    <GiftDetailsView
+      subject={subject}
+      valuation={state}
+      collectionId={gift?.collection_id || collection}
+      currency={currency}
+      collectionName={slug.split("-")[0]}
+      options={options}
+      names={names}
+      collectionPreview={preview}
+      slug={slug}
       close={close}
-    >
-      <div className="detail-art">
-        {subject ? (
-          <GiftPreview
-            order={subject}
-            options={options}
-            fallbackMedia={preview}
-            fallback="◇"
-            size="large"
-            playback="detail"
-          />
-        ) : (
-          <GiftArtwork
-            media={preview}
-            fallback="◇"
-            size="large"
-            playback="static"
-          />
-        )}
-        <div className="detail-caption">
-          <h2 id="detail-title">
-            {names.get(collection) || slug.split("-")[0]}{" "}
-            {gift?.number != null && (
-              <span>#{gift.number.toLocaleString()}</span>
-            )}
-          </h2>
-          {model && <p>{model.name}</p>}
-        </div>
-      </div>
-      <div className="detail-content">
-        <div className="detail-body">
-          <div className="detail-pricing">
-            <OrderValuationSummary state={state} />
-          </div>
-          {subject && (
-            <OrderAttributes
-              order={subject}
-              options={options}
-              names={names}
-              collectionPreview={preview}
-            />
-          )}
-        </div>
-        <div className="detail-actions">
-          {share && (
-            <button
-              className="detail-link detail-share"
-              onClick={() => share(slug, currency)}
-            >
-              Share valuation ↗
-            </button>
-          )}
-          <a
-            className="detail-link detail-telegram"
-            href={`https://t.me/nft/${encodeURIComponent(slug)}`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Telegram ↗
-          </a>
-        </div>
-      </div>
-    </Modal>
+      share={share}
+    />
   );
 }

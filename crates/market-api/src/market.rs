@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 #[derive(Clone)]
 pub struct MarketApi {
+    pub(crate) portfolio: Option<market_portfolio::PortfolioHandle>,
     data: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
     encoder: Arc<crate::encoding::ResponseEncoder>,
@@ -41,8 +42,20 @@ impl MarketApi {
         Self {
             data,
             valuation,
+            portfolio: None,
             encoder: Arc::new(crate::encoding::ResponseEncoder::new(limit)),
         }
+    }
+    pub fn with_portfolio(mut self, portfolio: market_portfolio::PortfolioHandle) -> Self {
+        self.portfolio = Some(portfolio);
+        self
+    }
+    pub(crate) async fn encode_portfolio(
+        &self,
+        data: Arc<market_portfolio::PortfolioState>,
+        envelope: crate::encoding::PortfolioEnvelope,
+    ) -> Result<actix_web::web::Bytes> {
+        self.encoder.portfolio(data, envelope).await
     }
     pub(crate) async fn encode_orders(
         &self,

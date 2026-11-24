@@ -1,10 +1,9 @@
-use crate::PortfolioError;
 use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct PortfolioConfig {
     pub max_requests: usize,
     pub cached_users: usize,
-    pub inventory_ttl: Duration,
+    pub refresh_interval: Duration,
     pub request_timeout: Duration,
     pub valuation_timeout: Duration,
     pub page_size: usize,
@@ -16,38 +15,36 @@ impl Default for PortfolioConfig {
         Self {
             max_requests: 128,
             cached_users: 64,
-            inventory_ttl: Duration::from_secs(30),
+            refresh_interval: Duration::from_secs(60),
             request_timeout: Duration::from_secs(60),
-            valuation_timeout: Duration::from_secs(10),
+            valuation_timeout: Duration::from_secs(30),
             page_size: 100,
-            max_gifts: 1000,
-            max_pages: 20,
+            max_gifts: 10000,
+            max_pages: 100,
         }
     }
 }
 impl PortfolioConfig {
-    pub(crate) fn validate(&self) -> Result<(), PortfolioError> {
-        if !(1..=4096).contains(&self.max_requests)
-            || self.cached_users > 4096
-            || self.max_pages > 1000
+    pub(crate) fn validate(&self) -> Result<(), crate::PortfolioError> {
+        if self.max_requests == 0
+            || self.max_requests > 4096
+            || self.cached_users == 0
+            || self.cached_users > 256
             || self.page_size == 0
-            || self.page_size > self.max_gifts
-            || self.max_gifts > 1000
+            || self.page_size > 100
+            || self.max_gifts < self.page_size
+            || self.max_gifts > 10000
             || self.max_pages == 0
-        {
-            return Err(PortfolioError::InvalidConfig(
-                "positive request/page limits required; page_size <= max_gifts <= 1000",
-            ));
-        }
-        if self.inventory_ttl.is_zero()
+            || self.max_pages > 1000
+            || self.refresh_interval.is_zero()
             || self.request_timeout.is_zero()
             || self.valuation_timeout.is_zero()
-            || self.valuation_timeout > self.request_timeout
-            || self.request_timeout > Duration::from_secs(3600)
-            || self.inventory_ttl > Duration::from_secs(3600)
+            || self.refresh_interval > Duration::from_secs(86400)
+            || self.request_timeout > Duration::from_secs(300)
+            || self.valuation_timeout > Duration::from_secs(300)
         {
-            return Err(PortfolioError::InvalidConfig(
-                "positive durations up to one hour required; valuation_timeout <= request_timeout",
+            return Err(crate::PortfolioError::InvalidConfig(
+                "Invalid portfolio limits",
             ));
         }
         Ok(())

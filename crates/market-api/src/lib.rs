@@ -14,6 +14,7 @@ pub mod miniapp;
 pub mod models;
 mod orders;
 mod origin;
+mod portfolio;
 mod routes;
 mod schema;
 mod security;

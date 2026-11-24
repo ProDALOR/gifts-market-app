@@ -9,6 +9,7 @@ path = "src/main.rs"
 [dependencies]
 actix.workspace = true
 market-valuation.workspace = true
+market-portfolio = { workspace = true, optional = true }
 market-invocations = { workspace = true, optional = true }
 market-media.workspace = true
 market-api.workspace = true
@@ -29,7 +30,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 [features]
 default = []
-bot = ["dep:rpassword", "dep:market-invocations", "dep:market-telegram", "dep:market-telegram-bot", "dep:market-telegram-client"]
+bot = ["dep:market-portfolio","dep:rpassword", "dep:market-invocations", "dep:market-telegram", "dep:market-telegram-bot", "dep:market-telegram-client"]
 miniapp = ["dep:market-miniapp", "market-api/miniapp"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

@@ -22,6 +22,7 @@ pub struct ApiServer {
     listener: TcpListener,
     data: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
+    portfolio: Option<market_portfolio::PortfolioHandle>,
     origins: OriginPolicy,
     media: Option<crate::media::MediaApi>,
     #[cfg(feature = "miniapp")]
@@ -49,11 +50,16 @@ impl ApiServer {
             listener,
             data,
             valuation,
+            portfolio: None,
             origins,
             media: None,
             #[cfg(feature = "miniapp")]
             miniapp: None,
         })
+    }
+    pub fn with_portfolio(mut self, portfolio: market_portfolio::PortfolioHandle) -> Self {
+        self.portfolio = Some(portfolio);
+        self
     }
     pub fn with_media(mut self, cache: market_media::MediaCache) -> Self {
         self.media = Some(crate::media::MediaApi::new(cache));
@@ -79,6 +85,7 @@ impl ApiServer {
             listener,
             data,
             valuation,
+            portfolio,
             origins,
             media,
             #[cfg(feature = "miniapp")]
@@ -89,6 +96,11 @@ impl ApiServer {
             config.limits.websocket.connections,
         );
         let market = MarketApi::with_response_limit(data, valuation, config.limits.response_bytes);
+        let market = if let Some(portfolio) = portfolio {
+            market.with_portfolio(portfolio)
+        } else {
+            market
+        };
         let ws = web::Data::new(WebSocketService {
             market: market.clone(),
             connections: connections.clone(),

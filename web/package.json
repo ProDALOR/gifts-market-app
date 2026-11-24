@@ -23,7 +23,9 @@
     "test:live-feed": "node scripts/live-feed-browser.mjs",
     "test:strategy-inputs": "node scripts/strategy-inputs-browser.mjs",
     "test:attribute-values": "node scripts/attribute-values-browser.mjs",
-    "test:rarity": "node scripts/rarity-browser.mjs"
+    "test:rarity": "node scripts/rarity-browser.mjs",
+    "test:portfolio": "node scripts/portfolio-browser.mjs",
+    "test:navigation": "node scripts/navigation-browser.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

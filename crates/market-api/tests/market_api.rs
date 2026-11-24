@@ -1,4 +1,6 @@
 use actix_web::{App, test, web};
+#[path = "market_api/portfolios.rs"]
+mod portfolios;
 #[path = "market_api/valuations.rs"]
 mod valuations;
 use futures_util::{SinkExt, StreamExt};

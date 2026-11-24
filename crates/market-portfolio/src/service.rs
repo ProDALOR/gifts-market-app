@@ -1,122 +1,106 @@
-use crate::{
-    InventoryProvider, Portfolio, PortfolioConfig, PortfolioError, PortfolioRequest,
-    ValuationProvider, actor,
-};
-use actix::Recipient;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
+use crate::*;
+use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot, watch};
 use tokio_util::sync::CancellationToken;
-
-#[derive(actix::Message)]
-#[rtype(result = "()")]
-pub(crate) struct Submit {
-    pub id: u64,
-    pub request: PortfolioRequest,
-    pub reply: oneshot::Sender<Result<Portfolio, PortfolioError>>,
-    pub _permit: OwnedSemaphorePermit,
+#[derive(Clone, Copy)]
+pub(crate) enum Action {
+    Query,
+    Watch,
+    Refresh,
 }
 #[derive(actix::Message)]
 #[rtype(result = "()")]
-pub(crate) struct Cancel(pub u64);
+pub(crate) struct Request {
+    pub query: PortfolioQuery,
+    pub action: Action,
+    pub reply: oneshot::Sender<Result<watch::Receiver<Arc<PortfolioState>>, PortfolioError>>,
+}
 #[derive(Clone)]
 pub struct PortfolioHandle {
-    submit: Recipient<Submit>,
-    cancel: Recipient<Cancel>,
-    slots: Arc<Semaphore>,
-    sequence: Arc<AtomicU64>,
+    pub(crate) address: actix::Recipient<Request>,
+    pub(crate) slots: Arc<Semaphore>,
+    pub(crate) stop: CancellationToken,
+    pub(crate) closed: CancellationToken,
+}
+pub struct PortfolioWatch {
+    receiver: watch::Receiver<Arc<PortfolioState>>,
     stop: CancellationToken,
     closed: CancellationToken,
-    timeout: std::time::Duration,
-}
-struct RequestGuard {
-    id: u64,
-    cancel: Recipient<Cancel>,
-    armed: bool,
-}
-impl Drop for RequestGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            self.cancel.do_send(Cancel(self.id));
-        }
-    }
+    _permit: OwnedSemaphorePermit,
 }
 impl PortfolioHandle {
-    pub(crate) fn new(
-        submit: Recipient<Submit>,
-        cancel: Recipient<Cancel>,
-        config: &PortfolioConfig,
-        stop: CancellationToken,
-        closed: CancellationToken,
-    ) -> Self {
-        Self {
-            submit,
-            cancel,
-            slots: Arc::new(Semaphore::new(config.max_requests)),
-            sequence: Arc::new(AtomicU64::new(0)),
-            stop,
-            closed,
-            timeout: config.request_timeout,
-        }
-    }
-    /// For trusted application callers. The API/bot must derive the subject from verified identity.
-    /// Dropping this future cancels this caller's interest without cancelling other callers.
-    pub async fn request(&self, request: PortfolioRequest) -> Result<Portfolio, PortfolioError> {
+    async fn invoke(
+        &self,
+        query: PortfolioQuery,
+        action: Action,
+    ) -> Result<watch::Receiver<Arc<PortfolioState>>, PortfolioError> {
         if self.stop.is_cancelled() || self.closed.is_cancelled() {
             return Err(PortfolioError::Stopped);
         }
-        if !request.strategy.is_portfolio_strategy() {
-            let mut details = market_valuation::ValuationErrorDetails::strategy(request.strategy);
-            details.currency_id = Some(request.currency_id);
-            return Err(PortfolioError::Valuation(
-                market_valuation::ValuationError::with_details(
-                    market_valuation::ValuationErrorCode::UnsupportedStrategy,
-                    "Portfolio valuation requires model_floor or collection_floor",
-                    details,
-                ),
-            ));
+        let (reply, receive) = oneshot::channel();
+        self.address
+            .try_send(Request {
+                query,
+                action,
+                reply,
+            })
+            .map_err(|e| match e {
+                actix::prelude::SendError::Full(_) => PortfolioError::Busy,
+                _ => PortfolioError::Stopped,
+            })?;
+        tokio::select! {biased;
+            _=self.stop.cancelled()=>Err(PortfolioError::Stopped),
+            _=self.closed.cancelled()=>Err(PortfolioError::Stopped),
+            v=tokio::time::timeout(std::time::Duration::from_secs(5),receive)=>v.map_err(|_|PortfolioError::TimedOut)?.map_err(|_|PortfolioError::Stopped)?,
         }
+    }
+    pub async fn query(
+        &self,
+        query: PortfolioQuery,
+    ) -> Result<Arc<PortfolioState>, PortfolioError> {
+        let _permit = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| PortfolioError::Busy)?;
+        Ok(self.invoke(query, Action::Query).await?.borrow().clone())
+    }
+    pub async fn refresh(
+        &self,
+        query: PortfolioQuery,
+    ) -> Result<Arc<PortfolioState>, PortfolioError> {
+        let _permit = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| PortfolioError::Busy)?;
+        Ok(self.invoke(query, Action::Refresh).await?.borrow().clone())
+    }
+    pub async fn watch(&self, query: PortfolioQuery) -> Result<PortfolioWatch, PortfolioError> {
         let permit = self
             .slots
             .clone()
             .try_acquire_owned()
             .map_err(|_| PortfolioError::Busy)?;
-        let id = self
-            .sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .map_err(|_| PortfolioError::Stopped)?;
-        let (reply, response) = oneshot::channel();
-        self.submit
-            .try_send(Submit {
-                id,
-                request,
-                reply,
-                _permit: permit,
-            })
-            .map_err(|error| match error {
-                actix::prelude::SendError::Full(_) => PortfolioError::Busy,
-                actix::prelude::SendError::Closed(_) => PortfolioError::Stopped,
-            })?;
-        let mut guard = RequestGuard {
-            id,
-            cancel: self.cancel.clone(),
-            armed: true,
-        };
-        let result = tokio::select! { biased;
-            _ = self.stop.cancelled() => Err(PortfolioError::Stopped),
-            _ = self.closed.cancelled() => Err(PortfolioError::Stopped),
-            result = tokio::time::timeout(self.timeout, response) => match result {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) => Err(PortfolioError::Stopped),
-                Err(_) => Err(PortfolioError::TimedOut),
-            },
-        };
-        // Completed requests have already left the actor. Timeouts still need cancellation.
-        guard.armed = matches!(result, Err(PortfolioError::TimedOut));
-        drop(guard);
-        result
+        Ok(PortfolioWatch {
+            receiver: self.invoke(query, Action::Watch).await?,
+            stop: self.stop.clone(),
+            closed: self.closed.clone(),
+            _permit: permit,
+        })
+    }
+}
+impl PortfolioWatch {
+    pub fn current(&mut self) -> Arc<PortfolioState> {
+        self.receiver.borrow_and_update().clone()
+    }
+    pub async fn changed(&mut self) -> Result<Arc<PortfolioState>, PortfolioError> {
+        tokio::select! {biased;
+            _=self.stop.cancelled()=>return Err(PortfolioError::Stopped),
+            _=self.closed.cancelled()=>return Err(PortfolioError::Stopped),
+            v=self.receiver.changed()=>v.map_err(|_|PortfolioError::Stopped)?,
+        }
+        Ok(self.current())
     }
 }
 /// Owns an isolated Actix thread. No HTTP/Actix system is required in the caller.

@@ -4,7 +4,10 @@ export type RequestCall = components["schemas"]["ApiRequest"];
 export type RequestResult = components["schemas"]["ApiResult"];
 export type SubscriptionCommand = Extract<
   components["schemas"]["Command"],
-  { type: "orders.watch" | "catalog.watch" | "valuation.watch" }
+  {
+    type:
+      "orders.watch" | "catalog.watch" | "valuation.watch" | "portfolio.watch";
+  }
 >;
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -233,6 +236,62 @@ function readResult(value: unknown) {
   return snapshot(value) && record(value) && nullableText(value.snapshot);
 }
 /** Validate envelopes and the data the GUI consumes; calculations remain server-owned typed results. */
+const portfolioProgress = (p: unknown) =>
+  record(p) &&
+  oneOf(p.stage, [
+    "idle",
+    "queued",
+    "loading_inventory",
+    "valuing",
+    "ready",
+    "failed",
+  ]) &&
+  [p.checked, p.pages, p.valued, p.collectibles].every(sequence) &&
+  (p.total == null || sequence(p.total));
+function portfolio(d: unknown) {
+  const money = (value: unknown) =>
+    text(value) &&
+    value.length <= 80 &&
+    /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value);
+  return (
+    record(d) &&
+    integer(d.user_id) &&
+    sequence(d.refresh_id) &&
+    portfolioProgress(d.progress) &&
+    (d.inventory == null ||
+      (record(d.inventory) &&
+        text(d.inventory.checked_at) &&
+        [
+          d.inventory.count,
+          d.inventory.scanned,
+          d.inventory.regular,
+          d.inventory.skipped,
+        ].every(sequence) &&
+        typeof d.inventory.complete === "boolean")) &&
+    (d.valuation == null ||
+      (record(d.valuation) &&
+        text(d.valuation.currency_id) &&
+        text(d.valuation.evaluated_at) &&
+        typeof d.valuation.stale === "boolean" &&
+        sequence(d.valuation.priced) &&
+        sequence(d.valuation.unpriced) &&
+        (d.valuation.total == null || money(d.valuation.total)) &&
+        Array.isArray(d.valuation.items) &&
+        d.valuation.items.length <= 10000 &&
+        d.valuation.items.every(
+          (item) =>
+            record(item) &&
+            record(item.gift) &&
+            oneOf(item.gift.relation, ["owned", "hosted", "unverified"]) &&
+            record(item.gift.gift) &&
+            text(item.gift.gift.id) &&
+            text(item.gift.gift.slug) &&
+            integer(item.gift.gift.number) &&
+            (item.resolved == null || gift(item.resolved)) &&
+            (item.estimate == null || money(item.estimate)),
+        )))
+  );
+}
 export function parseFrame(raw: unknown): LiveFrame {
   if (!text(raw) || raw.length > 8 * 1024 * 1024)
     throw new Error("Invalid WebSocket message");
@@ -297,17 +356,30 @@ export function parseFrame(raw: unknown): LiveFrame {
         record(value.versions.collections) &&
         Object.values(value.versions.collections).every(nullableText);
       break;
+    case "portfolio.snapshot":
+      valid = portfolio(value.data);
+      break;
+    case "portfolio.progress":
+      valid =
+        sequence(value.refresh_id) &&
+        portfolioProgress(value.progress) &&
+        nullableText(value.error) &&
+        nullableText(value.refresh_after);
+      break;
     case "valuation.snapshot":
       valid = valuationReport(value.data);
       break;
     case "result": {
       const d = value.data;
       valid =
-        value.method === "orders.query"
-          ? readResult(value)
-          : value.method === "valuation.query"
-            ? valuationReport(d)
-            : false;
+        value.method === "portfolio.query" ||
+        value.method === "portfolio.refresh"
+          ? portfolio(d)
+          : value.method === "orders.query"
+            ? readResult(value)
+            : value.method === "valuation.query"
+              ? valuationReport(d)
+              : false;
       break;
     }
   }

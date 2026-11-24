@@ -1,22 +1,18 @@
 use super::*;
-use market_gifts::{SyncState, SyncStatus, TelegramDocumentId, TelegramGiftId};
 use market_invocations::{
     AttemptError, Invocation, Policy, RateKey, RateLimit, Replay, Retry,
     Runtime as InvocationRuntime, operation,
 };
-use market_valuation::ValuationError;
-use market_valuation::{ModelValue, Valuation, ValuationRequest};
 use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
-use tokio::{sync::oneshot, time::Instant};
-use tokio_util::sync::CancellationToken;
-
+use tokio::sync::oneshot;
 struct Call {
     request: InventoryPageRequest,
-    at: Instant,
     reply: Option<oneshot::Sender<Result<InventoryPage, InventoryError>>>,
 }
 #[derive(Clone, Default)]
@@ -31,7 +27,7 @@ fn inventory_policy(timeout: Duration) -> Policy {
                 group: "gifts",
                 resource: None,
             },
-            interval: Duration::from_millis(300),
+            interval: Duration::from_millis(1),
             concurrency: 1,
         }],
         replay: Replay::Safe,
@@ -52,7 +48,6 @@ impl InventoryProvider for Source {
                 let (reply, response) = oneshot::channel();
                 source.calls.lock().unwrap().push(Call {
                     request,
-                    at: Instant::now(),
                     reply: Some(reply),
                 });
                 response
@@ -89,73 +84,49 @@ impl Source {
             .send(page)
             .unwrap();
     }
-    fn cancelled(&self, n: usize) -> bool {
-        self.calls.lock().unwrap()[n]
-            .reply
-            .as_ref()
-            .is_none_or(|reply| reply.is_closed())
-    }
 }
 #[derive(Clone, Default)]
-struct Quotes {
-    calls: Arc<Mutex<Vec<ValuationRequest>>>,
-    errors: Arc<Mutex<VecDeque<ValuationError>>>,
-}
+struct Quotes(Arc<AtomicUsize>);
 impl ValuationProvider for Quotes {
-    async fn mark(
+    async fn value(
         &self,
-        request: ValuationRequest,
-    ) -> Result<Arc<market_valuation::Mark<Valuation>>, ValuationError> {
-        let mut calls = self.calls.lock().unwrap();
-        calls.push(request.clone());
-        if let Some(error) = self.errors.lock().unwrap().pop_front() {
-            return Err(error);
-        }
-        let count: u32 = request.positions.iter().map(|p| p.quantity).sum();
-        let value = Valuation {
-            rows: request
-                .positions
+        gifts: Arc<Vec<InventoryGift>>,
+        currency: market_gifts::CurrencyId,
+        progress: tokio::sync::watch::Sender<usize>,
+    ) -> Result<Arc<InventoryValuation>, market_valuation::ValuationError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        progress.send_replace(gifts.len());
+        Ok(Arc::new(InventoryValuation {
+            currency_id: currency,
+            evaluated_at: jiff::Timestamp::now(),
+            stale: false,
+            total: Some((gifts.len() * 2).to_string().try_into().unwrap()),
+            priced: gifts.len(),
+            unpriced: 0,
+            items: gifts
                 .iter()
-                .map(|p| ModelValue {
-                    identity: None,
-                    collection: "Collection".into(),
-                    model: "Model".into(),
-                    quantity: p.quantity,
-                    floor: Some("2".into()),
-                    value: Some((p.quantity * 2).to_string().try_into().unwrap()),
-                    venue_id: None,
-                    unpriced: None,
+                .cloned()
+                .map(|gift| market_valuation::InventoryValue {
+                    gift,
+                    resolved: None,
+                    estimate: Some("2".into()),
+                    error: None,
                 })
                 .collect(),
-            total: (count * 2).to_string().try_into().unwrap(),
-            priced: count,
-            unpriced: 0,
-            currency_id: request.currency_id,
-            sync: SyncStatus {
-                ready: true,
-                state: SyncState::Live,
-                updated_at: None,
-            },
-        };
-        Ok(Arc::new(market_valuation::Mark::evaluated(
-            "model_floor",
-            market_valuation::Prepared {
-                stale: false,
-                prepared_at: jiff::Timestamp::now(),
-                revision: format!("quote-{}", calls.len()),
-                data: value,
-            },
-        )))
+        }))
     }
-}
-fn user(id: u64) -> UserId {
-    UserId::new(id).unwrap()
 }
 fn gift(id: &str) -> InventoryGift {
     InventoryGift {
-        id: id.to_owned().try_into().unwrap(),
-        collection_id: TelegramGiftId::new(1).unwrap(),
-        model_document_id: TelegramDocumentId::new(2).unwrap(),
+        gift: market_gifts::TelegramGiftDetails {
+            id: id.to_owned().try_into().unwrap(),
+            slug: format!("Gift-{id}").try_into().unwrap(),
+            number: id.parse::<u32>().unwrap().try_into().unwrap(),
+            collection: market_gifts::TelegramGiftId::new(1).unwrap(),
+            model: market_gifts::TelegramDocumentId::new(2).unwrap(),
+            backdrop: Some(3),
+            pattern: Some(market_gifts::TelegramDocumentId::new(4).unwrap()),
+        },
         relation: GiftRelation::Owned,
     }
 }
@@ -168,1091 +139,305 @@ fn page(ids: &[&str], next: Option<&str>, total: usize) -> InventoryPage {
         ..Default::default()
     }
 }
-fn request(id: u64, currency: &str, priority: Priority) -> PortfolioRequest {
-    PortfolioRequest {
-        strategy: market_valuation::StrategyId::model_floor(),
-        user: user(id),
+fn query(user: u64, currency: &str) -> PortfolioQuery {
+    PortfolioQuery {
+        user_id: UserId::new(user).unwrap(),
         currency_id: currency.to_owned().try_into().unwrap(),
-        priority,
     }
 }
-fn setup(
-    source: Source,
-    quotes: Quotes,
-    config: PortfolioConfig,
-) -> (
-    PortfolioHandle,
-    CancellationToken,
-    CancellationToken,
-    InvocationRuntime,
-) {
-    config.validate().unwrap();
-    let stop = CancellationToken::new();
-    let closed = CancellationToken::new();
-    let invocations = InvocationRuntime::start(Default::default()).unwrap();
-    let handle = crate::actor::start(
-        source,
-        quotes,
-        config,
-        invocations.handle(),
-        stop.clone(),
-        closed.clone(),
-    );
-    (handle, stop, closed, invocations)
-}
-
-fn ask(
-    handle: &PortfolioHandle,
-    id: u64,
-    currency: &str,
-    priority: Priority,
-) -> tokio::task::JoinHandle<Result<Portfolio, PortfolioError>> {
-    let handle = handle.clone();
-    let request = request(id, currency, priority);
-    tokio::spawn(async move { handle.request(request).await })
-}
-async fn spin(mut ready: impl FnMut() -> bool) {
-    for _ in 0..2000 {
-        if ready() {
-            return;
+async fn calls(source: &Source, n: usize) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while source.count() < n {
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        tokio::task::yield_now().await;
-    }
-    panic!("actor did not make expected progress");
+    })
+    .await
+    .unwrap();
 }
-async fn flush() {
-    for _ in 0..30 {
-        tokio::task::yield_now().await;
-    }
+async fn stage(watch: &mut PortfolioWatch, expected: PortfolioStage) -> Arc<PortfolioState> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let state = watch.current();
+            if state.progress.stage == expected {
+                return state;
+            }
+            watch.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap()
 }
-async fn next(source: &Source, n: usize) {
-    spin(|| source.count() >= n).await;
-}
-async fn shutdown(stop: CancellationToken, closed: CancellationToken) {
-    stop.cancel();
-    closed.cancelled().await;
-}
-
-#[actix::test]
-async fn coalesces_pages_and_currencies_deduplicates_gifts_and_revalues_cached_inventory() {
-    tokio::time::pause();
+async fn service(config: PortfolioConfig) -> (PortfolioService, Source, Quotes, InvocationRuntime) {
     let source = Source::default();
     let quotes = Quotes::default();
-    let (handle, stop, closed, _invocations) =
-        setup(source.clone(), quotes.clone(), PortfolioConfig::default());
-    let a = ask(&handle, 1, "GRAM", Priority::Normal);
-    let b = ask(&handle, 1, "XTR", Priority::Interactive);
-    next(&source, 1).await;
-    assert_eq!(source.request(0).limit, 100);
-    source.reply(0, Ok(page(&["one", "two"], Some("page-2"), 4)));
-    flush().await;
-    assert_eq!(source.count(), 1);
-    tokio::time::advance(Duration::from_millis(301)).await;
-    next(&source, 2).await;
-    assert_eq!(source.request(1).cursor.as_deref(), Some("page-2"));
-    let mut last = page(&["two", "three"], None, 4);
-    last.gifts[1].relation = GiftRelation::Hosted;
-    source.reply(1, Ok(last));
-    let a = a.await.unwrap().unwrap();
-    let b = b.await.unwrap().unwrap();
-    assert!(Arc::ptr_eq(&a.inventory, &b.inventory));
-    assert_eq!(a.inventory.gifts.len(), 3);
-    assert_eq!(a.inventory.gifts_scanned, 4);
-    assert_eq!(a.inventory.pages_read, 2);
-    assert_eq!(a.inventory.completion, InventoryCompletion::Complete);
-    assert!(
-        a.inventory
-            .gifts
-            .iter()
-            .any(|gift| gift.relation == GiftRelation::Hosted)
-    );
-    assert_eq!(a.valuation.total.as_str(), "6");
-    assert_eq!(quotes.calls.lock().unwrap().len(), 2);
-    assert!(
-        quotes
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|r| r.positions.len() == 1 && r.positions[0].quantity == 3)
-    );
-    let fresh = handle
-        .request(request(1, "GRAM", Priority::Normal))
+    let runtime = InvocationRuntime::start(Default::default()).unwrap();
+    let service = PortfolioService::start(source.clone(), quotes.clone(), config, runtime.handle())
         .await
         .unwrap();
-    assert_eq!(source.count(), 2);
-    assert_ne!(fresh.valuation.revision, a.valuation.revision);
-    assert!(Arc::ptr_eq(&fresh.inventory, &a.inventory));
-    shutdown(stop, closed).await;
+    (service, source, quotes, runtime)
 }
-
-#[actix::test]
-async fn priority_is_fifo_per_class_and_background_gets_a_turn() {
-    tokio::time::pause();
-    let source = Source::default();
-    let (handle, stop, closed, _invocations) = setup(
-        source.clone(),
-        Quotes::default(),
-        PortfolioConfig::default(),
-    );
-    let first = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    let background = ask(&handle, 2, "GRAM", Priority::Background);
-    flush().await;
-    let mut interactive = vec![];
-    for id in 3..=9 {
-        interactive.push(ask(&handle, id, "GRAM", Priority::Interactive));
-        flush().await;
-    }
-    source.reply(0, Ok(page(&["gift"], None, 1)));
-    flush().await;
-    let mut order = vec![];
-    for n in 1..=8 {
-        tokio::time::advance(Duration::from_millis(301)).await;
-        next(&source, n + 1).await;
-        order.push(source.request(n).user.get());
-        source.reply(n, Ok(page(&["gift"], None, 1)));
-        flush().await;
-    }
-    assert!(
-        order.iter().position(|id| *id == 2).unwrap() < 7,
-        "background must not starve: {order:?}"
+#[tokio::test]
+async fn bot_and_gui_share_paginated_refresh_and_currency_changes_do_not_fetch() {
+    let (service, source, quotes, calls_runtime) = service(Default::default()).await;
+    let cached = service.handle.query(query(7, "GRAM")).await.unwrap();
+    assert_eq!(cached.progress.stage, PortfolioStage::Idle);
+    assert_eq!(source.count(), 0);
+    let mut bot = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    let mut gui = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    assert_eq!(source.request(0).cursor, None);
+    service.handle.refresh(query(7, "GRAM")).await.unwrap();
+    assert_eq!(source.count(), 1);
+    source.reply(0, Ok(page(&["1", "2"], Some("next"), 4)));
+    calls(&source, 2).await;
+    assert_eq!(source.request(1).cursor.as_deref(), Some("next"));
+    let progress = stage(&mut gui, PortfolioStage::LoadingInventory).await;
+    assert_eq!(progress.progress.checked, 2);
+    assert_eq!(progress.progress.total, Some(4));
+    source.reply(1, Ok(page(&["2", "3"], None, 4)));
+    let result = stage(&mut bot, PortfolioStage::Ready).await;
+    assert_eq!(result.inventory.as_ref().unwrap().count, 3);
+    assert_eq!(
+        result
+            .valuation
+            .as_ref()
+            .unwrap()
+            .total
+            .as_ref()
+            .unwrap()
+            .to_string(),
+        "6"
     );
     assert_eq!(
-        order.into_iter().filter(|id| *id != 2).collect::<Vec<_>>(),
-        (3..=9).collect::<Vec<_>>()
+        stage(&mut gui, PortfolioStage::Ready).await.refresh_id,
+        result.refresh_id
     );
-    first.await.unwrap().unwrap();
-    background.await.unwrap().unwrap();
-    for result in interactive {
-        result.await.unwrap().unwrap();
-    }
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn multi_page_inventory_yields_and_duplicate_waiters_promote_queued_work() {
-    tokio::time::pause();
-    let source = Source::default();
-    let (handle, stop, closed, _invocations) = setup(
-        source.clone(),
-        Quotes::default(),
-        PortfolioConfig::default(),
+    let mut stars = service.handle.watch(query(7, "XTR")).await.unwrap();
+    let result = stage(&mut stars, PortfolioStage::Ready).await;
+    assert_eq!(
+        result.valuation.as_ref().unwrap().currency_id.as_str(),
+        "XTR"
     );
-    let first = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    let low = ask(&handle, 2, "GRAM", Priority::Background);
-    flush().await;
-    let other = ask(&handle, 3, "GRAM", Priority::Interactive);
-    flush().await;
-    let promoted = ask(&handle, 2, "XTR", Priority::Interactive);
-    flush().await;
-    source.reply(0, Ok(page(&["a"], Some("next"), 2)));
-    flush().await;
-    for (n, id) in [(1, 3), (2, 2), (3, 1)] {
-        tokio::time::advance(Duration::from_millis(301)).await;
-        next(&source, n + 1).await;
-        assert_eq!(source.request(n).user, user(id));
-        source.reply(n, Ok(page(&["b"], None, if id == 1 { 2 } else { 1 })));
-        flush().await;
-    }
-    for task in [first, low, other, promoted] {
-        task.await.unwrap().unwrap();
-    }
-    assert_eq!(source.count(), 4);
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn flood_wait_is_global_survives_cancellation_and_does_not_block_cached_valuation() {
-    tokio::time::pause();
-    let source = Source::default();
-    let (handle, stop, closed, _invocations) = setup(
-        source.clone(),
-        Quotes::default(),
-        PortfolioConfig::default(),
-    );
-    let cached = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    source.reply(0, Ok(page(&["g"], None, 1)));
-    cached.await.unwrap().unwrap();
-    tokio::time::advance(Duration::from_millis(301)).await;
-    let waiting = ask(&handle, 2, "GRAM", Priority::Normal);
-    next(&source, 2).await;
-    source.reply(1, Err(InventoryError::RetryAfter(Duration::from_secs(20))));
-    flush().await;
-    waiting.abort();
-    let _ = waiting.await;
-    flush().await;
-    let other = ask(&handle, 3, "GRAM", Priority::Interactive);
-    flush().await;
-    let cached = handle
-        .request(request(1, "XTR", Priority::Normal))
-        .await
-        .unwrap();
-    assert_eq!(cached.valuation.currency_id.as_str(), "XTR");
-    tokio::time::advance(Duration::from_secs(19)).await;
-    flush().await;
     assert_eq!(source.count(), 2);
-    tokio::time::advance(Duration::from_millis(1001)).await;
-    next(&source, 3).await;
-    assert_eq!(source.request(2).user, user(3));
-    {
-        let calls = source.calls.lock().unwrap();
-        assert!(calls[2].at.duration_since(calls[1].at) >= Duration::from_secs(20));
-    }
-    source.reply(2, Ok(page(&[], None, 0)));
-    other.await.unwrap().unwrap();
-    shutdown(stop, closed).await;
+    assert_eq!(quotes.0.load(Ordering::SeqCst), 2);
+    assert!(matches!(
+        service.handle.refresh(query(7, "GRAM")).await,
+        Err(PortfolioError::Cooldown(_))
+    ));
+    service.task.shutdown().await.unwrap();
+    calls_runtime.shutdown().await;
 }
-
-#[actix::test]
-async fn cancellation_is_per_waiter_and_capacity_is_bounded() {
-    tokio::time::pause();
-    let source = Source::default();
+#[tokio::test]
+async fn failed_or_partial_recheck_keeps_the_last_complete_report() {
     let config = PortfolioConfig {
-        max_requests: 2,
+        refresh_interval: Duration::from_millis(15),
         ..Default::default()
     };
-    let (handle, stop, closed, _invocations) = setup(source.clone(), Quotes::default(), config);
-    let a = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    let b = ask(&handle, 1, "GRAM", Priority::Normal);
-    flush().await;
+    let (service, source, _, runtime) = service(config).await;
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1", "2"], None, 2)));
+    let first = stage(&mut watch, PortfolioStage::Ready).await;
+    for (i, result) in [Err(InventoryError::Unavailable), Ok(page(&["3"], None, 20))]
+        .into_iter()
+        .enumerate()
+    {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        service.handle.refresh(query(7, "GRAM")).await.unwrap();
+        calls(&source, i + 2).await;
+        source.reply(i + 1, result);
+        let failed = stage(&mut watch, PortfolioStage::Failed).await;
+        assert_eq!(
+            failed.inventory.as_ref().unwrap().checked_at,
+            first.inventory.as_ref().unwrap().checked_at
+        );
+        assert!(Arc::ptr_eq(
+            failed.valuation.as_ref().unwrap(),
+            first.valuation.as_ref().unwrap()
+        ));
+    }
+    let mut reopened = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    assert_eq!(reopened.current().progress.stage, PortfolioStage::Failed);
+    assert_eq!(source.count(), 3);
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn active_watch_is_not_evicted_and_shutdown_wakes_observers() {
+    let (service, source, _, runtime) = service(PortfolioConfig {
+        cached_users: 1,
+        ..Default::default()
+    })
+    .await;
+    let mut first = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&[], None, 0)));
+    stage(&mut first, PortfolioStage::Ready).await;
     assert!(matches!(
-        handle
-            .request(request(2, "GRAM", Priority::Interactive))
-            .await,
+        service.handle.query(query(8, "GRAM")).await,
         Err(PortfolioError::Busy)
     ));
-    a.abort();
-    let _ = a.await;
-    flush().await;
-    assert!(!source.cancelled(0));
-    source.reply(0, Ok(page(&["g"], None, 1)));
-    b.await.unwrap().unwrap();
-    tokio::time::advance(Duration::from_millis(301)).await;
-    let a = ask(&handle, 2, "GRAM", Priority::Normal);
-    next(&source, 2).await;
-    a.abort();
-    let _ = a.await;
-    spin(|| source.cancelled(1)).await;
-    let b = ask(&handle, 3, "GRAM", Priority::Normal);
-    tokio::time::advance(Duration::from_millis(301)).await;
-    next(&source, 3).await;
-    source.reply(2, Ok(page(&[], None, 0)));
-    b.await.unwrap().unwrap();
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn repeated_and_missing_cursors_and_later_failures_are_explicit_and_not_cached() {
-    tokio::time::pause();
-    let source = Source::default();
-    let (handle, stop, closed, _invocations) = setup(
-        source.clone(),
-        Quotes::default(),
-        PortfolioConfig::default(),
-    );
-    for (id, final_page, reason) in [
-        (
-            1,
-            Ok(page(&["b"], Some("next"), 3)),
-            PartialReason::RepeatedCursor,
-        ),
-        (2, Ok(page(&[], None, 3)), PartialReason::MissingCursor),
-        (
-            3,
-            Err(InventoryError::Unavailable),
-            PartialReason::ReadFailed(InventoryError::Unavailable),
-        ),
-    ] {
-        let start = source.count();
-        let result = ask(&handle, id, "GRAM", Priority::Normal);
-        tokio::time::advance(Duration::from_millis(301)).await;
-        next(&source, start + 1).await;
-        source.reply(start, Ok(page(&["a"], Some("next"), 3)));
-        flush().await;
-        tokio::time::advance(Duration::from_millis(301)).await;
-        next(&source, start + 2).await;
-        source.reply(start + 1, final_page);
-        let result = result.await.unwrap().unwrap();
-        assert_eq!(
-            result.inventory.completion,
-            InventoryCompletion::Partial(reason)
-        );
-        let retry = ask(&handle, id, "GRAM", Priority::Normal);
-        tokio::time::advance(Duration::from_millis(301)).await;
-        next(&source, start + 3).await;
-        assert_eq!(source.request(start + 2).cursor, None);
-        retry.abort();
-        let _ = retry.await;
-        flush().await;
-    }
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn provider_errors_never_become_empty_portfolios_and_bad_pages_are_rejected() {
-    tokio::time::pause();
-    let source = Source::default();
-    let quotes = Quotes::default();
-    let (handle, stop, closed, _invocations) =
-        setup(source.clone(), quotes.clone(), PortfolioConfig::default());
-    for error in [
-        InventoryError::Forbidden,
-        InventoryError::Authorization,
-        InventoryError::Unavailable,
-    ] {
-        let n = source.count();
-        let result = ask(&handle, 1, "GRAM", Priority::Normal);
-        tokio::time::advance(Duration::from_millis(301)).await;
-        next(&source, n + 1).await;
-        source.reply(n, Err(error.clone()));
-        assert!(
-            matches!(result.await.unwrap(), Err(PortfolioError::Inventory(actual)) if actual == error)
-        );
-    }
-    assert!(quotes.calls.lock().unwrap().is_empty());
-    let n = source.count();
-    let result = ask(&handle, 1, "GRAM", Priority::Normal);
-    tokio::time::advance(Duration::from_millis(301)).await;
-    next(&source, n + 1).await;
-    source.reply(
-        n,
-        Ok(InventoryPage {
-            scanned: 101,
-            ..Default::default()
-        }),
-    );
-    assert!(matches!(
-        result.await.unwrap(),
-        Err(PortfolioError::Inventory(InventoryError::InvalidData(_)))
-    ));
-    let n = source.count();
-    let result = ask(&handle, 1, "GRAM", Priority::Normal);
-    tokio::time::advance(Duration::from_millis(301)).await;
-    next(&source, n + 1).await;
-    source.reply(
-        n,
-        Ok(InventoryPage {
-            scanned: 1,
-            reported_total: Some(1),
-            ..Default::default()
-        }),
-    );
-    assert!(matches!(
-        result.await.unwrap(),
-        Err(PortfolioError::Inventory(InventoryError::InvalidData(_)))
-    ));
-    assert!(
-        quotes.calls.lock().unwrap().is_empty(),
-        "unaccounted gifts must never produce a complete empty valuation"
-    );
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn cache_expires_evicts_lru_and_does_not_cache_valuation_errors() {
-    tokio::time::pause();
-    let source = Source::default();
-    let quotes = Quotes::default();
-    let config = PortfolioConfig {
-        cached_users: 2,
-        inventory_ttl: Duration::from_secs(5),
-        ..Default::default()
-    };
-    let (handle, stop, closed, _invocations) = setup(source.clone(), quotes.clone(), config);
-    for id in [1, 2] {
-        let n = source.count();
-        let result = ask(&handle, id, "GRAM", Priority::Normal);
-        tokio::time::advance(Duration::from_millis(301)).await;
-        next(&source, n + 1).await;
-        source.reply(n, Ok(page(&["g"], None, 1)));
-        result.await.unwrap().unwrap();
-    }
-    handle
-        .request(request(1, "GRAM", Priority::Normal))
-        .await
-        .unwrap(); // user 2 is least recent
-    let third = ask(&handle, 3, "GRAM", Priority::Normal);
-    tokio::time::advance(Duration::from_millis(301)).await;
-    next(&source, 3).await;
-    source.reply(2, Ok(page(&["g"], None, 1)));
-    third.await.unwrap().unwrap();
-    let evicted = ask(&handle, 2, "GRAM", Priority::Normal);
-    tokio::time::advance(Duration::from_millis(301)).await;
-    next(&source, 4).await;
-    source.reply(3, Ok(page(&["g"], None, 1)));
-    evicted.await.unwrap().unwrap();
-    quotes
-        .errors
-        .lock()
-        .unwrap()
-        .push_back(ValuationError::unavailable("temporary read failure"));
-    assert!(matches!(
-        handle.request(request(2, "GRAM", Priority::Normal)).await,
-        Err(PortfolioError::Valuation(_))
-    ));
-    assert!(
-        handle
-            .request(request(2, "GRAM", Priority::Normal))
-            .await
-            .is_ok()
-    );
-    assert_eq!(source.count(), 4);
-    tokio::time::advance(Duration::from_secs(5)).await;
-    let expired = ask(&handle, 2, "GRAM", Priority::Normal);
-    next(&source, 5).await;
-    source.reply(4, Ok(page(&[], None, 0)));
-    expired.await.unwrap().unwrap();
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn page_and_request_timeouts_cancel_work_without_poisoning_the_actor() {
-    tokio::time::pause();
-    let source = Source::default();
-    let config = PortfolioConfig {
-        request_timeout: Duration::from_secs(3),
-        valuation_timeout: Duration::from_secs(1),
-        ..Default::default()
-    };
-    let (handle, stop, closed, _invocations) = setup(source.clone(), Quotes::default(), config);
-    let stalled = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    tokio::time::advance(Duration::from_secs(1)).await;
-    assert!(matches!(
-        stalled.await.unwrap(),
-        Err(PortfolioError::Inventory(InventoryError::Unavailable))
-    ));
-    assert!(source.cancelled(0));
-    let stalled = ask(&handle, 2, "GRAM", Priority::Normal);
-    next(&source, 2).await;
-    source.reply(1, Err(InventoryError::RetryAfter(Duration::from_secs(20))));
-    flush().await;
-    tokio::time::advance(Duration::from_secs(3)).await;
-    assert!(matches!(
-        stalled.await.unwrap(),
-        Err(PortfolioError::TimedOut)
-    ));
-    flush().await;
-    shutdown(stop, closed).await;
-}
-
-#[tokio::test]
-async fn service_works_outside_actix_and_shutdown_closes_all_handles_and_provider_work() {
-    let invocations = InvocationRuntime::start(Default::default()).unwrap();
-    let source = Source::default();
-    let service = PortfolioService::start(
-        source.clone(),
-        Quotes::default(),
-        PortfolioConfig::default(),
-        invocations.handle(),
-    )
-    .await
-    .unwrap();
-    let result = ask(&service.handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
     service.task.shutdown().await.unwrap();
     assert!(matches!(
-        result.await.unwrap(),
+        first.changed().await,
         Err(PortfolioError::Stopped)
     ));
-    assert!(source.cancelled(0));
-    assert!(matches!(
-        service
-            .handle
-            .request(request(1, "GRAM", Priority::Normal))
-            .await,
-        Err(PortfolioError::Stopped)
-    ));
+    runtime.shutdown().await;
 }
-#[tokio::test]
-async fn invalid_config_and_identity_fail_without_starting_a_worker() {
-    let invocations = InvocationRuntime::start(Default::default()).unwrap();
+#[test]
+fn inventory_builder_bounds_cursors_and_accounts_for_every_item() {
+    let config = PortfolioConfig::default();
+    let mut builder = crate::inventory::InventoryBuilder::default();
+    assert!(
+        builder
+            .merge(page(&["1"], Some("same"), 3), 100, &config)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        builder
+            .merge(page(&["1"], Some("same"), 3), 100, &config)
+            .unwrap(),
+        Some(InventoryCompletion::Partial(PartialReason::RepeatedCursor))
+    );
+    let mut malformed = page(&["2"], None, 1);
+    malformed.scanned = 2;
+    assert!(
+        crate::inventory::InventoryBuilder::default()
+            .merge(malformed, 100, &config)
+            .is_err()
+    );
+    let partial = crate::inventory::InventoryBuilder::default()
+        .merge(page(&["1"], None, 2), 100, &config)
+        .unwrap();
+    assert_eq!(
+        partial,
+        Some(InventoryCompletion::Partial(PartialReason::MissingCursor))
+    );
     assert!(UserId::new(0).is_err());
     assert!(UserId::new(u64::MAX).is_err());
-    let config = PortfolioConfig {
-        max_requests: usize::MAX,
-        ..Default::default()
-    };
-    assert!(matches!(
-        PortfolioService::start(
-            Source::default(),
-            Quotes::default(),
-            config,
-            invocations.handle()
-        )
-        .await,
-        Err(PortfolioError::InvalidConfig(_))
-    ));
 }
 
-#[actix::test]
-async fn reads_seven_hundred_collectibles_with_counts_and_appearance_identity_intact() {
-    tokio::time::pause();
-    let source = Source::default();
-    let quotes = Quotes::default();
-    let (handle, stop, closed, _invocations) =
-        setup(source.clone(), quotes.clone(), PortfolioConfig::default());
-    let result = ask(&handle, 1, "GRAM", Priority::Interactive);
-    for (n, offset) in (0..748).step_by(100).enumerate() {
-        if n > 0 {
-            tokio::time::advance(Duration::from_millis(301)).await;
+#[derive(Clone, Default)]
+struct DelayedQuotes(Arc<Mutex<Vec<oneshot::Sender<()>>>>);
+impl ValuationProvider for DelayedQuotes {
+    async fn value(
+        &self,
+        gifts: Arc<Vec<InventoryGift>>,
+        currency: market_gifts::CurrencyId,
+        progress: tokio::sync::watch::Sender<usize>,
+    ) -> Result<Arc<InventoryValuation>, market_valuation::ValuationError> {
+        let (tx, rx) = oneshot::channel();
+        self.0.lock().unwrap().push(tx);
+        let _ = rx.await;
+        Quotes::default().value(gifts, currency, progress).await
+    }
+}
+async fn quote_calls(quotes: &DelayedQuotes, count: usize) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while quotes.0.lock().unwrap().len() < count {
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        next(&source, n + 1).await;
-        let end = (offset + 100).min(748);
-        let mut response = InventoryPage {
-            scanned: end - offset,
-            reported_total: Some(748),
-            next_cursor: (end < 748).then(|| end.to_string()),
-            ..Default::default()
-        };
-        for id in offset..end {
-            if id < 45 {
-                response.regular_gifts += 1;
-            } else if id < 48 {
-                *response
-                    .skipped
-                    .entry(SkipReason::MissingModel)
-                    .or_default() += 1;
-            } else {
-                let mut gift = gift(&id.to_string());
-                if id % 2 == 0 {
-                    gift.model_document_id = TelegramDocumentId::new(3).unwrap();
-                }
-                gift.relation = if id == 48 {
-                    GiftRelation::Hosted
-                } else if id == 49 {
-                    GiftRelation::Unverified
-                } else {
-                    GiftRelation::Owned
-                };
-                response.gifts.push(gift);
-            }
-        }
-        source.reply(n, Ok(response));
-        flush().await;
-    }
-    let result = result.await.unwrap().unwrap();
-    assert_eq!(result.inventory.pages_read, 8);
-    assert_eq!(result.inventory.gifts.len(), 700);
-    assert_eq!(result.inventory.gifts_scanned, 748);
-    assert_eq!(result.inventory.regular_gifts, 45);
-    assert_eq!(result.inventory.skipped[&SkipReason::MissingModel], 3);
-    assert_eq!(result.inventory.completion, InventoryCompletion::Complete);
-    assert_eq!(result.valuation.priced, 700);
-    assert_eq!(result.valuation.total.as_str(), "1400");
-    {
-        let calls = quotes.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].positions.len(), 2);
-        assert!(
-            calls[0]
-                .positions
-                .iter()
-                .all(|position| position.quantity == 350)
-        );
-    }
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn gift_and_page_limits_return_explicit_partial_snapshots_and_bound_provider_requests() {
-    tokio::time::pause();
-    let source = Source::default();
-    let config = PortfolioConfig {
-        page_size: 3,
-        max_gifts: 5,
-        ..Default::default()
-    };
-    let (handle, stop, closed, _invocations) = setup(source.clone(), Quotes::default(), config);
-    let result = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    assert_eq!(source.request(0).limit, 3);
-    source.reply(0, Ok(page(&["a", "b", "c"], Some("p2"), 6)));
-    flush().await;
-    tokio::time::advance(Duration::from_millis(301)).await;
-    next(&source, 2).await;
-    assert_eq!(source.request(1).limit, 2);
-    source.reply(1, Ok(page(&["d", "e"], Some("p3"), 6)));
-    let result = result.await.unwrap().unwrap();
-    assert_eq!(result.inventory.gifts.len(), 5);
-    assert_eq!(
-        result.inventory.completion,
-        InventoryCompletion::Partial(PartialReason::LimitReached)
-    );
-    shutdown(stop, closed).await;
-    let source = Source::default();
-    let config = PortfolioConfig {
-        max_pages: 1,
-        ..Default::default()
-    };
-    let (handle, stop, closed, _invocations) = setup(source.clone(), Quotes::default(), config);
-    let result = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    source.reply(0, Ok(page(&[], Some("no-progress"), 1)));
-    assert_eq!(
-        result.await.unwrap().unwrap().inventory.completion,
-        InventoryCompletion::Partial(PartialReason::LimitReached)
-    );
-    assert_eq!(source.count(), 1);
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn full_flood_wait_is_not_truncated_when_all_original_requests_time_out() {
-    tokio::time::pause();
-    let source = Source::default();
-    let (handle, stop, closed, _invocations) = setup(
-        source.clone(),
-        Quotes::default(),
-        PortfolioConfig::default(),
-    );
-    let result = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    source.reply(
-        0,
-        Err(InventoryError::RetryAfter(Duration::from_secs(7200))),
-    );
-    flush().await;
-    tokio::time::advance(Duration::from_secs(60)).await;
-    assert!(matches!(
-        result.await.unwrap(),
-        Err(PortfolioError::TimedOut)
-    ));
-    flush().await;
-    tokio::time::advance(Duration::from_secs(7139)).await;
-    let result = ask(&handle, 2, "GRAM", Priority::Interactive);
-    flush().await;
-    assert_eq!(source.count(), 1);
-    tokio::time::advance(Duration::from_millis(1001)).await;
-    next(&source, 2).await;
-    source.reply(1, Ok(page(&[], None, 0)));
-    result.await.unwrap().unwrap();
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn coalesces_same_currency_valuation_and_keeps_hanging_reads_bounded() {
-    let invocations = InvocationRuntime::start(Default::default()).unwrap();
-    tokio::time::pause();
-    #[derive(Clone, Default)]
-    struct Slow {
-        calls: Arc<Mutex<Vec<ValuationRequest>>>,
-        release: Arc<tokio::sync::Notify>,
-    }
-    impl ValuationProvider for Slow {
-        async fn mark(
-            &self,
-            request: ValuationRequest,
-        ) -> Result<Arc<market_valuation::Mark<Valuation>>, ValuationError> {
-            self.calls.lock().unwrap().push(request.clone());
-            self.release.notified().await;
-            Quotes::default().mark(request).await
-        }
-    }
-    let source = Source::default();
-    let backend = Slow::default();
-    let config = PortfolioConfig {
-        valuation_timeout: Duration::from_secs(1),
-        ..Default::default()
-    };
-    let stop = CancellationToken::new();
-    let closed = CancellationToken::new();
-    let handle = actor::start(
-        source.clone(),
-        backend.clone(),
-        config,
-        invocations.handle(),
-        stop.clone(),
-        closed.clone(),
-    );
-    let a = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    let b = ask(&handle, 1, "GRAM", Priority::Interactive);
-    flush().await;
-    source.reply(0, Ok(page(&["g"], None, 1)));
-    spin(|| backend.calls.lock().unwrap().len() == 1).await;
-    backend.release.notify_one();
-    let a = a.await.unwrap().unwrap();
-    let b = b.await.unwrap().unwrap();
-    assert_eq!(a.valuation.revision, b.valuation.revision);
-    assert!(Arc::ptr_eq(&a.valuation, &b.valuation));
-    assert!(Arc::ptr_eq(&a.inventory, &b.inventory));
-    let stalled = ask(&handle, 1, "GRAM", Priority::Normal);
-    spin(|| backend.calls.lock().unwrap().len() == 2).await;
-    tokio::time::advance(Duration::from_secs(1)).await;
-    assert!(matches!(
-        stalled.await.unwrap(),
-        Err(PortfolioError::Valuation(_))
-    ));
-    let next = ask(&handle, 1, "GRAM", Priority::Normal);
-    spin(|| backend.calls.lock().unwrap().len() == 3).await;
-    backend.release.notify_one();
-    next.await.unwrap().unwrap();
-    assert_eq!(source.count(), 1);
-    shutdown(stop, closed).await;
-}
-
-#[tokio::test]
-async fn real_market_actors_supply_exact_model_floor_values() {
-    let invocations = InvocationRuntime::start(Default::default()).unwrap();
-    use market_hub_protocol::wire as w;
-    let directory = tempfile::tempdir().unwrap();
-    let mut writer =
-        market_replica::ReplicaWriter::open(directory.path(), "portfolio-test").unwrap();
-    let rows = vec![
-        w::entity::Entity::Venue(w::Venue {
-            id: "venue".into(),
-            name: "Venue".into(),
-        }),
-        w::entity::Entity::Currency(w::Currency {
-            id: "GRAM".into(),
-            name: "Gram".into(),
-            decimals: 9,
-        }),
-        w::entity::Entity::ItemType(w::ItemType {
-            id: "collection".into(),
-            name: "Gift".into(),
-            quantity_step: "1".into(),
-            aliases: vec![w::ExternalId {
-                namespace: "tg".into(),
-                id: "1".into(),
-            }],
-            attributes: [(
-                "tg.model".into(),
-                w::AttributeRule {
-                    required: true,
-                    allowed_values: Some(w::AllowedAttributeValues {
-                        ids: vec!["model".into()],
-                    }),
-                },
-            )]
-            .into(),
-        }),
-        w::entity::Entity::AttributeOption(w::AttributeOption {
-            id: "model".into(),
-            name: "Model".into(),
-            attribute_id: "tg.model".into(),
-            aliases: vec![w::ExternalId {
-                namespace: "tg".into(),
-                id: "2".into(),
-            }],
-            ..Default::default()
-        }),
-        w::entity::Entity::Order(w::Order {
-            id: "ask".into(),
-            book: Some(w::BookKey {
-                venue_id: "venue".into(),
-                item_type_id: "collection".into(),
-                currency_id: "GRAM".into(),
-            }),
-            mode: w::OrderMode::Ask as i32,
-            price: "2.000000000000000001".into(),
-            quantity: "1".into(),
-            attributes: [(
-                "tg.model".into(),
-                w::AttributePredicate {
-                    predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
-                        value: Some(w::attribute_value::Value::OptionId("model".into())),
-                    })),
-                },
-            )]
-            .into(),
-            ..Default::default()
-        }),
-    ];
-    let mut seed = writer.begin_snapshot().unwrap();
-    seed.append(
-        &rows
-            .into_iter()
-            .map(|row| w::Change {
-                change: Some(w::change::Change::Upsert(w::Entity { entity: Some(row) })),
-            })
-            .collect::<Vec<_>>(),
-    )
+    })
+    .await
     .unwrap();
-    writer
-        .install_snapshot(seed.finish("portfolio-view").unwrap())
-        .unwrap();
-    let reads =
-        market_replica::ReadRuntime::new(writer.reader(), 2, CancellationToken::new()).unwrap();
-    let market = market_actors::MarketDataService::start(reads.handle(), 2)
-        .await
-        .unwrap();
+}
+#[tokio::test]
+async fn inventory_and_prices_replace_atomically_and_old_generation_is_cancelled() {
     let source = Source::default();
-    let valuation = market_valuation::Service::start_on(
-        &market.arbiter(),
-        "model_floor",
-        {
-            let source = market_valuation::ValuationSource::new(reads.handle());
-            move |life| market_valuation::FloorActor::model(source, life)
+    let quotes = DelayedQuotes::default();
+    let runtime = InvocationRuntime::start(Default::default()).unwrap();
+    let service = PortfolioService::start(
+        source.clone(),
+        quotes.clone(),
+        PortfolioConfig {
+            refresh_interval: Duration::from_millis(10),
+            ..Default::default()
         },
-        Default::default(),
+        runtime.handle(),
     )
     .await
     .unwrap();
-    let portfolio = PortfolioService::start(
-        source.clone(),
-        market_valuation::PortfolioValuationHandle::new([valuation.handle.clone()]).unwrap(),
-        PortfolioConfig::default(),
-        invocations.handle(),
-    )
-    .await
-    .unwrap();
-    let result = ask(&portfolio.handle, 1, "GRAM", Priority::Interactive);
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while source.count() == 0 {
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1"], None, 1)));
+    quote_calls(&quotes, 1).await;
+    assert!(watch.current().inventory.is_none());
+    quotes.0.lock().unwrap().remove(0).send(()).unwrap();
+    let first = stage(&mut watch, PortfolioStage::Ready).await;
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    service.handle.refresh(query(7, "GRAM")).await.unwrap();
+    calls(&source, 2).await;
+    source.reply(1, Ok(page(&["2", "3"], None, 2)));
+    quote_calls(&quotes, 1).await;
+    let pending = stage(&mut watch, PortfolioStage::Valuing).await;
+    assert_eq!(pending.inventory.as_ref().unwrap().count, 1);
+    assert!(Arc::ptr_eq(
+        pending.valuation.as_ref().unwrap(),
+        first.valuation.as_ref().unwrap()
+    ));
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    service.handle.refresh(query(7, "GRAM")).await.unwrap();
+    calls(&source, 3).await;
+    source.reply(2, Ok(page(&["4", "5", "6"], None, 3)));
+    quote_calls(&quotes, 2).await;
+    assert!(
+        quotes.0.lock().unwrap().remove(0).send(()).is_err(),
+        "superseded valuation is dropped"
+    );
+    quotes.0.lock().unwrap().remove(0).send(()).unwrap();
+    let ready = stage(&mut watch, PortfolioStage::Ready).await;
+    assert_eq!(ready.inventory.as_ref().unwrap().count, 3);
+    assert_eq!(
+        ready.valuation.as_ref().unwrap().items[0]
+            .gift
+            .gift
+            .id
+            .as_str(),
+        "4"
+    );
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn shutdown_drops_an_inventory_page_in_flight() {
+    let (service, source, _, runtime) = service(Default::default()).await;
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    service.task.shutdown().await.unwrap();
+    assert!(matches!(
+        watch.changed().await,
+        Err(PortfolioError::Stopped)
+    ));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !source.calls.lock().unwrap()[0]
+            .reply
+            .as_ref()
+            .unwrap()
+            .is_closed()
+        {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
-    source.reply(0, Ok(page(&["gift-a", "gift-b"], None, 2)));
-    let value = result.await.unwrap().unwrap();
-    assert_eq!(value.valuation.total.as_str(), "4.000000000000000002");
-    assert_eq!(
-        value.valuation.rows[0].floor.as_ref().unwrap().as_str(),
-        "2.000000000000000001"
-    );
-    assert_eq!(value.valuation.revision, "portfolio-view");
-    assert_eq!(value.inventory.gifts.len(), 2);
-    assert_eq!(value.valuation.revision, "portfolio-view");
-    assert_eq!(value.valuation.priced, 2);
-    portfolio.task.shutdown().await.unwrap();
-    valuation.task.shutdown().await.unwrap();
-    let stop = CancellationToken::new();
-    stop.cancel();
-    market.task.run(stop).await.unwrap();
-    reads.shutdown().await;
+    runtime.shutdown().await;
 }
 
 #[tokio::test]
-async fn dropping_lifecycle_owner_stops_work_even_with_live_handles() {
-    let invocations = InvocationRuntime::start(Default::default()).unwrap();
-    let source = Source::default();
-    let service = PortfolioService::start(
-        source.clone(),
-        Quotes::default(),
-        PortfolioConfig::default(),
-        invocations.handle(),
-    )
-    .await
-    .unwrap();
-    let result = ask(&service.handle, 1, "GRAM", Priority::Normal);
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while source.count() == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    drop(service.task);
-    assert!(matches!(
-        service
-            .handle
-            .request(request(2, "GRAM", Priority::Normal))
-            .await,
-        Err(PortfolioError::Stopped)
-    ));
-    assert!(matches!(
-        result.await.unwrap(),
-        Err(PortfolioError::Stopped)
-    ));
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !source.cancelled(0) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-}
-#[tokio::test]
-async fn unexpected_actor_failure_is_reported_to_supervision() {
-    let invocations = InvocationRuntime::start(Default::default()).unwrap();
-    struct Broken;
-    impl InventoryProvider for Broken {
-        fn page(
-            &self,
-            _: InventoryPageRequest,
-        ) -> impl Invocation<Output = InventoryPage, Error = InventoryError> {
-            operation(inventory_policy(Duration::from_secs(1)), || async {
-                panic!("simulated inventory provider panic")
-            })
-        }
-    }
-    let service = PortfolioService::start(
-        Broken,
-        Quotes::default(),
-        PortfolioConfig::default(),
-        invocations.handle(),
-    )
-    .await
-    .unwrap();
-    let pending = ask(&service.handle, 1, "GRAM", Priority::Normal);
-    assert!(matches!(
-        pending.await.unwrap(),
-        Err(PortfolioError::Stopped)
-    ));
-    let result = tokio::time::timeout(
-        Duration::from_secs(2),
-        service.task.run(CancellationToken::new()),
-    )
-    .await
-    .unwrap();
-    assert!(matches!(result, Err(PortfolioError::Stopped)));
-}
-
-#[actix::test]
-async fn refreshed_inventory_does_not_join_valuation_of_an_expired_snapshot() {
-    let invocations = InvocationRuntime::start(Default::default()).unwrap();
-    tokio::time::pause();
-    #[derive(Clone, Default)]
-    struct Slow {
-        calls: Arc<Mutex<Vec<ValuationRequest>>>,
-        release: Arc<tokio::sync::Notify>,
-    }
-    impl ValuationProvider for Slow {
-        async fn mark(
-            &self,
-            request: ValuationRequest,
-        ) -> Result<Arc<market_valuation::Mark<Valuation>>, ValuationError> {
-            self.calls.lock().unwrap().push(request.clone());
-            self.release.notified().await;
-            Quotes::default().mark(request).await
-        }
-    }
-    let source = Source::default();
-    let backend = Slow::default();
-    let stop = CancellationToken::new();
-    let closed = CancellationToken::new();
-    let config = PortfolioConfig {
-        inventory_ttl: Duration::from_secs(1),
-        ..Default::default()
-    };
-    let handle = actor::start(
-        source.clone(),
-        backend.clone(),
-        config,
-        invocations.handle(),
-        stop.clone(),
-        closed.clone(),
+async fn cached_queries_do_not_emit_duplicate_progress_or_move_the_cooldown_deadline() {
+    let (service, source, _, runtime) = service(Default::default()).await;
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1"], None, 1)));
+    let ready = stage(&mut watch, PortfolioStage::Ready).await;
+    let cached = service.handle.query(query(7, "GRAM")).await.unwrap();
+    assert_eq!(cached.refresh_after, ready.refresh_after);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), watch.changed())
+            .await
+            .is_err()
     );
-    let old = ask(&handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    source.reply(0, Ok(page(&["a"], None, 1)));
-    spin(|| backend.calls.lock().unwrap().len() == 1).await;
-    tokio::time::advance(Duration::from_secs(2)).await;
-    let fresh = ask(&handle, 1, "GRAM", Priority::Interactive);
-    next(&source, 2).await;
-    source.reply(1, Ok(page(&["a", "b"], None, 2)));
-    flush().await;
-    assert_eq!(
-        backend.calls.lock().unwrap().len(),
-        1,
-        "valuations remain serialized"
-    );
-    backend.release.notify_one();
-    let old = old.await.unwrap().unwrap();
-    spin(|| backend.calls.lock().unwrap().len() == 2).await;
-    backend.release.notify_one();
-    let fresh = fresh.await.unwrap().unwrap();
-    assert_eq!(old.valuation.total.as_str(), "2");
-    assert_eq!(fresh.valuation.total.as_str(), "4");
-    assert!(!Arc::ptr_eq(&old.inventory, &fresh.inventory));
-    assert!(!Arc::ptr_eq(&old.valuation, &fresh.valuation));
-    shutdown(stop, closed).await;
-}
-
-#[test]
-fn queue_assigns_four_two_one_turns_under_continuous_load() {
-    let mut queue = queue::Queue::default();
-    for n in 0..12 {
-        queue.insert(n, Priority::Interactive);
-        queue.insert(100 + n, Priority::Normal);
-        queue.insert(200 + n, Priority::Background);
-    }
-    let round: Vec<_> = (0..7).map(|_| queue.pop_ready(|_| true).unwrap()).collect();
-    assert_eq!(round, vec![0, 1, 2, 3, 100, 101, 200]);
-    let round: Vec<_> = (0..7).map(|_| queue.pop_ready(|_| true).unwrap()).collect();
-    assert_eq!(round, vec![4, 5, 6, 7, 102, 103, 201]);
-}
-
-#[tokio::test]
-async fn shared_invocation_shutdown_stops_portfolio_supervision_and_cancels_active_pages() {
-    let invocations = InvocationRuntime::start(Default::default()).unwrap();
-    let source = Source::default();
-    let service = PortfolioService::start(
-        source.clone(),
-        Quotes::default(),
-        PortfolioConfig::default(),
-        invocations.handle(),
-    )
-    .await
-    .unwrap();
-    let result = ask(&service.handle, 1, "GRAM", Priority::Normal);
-    next(&source, 1).await;
-    invocations.shutdown().await;
-    assert!(matches!(
-        service.task.run(CancellationToken::new()).await,
-        Err(PortfolioError::Stopped)
-    ));
-    assert!(matches!(
-        result.await.unwrap(),
-        Err(PortfolioError::Stopped)
-    ));
-    assert!(source.cancelled(0));
-}
-
-#[actix::test]
-async fn strategies_share_inventory_but_never_coalesce_valuation_jobs() {
-    tokio::time::pause();
-    let source = Source::default();
-    let quotes = Quotes::default();
-    let (handle, stop, closed, _invocations) =
-        setup(source.clone(), quotes.clone(), Default::default());
-    let model = ask(&handle, 1, "GRAM", Priority::Normal);
-    let second = handle.clone();
-    let mut broad = request(1, "GRAM", Priority::Interactive);
-    broad.strategy = market_valuation::StrategyId::collection_floor();
-    let collection = tokio::spawn(async move { second.request(broad).await });
-    next(&source, 1).await;
-    flush().await;
-    source.reply(0, Ok(page(&["one", "two"], None, 2)));
-    let a = model.await.unwrap().unwrap();
-    let b = collection.await.unwrap().unwrap();
-    assert!(Arc::ptr_eq(&a.inventory, &b.inventory));
-    assert_eq!(source.count(), 1);
-    let strategies: std::collections::BTreeSet<_> = quotes
-        .calls
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|r| r.strategy.clone())
-        .collect();
-    assert_eq!(strategies.len(), 2);
-    shutdown(stop, closed).await;
-}
-
-#[actix::test]
-async fn gift_strategy_is_rejected_before_inventory_is_requested() {
-    let source = Source::default();
-    let quotes = Quotes::default();
-    let (handle, stop, closed, _invocations) =
-        setup(source.clone(), quotes.clone(), Default::default());
-    let mut request = request(1, "GRAM", Priority::Normal);
-    request.strategy = market_valuation::StrategyId::new("gift_floor").unwrap();
-    let error = handle.request(request).await.unwrap_err();
-    let PortfolioError::Valuation(error) = error else {
-        panic!("strategy error required");
-    };
-    assert_eq!(
-        error.code(),
-        market_valuation::ValuationErrorCode::UnsupportedStrategy
-    );
-    assert_eq!(source.count(), 0);
-    assert!(quotes.calls.lock().unwrap().is_empty());
-    shutdown(stop, closed).await;
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
 }

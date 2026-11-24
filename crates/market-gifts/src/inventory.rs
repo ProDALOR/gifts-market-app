@@ -1,17 +1,19 @@
 //! Source-normalized gift inventories shared by transport adapters and portfolio services.
-use crate::{GiftId, TelegramDocumentId, TelegramGiftId};
+use crate::TelegramGiftDetails;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, time::Duration};
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum GiftRelation {
     Owned,
     Hosted,
     Unverified,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct InventoryGift {
-    pub id: GiftId,
-    pub collection_id: TelegramGiftId,
-    pub model_document_id: TelegramDocumentId,
+    pub gift: TelegramGiftDetails,
     pub relation: GiftRelation,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

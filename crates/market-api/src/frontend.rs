@@ -69,7 +69,7 @@ pub(crate) fn configure(cfg: &mut web::ServiceConfig) {
             .route(web::get().to(websocket_docs)),
     )
     .service(
-        web::resource("/")
+        web::resource(["/", "/portfolio", "/portfolio/{user_id}"])
             .wrap(Compress::default())
             .route(web::get().to(index)),
     )

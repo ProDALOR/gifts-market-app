@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { amount, compactAmount, listingAmount } from "../amount";
+import { amount, compactAmount, listingAmount, roundedAmount } from "../amount";
 import { CurrencySymbol } from "./icons";
 import { usePreviewEnvironment } from "../previews/preview-environment";
 export function Quote({
@@ -9,7 +9,7 @@ export function Quote({
 }: {
   price: string;
   currency: string;
-  format?: "exact" | "listing" | "compact";
+  format?: "exact" | "listing" | "compact" | "rounded";
 }) {
   const value = useRef<HTMLSpanElement>(null);
   const previous = useRef({ price, currency });
@@ -49,7 +49,9 @@ export function Quote({
       ? compactAmount(price)
       : format === "listing"
         ? listingAmount(price)
-        : amount(price);
+        : format === "rounded"
+          ? amount(roundedAmount(price))
+          : amount(price);
   return (
     <>
       <CurrencySymbol currency={currency} />

@@ -52,7 +52,6 @@ fn removed_commands_invalid_and_ambiguous_gifts_are_ignored() {
         "/value@market_bot Gift-123",
         "/value@another_bot Gift-123",
         "/floor A",
-        "/portfolio",
         "/multiplier",
         "hello",
         "Gift-0",
@@ -106,7 +105,7 @@ async fn command_menu_and_help_use_automatic_gift_detection() {
             .iter()
             .map(|c| c.name)
             .collect::<Vec<_>>(),
-        ["start", "market", "help", "status"]
+        ["start", "market", "help", "status", "portfolio"]
     );
     for command in [Command::Start, Command::Help, Command::GiftHelp] {
         let is_help = matches!(command, Command::Help);
@@ -120,8 +119,36 @@ async fn command_menu_and_help_use_automatic_gift_detection() {
             .unwrap();
         assert!(reply.text.contains("gift link or slug"));
         assert_eq!(reply.text.contains("history may be incomplete"), is_help);
-        for old in ["/value", "/portfolio", "/floor", "/multiplier"] {
+        for old in ["/value", "/floor", "/multiplier"] {
             assert!(!reply.text.contains(old));
         }
+    }
+}
+
+#[test]
+fn portfolio_commands_are_bound_to_the_authenticated_sender_or_an_explicit_numeric_subject() {
+    for (text, user, currency) in [
+        ("/portfolio", 7, "GRAM"),
+        ("/portfolio 123", 123, "GRAM"),
+        ("/portfolio 123 XTR", 123, "XTR"),
+    ] {
+        let Command::Portfolio(request) = commands::parse(message(text), &["market_bot"])
+            .unwrap()
+            .command
+        else {
+            panic!("{text}")
+        };
+        assert_eq!(
+            (request.user_id, request.currency_id.as_str()),
+            (user, currency)
+        );
+    }
+    for text in [
+        "/portfolio 0",
+        "/portfolio -1",
+        "/portfolio 123 GRAM extra",
+        "/portfolio@other 123",
+    ] {
+        assert!(commands::parse(message(text), &["market_bot"]).is_none());
     }
 }

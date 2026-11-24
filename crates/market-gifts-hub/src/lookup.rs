@@ -4,6 +4,13 @@ use market_hub_protocol::wire as w;
 fn by_name(input: &str, id: &str, name: &str) -> bool {
     id == input || name.eq_ignore_ascii_case(input)
 }
+/// Numeric transport aliases, interpreted only at the hub adapter boundary.
+pub fn telegram_alias_ids(aliases: &[w::ExternalId]) -> impl Iterator<Item = i64> + '_ {
+    aliases
+        .iter()
+        .filter(|a| a.namespace == TELEGRAM_NAMESPACE)
+        .filter_map(|a| a.id.parse().ok())
+}
 pub fn has_telegram_alias(input: i64, aliases: &[w::ExternalId]) -> bool {
     aliases
         .iter()
