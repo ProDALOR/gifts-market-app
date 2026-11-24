@@ -86,6 +86,7 @@ impl UserLogin {
                 handle: invocations,
                 account: api_id as u64,
                 stopped,
+                authorization: Default::default(),
             },
             code: None,
             password: None,

@@ -6,7 +6,7 @@ pub const MAX_THUMBNAIL_BYTES: usize = 256 * 1024;
 pub const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 pub const MAX_COVER_BYTES: usize = 2 * 1024 * 1024;
 pub const COVER_VERSION: &str = "3";
-pub const PREVIEW_VERSION: &str = "3";
+pub const PREVIEW_VERSION: &str = "4";
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct DocumentId(i64);
 impl DocumentId {

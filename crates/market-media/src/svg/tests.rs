@@ -37,6 +37,20 @@ fn renderer_rejects_external_assets_expressions_and_oversized_json() {
 }
 
 #[test]
+fn descending_gradient_stops_match_svg_clamping_without_reordering_colors() {
+    let mut source = fixture();
+    source["layers"][0]["shapes"][1] = json!({"ty":"gf","o":{"a":0,"k":100},"t":1,
+        "s":{"a":0,"k":[0,0]},"e":{"a":0,"k":[100,0]},
+        "g":{"p":4,"k":{"a":0,"k":[0,1,0,0,0.75,0,1,0,0.25,0,0,1,1,1,1,1]}}});
+    let descending = first_frame_svg(&serde_json::to_vec(&source).unwrap()).unwrap();
+    source["layers"][0]["shapes"][1]["g"]["k"]["k"][8] = json!(0.75);
+    assert_eq!(
+        descending,
+        first_frame_svg(&serde_json::to_vec(&source).unwrap()).unwrap()
+    );
+}
+
+#[test]
 fn adapter_retains_style_opacity_and_animated_stroke_dashes() {
     let mut input = fixture();
     input["layers"][0]["shapes"][1] = json!({"ty":"gs","o":{"a":0,"k":25},"w":{"a":0,"k":4},"t":1,"s":{"a":0,"k":[0,0]},"e":{"a":0,"k":[100,0]},"g":{"p":2,"k":{"a":0,"k":[0,1,0,0,1,0,0,1]}},"d":[{"n":"d","v":{"a":1,"k":[{"t":0,"s":[3]},{"t":10,"s":[7]}]}},{"n":"g","v":{"a":0,"k":2}},{"n":"o","v":{"a":0,"k":1}}]});

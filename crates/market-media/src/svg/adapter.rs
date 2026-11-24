@@ -8,7 +8,8 @@ use velato::{
 };
 
 pub(super) fn composition(mut source: Json) -> Result<Composition, MediaError> {
-    super::budget::validate_source(&source)?;
+    super::budget::validate_source(&source)
+        .inspect_err(|_| tracing::warn!(stage = "svg_source_budget", "SVG export rejected"))?;
     defaults(&mut source);
     // Retain only paint and group-position patches; path geometry is never cloned.
     let layers = layer_styles(&source["layers"])?;
@@ -29,8 +30,16 @@ pub(super) fn composition(mut source: Json) -> Result<Composition, MediaError> {
         })
         .collect::<Result<_, MediaError>>()?;
     normalize_group_positions(&mut source);
-    let mut model = Composition::from_json(source).map_err(|_| MediaError::InvalidMedia)?;
-    super::budget::validate(&model)?;
+    let mut model = Composition::from_json(source).map_err(|_| {
+        tracing::warn!(
+            stage = "svg_import",
+            reason = "unsupported_composition",
+            "SVG export rejected"
+        );
+        MediaError::InvalidMedia
+    })?;
+    super::budget::validate(&model)
+        .inspect_err(|_| tracing::warn!(stage = "svg_model_budget", "SVG export rejected"))?;
     let originals = std::mem::take(&mut model.assets);
     let mut context = Instances {
         originals: &originals,
@@ -40,7 +49,13 @@ pub(super) fn composition(mut source: Json) -> Result<Composition, MediaError> {
         stack: Vec::new(),
         next: 0,
     };
-    repair_layers(&layers, &mut model.layers, 0.0, &mut context)?;
+    repair_layers(&layers, &mut model.layers, 0.0, &mut context).inspect_err(|_| {
+        tracing::warn!(
+            stage = "svg_adapter",
+            reason = "invalid_shape_or_gradient",
+            "SVG export rejected"
+        )
+    })?;
     model.assets = context.result;
     Ok(model)
 }

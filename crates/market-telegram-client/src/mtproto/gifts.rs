@@ -388,6 +388,7 @@ mod connection_tests {
                     handle: runtime.handle(),
                     account: 42,
                     stopped: CancellationToken::new(),
+                    authorization: Default::default(),
                 },
             })
         };

@@ -318,10 +318,21 @@ pub fn first_frame_svg(json: &[u8]) -> Result<Vec<u8>, crate::MediaError> {
         &mut sink,
     );
     if !sink.warnings.is_empty() {
+        tracing::warn!(stage="svg_render", reason="unsupported_feature", feature=?sink.warnings.first(), "SVG export rejected");
         return Err(invalid);
     }
-    let bytes = sink.finish()?.into_bytes();
-    crate::preview::validate(&bytes)?;
+    let bytes = sink
+        .finish()
+        .inspect_err(|_| {
+            tracing::warn!(
+                stage = "svg_output",
+                reason = "output_budget_or_unbalanced_layers",
+                "SVG export rejected"
+            )
+        })?
+        .into_bytes();
+    crate::preview::validate(&bytes)
+        .inspect_err(|_| tracing::warn!(stage = "svg_validation", "SVG export rejected"))?;
     Ok(bytes)
 }
 

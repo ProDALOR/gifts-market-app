@@ -86,6 +86,7 @@ impl MtProtoTransport {
                     handle: invocations,
                     account: credentials.bot_id(),
                     stopped: exited.clone(),
+                    authorization: Default::default(),
                 },
                 credentials,
                 exited,

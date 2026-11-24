@@ -23,6 +23,7 @@ pub(super) struct Executor {
     pub handle: Handle,
     pub account: u64,
     pub stopped: CancellationToken,
+    pub authorization: Arc<tokio::sync::Mutex<()>>,
 }
 impl Executor {
     fn account_key(&self) -> RateKey {
@@ -116,12 +117,55 @@ impl Executor {
         R: tl::RemoteCall + Send + Sync + 'static,
         R::Return: Send + 'static,
     {
+        self.rpc_call_at(client, request, group, priority, replay, None)
+            .await
+    }
+    pub async fn rpc_call_at<R>(
+        &self,
+        client: &Client,
+        request: R,
+        group: Group,
+        priority: Priority,
+        replay: Replay,
+        dc: Option<i32>,
+    ) -> Result<R::Return, CallError>
+    where
+        R: tl::RemoteCall + Send + Sync + 'static,
+        R::Return: Send + 'static,
+    {
         let request = Arc::new(request);
         let client = client.clone();
+        let authorization = self.authorization.clone();
         self.run(group, priority, replay, move || {
             let request = request.clone();
             let client = client.clone();
-            async move { client.invoke(&*request).await }
+            let authorization = authorization.clone();
+            async move {
+                let Some(dc) = dc else {
+                    return client.invoke(&*request).await;
+                };
+                with_dc_authorization(
+                    &authorization,
+                    || client.invoke_in_dc(dc, &*request),
+                    || async {
+                        let tl::enums::auth::ExportedAuthorization::Authorization(exported) =
+                            client
+                                .invoke(&tl::functions::auth::ExportAuthorization { dc_id: dc })
+                                .await?;
+                        client
+                            .invoke_in_dc(
+                                dc,
+                                &tl::functions::auth::ImportAuthorization {
+                                    id: exported.id,
+                                    bytes: exported.bytes,
+                                },
+                            )
+                            .await?;
+                        Ok(())
+                    },
+                )
+                .await
+            }
         })
         .await
         .inspect_err(|error| {
@@ -136,12 +180,41 @@ impl Executor {
                 tracing::warn!(
                     method = std::any::type_name::<R>(),
                     rpc_code = error.code,
+                    target_dc = dc,
                     rpc_name = safe_rpc_name(&error.name),
                     "Telegram application RPC rejected"
                 );
             }
         })
     }
+}
+// Only a definitively rejected unauthorized request can trigger authorization.
+// Recheck under the shared gate: another request may already have imported it.
+async fn with_dc_authorization<T, I, IFut, A, AFut>(
+    gate: &tokio::sync::Mutex<()>,
+    invoke: I,
+    authorize: A,
+) -> Result<T, InvocationError>
+where
+    I: Fn() -> IFut,
+    IFut: Future<Output = Result<T, InvocationError>>,
+    A: Fn() -> AFut,
+    AFut: Future<Output = Result<(), InvocationError>>,
+{
+    let result = invoke().await;
+    if !needs_authorization(&result) {
+        return result;
+    }
+    let _guard = gate.lock().await;
+    let result = invoke().await;
+    if !needs_authorization(&result) {
+        return result;
+    }
+    authorize().await?;
+    invoke().await
+}
+fn needs_authorization<T>(result: &Result<T, InvocationError>) -> bool {
+    matches!(result, Err(InvocationError::Rpc(error)) if error.code == 401 && error.name == "AUTH_KEY_UNREGISTERED")
 }
 // Never log arbitrary server descriptions, request bodies, IDs or credential-bearing errors.
 fn safe_rpc_name(name: &str) -> &str {
@@ -152,6 +225,12 @@ fn safe_rpc_name(name: &str) -> &str {
         | "RICH_MESSAGE_INVALID"
         | "RICH_MESSAGE_PARSE_ERROR"
         | "RICH_MESSAGE_TOO_LONG"
+        | "MESSAGE_ID_INVALID"
+        | "MESSAGE_EDIT_TIME_EXPIRED"
+        | "INLINE_BOT_REQUIRED"
+        | "AUTH_KEY_UNREGISTERED"
+        | "AUTH_BYTES_INVALID"
+        | "DC_ID_INVALID"
         | "MESSAGE_EMPTY"
         | "MESSAGE_TOO_LONG"
         | "MESSAGE_NOT_MODIFIED"
@@ -314,7 +393,7 @@ mod tests {
     use market_invocations::InvocationExt;
     use std::sync::{
         Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     fn error(code: i32, name: &str) -> InvocationError {
         InvocationError::Rpc(
@@ -325,8 +404,66 @@ mod tests {
             .into(),
         )
     }
+    #[tokio::test]
+    async fn concurrent_dc_requests_share_authorization_and_recheck_after_waiting() {
+        let gate = tokio::sync::Mutex::new(());
+        let authorized = AtomicBool::new(false);
+        let imports = AtomicUsize::new(0);
+        let invoke = || async {
+            tokio::task::yield_now().await;
+            if authorized.load(Ordering::SeqCst) {
+                Ok(42)
+            } else {
+                Err(error(401, "AUTH_KEY_UNREGISTERED"))
+            }
+        };
+        let authorize = || async {
+            imports.fetch_add(1, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            authorized.store(true, Ordering::SeqCst);
+            Ok(())
+        };
+        let (first, second) = tokio::join!(
+            with_dc_authorization(&gate, invoke, authorize),
+            with_dc_authorization(&gate, invoke, authorize),
+        );
+        assert_eq!(first.unwrap(), 42);
+        assert_eq!(second.unwrap(), 42);
+        assert_eq!(imports.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn dc_authorization_never_replays_other_rejections_or_a_failed_import() {
+        let gate = tokio::sync::Mutex::new(());
+        for (code, name) in [(400, "MESSAGE_ID_INVALID"), (500, "INTERNAL")] {
+            let calls = AtomicUsize::new(0);
+            let result = with_dc_authorization(
+                &gate,
+                || async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(error(code, name))
+                },
+                || async { panic!("must not authorize a different rejection") },
+            )
+            .await;
+            assert!(result.is_err());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+        let calls = AtomicUsize::new(0);
+        let result = with_dc_authorization(
+            &gate,
+            || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err::<(), _>(error(401, "AUTH_KEY_UNREGISTERED"))
+            },
+            || async { Err(error(400, "AUTH_BYTES_INVALID")) },
+        )
+        .await;
+        assert!(matches!(result, Err(InvocationError::Rpc(e)) if e.name == "AUTH_BYTES_INVALID"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
     #[test]
     fn rpc_diagnostics_name_known_failures_without_exposing_arbitrary_descriptions() {
+        assert_eq!(safe_rpc_name("MESSAGE_ID_INVALID"), "MESSAGE_ID_INVALID");
         assert_eq!(safe_rpc_name("QUERY_ID_INVALID"), "QUERY_ID_INVALID");
         assert_eq!(
             safe_rpc_name("SEND_MESSAGE_TYPE_INVALID"),
@@ -349,6 +486,7 @@ mod tests {
             handle: runtime.handle(),
             account: 42,
             stopped: stopped.clone(),
+            authorization: Default::default(),
         };
         for (code, name, scope) in [
             (420, "FLOOD_WAIT_7200", "account"),
@@ -411,6 +549,7 @@ mod tests {
             handle: runtime.handle(),
             account: 42,
             stopped: CancellationToken::new(),
+            authorization: Default::default(),
         };
         let request = super::super::requests::reply_request(
             42,

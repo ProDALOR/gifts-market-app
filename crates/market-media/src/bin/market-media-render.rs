@@ -29,6 +29,12 @@ fn run() -> Result<(), (u8, String)> {
     std::fs::write(&args[1], svg).map_err(|e| (1, e.to_string()))
 }
 fn main() -> ExitCode {
+    tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing::Level::WARN)
+        .init();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err((code, error)) => {

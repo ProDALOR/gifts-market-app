@@ -282,13 +282,15 @@ impl MtProtoActions {
                             .or_else(accept_unchanged_edit)?;
                     }
                     CallbackTarget::Inline(id) => {
+                        let id = tl::enums::InputBotInlineMessageId::from(id);
+                        let dc = id.dc_id();
                         self.invocations
-                            .rpc_call(
+                            .rpc_call_at(
                                 &self.client,
                                 tl::functions::messages::EditInlineBotMessage {
                                     no_webpage: true,
                                     invert_media: false,
-                                    id: id.into(),
+                                    id,
                                     message: Some(if reply.rich_html.is_some() {
                                         String::new()
                                     } else {
@@ -302,6 +304,7 @@ impl MtProtoActions {
                                 Group::Inline,
                                 Priority::Interactive,
                                 Replay::Safe,
+                                Some(dc),
                             )
                             .await
                             .map(|_| ())

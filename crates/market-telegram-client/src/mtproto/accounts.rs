@@ -446,6 +446,7 @@ async fn run_account(
             handle: scheduler.clone(),
             account: bootstrap_owner,
             stopped: connection.stopped.clone(),
+            authorization: Default::default(),
         };
         let authenticated = tokio::select! {
             _ = stop.cancelled() => { connection.close().await; return; },
