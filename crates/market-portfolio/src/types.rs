@@ -118,6 +118,7 @@ pub struct PortfolioState {
     pub version: Option<crate::PortfolioVersion>,
     #[cfg_attr(feature="schema", schema(value_type=Option<String>, format=DateTime))]
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Next inventory recheck, measured from completion. Absent while a check is running.
     pub refresh_after: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

@@ -16,15 +16,12 @@ struct View {
     progress: usize,
     error: Option<String>,
     job: Option<SpawnHandle>,
-    attempted: Option<Instant>,
+    last_finished: Option<Instant>,
     attempt: u64,
 }
 impl View {
-    fn due(&self) -> bool {
-        self.job.is_none()
-            && self
-                .attempted
-                .is_none_or(|t| t.elapsed() >= Duration::from_secs(60))
+    fn due(&self, interval: Duration) -> bool {
+        self.job.is_none() && self.last_finished.is_none_or(|t| t.elapsed() >= interval)
     }
 }
 #[derive(Default)]
@@ -33,7 +30,7 @@ struct Entry {
     inventory_id: u64,
     refresh_id: u64,
     refreshing: bool,
-    last_refresh: Option<Instant>,
+    last_check_finished: Option<Instant>,
     refresh_after: Option<jiff::Timestamp>,
     progress: PortfolioProgress,
     error: Option<String>,
@@ -41,6 +38,16 @@ struct Entry {
     used: u64,
 }
 impl Entry {
+    fn evictable(&self, interval: Duration) -> bool {
+        !self.refreshing
+            && self
+                .last_check_finished
+                .is_none_or(|t| t.elapsed() >= interval)
+            && self
+                .views
+                .values()
+                .all(|v| v.tx.receiver_count() == 0 && v.due(interval))
+    }
     fn retained_gifts(&self, replacement: Option<usize>) -> usize {
         // Old reports pin their inventory until atomic valuation replacement.
         // Count each shared gift vector once, including retained generations.
@@ -148,16 +155,19 @@ impl<P: InventoryProvider, V: ValuationProvider> Actor for PortfolioActor<P, V> 
             let active: Vec<_> = actor
                 .entries
                 .iter()
-                .filter(|(_, e)| !e.refreshing && e.inventory.is_some())
+                .filter(|(_, e)| !e.refreshing && e.error.is_none() && e.inventory.is_some())
                 .flat_map(|(user, e)| {
                     e.views
                         .iter()
-                        .filter(|(_, v)| v.tx.receiver_count() > 0 && v.due())
+                        .filter(|(_, v)| {
+                            v.tx.receiver_count() > 0 && v.due(actor.config.refresh_interval)
+                        })
                         .map(|(c, _)| (*user, c.clone()))
                 })
                 .collect();
             for (user, currency) in active {
                 actor.value(user, currency, ctx);
+                actor.publish(user);
             }
         });
     }
@@ -283,12 +293,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 let oldest = self
                     .entries
                     .iter()
-                    .filter(|(_, e)| {
-                        !e.refreshing
-                            && e.views
-                                .values()
-                                .all(|v| v.job.is_none() && v.tx.receiver_count() == 0)
-                    })
+                    .filter(|(_, e)| e.evictable(self.config.refresh_interval))
                     .min_by_key(|(_, e)| e.used)
                     .map(|(u, _)| *u)
                     .ok_or(PortfolioError::Busy)?;
@@ -304,7 +309,9 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 let old = e
                     .views
                     .iter()
-                    .find(|(_, v)| v.job.is_none() && v.tx.receiver_count() == 0)
+                    .find(|(_, v)| {
+                        v.due(self.config.refresh_interval) && v.tx.receiver_count() == 0
+                    })
                     .map(|(c, _)| c.clone())
                     .ok_or(PortfolioError::Busy)?;
                 e.views.remove(&old);
@@ -330,12 +337,12 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                     progress: 0,
                     error: None,
                     job: None,
-                    attempted: None,
+                    last_finished: None,
                     attempt: 0,
                 },
             );
         }
-        let initial = matches!(action, Action::Watch) && e.last_refresh.is_none();
+        let initial = matches!(action, Action::Watch) && e.last_check_finished.is_none();
         let receiver = e.views[&q.currency_id].tx.subscribe();
         if matches!(action, Action::Refresh) || initial {
             self.refresh(q.user_id, ctx)?;
@@ -349,7 +356,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
         if e.refreshing {
             return Ok(());
         }
-        if let Some(t) = e.last_refresh
+        if let Some(t) = e.last_check_finished
             && t.elapsed() < self.config.refresh_interval
         {
             return Err(PortfolioError::Cooldown(
@@ -364,20 +371,14 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
         let refresh = self.next;
         e.refresh_id = refresh;
         e.refreshing = true;
-        e.last_refresh = Some(Instant::now());
-        e.refresh_after = Some(
-            jiff::Timestamp::from_millisecond(
-                jiff::Timestamp::now().as_millisecond()
-                    + self.config.refresh_interval.as_millis() as i64,
-            )
-            .expect("bounded refresh interval"),
-        );
+        e.refresh_after = None;
         e.error = None;
         // Rechecking inventory supersedes its old valuation immediately, not only
         // after all Telegram pages arrive. Keep the last published report intact.
         for view in e.views.values_mut() {
             if let Some(job) = view.job.take() {
                 ctx.cancel_future(job);
+                view.last_finished = Some(Instant::now());
             }
         }
         e.progress = PortfolioProgress {
@@ -463,6 +464,15 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                     return;
                 }
                 e.refreshing = false;
+                e.last_check_finished = Some(Instant::now());
+                e.refresh_after = Some(
+                    jiff::Timestamp::from_millisecond(
+                        jiff::Timestamp::now().as_millisecond()
+                            + actor.config.refresh_interval.as_millis() as i64,
+                    )
+                    .expect("bounded refresh interval"),
+                );
+                let mut updated = false;
                 match result {
                     Ok(_) if !fits => {
                         e.error = Some(
@@ -485,20 +495,16 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                             e.progress.checked = inventory.gifts_scanned;
                             e.progress.total = inventory.reported_total;
                             e.inventory = Some(Arc::new(inventory));
-                            for view in e.views.values_mut() {
-                                if let Some(job) = view.job.take() {
-                                    ctx.cancel_future(job);
-                                }
-                                view.attempted = None;
-                                view.progress = 0;
-                            }
+                            updated = true;
                         }
                     }
                     Err(error) => e.error = Some(error.to_string()),
                 }
-                let currencies: Vec<_> = e.views.keys().cloned().collect();
-                for currency in currencies {
-                    actor.value(user, currency, ctx);
+                if updated {
+                    let currencies: Vec<_> = e.views.keys().cloned().collect();
+                    for currency in currencies {
+                        actor.value(user, currency, ctx);
+                    }
                 }
                 actor.publish(user);
             }),
@@ -518,13 +524,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
             let old = self
                 .entries
                 .iter()
-                .filter(|(u, e)| {
-                    **u != user
-                        && !e.refreshing
-                        && e.views
-                            .values()
-                            .all(|v| v.job.is_none() && v.tx.receiver_count() == 0)
-                })
+                .filter(|(u, e)| **u != user && e.evictable(self.config.refresh_interval))
                 .min_by_key(|(_, e)| e.used)
                 .map(|(u, _)| *u);
             if let Some(old) = old {
@@ -540,10 +540,9 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
             return;
         };
         let v = e.views.get_mut(&currency).unwrap();
-        if e.refreshing || !v.due() {
+        if e.refreshing || e.error.is_some() || !v.due(self.config.refresh_interval) {
             return;
         }
-        v.attempted = Some(Instant::now());
         v.progress = 0;
         v.error = None;
         let valued_inventory = inventory.clone();
@@ -612,7 +611,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 }
                 v.job = None;
                 // A slow completed/stalled run must not immediately start another full pass.
-                v.attempted = Some(Instant::now());
+                v.last_finished = Some(Instant::now());
                 match result {
                     Ok(report) => {
                         if v.report.as_ref().is_none_or(|old| old.items != report.items) {
@@ -674,7 +673,7 @@ mod tests {
             progress: 0,
             error: None,
             job: None,
-            attempted: None,
+            last_finished: None,
             attempt: 0,
         };
         let mut entry = Entry {

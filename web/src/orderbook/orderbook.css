@@ -96,6 +96,10 @@
   pointer-events: none;
 }
 .serial {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 1px 4px;
   border-radius: 5px;
   background: #24192c91;
@@ -356,19 +360,30 @@
 }
 .gift-preview.card-preview {
   isolation: isolate;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-height: 96px;
-  --card-art-size: 64px;
-  --card-art-top: 8px;
-  padding: 4px 5px 3px;
+  --card-art-size: 80px;
+  --card-padding: 4px;
+  padding: var(--card-padding);
   border: 0;
   border-radius: 13px;
   color: white;
   background: radial-gradient(ellipse at 15% 38%, #4c4658, #302d3c 85%);
+}
+.gift-preview.card-preview > .card-head {
+  position: absolute;
+  inset: var(--card-padding) var(--card-padding) auto;
+  width: auto;
+}
+.gift-preview.card-preview > .card-copy {
+  grid-area: 1 / 1;
+  align-self: end;
+  margin: 0;
+  padding: 0;
+  text-shadow: 0 1px 4px #100f13bd;
 }
 .card-preview::after {
   content: "";
@@ -386,10 +401,15 @@
 }
 .gift-preview.card-preview
   > :is(.gift-loading-placeholder, .gift-model-image, .model-animation) {
-  inset: var(--card-art-top, 8px) auto auto
-    calc(50% - var(--card-art-size, 44px) / 2);
-  width: var(--card-art-size, 44px);
-  height: var(--card-art-size, 44px);
+  position: relative;
+  grid-area: 1 / 1;
+  align-self: center;
+  inset: auto;
+  margin: 0;
+  width: var(--card-art-size);
+  height: var(--card-art-size);
+  max-width: 100%;
+  max-height: 100%;
   filter: drop-shadow(0 2px 2px #21132638);
 }
 .card-preview > .gift-preview-fallback {
@@ -427,6 +447,11 @@
   justify-self: center;
   width: 72%;
   height: calc(100% - 32px);
+}
+.card-copy .quote-amount {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .card-copy .quote-amount.precise {
   font-size: 11px;

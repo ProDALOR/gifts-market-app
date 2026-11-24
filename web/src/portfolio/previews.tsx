@@ -5,6 +5,8 @@ import { portfolioRelation, type PortfolioItem } from "./model";
 import { GiftCardView } from "../previews/gift-card";
 import { GiftDetailsView } from "../previews/gift-details";
 import { useOrderValuation } from "../valuation/use-order-valuation";
+import { formatGiftNumber } from "../amount";
+import { CurrencySymbol } from "../ui/icons";
 export function portfolioSubject(
   item: PortfolioItem,
   currency: string,
@@ -51,7 +53,12 @@ export function PortfolioDetails({
       valuation={valuation}
       notice={
         relation && (
-          <p className="portfolio-ownership-note">{relation.description}</p>
+          <p className="portfolio-ownership-note">
+            {item.gift.relation === "unverified" && (
+              <CurrencySymbol currency="GRAM" />
+            )}
+            {relation.description}
+          </p>
         )
       }
       collectionId={gift.book.collection_id}
@@ -98,18 +105,16 @@ export const PortfolioGiftCard = memo(function PortfolioGiftCard({
         item.gift.gift.slug.split("-")[0]
       }
       media={modelMedia(item)}
-      identity={`#${item.gift.gift.number.toLocaleString()}`}
+      identity={`#${formatGiftNumber(item.gift.gift.number)}`}
       meta={
         relation && (
           <span
             className="portfolio-relation"
+            role="img"
             title={relation.description}
             aria-label={relation.description}
           >
-            <svg viewBox="0 0 20 20" aria-hidden="true">
-              <circle cx="10" cy="10" r="7.5" />
-              <path d="M10 9v5M10 6h.01" />
-            </svg>
+            <CurrencySymbol currency="GRAM" />
           </span>
         )
       }
@@ -125,7 +130,6 @@ export const PortfolioGiftCard = memo(function PortfolioGiftCard({
           <button
             className="card-open"
             aria-label={`View ${item.gift.gift.slug}`}
-            title={relation?.description}
             onClick={() => select(item.gift.gift.id)}
             aria-haspopup="dialog"
           />

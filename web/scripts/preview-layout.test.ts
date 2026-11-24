@@ -40,6 +40,35 @@ test("gift covers preserve Telegram's native SVG positions, scales and individua
   assert.deepEqual(giftPatternTiles(0, 400), []);
   assert.deepEqual(giftPatternTiles(400, 0), []);
 });
+test("card symbols keep width-based sizing and consistent radial clearance", () => {
+  for (const width of [92, 115, 161, 240]) {
+    const short = giftPatternTiles(width, 100, true);
+    const tall = giftPatternTiles(width, 240, true);
+    assert.deepEqual(
+      tall.map((tile) => tile.size),
+      short.map((tile) => tile.size),
+    );
+    assert(
+      Math.abs(
+        Math.max(...tall.map((tile) => tile.size)) / width - (30 / 420) * 1.35,
+      ) < 1e-10,
+    );
+    const native = giftPatternTiles(width, 240);
+    const offset = 30 * Math.max(width / 420, 240 / 280);
+    tall.forEach((tile, index) => {
+      const original = native[index];
+      const centerX = tile.x + tile.size / 2;
+      const centerY = tile.y + tile.size / 2;
+      const expectedX =
+        width / 2 + (original.x + original.size / 2 - width / 2) * 1.12;
+      const expectedY =
+        120 + (original.y + original.size / 2 + offset - 120) * 1.12;
+      assert(Math.abs(centerX - expectedX) < 1e-10);
+      assert(Math.abs(centerY - expectedY) < 1e-10);
+      assert.equal(tile.opacity, original.opacity);
+    });
+  }
+});
 test("backdrops split into balanced complete rows, including twelve as six plus six", () => {
   assert.deepEqual(
     balancedRows(

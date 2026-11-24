@@ -156,6 +156,7 @@ async fn portfolio_rest_and_ws_share_inventory_progress_and_reconnect_cache() {
         pending["data"]["progress"]["stage"].as_str(),
         Some("queued" | "loading_inventory")
     ));
+    assert!(pending["data"].get("refresh_after").is_none());
     let response = test::call_service(
         &app,
         test::TestRequest::post()
@@ -178,6 +179,16 @@ async fn portfolio_rest_and_ws_share_inventory_progress_and_reconnect_cache() {
     .unwrap();
     assert_eq!(ready["inventory"]["count"], 0);
     assert_eq!(ready["valuation"]["total"], "0");
+    let checked: jiff::Timestamp = ready["inventory"]["checked_at"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let next: jiff::Timestamp = ready["refresh_after"].as_str().unwrap().parse().unwrap();
+    assert!(
+        (299_000..=301_000).contains(&(next.as_millisecond() - checked.as_millisecond())),
+        "the public recheck deadline starts five minutes after completion"
+    );
     bid_filters::send(&mut socket, serde_json::json!({"type":"cancel","id":"p1"})).await;
     bid_filters::send(
         &mut socket,
@@ -186,6 +197,7 @@ async fn portfolio_rest_and_ws_share_inventory_progress_and_reconnect_cache() {
     .await;
     let reopened = bid_filters::frame(&mut socket, "p2", "portfolio.snapshot").await;
     assert_eq!(reopened["data"]["valuation"], ready["valuation"]);
+    assert_eq!(reopened["data"]["refresh_after"], ready["refresh_after"]);
     bid_filters::send(&mut socket,serde_json::json!({"type":"request","id":"query","method":"portfolio.query","params":params})).await;
     let finite = bid_filters::frame(&mut socket, "query", "result").await;
     assert_eq!(finite["method"], "portfolio.query");

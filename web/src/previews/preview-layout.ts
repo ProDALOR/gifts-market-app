@@ -92,21 +92,33 @@ export function bannerPatternTiles(
 // 100 × 100 symbol before its per-instance scale. Preserve individual alpha.
 // Source: https://t.me/nft/ResistanceDog-14029 (2026-11-19).
 
+const CARD_SYMBOL_SIZE = 1.35;
+const CARD_PATTERN_RADIUS = 1.12;
 
-/** Keep native symbol spacing; cards center the composition's model anchor at y=110. */
-export function giftPatternTiles(
-  width: number,
-  height: number,
-  centered = false,
-) {
+/** Card symbols follow width; a little extra radial spacing keeps the model clear. */
+export function giftPatternTiles(width: number, height: number, card = false) {
   if (width <= 0 || height <= 0) return [];
   const scale = Math.max(width / 420, height / 280);
   const left = (width - 420 * scale) / 2;
-  const top = (height - 280 * scale) / 2 + (centered ? 30 * scale : 0);
-  return GIFT_PATTERN.map(([x, y, size, opacity]) => ({
-    x: left + x * scale,
-    y: top + y * scale,
-    size: 100 * size * scale,
-    opacity,
-  }));
+  const top = (height - 280 * scale) / 2 + (card ? 30 * scale : 0);
+  const symbolScale = card ? (width / 420) * CARD_SYMBOL_SIZE : scale;
+  return GIFT_PATTERN.map(([x, y, size, opacity]) => {
+    const renderedSize = 100 * size * symbolScale;
+    const centerX = left + (x + 50 * size) * scale;
+    const centerY = top + (y + 50 * size) * scale;
+    return {
+      x: card
+        ? width / 2 +
+          (centerX - width / 2) * CARD_PATTERN_RADIUS -
+          renderedSize / 2
+        : left + x * scale,
+      y: card
+        ? height / 2 +
+          (centerY - height / 2) * CARD_PATTERN_RADIUS -
+          renderedSize / 2
+        : top + y * scale,
+      size: renderedSize,
+      opacity,
+    };
+  });
 }

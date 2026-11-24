@@ -1,5 +1,10 @@
 const decimal = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
+/** Gift numbers use space grouping independently of price formatting and locale. */
+export function formatGiftNumber(value: number | string) {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");
+}
+
 /** Exact decimal rounding. Strategy formatting defaults to Rust's midpoint-to-even. */
 export function formatDecimal(
   value: string,

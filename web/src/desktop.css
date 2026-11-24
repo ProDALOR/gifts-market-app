@@ -207,9 +207,9 @@
     gap: 12px;
   }
   .market-results .card-preview {
-    --card-art-size: 112px;
-    --card-art-top: 6px;
-    padding: 8px;
+    --card-art-size: 128px;
+    --card-padding: 8px;
+    padding: var(--card-padding);
     border-radius: 16px;
   }
   .market-results .card-preview > .gift-preview-fallback {

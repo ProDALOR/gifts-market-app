@@ -1045,11 +1045,15 @@ try {
   );
   await sort("Gift #");
   await page.waitForFunction(
-    () => document.querySelector(".gift-card .serial")?.textContent === "#2000",
+    () =>
+      document.querySelector(".gift-card .serial")?.textContent ===
+      "#2\u00a0000",
   );
   await sort("Time");
   await page.waitForFunction(
-    () => document.querySelector(".gift-card .serial")?.textContent === "#1876",
+    () =>
+      document.querySelector(".gift-card .serial")?.textContent ===
+      "#1\u00a0876",
   );
   await sort("Price");
   await button("Reverse sort direction").click();
@@ -1275,7 +1279,9 @@ try {
   assert.equal(await sortTrigger.innerText(), "Time");
   assert.equal(await button("Reverse sort direction").innerText(), "↓");
   await page.waitForFunction(
-    () => document.querySelector(".gift-card .serial")?.textContent === "#1926",
+    () =>
+      document.querySelector(".gift-card .serial")?.textContent ===
+      "#1\u00a0926",
   );
   await page.locator(".feed-status .status.live").waitFor();
   await scrollMore(75);
@@ -1330,7 +1336,9 @@ try {
   );
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForFunction(
-    () => document.querySelector(".gift-card .serial")?.textContent === "#1900",
+    () =>
+      document.querySelector(".gift-card .serial")?.textContent ===
+      "#1\u00a0900",
   );
   assert.ok((await page.locator(".gift-card.is-new").count()) > 0);
   assert.equal(

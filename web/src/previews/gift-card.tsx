@@ -10,6 +10,7 @@ import { GiftArtwork } from "./gift-artwork";
 import { BidPreview } from "../orderbook/bid-preview";
 import { Quote } from "../ui/market-controls";
 import { CurrencySymbol } from "../ui/icons";
+import { amount } from "../amount";
 import { FRESHNESS_MS } from "../orderbook/order-activity";
 import type { OrderActivity } from "../orderbook/order-activity";
 import { usePreviewEnvironment } from "./preview-environment";
@@ -58,6 +59,9 @@ export const GiftCardView = memo(function GiftCardView({
     [activity?.since, pageVisible, reducedMotion],
   );
   const criteria = subject && criteriaPresentation(subject);
+  const name = subject
+    ? modelName(subject, options, collectionName)
+    : collectionName;
   const content = (
     <>
       {activity && (
@@ -89,7 +93,9 @@ export const GiftCardView = memo(function GiftCardView({
             title={
               subject?.target.kind === "unsupported"
                 ? subject.target.message
-                : undefined
+                : typeof identity === "string"
+                  ? identity
+                  : undefined
             }
           >
             {identity}
@@ -104,13 +110,7 @@ export const GiftCardView = memo(function GiftCardView({
             #{giftNumberRange(criteria.number)}
           </span>
         )}
-        {!criteria && (
-          <strong>
-            {subject
-              ? modelName(subject, options, collectionName)
-              : collectionName}
-          </strong>
-        )}
+        {!criteria && <strong title={name}>{name}</strong>}
         <div className={`quote price${subject?.kind === "bid" ? " bid" : ""}`}>
           {price != null ? (
             <Quote price={price} currency={currency} format={format} />
@@ -128,6 +128,13 @@ export const GiftCardView = memo(function GiftCardView({
   return (
     <li
       className={`gift-card${selected ? " selected" : ""}${activity ? ` is-${activity.state}` : ""}${className ? ` ${className}` : ""}`}
+      title={[
+        name,
+        typeof identity === "string" ? identity : undefined,
+        price != null ? `${amount(price)} ${currency}` : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n")}
       data-activity={activity?.state}
       style={
         activity?.state === "new"

@@ -447,7 +447,7 @@ try {
     assert.equal(pageReads[0].limit, 100);
     await page
       .locator(".portfolio-meta")
-      .filter({ hasText: "1 unverified" })
+      .filter({ hasText: "1 on-chain" })
       .waitFor();
     assert.equal(
       (await page.locator(".portfolio-total").innerText()).trim(),
@@ -458,7 +458,7 @@ try {
       has: page.getByRole("button", { name: "View Gift-2", exact: true }),
     });
     await unverified
-      .getByLabel("Visible on this profile; ownership unverified.", {
+      .getByLabel("On-chain", {
         exact: true,
       })
       .waitFor();
@@ -494,39 +494,173 @@ try {
         const image = card
           .querySelector(".gift-model-image.loaded")
           .getBoundingClientRect();
-        const copy = card
-          .querySelector(".card-copy strong")
-          .getBoundingClientRect();
         return {
           width: image.width,
           height: image.height,
-          bottom: image.bottom,
-          labelTop: copy.top,
+          imageLayer: Number(
+            getComputedStyle(card.querySelector(".gift-model-image.loaded"))
+              .zIndex,
+          ),
+          textLayer: Number(
+            getComputedStyle(card.querySelector(".card-copy")).zIndex,
+          ),
+          centerY: image.y + image.height / 2,
+          cardCenterY:
+            card.getBoundingClientRect().y +
+            card.getBoundingClientRect().height / 2,
+          centerX: image.x + image.width / 2,
+          artworkCenterX:
+            card.getBoundingClientRect().x +
+            card.getBoundingClientRect().width / 2,
           symbols: !!card.querySelector(".gift-backdrop"),
         };
       });
-    assert.equal(composition.width, viewport.width < 960 ? 64 : 112);
-    assert.equal(composition.width, composition.height);
+    assert.equal(composition.width, viewport.width < 960 ? 80 : 128);
+    assert(composition.height > 0 && composition.height <= composition.width);
     assert(
-      composition.bottom <= composition.labelTop,
-      "artwork leaves the model name readable",
+      composition.textLayer > composition.imageLayer,
+      "text overlays the model",
+    );
+    assert(Math.abs(composition.centerX - composition.artworkCenterX) < 1);
+    assert(
+      Math.abs(composition.centerY - composition.cardCenterY) < 1,
+      "model centers within the whole card behind the text",
     );
     assert(composition.symbols);
-    await page
-      .locator(".portfolio-card")
-      .first()
-      .evaluate((card) => {
-        const label = card.querySelector(".card-copy strong");
-        const original = label.textContent;
-        label.textContent = "Very Long Collectible Model";
-        const image = card
-          .querySelector(".gift-model-image.loaded")
-          .getBoundingClientRect();
-        const text = label.getBoundingClientRect();
-        label.textContent = original;
-        if (image.bottom > text.top)
-          throw new Error("two-line model labels overlap artwork");
+    // Exercise real card/control styles across compact phones, tablets and the desktop breakpoint.
+    const widths =
+      viewport.width < 960 ? [320, 360, 600, 768, 959] : [960, 1024];
+    for (const width of widths) {
+      await page.setViewportSize({ width, height: viewport.height });
+      await page.evaluate(
+        () =>
+          new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          ),
+      );
+      const issues = await page
+        .locator(".portfolio-card")
+        .first()
+        .evaluate((card) => {
+          const label = card.querySelector(".card-copy strong");
+          const serial = card.querySelector(".serial");
+          const amount = card.querySelector(".quote-amount");
+          if (
+            label.title !== label.textContent ||
+            serial.title !== serial.textContent
+          )
+            throw new Error("card labels must retain their complete text");
+          const tooltip = card
+            .querySelector(".card-open")
+            .closest("[title]")?.title;
+          if (
+            !tooltip?.includes(label.textContent) ||
+            !tooltip.includes(serial.textContent)
+          )
+            throw new Error(
+              "card action must expose the complete labels on hover",
+            );
+          const saved = [
+            label.textContent,
+            serial.textContent,
+            amount.textContent,
+            amount.className,
+          ];
+          label.textContent =
+            "ExtraordinarilyLongCollectibleModelWithoutSpaces";
+          serial.textContent = "#4\u00a0294\u00a0967\u00a0295";
+          amount.textContent = "999,999,999.99";
+          amount.classList.add("precise");
+          const model = card
+            .querySelector(".gift-model-image.loaded")
+            .getBoundingClientRect();
+          const text = label.getBoundingClientRect();
+          const identity = serial.getBoundingClientRect();
+          const bounds = card.getBoundingClientRect();
+          const quote = amount.getBoundingClientRect();
+          const problems = [];
+          if (
+            text.height >
+            parseFloat(getComputedStyle(label).lineHeight) * 2 + 1
+          )
+            problems.push("name exceeds two lines");
+          if (
+            Number(getComputedStyle(label.parentElement).zIndex) <=
+            Number(
+              getComputedStyle(card.querySelector(".gift-model-image.loaded"))
+                .zIndex,
+            )
+          )
+            problems.push("name is behind artwork");
+          if (model.left < bounds.left || model.right > bounds.right)
+            problems.push("art exceeds card");
+          if (model.width / bounds.width < 0.3)
+            problems.push("art too small relative to card");
+          if (identity.right > bounds.right - 20)
+            problems.push("serial crowds metadata");
+          if (quote.bottom > bounds.bottom + 1 || quote.right > bounds.right)
+            problems.push("price exceeds card");
+          [
+            label.textContent,
+            serial.textContent,
+            amount.textContent,
+            amount.className,
+          ] = saved;
+          return problems;
+        });
+      assert.deepEqual(issues, [], `portfolio layout at ${width}px`);
+      const controls = await page
+        .locator(".portfolio-filters")
+        .evaluate((host) => {
+          const input = host.querySelector("input").getBoundingClientRect();
+          const sort = host
+            .querySelector(".portfolio-sort")
+            .getBoundingClientRect();
+          return {
+            input: input.toJSON(),
+            sort: sort.toJSON(),
+            overflow: document.documentElement.scrollWidth > innerWidth,
+          };
+        });
+      assert.equal(
+        controls.overflow,
+        false,
+        `no horizontal overflow at ${width}px`,
+      );
+      if (width < 960) {
+        assert(Math.abs(controls.input.y - controls.sort.y) < 1);
+        assert(controls.sort.x - controls.input.right >= 8);
+      }
+      const picker = page.getByRole("combobox", {
+        name: "Sort by",
+        exact: true,
       });
+      await picker.click();
+      const menu = page.getByRole("listbox", {
+        name: "Sort by options",
+        exact: true,
+      });
+      const bounds = await menu.boundingBox();
+      assert(bounds.x >= 0 && bounds.x + bounds.width <= width);
+      assert.deepEqual(await menu.getByRole("option").allTextContents(), [
+        "Position",
+        "Gift #",
+        "Estimate✓",
+      ]);
+      await page.keyboard.press("Escape");
+      await menu.waitFor({ state: "hidden" });
+      assert(
+        await picker.evaluate((node) => node === document.activeElement),
+        "dismissed sort menu restores focus",
+      );
+    }
+    await page.setViewportSize(viewport);
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
     assert.equal(
       await page.locator(".portfolio-relation").first().innerText(),
       "",
@@ -598,6 +732,42 @@ try {
     await page
       .getByRole("button", { name: "View Gift-1", exact: true })
       .waitFor();
+
+    const selectionWatches = watchCount;
+    for (const [label, sort, first] of [
+      ["Gift #", "number_asc", 1],
+      ["Estimate", "value_desc", 1],
+    ]) {
+      await page
+        .getByRole("combobox", { name: "Sort by", exact: true })
+        .click();
+      await page.getByRole("option", { name: label, exact: true }).click();
+      if (sort.endsWith("desc"))
+        await page
+          .getByRole("button", { name: "Sort descending", exact: true })
+          .click();
+      await page
+        .getByRole("button", { name: `View Gift-${first}`, exact: true })
+        .waitFor();
+      // Wait on the finite response before checking its normalized sort.
+      await page.waitForFunction(
+        () =>
+          !document
+            .querySelector(".scroll-loader")
+            ?.textContent?.includes("Loading"),
+      );
+      assert.equal(pageReads.at(-1).sort, sort);
+    }
+    await page.getByRole("combobox", { name: "Sort by", exact: true }).click();
+    await page.getByRole("option", { name: "Position", exact: true }).click();
+    await page
+      .getByRole("button", { name: "View Gift-1", exact: true })
+      .waitFor();
+    assert.equal(
+      watchCount,
+      selectionWatches,
+      "sorting reuses the portfolio summary watch",
+    );
 
     await page
       .getByRole("button", { name: "Refresh gifts", exact: true })
@@ -679,7 +849,7 @@ try {
       .click();
     await page
       .getByRole("dialog")
-      .getByText("Visible on this profile; ownership unverified.", {
+      .getByText("On-chain", {
         exact: true,
       })
       .waitFor();

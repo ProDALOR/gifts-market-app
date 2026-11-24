@@ -106,9 +106,7 @@ export function GiftDetailsView({
         {selectedSerial && (
           <>
             {" "}
-            <span>
-              #{selectedSerial.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0")}
-            </span>
+            <span>#{selectedSerial}</span>
           </>
         )}
       </h2>

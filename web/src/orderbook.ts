@@ -1,11 +1,12 @@
 import type { Order, CatalogOption, TraitFilters } from "./market.ts";
 import { resolveTraits } from "./catalog/traits.ts";
 import { giftPresentation, type PreviewOrder } from "./order-target.ts";
+import { formatGiftNumber } from "./amount.ts";
 export { traits } from "./catalog/traits.ts";
 export type { Collection, CatalogOption } from "./market.ts";
 export function serial(order: PreviewOrder): string | undefined {
   const number = giftPresentation(order)?.number;
-  return number != null ? String(number) : undefined;
+  return number != null ? formatGiftNumber(number) : undefined;
 }
 export function modelName(
   order: PreviewOrder,
@@ -40,9 +41,11 @@ export function listingLink(order: Order): string | undefined {
 export type BidCriteria = Extract<Order["target"], { kind: "criteria" }>;
 export function giftNumberRange(range: BidCriteria["number"]) {
   if (!range || (range.min == null && range.max == null)) return;
+  const bound = (value: number | null | undefined) =>
+    value == null ? "Any" : formatGiftNumber(value);
   return range.min === range.max
-    ? String(range.min)
-    : `${range.min ?? "Any"} – ${range.max ?? "Any"}`;
+    ? bound(range.min)
+    : `${bound(range.min)} – ${bound(range.max)}`;
 }
 
 export type GiftDetail = {

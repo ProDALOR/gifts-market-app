@@ -183,10 +183,7 @@ test("page frames validate bounded items and keep unpriced/unverified gifts", ()
   }
   assert.equal(portfolioRelation("owned"), undefined);
   assert.equal(portfolioRelation("hosted")?.label, "Hosted");
-  assert.equal(
-    portfolioRelation("unverified")?.description,
-    "Visible on this profile; ownership unverified.",
-  );
+  assert.equal(portfolioRelation("unverified")?.description, "On-chain");
 });
 test("first load is 100 rows, scroll demand appends without changing full totals", async () => {
   const source = report();

@@ -2,15 +2,15 @@ import type { components } from "../gen/api";
 import type { TraitFilters } from "../market";
 export type PortfolioState = components["schemas"]["PortfolioResponse"];
 export type PortfolioItem = components["schemas"]["InventoryValue"];
-const relations = {
+export const portfolioRelations = {
   hosted: { label: "Hosted", description: "Hosted on this Telegram profile." },
   unverified: {
-    label: "Unverified",
-    description: "Visible on this profile; ownership unverified.",
+    label: "On-chain",
+    description: "On-chain",
   },
 };
 export function portfolioRelation(relation: PortfolioItem["gift"]["relation"]) {
-  return relation === "owned" ? undefined : relations[relation];
+  return relation === "owned" ? undefined : portfolioRelations[relation];
 }
 export type PortfolioSort =
   | "value_desc"

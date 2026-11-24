@@ -3,6 +3,7 @@ use std::time::Duration;
 pub struct PortfolioConfig {
     pub max_requests: usize,
     pub cached_users: usize,
+    /// Minimum interval after a check or valuation finishes, before its next run.
     pub refresh_interval: Duration,
     pub request_timeout: Duration,
     pub valuation_idle_timeout: Duration,
@@ -15,7 +16,7 @@ impl Default for PortfolioConfig {
         Self {
             max_requests: 128,
             cached_users: 64,
-            refresh_interval: Duration::from_secs(60),
+            refresh_interval: Duration::from_secs(300),
             request_timeout: Duration::from_secs(60),
             valuation_idle_timeout: Duration::from_secs(60),
             page_size: 100,

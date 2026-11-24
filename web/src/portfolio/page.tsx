@@ -37,7 +37,12 @@ import { useMarketStatus } from "../use-market-status";
 import { usePortfolio } from "./use-portfolio";
 import { usePortfolioRows } from "./use-portfolio-rows";
 import { ScrollLoader } from "../orderbook/scroll-loader";
-import { progressText, portfolioSort, portfolioSortOptions } from "./model";
+import {
+  progressText,
+  portfolioSort,
+  portfolioSortOptions,
+  portfolioRelations,
+} from "./model";
 import type { PortfolioFilters, PortfolioItem, PortfolioState } from "./model";
 import "./portfolio.css";
 const keyOf = (item: PortfolioItem) => item.gift.gift.id;
@@ -531,8 +536,9 @@ function PortfolioView({
                       <span>{summary.collections.length} collections</span>
                     )}
                     {summary.unverified > 0 && (
-                      <span title="Visible on this profile; ownership unverified.">
-                        {summary.unverified.toLocaleString()} unverified
+                      <span title={portfolioRelations.unverified.description}>
+                        {summary.unverified.toLocaleString()}{" "}
+                        {portfolioRelations.unverified.label.toLowerCase()}
                       </span>
                     )}
                     {summary.unpriced > 0 && (

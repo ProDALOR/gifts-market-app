@@ -662,3 +662,246 @@ async fn item_versions_ignore_check_times_but_change_with_profile_order() {
     service.task.shutdown().await.unwrap();
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn check_cooldown_starts_after_completion_including_failures() {
+    let interval = Duration::from_millis(200);
+    assert_eq!(
+        PortfolioConfig::default().refresh_interval,
+        Duration::from_secs(300)
+    );
+    let (service, source, _, runtime) = service(PortfolioConfig {
+        refresh_interval: interval,
+        ..Default::default()
+    })
+    .await;
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    assert!(
+        watch.current().refresh_after.is_none(),
+        "running checks have no completion deadline yet"
+    );
+    tokio::time::sleep(interval + Duration::from_millis(30)).await;
+    service.handle.refresh(query(7, "GRAM")).await.unwrap();
+    assert_eq!(
+        source.count(),
+        1,
+        "requests join the check even after its starting deadline would have passed"
+    );
+    source.reply(0, Ok(page(&["1"], None, 1)));
+    let first = stage(&mut watch, PortfolioStage::Ready).await;
+    assert!(first.refresh_after.unwrap() > first.inventory.as_ref().unwrap().checked_at);
+    assert!(
+        matches!(
+            service.handle.refresh(query(7, "XTR")).await,
+            Err(PortfolioError::Cooldown(_))
+        ),
+        "currency changes cannot bypass a just-completed check"
+    );
+    assert_eq!(source.count(), 1);
+    tokio::time::sleep(interval + Duration::from_millis(20)).await;
+    service.handle.refresh(query(7, "GRAM")).await.unwrap();
+    calls(&source, 2).await;
+    source.reply(1, Err(InventoryError::Unavailable));
+    let failed = stage(&mut watch, PortfolioStage::Failed).await;
+    assert!(failed.refresh_after > first.refresh_after);
+    assert!(
+        matches!(
+            service.handle.refresh(query(7, "GRAM")).await,
+            Err(PortfolioError::Cooldown(_))
+        ),
+        "failed checks are also throttled"
+    );
+    assert!(Arc::ptr_eq(
+        failed.valuation.as_ref().unwrap(),
+        first.valuation.as_ref().unwrap()
+    ));
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn completed_valuation_cooldown_survives_new_inventory_and_cached_requests() {
+    let interval = Duration::from_millis(200);
+    let source = Source::default();
+    let quotes = DelayedQuotes::default();
+    let runtime = InvocationRuntime::start(Default::default()).unwrap();
+    let service = PortfolioService::start(
+        source.clone(),
+        quotes.clone(),
+        PortfolioConfig {
+            refresh_interval: interval,
+            ..Default::default()
+        },
+        runtime.handle(),
+    )
+    .await
+    .unwrap();
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1"], None, 1)));
+    quote_calls(&quotes, 1).await;
+    // A run longer than the interval must still get a full cooldown after finishing.
+    tokio::time::sleep(interval + Duration::from_millis(30)).await;
+    for _ in 0..3 {
+        service.handle.query(query(7, "GRAM")).await.unwrap();
+    }
+    assert_eq!(
+        quotes.0.lock().unwrap().len(),
+        1,
+        "in-flight valuation is shared"
+    );
+    quotes.0.lock().unwrap().remove(0).send(()).unwrap();
+    let first = stage(&mut watch, PortfolioStage::Ready).await;
+    // The inventory is independently eligible, but its new generation cannot reset valuation pacing.
+    service.handle.refresh(query(7, "GRAM")).await.unwrap();
+    calls(&source, 2).await;
+    source.reply(1, Ok(page(&["2", "3"], None, 2)));
+    let mut reopened = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    for _ in 0..3 {
+        let cached = service.handle.query(query(7, "GRAM")).await.unwrap();
+        assert!(Arc::ptr_eq(
+            cached.valuation.as_ref().unwrap(),
+            first.valuation.as_ref().unwrap()
+        ));
+        assert_eq!(cached.inventory.as_ref().unwrap().count, 1);
+    }
+    assert!(
+        quotes.0.lock().unwrap().is_empty(),
+        "new inventory must wait for the previous valuation cooldown"
+    );
+    tokio::time::sleep(interval).await;
+    service.handle.query(query(7, "GRAM")).await.unwrap();
+    quote_calls(&quotes, 1).await;
+    quotes.0.lock().unwrap().remove(0).send(()).unwrap();
+    let updated = stage(&mut reopened, PortfolioStage::Ready).await;
+    assert_eq!(updated.inventory.as_ref().unwrap().count, 2);
+    assert_eq!(
+        updated.valuation.as_ref().unwrap().items[0]
+            .gift
+            .gift
+            .id
+            .as_str(),
+        "2"
+    );
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn cache_eviction_does_not_reset_recent_portfolio_cooldowns() {
+    let interval = Duration::from_millis(200);
+    let (service, source, quotes, runtime) = service(PortfolioConfig {
+        cached_users: 1,
+        refresh_interval: interval,
+        ..Default::default()
+    })
+    .await;
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1"], None, 1)));
+    stage(&mut watch, PortfolioStage::Ready).await;
+    drop(watch);
+    assert!(matches!(
+        service.handle.query(query(8, "GRAM")).await,
+        Err(PortfolioError::Busy)
+    ));
+    let mut reopened = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    assert_eq!(reopened.current().progress.stage, PortfolioStage::Ready);
+    assert_eq!(source.count(), 1);
+    assert_eq!(quotes.0.load(Ordering::SeqCst), 1);
+    drop(reopened);
+    tokio::time::sleep(interval + Duration::from_millis(20)).await;
+    service.handle.query(query(8, "GRAM")).await.unwrap();
+    assert_eq!(
+        source.count(),
+        1,
+        "cached-only queries never fetch inventory"
+    );
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
+
+#[derive(Clone, Default)]
+struct FailedQuotes(Arc<AtomicUsize>);
+impl ValuationProvider for FailedQuotes {
+    async fn value(
+        &self,
+        _: Arc<Vec<InventoryGift>>,
+        _: market_gifts::CurrencyId,
+        _: tokio::sync::watch::Sender<usize>,
+    ) -> Result<Arc<InventoryValuation>, market_valuation::ValuationError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(market_valuation::ValuationError::timed_out("test failure"))
+    }
+}
+#[tokio::test]
+async fn failed_valuations_wait_before_retrying() {
+    let source = Source::default();
+    let quotes = FailedQuotes::default();
+    let runtime = InvocationRuntime::start(Default::default()).unwrap();
+    let interval = Duration::from_millis(200);
+    let service = PortfolioService::start(
+        source.clone(),
+        quotes.clone(),
+        PortfolioConfig {
+            refresh_interval: interval,
+            ..Default::default()
+        },
+        runtime.handle(),
+    )
+    .await
+    .unwrap();
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1"], None, 1)));
+    stage(&mut watch, PortfolioStage::Failed).await;
+    for _ in 0..3 {
+        service.handle.query(query(7, "GRAM")).await.unwrap();
+    }
+    assert_eq!(quotes.0.load(Ordering::SeqCst), 1);
+    tokio::time::sleep(interval + Duration::from_millis(20)).await;
+    service.handle.query(query(7, "GRAM")).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while quotes.0.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(source.count(), 1);
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn switching_currencies_cannot_evict_a_cooling_valuation() {
+    let (service, source, quotes, runtime) = service(Default::default()).await;
+    let mut first = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1"], None, 1)));
+    let ready = stage(&mut first, PortfolioStage::Ready).await;
+    drop(first);
+    for i in 0..7 {
+        let mut view = service
+            .handle
+            .watch(query(7, &format!("C{i}")))
+            .await
+            .unwrap();
+        stage(&mut view, PortfolioStage::Ready).await;
+    }
+    assert!(matches!(
+        service.handle.watch(query(7, "EXTRA")).await,
+        Err(PortfolioError::Busy)
+    ));
+    let cached = service.handle.query(query(7, "GRAM")).await.unwrap();
+    assert!(Arc::ptr_eq(
+        cached.valuation.as_ref().unwrap(),
+        ready.valuation.as_ref().unwrap()
+    ));
+    assert_eq!(source.count(), 1);
+    assert_eq!(quotes.0.load(Ordering::SeqCst), 8);
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
