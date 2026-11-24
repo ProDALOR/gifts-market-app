@@ -58,6 +58,9 @@ impl ValuationSnapshot {
             Ok(())
         }
     }
+    pub(crate) fn generation(&self) -> Result<u64> {
+        self.reader.generation()
+    }
     pub fn revision(&self) -> Result<String> {
         self.check_cancelled()?;
         self.reader.cursor()

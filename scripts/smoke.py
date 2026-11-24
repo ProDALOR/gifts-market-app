@@ -14,6 +14,7 @@ def clean_environment(source):
         if not key.startswith(("MARKET_", "TELEGRAM_", "VITE_MARKET_"))
     }
     environment["NO_PROXY"] = environment["no_proxy"] = "127.0.0.1,localhost"
+    environment["RUST_LOG"] = "info"
     return environment
 
 
@@ -33,10 +34,16 @@ def fixture_executable(build_output):
 
 
 def stop_group(process, sig):
+    # Completed children may have already lost their process group (or their
+    # numeric PID may have been reused); never signal those groups.
+    if process.poll() is not None:
+        return
     try:
         os.killpg(process.pid, sig)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        process.send_signal(sig)
 
 
 def main():
@@ -199,9 +206,10 @@ def main():
             str(workspace / "replica"),
         ]
         app_process = start(
-            "app", app_command, dict(base_env, MARKET_HUB_TOKEN=token), root
+            "app", app_command, dict(base_env, MARKET_HUB_TOKEN=token), workspace
         )
         wait(base + "/readyz")
+        assert 'transport="split_stream"' in (workspace / "app.log").read_text(), "Updated hub/app must use snapshot streaming"
         query = {
             "filters": {"collection_id": "tg.gift.123", "currency_id": "GRAM"},
             "source": "asks",
@@ -212,7 +220,7 @@ def main():
         assert page["data"][0]["price"] == "1.25"
         assert page["data"][0]["book"]["venue_id"] == "partner"
         assert "T" in page["data"][0]["observed_at"]
-        stale = page["next"]
+        stale = page["range"]["end"]
         frozen_query["view"]["id"]=page["snapshot"]
         second = call("/orders/query", dict(frozen_query,range={"start":stale,"end":None}))
         assert second["data"][0]["price"] == "2.25"
@@ -278,7 +286,17 @@ def main():
                 assert time.monotonic() < deadline, "Replica convergence timed out"
                 time.sleep(0.05)
 
+        def hub_persisted():
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{admin}/metrics",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urllib.request.urlopen(request, timeout=2) as response:
+                return "market_storage_pending_jobs 0\n" in response.read().decode()
+
         # All public queries remain available with the hub offline, including after an app restart.
+        # Publishing is memory-first; pin the durable boundary before testing a hard hub crash.
+        eventually(hub_persisted)
         server.kill()
         server.wait()
         eventually(lambda: market_status() == "delayed")
@@ -289,32 +307,31 @@ def main():
             call("/orders/query", dict(frozen_query,range={"start":stale,"end":None}))["data"][0]["price"]
             == "2.25"
         )
-        app_process.kill()
-        app_process.wait()
+        stop_group(app_process, signal.SIGINT)
+        assert app_process.wait(timeout=30) == 0
         app_process = start(
-            "app", app_command, dict(base_env, MARKET_HUB_TOKEN=token), root
+            "app", app_command, dict(base_env, MARKET_HUB_TOKEN=token), workspace
         )
         wait(base + "/readyz")
         assert call("/orders/query", query)["data"][0]["price"] == "0.500000001"
         assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 1
         assert len(call("/catalog")["collections"]) == 2
         call("/orders/query", dict(frozen_query,range={"start":stale,"end":None}), expected=409)
-        # Hub restart invalidates the Watch cursor: rebuild and swap the replica atomically.
+        # Hub restart restores facts and invalidates Watch: rebuild without source reseeding.
         server = start("hub", hub_command, env, root)
         wait(f"http://127.0.0.1:{admin}/healthz")
-        fixture("seed-live")
         eventually(
             lambda: (
                 market_status() == "available"
                 and len(call("/orders/query", q)["data"]) == 30
-                and call("/orders/query", query)["data"][0]["price"] == "1.25"
+                and call("/orders/query", query)["data"][0]["price"] == "0.500000001"
             )
         )
         assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 1
         # Ordering keys remain reusable after their snapshot lease expires.
         live = call("/orders/query", dict(query,range={"start":stale,"end":None}))
         assert live["data"][0]["price"] == "2.25"
-        assert call("/orders/query", dict(query,range={"start":live["next"],"end":None}))["data"][0]["price"] == "3.25"
+        assert call("/orders/query", dict(query,range={"start":live["range"]["end"],"end":None}))["data"][0]["price"] == "3.25"
         # REST and WebSockets use the same query-bound ordering keys.
         subprocess.run(
             ["node", str(root / "scripts/range-probe.mjs")],
@@ -339,13 +356,14 @@ def main():
         )
         history = call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]
         assert history[0]["id"] == "old-execution"
+        eventually(hub_persisted)
         server.kill()
         server.wait()
         eventually(lambda: market_status() == "delayed")
-        app_process.kill()
-        app_process.wait()
+        stop_group(app_process, signal.SIGINT)
+        assert app_process.wait(timeout=30) == 0
         app_process = start(
-            "app", app_command, dict(base_env, MARKET_HUB_TOKEN=token), root
+            "app", app_command, dict(base_env, MARKET_HUB_TOKEN=token), workspace
         )
         wait(base + "/readyz")
         assert len(call("/orders/query", {"filters":query["filters"],"source":"history","sort":"time_asc"})["data"]) == 3
@@ -353,7 +371,6 @@ def main():
         # Leave the optional preview connected after testing persisted, disconnected reads.
         server = start("hub", hub_command, env, root)
         wait(f"http://127.0.0.1:{admin}/healthz")
-        fixture("seed-recover")
         eventually(
             lambda: (
                 market_status() == "available"

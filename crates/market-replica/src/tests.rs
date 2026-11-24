@@ -303,7 +303,7 @@ fn repeated_heartbeats_preserve_views_revisions_and_notification_quietness() {
         apply(&replica, vec![], "c0");
         replica.writer.lock().unwrap().mark(SyncState::Live);
     }
-    assert!(Arc::ptr_eq(&before, &replica.view().unwrap()));
+    assert!(before.revisions.sequence == replica.view().unwrap().revisions.sequence);
     assert_eq!(
         replica.writer.lock().unwrap().store.updated_at().unwrap(),
         updated_at
@@ -425,7 +425,7 @@ fn grouped_deliveries_publish_once_and_reject_invalid_later_deliveries_atomicall
             .apply_deliveries(&bad)
             .is_err()
     );
-    assert!(Arc::ptr_eq(&reference, &replica.view().unwrap()));
+    assert!(reference.revisions.sequence == replica.view().unwrap().revisions.sequence);
     assert!(!changes.has_changed().unwrap());
     drop(reference);
     drop(replica);
@@ -474,7 +474,7 @@ fn resume_repairs_committed_but_unpublished_current_and_history_without_marking_
     let before = replica.view().unwrap();
     assert_eq!(writer.resume_cursor().unwrap(), "committed");
     assert!(
-        Arc::ptr_eq(&before, &replica.view().unwrap()),
+        before.revisions.sequence == replica.view().unwrap().revisions.sequence,
         "ordinary reconnects must not rebuild state"
     );
     writer
@@ -509,8 +509,9 @@ fn publication_failure_recovery_does_not_depend_on_cursor_inequality() {
             writer.publication,
             PublicationState::Prepared { .. }
         ));
+        writer.finish_persistence().unwrap();
         assert_eq!(writer.cursor().unwrap(), cursor);
-        assert!(Arc::ptr_eq(&before, &replica.view().unwrap()));
+        assert!(before.revisions.sequence == replica.view().unwrap().revisions.sequence);
         let prepared = match &writer.publication {
             PublicationState::Prepared { view, .. } => view.clone(),
             _ => unreachable!(),
@@ -519,7 +520,7 @@ fn publication_failure_recovery_does_not_depend_on_cursor_inequality() {
         writer.fail_publish_once = true;
         assert!(writer.resume_cursor().is_err());
         assert_eq!(writer.resume_cursor().unwrap(), cursor);
-        assert!(Arc::ptr_eq(&prepared, &replica.view().unwrap()));
+        assert!(prepared.revisions.sequence == replica.view().unwrap().revisions.sequence);
         assert_eq!(
             replica.view().unwrap().revisions.sequence,
             revision_before_retry
@@ -540,7 +541,7 @@ fn publication_failure_recovery_does_not_depend_on_cursor_inequality() {
             })
             .unwrap();
         assert_eq!(replica.status().state, SyncState::Live);
-        assert!(Arc::ptr_eq(&repaired, &replica.view().unwrap()));
+        assert!(repaired.revisions.sequence == replica.view().unwrap().revisions.sequence);
     }
 }
 
@@ -602,7 +603,7 @@ fn rejected_storage_writes_do_not_rebuild_state_on_resume() {
         );
         assert!(matches!(writer.publication, PublicationState::Current));
         assert_eq!(writer.resume_cursor().unwrap(), "saved");
-        assert!(Arc::ptr_eq(&before, &replica.view().unwrap()));
+        assert!(before.revisions.sequence == replica.view().unwrap().revisions.sequence);
         assert!(!changes.has_changed().unwrap());
     }
 }
@@ -633,32 +634,120 @@ fn checkpoint_only_publication_retry_keeps_revisions_and_data_notifications_quie
 }
 
 #[test]
-fn uncertain_commits_restore_a_consistent_snapshot_even_with_a_repeated_cursor() {
+fn blocked_persistence_does_not_delay_live_books_history_or_pinned_pagination() {
+    let (_dir, replica) = setup();
+    let mut writer = replica.writer.lock().unwrap();
+    let baseline = writer.reader().snapshot().unwrap();
+    let store = writer.store.clone();
+    let blocked = store.hold_write_for_test();
+    writer
+        .apply(w::Batch {
+            cursor: "fast-ask".into(),
+            changes: vec![upsert(entity(E::Order(order("listing", "3", None))))],
+        })
+        .unwrap();
+    assert_eq!(
+        ids(&replica.read(read(1, false)).unwrap().page),
+        ["listing"]
+    );
+    writer
+        .apply(w::Batch {
+            cursor: "fast-sale".into(),
+            changes: vec![
+                upsert(entity(E::Order(order("listing", "3", Some(10))))),
+                upsert(entity(E::Order(order("other", "2", Some(9))))),
+            ],
+        })
+        .unwrap();
+    assert!(
+        replica
+            .read(read(1, false))
+            .unwrap()
+            .page
+            .entities
+            .is_empty()
+    );
+    let pinned = replica.snapshot().unwrap();
+    let revision = replica.read_revision(&read(0, true)).unwrap();
+    assert_eq!(
+        store.cursor().unwrap(),
+        "c0",
+        "the database writer is still blocked"
+    );
+    assert!(
+        baseline
+            .read(read(0, true))
+            .unwrap()
+            .page
+            .entities
+            .is_empty()
+    );
+    for sort in [
+        crate::Sort::PriceAsc,
+        crate::Sort::PriceDesc,
+        crate::Sort::TimeAsc,
+        crate::Sort::TimeDesc,
+        crate::Sort::NumberAsc,
+        crate::Sort::NumberDesc,
+    ] {
+        let mut query = read(0, true);
+        query.limit = 1;
+        let mut result = pinned
+            .read_with_options(
+                query.clone(),
+                crate::ReadOptions {
+                    sort: Some(sort),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let first = ids(&result.page);
+        query.page_token = result.page.next_page_token;
+        assert!(!query.page_token.is_empty());
+        result = pinned
+            .read_with_options(
+                query,
+                crate::ReadOptions {
+                    sort: Some(sort),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(result.page.entities.len(), 1);
+        assert_ne!(first, ids(&result.page));
+    }
+    drop(blocked);
+    writer.finish_persistence().unwrap();
+    assert_eq!(store.cursor().unwrap(), "fast-sale");
+    assert_eq!(revision, replica.read_revision(&read(0, true)).unwrap());
+    assert_eq!(
+        ids(&pinned.read(read(0, true)).unwrap().page),
+        ids(&replica.read(read(0, true)).unwrap().page)
+    );
+}
+
+#[test]
+fn background_failures_recover_durable_state_even_with_a_repeated_cursor() {
     for committed in [false, true] {
         let (_dir, replica) = setup();
         let mut writer = replica.writer.lock().unwrap();
-        writer.mark(SyncState::Stale);
         writer.store.fail_commit_once(committed);
-        assert!(
-            writer
-                .apply(w::Batch {
-                    cursor: "c0".into(),
-                    changes: vec![
-                        upsert(entity(E::Order(order("listing", "1", None)))),
-                        upsert(entity(E::Order(order("sale", "2", Some(10)))))
-                    ],
-                })
-                .is_err()
+        writer
+            .apply(w::Batch {
+                cursor: "c0".into(),
+                changes: vec![
+                    upsert(entity(E::Order(order("listing", "1", None)))),
+                    upsert(entity(E::Order(order("sale", "2", Some(10))))),
+                ],
+            })
+            .unwrap();
+        assert_eq!(
+            ids(&replica.read(read(1, false)).unwrap().page),
+            ["listing"]
         );
+        assert_eq!(ids(&replica.read(read(0, true)).unwrap().page), ["sale"]);
+        assert!(writer.finish_persistence().is_err());
         assert!(matches!(writer.publication, PublicationState::Uncertain));
-        assert!(
-            replica
-                .read(read(1, false))
-                .unwrap()
-                .page
-                .entities
-                .is_empty()
-        );
         assert_eq!(writer.resume_cursor().unwrap(), "c0");
         assert!(matches!(writer.publication, PublicationState::Current));
         assert_eq!(replica.status().state, SyncState::Stale);
@@ -670,12 +759,12 @@ fn uncertain_commits_restore_a_consistent_snapshot_even_with_a_repeated_cursor()
             replica.read(read(0, true)).unwrap().page.entities.len(),
             usize::from(committed)
         );
-        let view = replica.view().unwrap();
-        let checkpoint = view.history.checkpoint().unwrap();
-        assert_eq!(view.cursor, checkpoint.cursor);
-        assert_eq!(view.updated_at, checkpoint.updated_at);
+        let before = replica.view().unwrap();
         writer.resume_cursor().unwrap();
-        assert!(Arc::ptr_eq(&view, &replica.view().unwrap()));
+        assert_eq!(
+            before.revisions.sequence,
+            replica.view().unwrap().revisions.sequence
+        );
     }
 }
 
@@ -708,7 +797,7 @@ fn failed_snapshot_publication_reuses_the_prepared_database_and_persists_future_
     };
     writer.mark(SyncState::Stale);
     assert_eq!(writer.resume_cursor().unwrap(), "new");
-    assert!(Arc::ptr_eq(&prepared, &reader.view().unwrap()));
+    assert!(prepared.revisions.sequence == reader.view().unwrap().revisions.sequence);
     assert_eq!(ids(&reader.read(read(1, false)).unwrap().page), ["new"]);
     assert_eq!(ids(&reader.read(read(0, true)).unwrap().page), ["new-sale"]);
     writer
@@ -1024,7 +1113,7 @@ fn shared_book_references_and_directory_pagination_survive_restart() {
 }
 
 #[test]
-fn legacy_continuations_keep_their_shape_and_exact_boundaries() {
+fn canonical_continuations_reject_obsolete_price_boundaries_and_preserve_exact_ties() {
     use crate::types::{EntityKind, Key, Position, Sort};
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use serde_json::json;
@@ -1058,8 +1147,8 @@ fn legacy_continuations_keep_their_shape_and_exact_boundaries() {
         "typed",
     );
     for (history, sort, boundary, expected) in [
-        (false, 1, json!({"Price":["1",[7,"venue","a"]]}), "b"),
-        (false, 2, json!({"Price":["2",[7,"venue","c"]]}), "b"),
+        (false, 1, json!({"Ranked":["1",[7,"venue","a"]]}), "b"),
+        (false, 2, json!({"Ranked":["2",[7,"venue","c"]]}), "b"),
         (false, 0, json!({"Current":[7,"venue","a"]}), "b"),
         (true, 0, json!({"History":[10,"venue","x"]}), "y"),
     ] {
@@ -1074,26 +1163,18 @@ fn legacy_continuations_keep_their_shape_and_exact_boundaries() {
         );
         assert_eq!(ids(&replica.read(query).unwrap().page), [expected]);
     }
-    // Price and time sorts emit canonical cursors, including after a legacy price cursor.
-    for sort in 1..=4 {
-        let mut request = read(1, false);
-        request.sort = sort;
-        let first = replica.read(request.clone()).unwrap();
-        let mut token: serde_json::Value =
-            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(&first.page.next_page_token).unwrap())
-                .unwrap();
-        assert!(token["position"].get("Ranked").is_some());
-        if sort <= 2 {
-            token["position"] = json!({"Price":token["position"]["Ranked"]});
-            request.page_token = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&token).unwrap());
-            let next = replica.read(request).unwrap();
-            let token: serde_json::Value =
-                serde_json::from_slice(&URL_SAFE_NO_PAD.decode(next.page.next_page_token).unwrap())
-                    .unwrap();
-            assert!(token["position"].get("Ranked").is_some());
-            assert!(token["position"].get("Price").is_none());
-        }
-    }
+    // Only the canonical Ranked variant is accepted. Expired Price aliases
+    // must not silently reintroduce an obsolete continuation contract.
+    let request = read(1, false);
+    let first = replica.read(request.clone()).unwrap();
+    let mut token: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(first.page.next_page_token).unwrap())
+            .unwrap();
+    assert!(token["position"].get("Ranked").is_some());
+    token["position"] = json!({"Price":token["position"]["Ranked"]});
+    let mut old = request;
+    old.page_token = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&token).unwrap());
+    assert!(replica.read(old).is_err());
     // Inclusive price bounds must retain every identity tied at the same exact price.
     let mut query = read(1, false);
     query.limit = 10;
@@ -1158,11 +1239,17 @@ fn time_number_and_price_sort_whole_books_and_history_with_stable_keyset_pages()
     apply(&replica, changes, "ranked1");
     let collect = |replica: &Fixture, sort: i32, history: bool| {
         let mut query = read(0, history);
-        query.sort = sort;
+        let options = ReadOptions {
+            sort: Some(Sort::try_from(sort).unwrap()),
+            ..Default::default()
+        };
         query.limit = 2;
         let mut result = Vec::new();
         loop {
-            let page = replica.read(query.clone()).unwrap().page;
+            let page = replica
+                .read_with_options(query.clone(), options)
+                .unwrap()
+                .page;
             result.extend(ids(&page));
             if page.next_page_token.is_empty() {
                 break;
@@ -1192,9 +1279,15 @@ fn time_number_and_price_sort_whole_books_and_history_with_stable_keyset_pages()
         }
     }
     let mut snapshot = read(0, false);
-    snapshot.sort = 4;
+    let options = ReadOptions {
+        sort: Some(Sort::TimeDesc),
+        ..Default::default()
+    };
     snapshot.limit = 2;
-    let first = replica.read(snapshot.clone()).unwrap().page;
+    let first = replica
+        .read_with_options(snapshot.clone(), options)
+        .unwrap()
+        .page;
     assert_eq!(ids(&first), ["act-a", "act-d"]);
     apply(
         &replica,
@@ -1205,7 +1298,7 @@ fn time_number_and_price_sort_whole_books_and_history_with_stable_keyset_pages()
     );
     snapshot.page_token = first.next_page_token;
     assert_eq!(
-        ids(&replica.read(snapshot).unwrap().page),
+        ids(&replica.read_with_options(snapshot, options).unwrap().page),
         ["act-c", "act-b"]
     );
     assert_eq!(
@@ -1470,11 +1563,17 @@ fn ranked_snapshot_continuations_keep_old_payloads_after_same_rank_updates() {
     let mut continuations = Vec::new();
     for sort in 1..=6 {
         let mut request = read(0, false);
-        request.sort = sort;
-        let first = replica.read(request.clone()).unwrap().page;
+        let options = ReadOptions {
+            sort: Some(Sort::try_from(sort).unwrap()),
+            ..Default::default()
+        };
+        let first = replica
+            .read_with_options(request.clone(), options)
+            .unwrap()
+            .page;
         assert!(!first.next_page_token.is_empty());
         request.page_token = first.next_page_token;
-        continuations.push(request);
+        continuations.push((request, options));
     }
     let mut a = order("a", "1", None);
     let mut b = order("b", "2", None);
@@ -1485,13 +1584,16 @@ fn ranked_snapshot_continuations_keep_old_payloads_after_same_rank_updates() {
         vec![upsert(entity(E::Order(a))), upsert(entity(E::Order(b)))],
         "shared2",
     );
-    for request in continuations {
-        let pinned = replica.read(request.clone()).unwrap().page;
+    for (request, options) in continuations {
+        let pinned = replica
+            .read_with_options(request.clone(), options)
+            .unwrap()
+            .page;
         assert_eq!(pinned.entities.len(), 1);
         assert!(state::order(&pinned.entities[0]).unwrap().meta.is_empty());
         let mut live = request;
         live.mode = 1;
-        let current = replica.read(live).unwrap().page;
+        let current = replica.read_with_options(live, options).unwrap().page;
         assert_eq!(current.entities.len(), 1);
         assert_eq!(
             state::order(&current.entities[0]).unwrap().meta["label"],

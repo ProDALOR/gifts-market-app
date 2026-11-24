@@ -8,8 +8,8 @@ use w::entity::Entity as E;
 
 #[tokio::test]
 async fn abandoned_returned_snapshot_results_release_resources_off_thread_and_drain() {
-    use super::{StorageValue, drain};
-    use tokio_util::task::TaskTracker;
+    use super::StorageValue;
+    use crate::replication::storage_jobs::StorageJobs;
     struct Held {
         _builder: crate::SnapshotBuilder,
         entered: Option<tokio::sync::oneshot::Sender<()>>,
@@ -23,7 +23,7 @@ async fn abandoned_returned_snapshot_results_release_resources_off_thread_and_dr
     }
     let directory = tempfile::tempdir().unwrap();
     let mut writer = crate::ReplicaWriter::open(directory.path(), "cleanup").unwrap();
-    let jobs = TaskTracker::new();
+    let jobs = StorageJobs::new().unwrap();
     let (entered, started) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let value = StorageValue::new(
@@ -41,7 +41,7 @@ async fn abandoned_returned_snapshot_results_release_resources_off_thread_and_dr
     drop(value);
     started.await.unwrap();
     let exclusive = writer.begin_snapshot().is_err();
-    let mut draining = Box::pin(drain(&jobs));
+    let mut draining = Box::pin(jobs.drain());
     let premature = tokio::time::timeout(Duration::from_millis(25), &mut draining)
         .await
         .is_ok();
@@ -176,9 +176,9 @@ async fn live_group_buffer_allocation_benchmark() {
 
 #[tokio::test]
 async fn cancellation_replays_buffered_frames_after_the_last_admitted_group() {
-    use super::{drain, live_deliveries};
+    use super::live_deliveries;
+    use crate::replication::storage_jobs::StorageJobs;
     use futures_util::StreamExt;
-    use tokio_util::task::TaskTracker;
 
     for admitted in [false, true] {
         let directory = tempfile::tempdir().unwrap();
@@ -211,7 +211,7 @@ async fn cancellation_replays_buffered_frames_after_the_last_admitted_group() {
             .unwrap();
         assert_eq!(deliveries.batches.len(), 1);
         assert_eq!(pending.as_ref().unwrap().cursor, "c1");
-        let jobs = TaskTracker::new();
+        let jobs = StorageJobs::new().unwrap();
         if admitted {
             let (started, running) = tokio::sync::oneshot::channel();
             let (release, blocked) = std::sync::mpsc::channel();
@@ -233,7 +233,7 @@ async fn cancellation_replays_buffered_frames_after_the_last_admitted_group() {
             drop(pending);
             drop(stream);
         }
-        drain(&jobs).await;
+        jobs.drain().await;
         let first = usize::from(admitted);
         {
             let mut writer = market.replication.writer.lock().unwrap();
@@ -297,6 +297,30 @@ async fn reconnect_after_failed_publication_repairs_history_and_replays_remainin
     }
     #[tonic::async_trait]
     impl w::market_read_server::MarketRead for Peer {
+        type ReadSnapshotPartStream = Self::ReadStream;
+        async fn open_snapshot(
+            &self,
+            _: tonic::Request<w::Empty>,
+        ) -> Result<tonic::Response<w::SnapshotSession>, tonic::Status> {
+            Err(tonic::Status::unimplemented(
+                "coordinated snapshots unavailable",
+            ))
+        }
+        async fn read_snapshot_part(
+            &self,
+            _: tonic::Request<w::SnapshotPartRequest>,
+        ) -> Result<tonic::Response<Self::ReadSnapshotPartStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented(
+                "coordinated snapshots unavailable",
+            ))
+        }
+        async fn close_snapshot(
+            &self,
+            _: tonic::Request<w::SnapshotToken>,
+        ) -> Result<tonic::Response<w::Empty>, tonic::Status> {
+            Ok(tonic::Response::new(w::Empty {}))
+        }
+
         async fn books(
             &self,
             _: Request<w::BooksRequest>,
@@ -433,9 +457,8 @@ async fn reconnect_after_failed_publication_repairs_history_and_replays_remainin
 
 #[tokio::test]
 async fn draining_cancelled_storage_work_waits_for_returned_builder_cleanup() {
-    use super::{blocking, drain};
+    use crate::replication::storage_jobs::StorageJobs;
     use tokio::sync::oneshot;
-    use tokio_util::task::TaskTracker;
 
     struct HeldBuilder {
         _builder: crate::SnapshotBuilder,
@@ -450,13 +473,13 @@ async fn draining_cancelled_storage_work_waits_for_returned_builder_cleanup() {
     }
     let directory = tempfile::tempdir().unwrap();
     let mut writer = crate::ReplicaWriter::open(directory.path(), "cancelled-work").unwrap();
-    let jobs = TaskTracker::new();
+    let jobs = StorageJobs::new().unwrap();
     let (started, running) = oneshot::channel();
     let (finish, finished) = std::sync::mpsc::channel();
     let (dropping, dropped) = oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
     let builder = writer.begin_snapshot().unwrap();
-    let mut work = Box::pin(blocking(&jobs, move || {
+    let mut work = Box::pin(jobs.run(move || {
         let _ = started.send(());
         let _ = finished.recv();
         Ok(HeldBuilder {
@@ -472,7 +495,7 @@ async fn draining_cancelled_storage_work_waits_for_returned_builder_cleanup() {
     drop(work);
     finish.send(()).unwrap();
     dropped.await.unwrap();
-    let mut drained = Box::pin(drain(&jobs));
+    let mut drained = Box::pin(jobs.drain());
     let premature = tokio::time::timeout(Duration::from_millis(25), &mut drained)
         .await
         .is_ok();
@@ -487,14 +510,13 @@ async fn draining_cancelled_storage_work_waits_for_returned_builder_cleanup() {
     assert!(!writer.reader().status().ready);
     jobs.reopen();
     assert!(writer.begin_snapshot().is_ok());
-    assert_eq!(blocking(&jobs, || Ok(42)).await.unwrap(), 42);
-    drain(&jobs).await;
+    assert_eq!(jobs.run(|| Ok(42)).await.unwrap(), 42);
+    jobs.drain().await;
 }
 
 #[tokio::test]
 async fn cancellation_drains_an_admitted_prepared_publication_retry_without_rebuilding() {
-    use super::drain;
-    use tokio_util::task::TaskTracker;
+    use crate::replication::storage_jobs::StorageJobs;
     let directory = tempfile::tempdir().unwrap();
     let market = ReplicaRuntime::open(directory.path(), "cancelled-publication")
         .await
@@ -521,7 +543,7 @@ async fn cancellation_drains_an_admitted_prepared_publication_retry_without_rebu
             _ => unreachable!(),
         }
     };
-    let jobs = TaskTracker::new();
+    let jobs = StorageJobs::new().unwrap();
     let (started, running) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let mut work = Box::pin(market.replication.mutate(&jobs, move |writer| {
@@ -532,8 +554,8 @@ async fn cancellation_drains_an_admitted_prepared_publication_retry_without_rebu
     tokio::select! { _ = running => {}, _ = &mut work => panic!("retry must be blocked") }
     drop(work);
     release.send(()).unwrap();
-    drain(&jobs).await;
-    assert!(Arc::ptr_eq(&prepared, &market.reader.view().unwrap()));
+    jobs.drain().await;
+    assert!(prepared.revisions.sequence == market.reader.view().unwrap().revisions.sequence);
     assert_eq!(market.reader.cursor().unwrap(), "next");
     assert_eq!(market.reader.status().state, SyncState::Stale);
     let mut writer = market.replication.writer.lock().unwrap();
@@ -542,13 +564,12 @@ async fn cancellation_drains_an_admitted_prepared_publication_retry_without_rebu
         crate::PublicationState::Current
     ));
     writer.resume_cursor().unwrap();
-    assert!(Arc::ptr_eq(&prepared, &market.reader.view().unwrap()));
+    assert!(prepared.revisions.sequence == market.reader.view().unwrap().revisions.sequence);
 }
 
 #[tokio::test]
 async fn storage_panic_releases_tracking_and_preserves_the_published_replica() {
-    use super::{blocking, drain};
-    use tokio_util::task::TaskTracker;
+    use crate::replication::storage_jobs::StorageJobs;
     let directory = tempfile::tempdir().unwrap();
     let mut writer = crate::ReplicaWriter::open(directory.path(), "panicked-work").unwrap();
     let mut builder = writer.begin_snapshot().unwrap();
@@ -557,14 +578,15 @@ async fn storage_panic_releases_tracking_and_preserves_the_published_replica() {
         .install_snapshot(builder.finish("saved").unwrap())
         .unwrap();
     let builder = writer.begin_snapshot().unwrap();
-    let jobs = TaskTracker::new();
-    let error = blocking::<()>(&jobs, move || {
-        let _builder = builder;
-        panic!("test storage worker panic");
-    })
-    .await
-    .unwrap_err();
-    drain(&jobs).await;
+    let jobs = StorageJobs::new().unwrap();
+    let error = jobs
+        .run::<()>(move || {
+            let _builder = builder;
+            panic!("test storage worker panic");
+        })
+        .await
+        .unwrap_err();
+    jobs.drain().await;
     assert_eq!(error.code(), tonic::Code::Unavailable);
     assert_eq!(writer.cursor().unwrap(), "saved");
     assert!(writer.reader().status().ready);
@@ -578,12 +600,56 @@ async fn prefetch_cancellation_and_watch_failure_release_staging_before_recovery
     type Stream<T> = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<T, Status>> + Send>>;
     #[derive(Clone)]
     struct Peer {
+        streaming: Arc<std::sync::atomic::AtomicBool>,
         started: tokio::sync::mpsc::UnboundedSender<()>,
         watches: tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>,
         released: Arc<tokio::sync::Notify>,
     }
     #[tonic::async_trait]
     impl w::market_read_server::MarketRead for Peer {
+        type ReadSnapshotPartStream = Self::ReadStream;
+        async fn open_snapshot(
+            &self,
+            _: Request<w::Empty>,
+        ) -> Result<Response<w::SnapshotSession>, Status> {
+            if !self.streaming.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(Status::unimplemented("coordinated snapshots unavailable"));
+            }
+            Ok(Response::new(w::SnapshotSession {
+                token: "session".into(),
+                cursor: "baseline".into(),
+            }))
+        }
+        async fn read_snapshot_part(
+            &self,
+            request: Request<w::SnapshotPartRequest>,
+        ) -> Result<Response<Self::ReadSnapshotPartStream>, Status> {
+            if request.get_ref().part == w::SnapshotPart::History as i32 {
+                return Ok(Response::new(Box::pin(tokio_stream::once(Ok(w::Page {
+                    cursor: "baseline".into(),
+                    ..Default::default()
+                })))));
+            }
+            let first = self
+                .read(Request::new(w::ReadRequest::default()))
+                .await?
+                .into_inner();
+            let later = self
+                .read(Request::new(w::ReadRequest {
+                    page_token: "later".into(),
+                    ..Default::default()
+                }))
+                .await?
+                .into_inner();
+            Ok(Response::new(Box::pin(first.chain(later))))
+        }
+        async fn close_snapshot(
+            &self,
+            _: tonic::Request<w::SnapshotToken>,
+        ) -> Result<tonic::Response<w::Empty>, tonic::Status> {
+            Ok(tonic::Response::new(w::Empty {}))
+        }
+
         async fn books(
             &self,
             _: Request<w::BooksRequest>,
@@ -646,7 +712,6 @@ async fn prefetch_cancellation_and_watch_failure_release_staging_before_recovery
             )))
         }
     }
-    let directory = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let hub = market_hub_client::HubClient::new(
         format!("http://{}", listener.local_addr().unwrap()),
@@ -656,10 +721,12 @@ async fn prefetch_cancellation_and_watch_failure_release_staging_before_recovery
     let (started, mut requests) = tokio::sync::mpsc::unbounded_channel();
     let (watches, mut watch_requests) = tokio::sync::mpsc::unbounded_channel();
     let released = Arc::new(tokio::sync::Notify::new());
+    let streaming = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let server_stop = tokio_util::sync::CancellationToken::new();
     let server = tokio::spawn(
         Server::builder()
             .add_service(w::market_read_server::MarketReadServer::new(Peer {
+                streaming: streaming.clone(),
                 started,
                 watches,
                 released: released.clone(),
@@ -669,57 +736,65 @@ async fn prefetch_cancellation_and_watch_failure_release_staging_before_recovery
                 server_stop.clone().cancelled_owned(),
             ),
     );
-    for cancelled in [true, false] {
-        let market = ReplicaRuntime::open(directory.path(), "prefetch-test")
-            .await
-            .unwrap();
-        let reader = market.reader;
-        let writer = market.replication.writer.clone();
-        let stop = tokio_util::sync::CancellationToken::new();
-        let worker = tokio::spawn(market.replication.run(hub.clone(), stop.clone()));
-        tokio::time::timeout(Duration::from_secs(3), requests.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        let fail_watch = watch_requests.recv().await.unwrap();
-        if !cancelled {
-            fail_watch.send(()).unwrap();
+    for use_stream in [false, true] {
+        streaming.store(use_stream, std::sync::atomic::Ordering::SeqCst);
+        let directory = tempfile::tempdir().unwrap();
+        for cancelled in [true, false] {
+            // A recovered session leaves an unused failure trigger behind.
+            // Each case must control its own Watch, rather than a previous one.
+            while watch_requests.try_recv().is_ok() {}
+            while requests.try_recv().is_ok() {}
+            let market = ReplicaRuntime::open(directory.path(), "prefetch-test")
+                .await
+                .unwrap();
+            let reader = market.reader;
+            let writer = market.replication.writer.clone();
+            let stop = tokio_util::sync::CancellationToken::new();
+            let worker = tokio::spawn(market.replication.run(hub.clone(), stop.clone()));
             tokio::time::timeout(Duration::from_secs(3), requests.recv())
                 .await
                 .unwrap()
                 .unwrap();
-            assert!(
-                !reader.status().ready,
-                "a failed build must remain unpublished"
-            );
-            released.notify_one();
-            tokio::time::timeout(Duration::from_secs(3), async {
-                while reader.cursor().unwrap_or_default() != "updated" {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap();
-        }
-        stop.cancel();
-        tokio::time::timeout(Duration::from_secs(3), worker)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert_eq!(reader.status().state, SyncState::Stale);
-        assert_eq!(reader.status().ready, !cancelled);
-        if cancelled {
-            assert_eq!(writer.lock().unwrap().cursor().unwrap(), "");
-            // No detached page/replay result may retain the old build lease.
-            assert!(writer.lock().unwrap().begin_snapshot().is_ok());
-        } else {
-            assert_eq!(
-                order_entity(&reader.read(read(1, false)).unwrap().page.entities[0])
+            let fail_watch = watch_requests.recv().await.unwrap();
+            if !cancelled {
+                fail_watch.send(()).unwrap();
+                tokio::time::timeout(Duration::from_secs(3), requests.recv())
+                    .await
                     .unwrap()
-                    .price,
-                "1"
-            );
+                    .unwrap();
+                assert!(
+                    !reader.status().ready,
+                    "a failed build must remain unpublished"
+                );
+                released.notify_one();
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while reader.cursor().unwrap_or_default() != "updated" {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+            }
+            stop.cancel();
+            tokio::time::timeout(Duration::from_secs(3), worker)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(reader.status().state, SyncState::Stale);
+            assert_eq!(reader.status().ready, !cancelled);
+            if cancelled {
+                assert_eq!(writer.lock().unwrap().cursor().unwrap(), "");
+                // No detached page/replay result may retain the old build lease.
+                assert!(writer.lock().unwrap().begin_snapshot().is_ok());
+            } else {
+                assert_eq!(
+                    order_entity(&reader.read(read(1, false)).unwrap().page.entities[0])
+                        .unwrap()
+                        .price,
+                    "1"
+                );
+            }
         }
     }
     server_stop.cancel();
@@ -743,6 +818,30 @@ async fn snapshot_paging_spools_changes_before_older_snapshot_rows_and_resumes_s
     }
     #[tonic::async_trait]
     impl w::market_read_server::MarketRead for Peer {
+        type ReadSnapshotPartStream = Self::ReadStream;
+        async fn open_snapshot(
+            &self,
+            _: tonic::Request<w::Empty>,
+        ) -> Result<tonic::Response<w::SnapshotSession>, tonic::Status> {
+            Err(tonic::Status::unimplemented(
+                "coordinated snapshots unavailable",
+            ))
+        }
+        async fn read_snapshot_part(
+            &self,
+            _: tonic::Request<w::SnapshotPartRequest>,
+        ) -> Result<tonic::Response<Self::ReadSnapshotPartStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented(
+                "coordinated snapshots unavailable",
+            ))
+        }
+        async fn close_snapshot(
+            &self,
+            _: tonic::Request<w::SnapshotToken>,
+        ) -> Result<tonic::Response<w::Empty>, tonic::Status> {
+            Ok(tonic::Response::new(w::Empty {}))
+        }
+
         async fn books(
             &self,
             _: Request<w::BooksRequest>,
@@ -806,7 +905,6 @@ async fn snapshot_paging_spools_changes_before_older_snapshot_rows_and_resumes_s
                     } else {
                         String::new()
                     },
-                    ..Default::default()
                 }
             };
             Ok(Response::new(tokio_stream::once(Ok(page))))

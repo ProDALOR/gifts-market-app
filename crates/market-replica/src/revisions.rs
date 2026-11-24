@@ -137,6 +137,7 @@ impl Revisions {
         history_changed: bool,
     ) -> Result<Self, Status> {
         let mut next = self.clone();
+        let mut data_changed = history_changed;
         next.sequence += 1;
         if history_changed {
             next.history = next.sequence;
@@ -163,6 +164,7 @@ impl Revisions {
             if old == new {
                 continue;
             }
+            data_changed = true;
             if key.kind != EntityKind::Order && key.kind != EntityKind::Feed {
                 next.catalog = next.sequence;
                 next.metadata[key.kind as usize - 1] = next.sequence;
@@ -222,7 +224,7 @@ impl Revisions {
                 next.books.remove(&group);
             }
         }
-        Ok(next)
+        Ok(if data_changed { next } else { self.clone() })
     }
 }
 impl ReadRevision {

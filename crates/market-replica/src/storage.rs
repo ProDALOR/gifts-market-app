@@ -20,7 +20,8 @@ type IndexKey<'a> = (u8, &'a [u8], &'a [u8], TimeKey<'a>);
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("metadata");
 const CURRENT: TableDefinition<Identity<'static>, &[u8]> = TableDefinition::new("current");
 const EXECUTIONS: TableDefinition<TimeKey<'static>, &[u8]> = TableDefinition::new("executions");
-const IDENTITIES: TableDefinition<(&str, &str), i64> = TableDefinition::new("identities");
+pub(super) const IDENTITIES: TableDefinition<(&str, &str), i64> =
+    TableDefinition::new("identities");
 const INDEX: TableDefinition<IndexKey<'static>, ()> = TableDefinition::new("index");
 pub(crate) type RankedHistoryPage = (Vec<w::Entity>, Option<(String, Position)>);
 type RankedExecution<'a> = (u8, &'a str, &'a str, &'a [u8], TimeKey<'a>);
@@ -33,6 +34,7 @@ pub struct Store(Arc<Database>, #[cfg(test)] Arc<std::sync::atomic::AtomicU8>);
 pub struct Snapshot {
     pub read: Arc<ReadTransaction>,
     pub _store: Store,
+    pub(super) pending: super::pending_history::Pending,
 }
 pub(crate) struct Applied {
     pub updated_at: Option<i64>,
@@ -45,6 +47,8 @@ pub(crate) struct WriteTimings {
     pub wait: Duration,
     pub write: Duration,
     pub commit: Duration,
+    pub history_payload: Duration,
+    pub history_indexes: Duration,
 }
 #[derive(Debug)]
 pub(crate) struct ApplyError {
@@ -131,6 +135,7 @@ impl Store {
         Ok(Snapshot {
             read: Arc::new(self.0.begin_read().map_err(failure)?),
             _store: self.clone(),
+            pending: Default::default(),
         })
     }
     #[cfg(test)]
@@ -155,6 +160,14 @@ impl Store {
         &self,
         changes: impl IntoIterator<Item = &'a w::Change>,
         cursor: Option<&str>,
+    ) -> Result<Applied, ApplyError> {
+        self.apply_with_index_order(changes, cursor, cursor.is_none())
+    }
+    pub(crate) fn apply_with_index_order<'a>(
+        &self,
+        changes: impl IntoIterator<Item = &'a w::Change>,
+        cursor: Option<&str>,
+        bulk: bool,
     ) -> Result<Applied, ApplyError> {
         let waiting = Instant::now();
         let mut tx = self.0.begin_write().map_err(failure)?;
@@ -183,6 +196,7 @@ impl Store {
             let mut index = tx.open_table(INDEX).map_err(failure)?;
             let mut ranked = tx.open_table(SORTED).map_err(failure)?;
             let mut encoded = Vec::new();
+            let mut pending = bulk.then(HistoryIndexes::default);
             for change in changes {
                 match change
                     .change
@@ -204,6 +218,7 @@ impl Store {
                         if let Some(order) = state::order(entity).filter(|v| {
                             OrderMode::try_from(v.mode).ok() == Some(OrderMode::Executed)
                         }) {
+                            let payload_started = Instant::now();
                             let book = order
                                 .book
                                 .as_ref()
@@ -229,6 +244,7 @@ impl Store {
                                     )
                                     .into());
                                 }
+                                applied.timings.history_payload += payload_started.elapsed();
                                 continue;
                             }
                             encoded.clear();
@@ -240,20 +256,30 @@ impl Store {
                             applied.data_changed = true;
                             applied.history_changed = true;
                             identities.insert((venue, id), time).map_err(failure)?;
-                            insert_ranks(&mut ranked, order)?;
-                            for IndexTerm { kind, path, value } in execution_indexes(order)? {
-                                index
-                                    .insert(
-                                        (
-                                            kind as u8,
-                                            path.as_slice(),
-                                            value.as_slice(),
-                                            (time, venue, id),
-                                        ),
-                                        (),
-                                    )
-                                    .map_err(failure)?;
+                            applied.timings.history_payload += payload_started.elapsed();
+                            let indexes_started = Instant::now();
+                            if let Some(pending) = &mut pending {
+                                pending.add(order)?;
+                                if pending.bytes >= crate::limits::MAX_HISTORY_INDEX_BYTES {
+                                    pending.flush(&mut ranked, &mut index)?;
+                                }
+                            } else {
+                                insert_ranks(&mut ranked, order)?;
+                                for IndexTerm { kind, path, value } in execution_indexes(order)? {
+                                    index
+                                        .insert(
+                                            (
+                                                kind as u8,
+                                                path.as_slice(),
+                                                value.as_slice(),
+                                                (time, venue, id),
+                                            ),
+                                            (),
+                                        )
+                                        .map_err(failure)?;
+                                }
                             }
+                            applied.timings.history_indexes += indexes_started.elapsed();
                         } else {
                             encoded.clear();
                             encoded.reserve(entity.encoded_len());
@@ -271,6 +297,11 @@ impl Store {
                         }
                     }
                 }
+            }
+            if let Some(pending) = &mut pending {
+                let started = Instant::now();
+                pending.flush(&mut ranked, &mut index)?;
+                applied.timings.history_indexes += started.elapsed();
             }
         }
         if let Some(cursor) = cursor {
@@ -301,18 +332,28 @@ impl Store {
         }
         Ok(applied)
     }
-    pub fn journal(&self, batch: &w::Batch, buffer: &mut Vec<u8>) -> Result<(), Status> {
-        buffer.clear();
-        buffer.reserve(batch.encoded_len());
-        batch.encode(&mut *buffer).map_err(failure)?;
+    pub fn journal(&self, batches: &[w::Batch], buffer: &mut Vec<u8>) -> Result<usize, Status> {
+        if batches.is_empty() {
+            return Ok(0);
+        }
         let mut tx = self.0.begin_write().map_err(failure)?;
         tx.set_durability(Durability::None).map_err(failure)?;
+        let mut bytes = 0;
         {
             let mut table = tx.open_table(JOURNAL).map_err(failure)?;
             let next = table.len().map_err(failure)?;
-            table.insert(next, buffer.as_slice()).map_err(failure)?;
+            for (offset, batch) in batches.iter().enumerate() {
+                buffer.clear();
+                buffer.reserve(batch.encoded_len());
+                batch.encode(&mut *buffer).map_err(failure)?;
+                bytes += buffer.len();
+                table
+                    .insert(next + offset as u64, buffer.as_slice())
+                    .map_err(failure)?;
+            }
         }
-        tx.commit().map_err(failure)
+        tx.commit().map_err(failure)?;
+        Ok(bytes)
     }
     #[cfg(test)]
     pub(crate) fn hold_write_for_test(&self) -> WriteTransaction {
@@ -368,6 +409,65 @@ fn checkpoint(tx: &WriteTransaction, cursor: &str) -> Result<i64, Status> {
         .map_err(failure)?;
     Ok(updated_at)
 }
+const HISTORY_SORTS: [Sort; 3] = [Sort::PriceAsc, Sort::TimeAsc, Sort::NumberAsc];
+type OwnedRank<'a> = (u8, &'a str, &'a str, Vec<u8>, TimeKey<'a>);
+type OwnedFilter<'a> = (u8, Vec<u8>, Vec<u8>, TimeKey<'a>);
+#[derive(Default)]
+struct HistoryIndexes<'a> {
+    ranks: Vec<OwnedRank<'a>>,
+    filters: Vec<OwnedFilter<'a>>,
+    bytes: usize,
+}
+impl<'a> HistoryIndexes<'a> {
+    fn add(&mut self, order: &'a w::Order) -> Result<(), Status> {
+        let book = order
+            .book
+            .as_ref()
+            .ok_or_else(|| Status::data_loss("missing book"))?;
+        let time = order
+            .executed_at_ms
+            .ok_or_else(|| Status::data_loss("missing execution time"))?;
+        let key = (time, book.venue_id.as_str(), order.id.as_str());
+        for sort in HISTORY_SORTS {
+            let rank = crate::ranking::ordered_decimal(sort.rank(order, true)?);
+            self.bytes += std::mem::size_of::<OwnedRank<'a>>() + rank.len();
+            self.ranks.push((
+                sort.criterion(),
+                book.item_type_id.as_str(),
+                book.currency_id.as_str(),
+                rank,
+                key,
+            ));
+        }
+        for IndexTerm { kind, path, value } in execution_indexes(order)? {
+            self.bytes += std::mem::size_of::<OwnedFilter<'a>>() + path.len() + value.len();
+            self.filters.push((kind as u8, path, value, key));
+        }
+        Ok(())
+    }
+    fn flush(
+        &mut self,
+        ranked: &mut redb::Table<'_, RankedExecution<'static>, ()>,
+        index: &mut redb::Table<'_, IndexKey<'static>, ()>,
+    ) -> Result<(), Status> {
+        // Staging is private: reorder derived writes within the same transaction,
+        // while payload/identity validation remains in original delivery order.
+        self.ranks.sort_unstable();
+        self.filters.sort_unstable();
+        for (kind, item_type, currency, rank, key) in self.ranks.drain(..) {
+            ranked
+                .insert((kind, item_type, currency, rank.as_slice(), key), ())
+                .map_err(failure)?;
+        }
+        for (kind, path, value, key) in self.filters.drain(..) {
+            index
+                .insert((kind, path.as_slice(), value.as_slice(), key), ())
+                .map_err(failure)?;
+        }
+        self.bytes = 0;
+        Ok(())
+    }
+}
 fn insert_ranks(
     table: &mut redb::Table<'_, RankedExecution<'static>, ()>,
     order: &w::Order,
@@ -379,7 +479,7 @@ fn insert_ranks(
     let time = order
         .executed_at_ms
         .ok_or_else(|| Status::data_loss("missing execution time"))?;
-    for sort in [Sort::PriceAsc, Sort::TimeAsc, Sort::NumberAsc] {
+    for sort in HISTORY_SORTS {
         let rank = crate::ranking::ordered_decimal(sort.rank(order, true)?);
         table
             .insert(
@@ -504,14 +604,24 @@ impl Snapshot {
     }
     pub fn execution(&self, position: &Position) -> Result<Option<w::Entity>, Status> {
         let table = self.read.open_table(EXECUTIONS).map_err(failure)?;
+        Ok(self.order_from(&table, position)?.map(|order| w::Entity {
+            entity: Some(w::entity::Entity::Order(order)),
+        }))
+    }
+    fn order_from(
+        &self,
+        table: &impl ReadableTable<TimeKey<'static>, &'static [u8]>,
+        position: &Position,
+    ) -> Result<Option<w::Order>, Status> {
+        if let Some(order) = self.pending.order(position) {
+            return Ok(Some(order.as_ref().clone()));
+        }
         table
             .get(position.stored())
             .map_err(failure)?
             .map(|raw| {
                 let order = w::Order::decode(raw.value()).map_err(failure)?;
-                Ok(w::Entity {
-                    entity: Some(w::entity::Entity::Order(order)),
-                })
+                Ok(order)
             })
             .transpose()
     }
@@ -618,6 +728,20 @@ impl Snapshot {
         } else {
             Box::new(range)
         };
+        let rows = rows.map(|row| {
+            let (key, _) = row.map_err(failure)?;
+            let (_, _, _, rank, (time, venue, id)) = key.value();
+            Ok((
+                <[u8; 58]>::try_from(rank).map_err(failure)?,
+                Position {
+                    executed_at_ms: time,
+                    venue_id: venue.into(),
+                    order_id: id.into(),
+                },
+            ))
+        });
+        let pending = self.pending.ranked(filter, after.as_ref(), end.as_ref())?;
+        let rows = super::pending_history::merge(rows, pending, filter.sort.descending());
         let mut data = Vec::new();
         let mut bytes = 0;
         let mut position = after;
@@ -625,41 +749,30 @@ impl Snapshot {
             if count == crate::READ_LIMITS.max_scan_candidates {
                 return Ok((data, position));
             }
-            let (key, _) = row.map_err(failure)?;
-            let (_, _, _, _, (time, venue, id)) = key.value();
-            let raw = executions
-                .get((time, venue, id))
-                .map_err(failure)?
+            let (_, row) = row?;
+            let order = self
+                .order_from(&executions, &row)?
                 .ok_or_else(|| failure("missing indexed execution"))?;
-            let order = w::Order::decode(raw.value()).map_err(failure)?;
             let rank = filter.sort.rank(&order, true)?.to_string();
-            if filter.matches_order(&order)? {
-                let entity = w::Entity {
-                    entity: Some(w::entity::Entity::Order(order)),
-                };
-                if include(&entity)? {
-                    if data.len() == limit {
-                        return Ok((data, position));
-                    }
-                    let size = entity.encoded_len() + 8;
-                    if bytes + size > crate::READ_LIMITS.max_read_bytes {
-                        if data.is_empty() {
-                            return Err(Status::resource_exhausted("order exceeds page budget"));
-                        }
-                        return Ok((data, position));
-                    }
-                    bytes += size;
-                    data.push(entity);
+            let matches = filter.matches_order(&order)?;
+            let entity = w::Entity {
+                entity: Some(w::entity::Entity::Order(order)),
+            };
+            if matches && include(&entity)? {
+                if data.len() == limit {
+                    return Ok((data, position));
                 }
+                let size = entity.encoded_len() + 8;
+                if bytes + size > crate::READ_LIMITS.max_read_bytes {
+                    if data.is_empty() {
+                        return Err(Status::resource_exhausted("order exceeds page budget"));
+                    }
+                    return Ok((data, position));
+                }
+                bytes += size;
+                data.push(entity);
             }
-            position = Some((
-                rank,
-                Position {
-                    executed_at_ms: time,
-                    venue_id: venue.into(),
-                    order_id: id.into(),
-                },
-            ));
+            position = Some((rank, row));
         }
         Ok((data, None))
     }
@@ -733,6 +846,8 @@ impl Snapshot {
                     })
                 }))
             };
+        let pending = self.pending.chronological(after, from, until);
+        let rows = super::pending_history::merge(rows, pending, false);
         let mut data = Vec::new();
         let mut position = after.cloned();
         let mut bytes = 0;
@@ -741,29 +856,26 @@ impl Snapshot {
             if count == crate::READ_LIMITS.max_scan_candidates {
                 return Ok((data, position));
             }
-            let raw = executions
-                .get(row.stored())
-                .map_err(failure)?
+            let order = self
+                .order_from(&executions, &row)?
                 .ok_or_else(|| failure("index points to missing execution"))?;
-            let order = w::Order::decode(raw.value()).map_err(failure)?;
-            if filter.matches_order(&order)? {
-                let entity = w::Entity {
-                    entity: Some(w::entity::Entity::Order(order)),
-                };
-                if include(&entity)? {
-                    if data.len() == limit {
-                        return Ok((data, position));
-                    }
-                    let size = entity.encoded_len() + 8;
-                    if bytes + size > crate::READ_LIMITS.max_read_bytes {
-                        if data.is_empty() {
-                            return Err(Status::resource_exhausted("order exceeds page budget"));
-                        }
-                        return Ok((data, position));
-                    }
-                    bytes += size;
-                    data.push(entity);
+            let matches = filter.matches_order(&order)?;
+            let entity = w::Entity {
+                entity: Some(w::entity::Entity::Order(order)),
+            };
+            if matches && include(&entity)? {
+                if data.len() == limit {
+                    return Ok((data, position));
                 }
+                let size = entity.encoded_len() + 8;
+                if bytes + size > crate::READ_LIMITS.max_read_bytes {
+                    if data.is_empty() {
+                        return Err(Status::resource_exhausted("order exceeds page budget"));
+                    }
+                    return Ok((data, position));
+                }
+                bytes += size;
+                data.push(entity);
             }
             position = Some(row);
         }
@@ -774,6 +886,140 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sorted_staging_indexes_match_incremental_indexes_including_duplicate_executions() {
+        let mut rows = crate::benchmarks::fixture(1000);
+        for (i, row) in rows.iter_mut().enumerate() {
+            if let Some(w::change::Change::Upsert(w::Entity {
+                entity: Some(w::entity::Entity::Order(order)),
+            })) = &mut row.change
+                && i % 2 == 0
+            {
+                order.mode = w::OrderMode::Executed as i32;
+                order.executed_at_ms = Some(i as i64 + 1);
+            }
+        }
+        let duplicate = rows.iter().find(|row| matches!(&row.change, Some(w::change::Change::Upsert(w::Entity { entity: Some(w::entity::Entity::Order(order)) })) if order.mode == w::OrderMode::Executed as i32)).unwrap().clone();
+        rows.push(duplicate);
+        let mut expected = None;
+        for bulk in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open(&directory.path().join("replica.redb"), "test").unwrap();
+            store.apply_with_index_order(&rows, None, bulk).unwrap();
+            let snapshot = store.snapshot().unwrap();
+            let filters = snapshot
+                .read
+                .open_table(INDEX)
+                .unwrap()
+                .iter()
+                .unwrap()
+                .map(|row| {
+                    let (key, _) = row.unwrap();
+                    let (kind, path, value, (time, venue, id)) = key.value();
+                    (
+                        kind,
+                        path.to_vec(),
+                        value.to_vec(),
+                        time,
+                        venue.to_owned(),
+                        id.to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let ranks = snapshot
+                .read
+                .open_table(SORTED)
+                .unwrap()
+                .iter()
+                .unwrap()
+                .map(|row| {
+                    let (key, _) = row.unwrap();
+                    let (kind, item, currency, value, (time, venue, id)) = key.value();
+                    (
+                        kind,
+                        item.to_owned(),
+                        currency.to_owned(),
+                        value.to_vec(),
+                        time,
+                        venue.to_owned(),
+                        id.to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let result = (filters, ranks);
+            if let Some(expected) = &expected {
+                assert_eq!(&result, expected);
+            } else {
+                expected = Some(result);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual sorted history indexing benchmark; use --test-threads=1"]
+    fn history_index_batching_benchmark() {
+        let mut rows = crate::benchmarks::fixture(120_000);
+        for (i, row) in rows.iter_mut().enumerate() {
+            if let Some(w::change::Change::Upsert(w::Entity {
+                entity: Some(w::entity::Entity::Order(order)),
+            })) = &mut row.change
+            {
+                order.mode = w::OrderMode::Executed as i32;
+                order.executed_at_ms = Some(i as i64 + 1);
+                for (name, options) in [("tg.backdrop", 64), ("tg.pattern", 128)] {
+                    order.attributes.insert(
+                        name.into(),
+                        w::AttributePredicate {
+                            predicate: Some(w::attribute_predicate::Predicate::Eq(
+                                w::AttributeValue {
+                                    value: Some(w::attribute_value::Value::OptionId(format!(
+                                        "option{}",
+                                        i % options
+                                    ))),
+                                },
+                            )),
+                        },
+                    );
+                }
+            }
+        }
+        let mut expected = None;
+        for bulk in [false, true] {
+            let mut samples = Vec::new();
+            for _ in 0..3 {
+                let directory = tempfile::tempdir().unwrap();
+                let store =
+                    Store::open(&directory.path().join("history.redb"), "benchmark").unwrap();
+                let started = Instant::now();
+                let mut indexes = Duration::ZERO;
+                let mut payload = Duration::ZERO;
+                for batch in rows.chunks(4000) {
+                    let applied = store.apply_with_index_order(batch, None, bulk).unwrap();
+                    indexes += applied.timings.history_indexes;
+                    payload += applied.timings.history_payload;
+                }
+                samples.push(started.elapsed());
+                let snapshot = store.snapshot().unwrap();
+                let counts = (
+                    snapshot.read.open_table(EXECUTIONS).unwrap().len().unwrap(),
+                    snapshot.read.open_table(INDEX).unwrap().len().unwrap(),
+                    snapshot.read.open_table(SORTED).unwrap().len().unwrap(),
+                );
+                assert_eq!(counts.0, 120_000);
+                assert_eq!(counts.2, 360_000);
+                assert_eq!(*expected.get_or_insert(counts), counts);
+                println!(
+                    "history bulk={bulk}; indexes={indexes:?}; payload={payload:?}; counts={counts:?}"
+                );
+            }
+            samples.sort();
+            println!(
+                "history bulk={bulk}; 120,000 executions; median={:?}; samples={samples:?}",
+                samples[1]
+            );
+        }
+    }
 
     #[test]
     fn legacy_database_tuple_keys_remain_readable_and_writable() {
@@ -909,9 +1155,21 @@ mod tests {
         );
         for sort in [1, 2, 3, 4, 5, 6] {
             assert_eq!(
-                state::order(&replica.read(query(3, sort)).unwrap().page.entities[0])
-                    .unwrap()
-                    .id,
+                state::order(
+                    &replica
+                        .read_with_options(
+                            query(3, 0),
+                            crate::ReadOptions {
+                                sort: Some(crate::Sort::try_from(sort).unwrap()),
+                                ..Default::default()
+                            }
+                        )
+                        .unwrap()
+                        .page
+                        .entities[0]
+                )
+                .unwrap()
+                .id,
                 "old",
                 "legacy history index backfill, sort {sort}"
             );

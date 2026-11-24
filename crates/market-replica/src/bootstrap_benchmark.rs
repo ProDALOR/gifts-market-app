@@ -231,3 +231,51 @@ fn failed_snapshot_batch_allocation_regression() {
     assert_eq!(writer.cursor().unwrap(), "old");
     println!("failed batch with 10,000 staged orders: {allocations:?}");
 }
+
+#[test]
+#[ignore = "manual journal transaction benchmark; use --test-threads=1"]
+fn journal_batching_benchmark() {
+    let template = fixture(1)
+        .into_iter()
+        .find(|change| {
+            matches!(
+                &change.change,
+                Some(w::change::Change::Upsert(w::Entity {
+                    entity: Some(w::entity::Entity::Order(_))
+                }))
+            )
+        })
+        .unwrap();
+    let batches = (0..2000)
+        .map(|i| w::Batch {
+            cursor: format!("cursor-{i}"),
+            changes: vec![template.clone()],
+        })
+        .collect::<Vec<_>>();
+    for width in [1, 64] {
+        let mut samples = Vec::new();
+        for _ in 0..3 {
+            let directory = tempfile::tempdir().unwrap();
+            let mut writer = ReplicaWriter::open(directory.path(), "journal-benchmark").unwrap();
+            let builder = writer.begin_snapshot().unwrap();
+            let journal = builder.journal();
+            let started = Instant::now();
+            for batch in batches.chunks(width) {
+                journal.push_many(batch).unwrap();
+            }
+            samples.push(started.elapsed());
+            let stats = journal.stats().unwrap();
+            assert_eq!(stats.deliveries, 2000);
+            assert_eq!(stats.transactions, 2000_u64.div_ceil(width as u64));
+            println!(
+                "journal width={width}; transactions={}; bytes={}",
+                stats.transactions, stats.bytes
+            );
+        }
+        samples.sort();
+        println!(
+            "journal width={width}; median={:?}; samples={samples:?}",
+            samples[1]
+        );
+    }
+}

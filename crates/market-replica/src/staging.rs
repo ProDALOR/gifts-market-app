@@ -32,6 +32,8 @@ pub(crate) struct BuildTimings {
     pub db_wait: Duration,
     pub db_write: Duration,
     pub db_commit: Duration,
+    pub history_payload: Duration,
+    pub history_indexes: Duration,
 }
 pub(crate) struct Replayed {
     pub next_position: u64,
@@ -52,8 +54,20 @@ pub struct SnapshotJournal(Arc<JournalState>);
 struct JournalState {
     store: Store,
     open: AtomicBool,
-    writes: Mutex<Vec<u8>>,
+    writes: Mutex<JournalBuffer>,
     lease: Weak<()>,
+}
+#[derive(Default)]
+struct JournalBuffer {
+    encoded: Vec<u8>,
+    stats: JournalStats,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct JournalStats {
+    pub transactions: u64,
+    pub deliveries: u64,
+    pub changes: u64,
+    pub bytes: u64,
 }
 struct SnapshotLease {
     journal: SnapshotJournal,
@@ -81,7 +95,7 @@ impl SnapshotBuilder {
         let journal = SnapshotJournal(Arc::new(JournalState {
             store: store.clone(),
             open: AtomicBool::new(true),
-            writes: Mutex::new(Vec::new()),
+            writes: Mutex::new(JournalBuffer::default()),
             lease: Arc::downgrade(&token),
         }));
         Ok(Self {
@@ -125,6 +139,8 @@ impl SnapshotBuilder {
         self.timings.db_wait += applied.timings.wait;
         self.timings.db_write += applied.timings.write;
         self.timings.db_commit += applied.timings.commit;
+        self.timings.history_payload += applied.timings.history_payload;
+        self.timings.history_indexes += applied.timings.history_indexes;
         Ok(())
     }
     pub fn replay(&mut self, position: u64) -> Result<Option<String>, Status> {
@@ -189,6 +205,9 @@ fn failed_builder() -> Status {
 }
 impl SnapshotJournal {
     pub fn push(&self, batch: &w::Batch) -> Result<(), Status> {
+        self.push_many(std::slice::from_ref(batch))
+    }
+    pub fn push_many(&self, batches: &[w::Batch]) -> Result<(), Status> {
         let mut buffer = self.0.writes.lock().map_err(storage::failure)?;
         if !self.0.open.load(Ordering::Acquire) {
             return Err(Status::failed_precondition("snapshot journal is closed"));
@@ -198,7 +217,20 @@ impl SnapshotJournal {
             .lease
             .upgrade()
             .ok_or_else(|| Status::failed_precondition("snapshot journal is closed"))?;
-        self.0.store.journal(batch, &mut buffer)
+        if !batches.is_empty() {
+            let bytes = self.0.store.journal(batches, &mut buffer.encoded)?;
+            buffer.stats.transactions += 1;
+            buffer.stats.deliveries += batches.len() as u64;
+            buffer.stats.changes += batches
+                .iter()
+                .map(|batch| batch.changes.len() as u64)
+                .sum::<u64>();
+            buffer.stats.bytes += bytes as u64;
+        }
+        Ok(())
+    }
+    pub(crate) fn stats(&self) -> Result<JournalStats, Status> {
+        Ok(self.0.writes.lock().map_err(storage::failure)?.stats)
     }
     fn close(&self) -> Result<(), Status> {
         self.0.open.store(false, Ordering::Release);
@@ -216,6 +248,67 @@ mod tests {
         tests::{catalog, entity, order, read, upsert},
     };
     use market_hub_protocol::wire as w;
+
+    #[tokio::test]
+    async fn ready_journal_deliveries_share_transactions_and_keep_replay_positions() {
+        use futures_util::{StreamExt, stream};
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = ReplicaWriter::open(directory.path(), "test").unwrap();
+        let mut builder = writer.begin_snapshot().unwrap();
+        builder.append(&catalog()).unwrap();
+        let journal = builder.journal();
+        let batches = (0..130)
+            .map(|i| {
+                Ok(w::Batch {
+                    cursor: format!("j{i}"),
+                    changes: vec![],
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut stream = stream::iter(batches).chain(stream::pending());
+        let jobs = crate::replication::storage_jobs::StorageJobs::new().unwrap();
+        let mut queued = 0;
+        let mut elapsed = std::time::Duration::ZERO;
+        // The work cannot finish until every ready delivery is persisted.
+        let check = async {
+            loop {
+                if journal.stats()?.deliveries == 130 {
+                    return Ok(());
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        crate::replication::collecting(
+            check,
+            &mut stream,
+            &journal,
+            &mut queued,
+            &mut elapsed,
+            &jobs,
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued, 130);
+        assert_eq!(journal.stats().unwrap().transactions, 3);
+        assert_eq!(journal.stats().unwrap().deliveries, 130);
+        assert!(journal.stats().unwrap().bytes > 0);
+        let mut position = 0;
+        let mut checkpoint = String::new();
+        while let Some(batch) = builder.replay_chunk(position).unwrap() {
+            position = batch.next_position;
+            checkpoint = batch.cursor;
+        }
+        assert_eq!(position, 130);
+        assert_eq!(checkpoint, "j129");
+        writer
+            .install_snapshot(builder.finish(&checkpoint).unwrap())
+            .unwrap();
+        assert!(
+            journal.push_many(&[]).is_err(),
+            "closed journals reject new admissions"
+        );
+        assert_eq!(writer.cursor().unwrap(), checkpoint);
+    }
 
     #[tokio::test]
     async fn abandoning_a_builder_does_not_wait_for_an_admitted_journal_write() {
@@ -278,8 +371,8 @@ mod tests {
 
     #[tokio::test]
     async fn prefetch_progresses_during_journal_contention_and_waits_for_accepted_writes() {
+        use crate::replication::storage_jobs::StorageJobs;
         use futures_util::StreamExt;
-        use tokio_util::task::TaskTracker;
         let directory = tempfile::tempdir().unwrap();
         let mut writer = ReplicaWriter::open(directory.path(), "test").unwrap();
         let mut builder = writer.begin_snapshot().unwrap();
@@ -301,7 +394,7 @@ mod tests {
         };
         let mut queued = 0;
         let mut elapsed = std::time::Duration::ZERO;
-        let jobs = TaskTracker::new();
+        let jobs = StorageJobs::new().unwrap();
         let mut collecting = Box::pin(crate::replication::collecting(
             work,
             &mut stream,

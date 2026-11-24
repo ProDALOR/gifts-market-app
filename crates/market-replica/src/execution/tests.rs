@@ -177,3 +177,49 @@ async fn admitted_work_cannot_use_a_different_runtimes_capacity() {
     first.shutdown().await;
     second.shutdown().await;
 }
+
+#[tokio::test]
+async fn preparation_cannot_occupy_interactive_worker_threads() {
+    let (_directory, writer) = fixture();
+    let runtime = ReadRuntime::new(writer.reader(), 8, CancellationToken::new()).unwrap();
+    let reads = runtime.handle();
+    let lanes = reads.workers.available_permits();
+    let mut releases = Vec::new();
+    let mut tasks = Vec::new();
+    for _ in 0..lanes {
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, proceed) = std::sync::mpsc::channel();
+        releases.push(release);
+        let source = reads.clone();
+        tasks.push(tokio::spawn(async move {
+            source
+                .prepare(move |_, _| {
+                    entered
+                        .send(std::thread::current().name().unwrap().to_string())
+                        .unwrap();
+                    proceed.recv().unwrap();
+                })
+                .await
+                .unwrap();
+        }));
+        assert_eq!(started.await.unwrap(), "market-prepare");
+    }
+    let permit = reads.budget().try_query().unwrap();
+    let name = tokio::time::timeout(
+        Duration::from_secs(1),
+        reads.admitted(permit, |_| {
+            std::thread::current().name().unwrap().to_string()
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(name, "market-query");
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+    runtime.shutdown().await;
+}

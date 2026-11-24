@@ -171,7 +171,10 @@ mod tests {
             crate::query::Filter::compile_with_options(
                 &state,
                 &request,
-                crate::ReadOptions { attribute_match },
+                crate::ReadOptions {
+                    attribute_match,
+                    ..Default::default()
+                },
             )
             .unwrap()
         };
@@ -226,7 +229,10 @@ mod tests {
             crate::query::Filter::compile_with_options(
                 &state,
                 &request,
-                crate::ReadOptions { attribute_match },
+                crate::ReadOptions {
+                    attribute_match,
+                    ..Default::default()
+                },
             )
             .unwrap()
         };

@@ -138,7 +138,7 @@ async fn cancelling_a_worker_stops_its_scan_at_the_next_page_and_releases_capaci
             changes,
         })
         .unwrap();
-    let data = MarketDataService::start(writer.reader(), 2, 1)
+    let data = MarketDataService::start(writer.reader(), 1, 1)
         .await
         .unwrap();
     let (entered, started) = tokio::sync::oneshot::channel();

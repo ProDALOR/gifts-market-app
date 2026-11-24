@@ -29,7 +29,11 @@ fn borrowed_ranked_scan_can_resume_after_an_empty_scan_budget_page() {
     }
     let view = view(state, &writer);
     let mut request = read(1, false);
-    request.sort = 3; // Time order cannot skip candidates using the price index.
+    // Native time order cannot skip candidates using the price index.
+    let options = ReadOptions {
+        sort: Some(Sort::TimeAsc),
+        ..Default::default()
+    };
     let Some(w::selection::Source::Scope(scope)) = &mut request.selection.as_mut().unwrap().source
     else {
         unreachable!()
@@ -38,7 +42,7 @@ fn borrowed_ranked_scan_can_resume_after_an_empty_scan_budget_page() {
         min: Some("2".into()),
         max: None,
     });
-    let filter = Filter::compile(&view.state, &request).unwrap();
+    let filter = Filter::compile_with_options(&view.state, &request, options).unwrap();
     let (first, next) = scan(
         &view,
         &filter,
@@ -81,9 +85,12 @@ fn borrowed_rows_preserve_page_byte_limits_and_oversized_record_errors() {
     }
     let mut view = view(state, &writer);
     for sort in 0..=6 {
-        let mut request = read(1, false);
-        request.sort = sort;
-        let filter = Filter::compile(&view.state, &request).unwrap();
+        let request = read(1, false);
+        let options = ReadOptions {
+            sort: Some(Sort::try_from(sort).unwrap()),
+            ..Default::default()
+        };
+        let filter = Filter::compile_with_options(&view.state, &request, options).unwrap();
         let boundary = match sort {
             0 => Boundary::Current(None),
             _ => Boundary::Ranked(None),
@@ -198,19 +205,22 @@ fn checked_row_policy_fills_current_and_history_pages_for_every_rank() {
         for mode in [w::ReadMode::Snapshot, w::ReadMode::Live] {
             for sort in 0..=6 {
                 let mut request = read(mode as i32, history);
-                request.sort = sort;
+                let options = ReadOptions {
+                    sort: Some(Sort::try_from(sort).unwrap()),
+                    ..Default::default()
+                };
                 request.limit = 2;
                 let include = |entity: &w::Entity| {
                     Ok(state::order(entity).unwrap().id.as_bytes().last().unwrap() % 2 == 1)
                 };
                 let first = reader
-                    .read_checked(request.clone(), |_, _| Ok(()), include)
+                    .read_checked_with_options(request.clone(), options, |_, _| Ok(()), include)
                     .unwrap();
                 assert_eq!(first.page.entities.len(), 2, "{history} {mode:?} {sort}");
                 assert!(!first.page.next_page_token.is_empty());
                 request.page_token = first.page.next_page_token;
                 let second = reader
-                    .read_checked(request, |_, _| Ok(()), include)
+                    .read_checked_with_options(request, options, |_, _| Ok(()), include)
                     .unwrap();
                 assert_eq!(second.page.entities.len(), 1);
                 assert!(second.page.next_page_token.is_empty());

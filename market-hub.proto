@@ -252,16 +252,10 @@ enum ReadMode {
   // Return a live page, then replacements including refills. Reconnect with the same request.
   READ_MODE_LIVE = 1;
 }
-// Local public reads support complete-book ranking. Time uses observed_at for
-// active orders and executed_at for history; number uses the exact tg.number fact.
 enum ReadSort {
   READ_SORT_IDENTITY = 0;
   READ_SORT_PRICE_ASC = 1;
   READ_SORT_PRICE_DESC = 2;
-  READ_SORT_TIME_ASC = 3;
-  READ_SORT_TIME_DESC = 4;
-  READ_SORT_NUMBER_ASC = 5;
-  READ_SORT_NUMBER_DESC = 6;
 }
 // Follow snapshot continuations until empty, then Watch at the page cursor.
 // Active paging renews the idle view lifetime. A full replica can use an omitted selection:
@@ -313,7 +307,29 @@ service MarketWrite {
   // Call only after successfully enumerating and confirming every page in the feed.
   rpc VerifyFeed(VerifyFeedRequest) returns (Empty);
 }
+// Coordinated exports pin current entities and history at one Watch checkpoint.
+// Tokens are private to the authenticated owner. Close is idempotent; abandoned
+// sessions expire. Both parts must finish before a consumer publishes the dataset.
+message SnapshotSession {
+  string token = 1;
+  string cursor = 2;
+}
+enum SnapshotPart {
+  SNAPSHOT_PART_CURRENT = 0;
+  SNAPSHOT_PART_HISTORY = 1;
+}
+message SnapshotPartRequest {
+  string token = 1;
+  SnapshotPart part = 2;
+}
+message SnapshotToken { string token = 1; }
 service MarketRead {
+  rpc OpenSnapshot(Empty) returns (SnapshotSession);
+  // Each part may be started once. next_page_token is a nonempty marker until
+  // the final frame, not a token for Read. All frames share the session cursor.
+  rpc ReadSnapshotPart(SnapshotPartRequest) returns (stream Page);
+  rpc CloseSnapshot(SnapshotToken) returns (Empty);
+
   // Includes feed-declared books and books with active orders. Feed removal never deletes orders.
   rpc Books(BooksRequest) returns (BooksPage);
   // SNAPSHOT returns one page and closes; LIVE streams replacements of the selected page.

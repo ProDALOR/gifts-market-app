@@ -148,16 +148,23 @@ pub enum Sort {
 impl TryFrom<i32> for Sort {
     type Error = Status;
     fn try_from(value: i32) -> Result<Self, Status> {
-        match w::ReadSort::try_from(value) {
-            Ok(w::ReadSort::Identity) => Ok(Self::Identity),
-            Ok(w::ReadSort::PriceAsc) => Ok(Self::PriceAsc),
-            Ok(w::ReadSort::PriceDesc) => Ok(Self::PriceDesc),
-            Ok(w::ReadSort::TimeAsc) => Ok(Self::TimeAsc),
-            Ok(w::ReadSort::TimeDesc) => Ok(Self::TimeDesc),
-            Ok(w::ReadSort::NumberAsc) => Ok(Self::NumberAsc),
-            Ok(w::ReadSort::NumberDesc) => Ok(Self::NumberDesc),
+        match value {
+            0 => Ok(Self::Identity),
+            1 => Ok(Self::PriceAsc),
+            2 => Ok(Self::PriceDesc),
+            3 => Ok(Self::TimeAsc),
+            4 => Ok(Self::TimeDesc),
+            5 => Ok(Self::NumberAsc),
+            6 => Ok(Self::NumberDesc),
             _ => Err(Status::invalid_argument("unknown read sort")),
         }
+    }
+}
+impl Sort {
+    pub(crate) fn from_wire(value: i32) -> Result<Self, Status> {
+        w::ReadSort::try_from(value)
+            .map_err(|_| Status::invalid_argument("unknown wire read sort"))?;
+        Self::try_from(value)
     }
 }
 impl From<Sort> for i32 {

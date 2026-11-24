@@ -231,13 +231,6 @@ impl ReadPosition {
         }
         Ok(())
     }
-    pub(crate) fn before(&self) -> Self {
-        let mut p = self.clone();
-        if p.edge == Edge::At {
-            p.edge = Edge::Before;
-        }
-        p
-    }
     pub(crate) fn after(&self) -> Self {
         let mut p = self.clone();
         if p.edge == Edge::At {

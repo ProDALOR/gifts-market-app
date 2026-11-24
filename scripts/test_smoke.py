@@ -3,11 +3,25 @@
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import Mock, patch
 
-from smoke import clean_environment, fixture_executable
+from smoke import clean_environment, fixture_executable, stop_group
 
 
 class SmokeIsolationTests(unittest.TestCase):
+    def test_cleanup_never_signals_a_completed_childs_reused_process_group(self):
+        process = Mock()
+        process.poll.return_value = 0
+        with patch("smoke.os.killpg") as kill:
+            stop_group(process, 15)
+            kill.assert_not_called()
+
+    def test_cleanup_falls_back_to_the_child_handle_when_group_signal_is_denied(self):
+        process = Mock()
+        process.poll.return_value = None
+        with patch("smoke.os.killpg", side_effect=PermissionError):
+            stop_group(process, 15)
+        process.send_signal.assert_called_once_with(15)
     def test_service_settings_and_credentials_never_reach_disposable_processes(self):
         original = {
             "PATH": "/bin",
@@ -24,6 +38,7 @@ class SmokeIsolationTests(unittest.TestCase):
             "MARKET_NO_WEB": "true",
             "VITE_MARKET_MINIAPP": "true",
             "HTTP_PROXY": "http://proxy",
+            "RUST_LOG": "warn",
         }
         cleaned = clean_environment(original)
         self.assertFalse(
@@ -35,6 +50,7 @@ class SmokeIsolationTests(unittest.TestCase):
         self.assertEqual(cleaned["CARGO_TARGET_DIR"], "/build-cache")
         self.assertEqual(cleaned["PATH"], "/bin")
         self.assertEqual(cleaned["NO_PROXY"], "127.0.0.1,localhost")
+        self.assertEqual(cleaned["RUST_LOG"], "info")
         self.assertEqual(original["MARKET_NO_WEB"], "true")
 
     def test_fixture_path_comes_from_cargo_including_custom_target_directories(self):

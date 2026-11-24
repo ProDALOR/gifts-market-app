@@ -293,22 +293,6 @@ fn capacity() -> ValuationError {
     ValuationError::capacity("Gift valuation statistics budget exceeded")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn repeated_listings_keep_price_evidence_without_multiplying_gift_count() {
-        let mut floor = Floor::default();
-        let gift = Arc::new(GiftId::new("same-gift").unwrap());
-        for price in ["10", "9", "11"] {
-            floor.observe(&price.into(), Some(&gift));
-        }
-        assert_eq!(floor.count, 1);
-        assert_eq!(floor.observations, 3);
-        assert_eq!(floor.price.unwrap().as_str(), "9");
-    }
-}
-
 impl Floor {
     pub(crate) fn metric(&self, present: bool) -> ValuationMetric {
         if !present {
@@ -330,5 +314,21 @@ impl Floor {
                 None,
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn repeated_listings_keep_price_evidence_without_multiplying_gift_count() {
+        let mut floor = Floor::default();
+        let gift = Arc::new(GiftId::new("same-gift").unwrap());
+        for price in ["10", "9", "11"] {
+            floor.observe(&price.into(), Some(&gift));
+        }
+        assert_eq!(floor.count, 1);
+        assert_eq!(floor.observations, 3);
+        assert_eq!(floor.price.unwrap().as_str(), "9");
     }
 }

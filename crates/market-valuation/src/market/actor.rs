@@ -90,8 +90,14 @@ impl Handler<Evaluate<crate::service::Work, Arc<ValuationRead>, ValuationError>>
                         }
                     }
                 }
+                let gate = reads.gate(&input.request)?;
+                let query = gate.lock_owned().await;
                 source
                     .prepare(move |snapshot| -> Result<_, ValuationError> {
+                        // Cancellation can drop the awaiting future while its CPU
+                        // job is still exiting. Keep publication coalesced until
+                        // that job actually releases its admitted read permit.
+                        let _query = query;
                         let previous = reads.get(&input.request)?.or(input.previous);
                         let output = ValuationRead::read(
                             &snapshot,

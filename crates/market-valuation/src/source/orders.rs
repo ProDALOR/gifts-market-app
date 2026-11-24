@@ -65,6 +65,21 @@ impl AskBookSnapshot {
         })
     }
 }
+fn read_options(query: &GiftOrderQuery) -> market_replica::ReadOptions {
+    use market_replica::Sort;
+    market_replica::ReadOptions {
+        sort: Some(match query.sort() {
+            market_gifts::GiftSort::Identity => Sort::Identity,
+            market_gifts::GiftSort::PriceAsc => Sort::PriceAsc,
+            market_gifts::GiftSort::PriceDesc => Sort::PriceDesc,
+            market_gifts::GiftSort::TimeAsc => Sort::TimeAsc,
+            market_gifts::GiftSort::TimeDesc => Sort::TimeDesc,
+            market_gifts::GiftSort::NumberAsc => Sort::NumberAsc,
+            market_gifts::GiftSort::NumberDesc => Sort::NumberDesc,
+        }),
+        ..Default::default()
+    }
+}
 impl ValuationSnapshot {
     pub(crate) fn ask_book(&self, scope: &BookScope) -> Result<AskBookSnapshot> {
         self.check_cancelled()?;
@@ -88,17 +103,18 @@ impl ValuationSnapshot {
         request.page_token = continuation;
         let page = self
             .reader
-            .read_checked(
+            .read_checked_with_options(
                 request,
+                read_options(query),
                 |_, _| Ok(()),
                 |entity| {
                     self.check_cancelled()?;
-                    if let Some(w::entity::Entity::Order(order)) = &entity.entity {
-                        if query.source == OrderSource::Asks {
-                            return market_gifts_hub::is_exhausted(order)
-                                .map(|v| !v)
-                                .map_err(|e| Status::data_loss(e.to_string()));
-                        }
+                    if let Some(w::entity::Entity::Order(order)) = &entity.entity
+                        && query.source == OrderSource::Asks
+                    {
+                        return market_gifts_hub::is_exhausted(order)
+                            .map(|v| !v)
+                            .map_err(|e| Status::data_loss(e.to_string()));
                     }
                     Ok(true)
                 },
@@ -130,8 +146,9 @@ impl ValuationSnapshot {
         request.page_token = continuation;
         let page = self
             .reader
-            .read_checked(
+            .read_checked_with_options(
                 request,
+                read_options(&query),
                 |_, _| Ok(()),
                 |entity| {
                     self.check_cancelled()?;

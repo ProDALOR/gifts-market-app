@@ -1,4 +1,4 @@
-//! Ordered slices and fixed ranges over one pinned active/history view.
+//! Half-open order ranges over one pinned active/history view.
 use crate::read_key::{Edge, PositionSource};
 use crate::{
     query::Filter,
@@ -10,19 +10,6 @@ use prost::Message;
 use rust_decimal::Decimal;
 use std::ops::Bound::{Excluded, Unbounded};
 
-#[derive(Clone)]
-pub struct SliceRequest {
-    pub navigation: Navigation,
-    pub limit: u32,
-    pub snapshot: Option<SnapshotId>,
-}
-#[derive(Clone)]
-pub enum Navigation {
-    Head,
-    After(ReadPosition),
-    Before(ReadPosition),
-    Around(ReadPosition),
-}
 #[derive(Clone)]
 pub struct ReadEntry {
     pub entity: Arc<w::Entity>,
@@ -44,22 +31,10 @@ pub struct RangeRequest {
 pub struct ReadBatch {
     pub entries: Vec<ReadEntry>,
     pub range: KeyRange,
-    pub next: Option<ReadPosition>,
     pub revision: ReadRevision,
     /// Monotonic observation clock within this reader instance; not a scoped cache key.
     pub observed: u64,
     pub snapshot: Option<SnapshotId>,
-}
-fn reverse_sort(sort: Sort) -> Sort {
-    match sort {
-        Sort::PriceAsc => Sort::PriceDesc,
-        Sort::PriceDesc => Sort::PriceAsc,
-        Sort::TimeAsc => Sort::TimeDesc,
-        Sort::TimeDesc => Sort::TimeAsc,
-        Sort::NumberAsc => Sort::NumberDesc,
-        Sort::NumberDesc => Sort::NumberAsc,
-        Sort::Identity => Sort::Identity,
-    }
 }
 fn entity_rank(entity: &w::Entity, sort: Sort, history: bool) -> Result<Decimal, Status> {
     let order = state::order(entity).ok_or_else(|| Status::data_loss("missing order"))?;
@@ -78,46 +53,8 @@ fn entity_rank(entity: &w::Entity, sort: Sort, history: bool) -> Result<Decimal,
     }
 }
 impl ReplicaReader {
-    pub fn read_slice_checked(
-        &self,
-        request: w::ReadRequest,
-        slice: SliceRequest,
-        validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
-        include: impl Fn(&w::Entity) -> Result<bool, Status>,
-    ) -> Result<ReadBatch, Status> {
-        self.read_selection_checked(
-            request,
-            slice,
-            None,
-            false,
-            ReadOptions::default(),
-            validate,
-            include,
-        )
-    }
-    pub fn read_range_checked(
-        &self,
-        request: w::ReadRequest,
-        range: KeyRange,
-        validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
-        include: impl Fn(&w::Entity) -> Result<bool, Status>,
-    ) -> Result<ReadBatch, Status> {
-        let slice = SliceRequest {
-            navigation: Navigation::Head,
-            limit: READ_LIMITS.max_batch_rows,
-            snapshot: None,
-        };
-        self.read_selection_checked(
-            request,
-            slice,
-            Some(range),
-            true,
-            ReadOptions::default(),
-            validate,
-            include,
-        )
-    }
-    /// Read one page within half-open bounds; continue at the returned range end.
+    /// Read a bounded page or reconcile a complete half-open range.
+    /// Continue a page at its returned range end, retaining its snapshot lease.
     pub fn query_range_checked(
         &self,
         request: w::ReadRequest,
@@ -126,53 +63,13 @@ impl ReplicaReader {
         validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
         include: impl Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadBatch, Status> {
-        self.read_selection_checked(
-            request,
-            SliceRequest {
-                navigation: Navigation::Head,
-                limit: read.limit,
-                snapshot: read.snapshot,
-            },
-            Some(read.range),
-            complete,
-            read.options,
-            validate,
-            include,
-        )
-    }
-    fn read_selection_checked(
-        &self,
-        request: w::ReadRequest,
-        slice: SliceRequest,
-        range: Option<KeyRange>,
-        complete: bool,
-        options: ReadOptions,
-        validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
-        include: impl Fn(&w::Entity) -> Result<bool, Status>,
-    ) -> Result<ReadBatch, Status> {
-        let size = slice.limit as usize;
-        if size == 0
-            || size
-                > if range.is_some() {
-                    READ_LIMITS.max_batch_rows
-                } else {
-                    READ_LIMITS.max_rows
-                } as usize
-        {
+        let size = read.limit as usize;
+        if size == 0 || size > READ_LIMITS.max_batch_rows as usize {
             return Err(Status::invalid_argument("query exceeds row budget"));
         }
-        let around = matches!(slice.navigation, Navigation::Around(_));
-        let backwards = matches!(slice.navigation, Navigation::Before(_));
-        let before_target = if around {
-            size / 3
-        } else if backwards {
-            size
-        } else {
-            0
-        };
         if !request.page_token.is_empty() {
             return Err(Status::invalid_argument(
-                "slice reads do not use page tokens",
+                "range reads do not use page tokens",
             ));
         }
         self.expire();
@@ -181,17 +78,17 @@ impl ReplicaReader {
             Ok(w::ReadMode::Live) => false,
             _ => return Err(Status::invalid_argument("unknown read mode")),
         };
-        if !frozen && slice.snapshot.is_some() {
+        if !frozen && read.snapshot.is_some() {
             return Err(Status::invalid_argument(
                 "latest reads do not use snapshot leases",
             ));
         }
         let snapshot = if frozen {
-            Some(slice.snapshot.unwrap_or_else(SnapshotId::fresh))
+            Some(read.snapshot.unwrap_or_else(SnapshotId::fresh))
         } else {
             None
         };
-        let reader = if let Some(id) = &slice.snapshot {
+        let reader = if let Some(id) = &read.snapshot {
             let mut views = self.0.views.lock().map_err(storage::failure)?;
             let retained = views
                 .get_mut(&id.to_string())
@@ -204,16 +101,12 @@ impl ReplicaReader {
         };
         validate(&reader, &request)?;
         let view = reader.view()?;
-        let filter = Filter::compile_with_options(&view.state, &request, options)?;
+        let filter = Filter::compile_with_options(&view.state, &request, read.options)?;
         if filter.scope.is_none() {
             return Err(Status::invalid_argument("reads require an order scope"));
         }
-        let anchor = match &slice.navigation {
-            Navigation::Head => None,
-            Navigation::After(p) | Navigation::Before(p) | Navigation::Around(p) => Some(p.clone()),
-        };
-        let mut position = range.as_ref().map(|r| r.start.clone()).unwrap_or(anchor);
-        let end = range.as_ref().and_then(|r| r.end.clone());
+        let position = read.range.start.clone();
+        let end = read.range.end.clone();
         for p in position.iter().chain(end.iter()) {
             p.validate(&filter)?;
         }
@@ -235,7 +128,8 @@ impl ReplicaReader {
         };
         let eligible = |e: &w::Entity| -> Result<bool, Status> {
             reader.check_cancelled()?;
-            if let Some(range) = &range {
+            if read.range.start.is_some() || read.range.end.is_some() {
+                let range = &read.range;
                 let point = make_position(
                     state::entity_key(e)?,
                     entity_rank(e, filter.sort, filter.history())?,
@@ -253,8 +147,9 @@ impl ReplicaReader {
             }
             Ok(filter.matches(e)? && include(e)?)
         };
-        let mut pivot = None;
-        if let Some(p) = &mut position {
+        // Ranked scans start strictly after a key. Include a surviving lower
+        // bound only when it still occupies that exact observed ordering position.
+        let pivot = if let Some(p) = &position {
             let existing = if filter.history() {
                 view.history
                     .execution(&p.history_position()?)?
@@ -262,48 +157,39 @@ impl ReplicaReader {
             } else {
                 view.state.books().get(&p.key).cloned()
             };
-            if let Some(e) = existing
-                && eligible(&e)?
-            {
-                let rank = entity_rank(&e, filter.sort, filter.history())?;
-                if around || rank == p.rank {
-                    p.rank = rank;
-                    if (around
-                        || (range.is_some() && p.edge != Edge::After)
-                        || (matches!(slice.navigation, Navigation::After(_))
-                            && p.edge == Edge::Before)
-                        || (backwards && p.edge == Edge::After))
-                        && end
-                            .as_ref()
-                            .is_none_or(|end| make_position(p.key.clone(), p.rank, p.at) < *end)
-                    {
-                        pivot = Some(e);
-                    }
-                }
-            }
-        }
-        let directional = !complete && !around;
+            existing
+                .filter(|_| p.edge != Edge::After)
+                .map(|entity| {
+                    Ok::<_, Status>((
+                        p.key.clone(),
+                        entity_rank(&entity, filter.sort, filter.history())?,
+                        entity,
+                    ))
+                })
+                .transpose()?
+                .filter(|(_, rank, _)| *rank == p.rank)
+                .map(|row| eligible(&row.2).map(|include| include.then_some(row)))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        let directional = !complete;
         let mut resume = None;
-        let mut scan = |reverse: bool| -> Result<Vec<(Key, Decimal, Arc<w::Entity>)>, Status> {
+        let mut scan = || -> Result<Vec<(Key, Decimal, Arc<w::Entity>)>, Status> {
             let boundary = position.as_ref();
             if filter.history() {
                 let mut scan_filter = filter.clone();
                 if scan_filter.sort == Sort::Identity {
                     scan_filter.sort = Sort::TimeAsc;
                 }
-                if reverse {
-                    scan_filter.sort = reverse_sort(scan_filter.sort);
-                }
                 let after = boundary
                     .map(|p| Ok::<_, Status>((p.rank.to_string(), p.history_position()?)))
                     .transpose()?;
-                let end = if reverse {
-                    None
-                } else {
-                    end.as_ref()
-                        .map(|p| Ok::<_, Status>((p.rank.to_string(), p.history_position()?)))
-                        .transpose()?
-                };
+                let end = end
+                    .as_ref()
+                    .map(|p| Ok::<_, Status>((p.rank.to_string(), p.history_position()?)))
+                    .transpose()?;
                 let (rows, next) = view.history.ranked_history_between(
                     &scan_filter,
                     after,
@@ -335,47 +221,23 @@ impl ReplicaReader {
             }
             let rows: Box<dyn Iterator<Item = (&Key, Decimal, &Arc<w::Entity>)> + '_> =
                 if filter.sort == Sort::Identity {
-                    let low = if reverse {
-                        Unbounded
-                    } else {
-                        boundary
-                            .map(|p| Excluded(p.key.clone()))
-                            .unwrap_or(Unbounded)
-                    };
-                    let high = if reverse {
-                        boundary
-                            .map(|p| Excluded(p.key.clone()))
-                            .unwrap_or(Unbounded)
-                    } else {
-                        Unbounded
-                    };
-                    let rows = view.state.books().range((low, high));
-                    if reverse {
-                        Box::new(rows.rev().map(|(k, e)| (k, Decimal::ZERO, e)))
-                    } else {
-                        Box::new(rows.map(|(k, e)| (k, Decimal::ZERO, e)))
-                    }
+                    let low = boundary
+                        .map(|p| Excluded(p.key.clone()))
+                        .unwrap_or(Unbounded);
+                    Box::new(
+                        view.state
+                            .books()
+                            .range((low, Unbounded))
+                            .map(|(key, entity)| (key, Decimal::ZERO, entity)),
+                    )
                 } else {
-                    let sort = if reverse {
-                        match filter.sort {
-                            Sort::PriceAsc => Sort::PriceDesc,
-                            Sort::PriceDesc => Sort::PriceAsc,
-                            Sort::TimeAsc => Sort::TimeDesc,
-                            Sort::TimeDesc => Sort::TimeAsc,
-                            Sort::NumberAsc => Sort::NumberDesc,
-                            Sort::NumberDesc => Sort::NumberAsc,
-                            Sort::Identity => unreachable!(),
-                        }
-                    } else {
-                        filter.sort
-                    };
                     Box::new(
                         view.state
                             .books()
                             .ranked(
                                 filter.scope.as_ref().expect("scope checked"),
                                 boundary.map(|p| RankKey::new(p.rank, p.key.clone())),
-                                sort,
+                                filter.sort,
                             )
                             .map(|(r, e)| {
                                 let (v, k) = r.entity();
@@ -387,10 +249,9 @@ impl ReplicaReader {
             let mut scanned_key = None;
             for (scanned, (key, rank, e)) in rows.enumerate() {
                 reader.check_cancelled()?;
-                if !reverse
-                    && end
-                        .as_ref()
-                        .is_some_and(|end| make_position(key.clone(), rank, None) >= *end)
+                if end
+                    .as_ref()
+                    .is_some_and(|end| make_position(key.clone(), rank, None) >= *end)
                 {
                     break;
                 }
@@ -415,43 +276,12 @@ impl ReplicaReader {
             }
             Ok(result)
         };
-        let mut before = if position.is_some() && (around || backwards) && range.is_none() {
-            scan(true)?
-        } else {
-            vec![]
-        };
-        let mut after = if backwards { vec![] } else { scan(false)? };
-        // Around follows the current identity; directional reads stay strictly beyond the observed key.
-        let pivot = if let (Some(e), Some(p)) = (pivot, position.as_ref()) {
-            Some((p.key.clone(), p.rank, e))
-        } else {
-            None
-        };
-        let before_count =
-            (before_target - usize::from(backwards && pivot.is_some())).min(before.len());
-        let after_count = (if around {
-            size - before_count - usize::from(pivot.is_some())
-        } else if backwards {
-            0
-        } else {
-            size - usize::from(pivot.is_some())
-        })
-        .min(after.len());
-        let before_count = if around {
-            (size - after_count - usize::from(pivot.is_some())).min(before.len())
-        } else {
-            before_count
-        };
-        let has_before = before.len() > before_count || (backwards && resume.is_some());
-        let has_after = after.len() > after_count || (!backwards && resume.is_some());
-        let selected = before
-            .drain(..before_count)
-            .rev()
-            .chain(pivot)
-            .chain(after.drain(..after_count))
-            .collect::<Vec<_>>();
+        let mut rows = scan()?;
+        let count = (size - usize::from(pivot.is_some())).min(rows.len());
+        let has_after = rows.len() > count || resume.is_some();
+        let selected = pivot.into_iter().chain(rows.drain(..count));
         let mut bytes = 0;
-        let mut entries = Vec::with_capacity(selected.len());
+        let mut entries = Vec::with_capacity(size.min(128));
         for (key, rank, entity) in selected {
             let at = if filter.history() {
                 state::order(&entity).and_then(|o| o.executed_at_ms)
@@ -475,7 +305,7 @@ impl ReplicaReader {
         if let Some(id) = &snapshot {
             let mut views = self.0.views.lock().map_err(storage::failure)?;
             self.check_cancelled()?;
-            if slice.snapshot.is_some() {
+            if read.snapshot.is_some() {
                 let retained = views.get_mut(&id.to_string()).ok_or_else(|| {
                     Status::failed_precondition("snapshot released; restart read")
                 })?;
@@ -495,68 +325,19 @@ impl ReplicaReader {
                 );
             }
         }
-        let range_query = range.is_some() && !complete;
-        let coverage = if range_query {
+        let coverage = if !complete && has_after {
             KeyRange {
-                start: range.as_ref().and_then(|r| r.start.clone()),
-                end: if has_after {
-                    resume
-                        .clone()
-                        .or_else(|| entries.last().map(|e| e.key.clone()))
-                        .map(|point| point.after())
-                } else {
-                    range.as_ref().and_then(|r| r.end.clone())
-                },
+                start: read.range.start,
+                end: resume
+                    .or_else(|| entries.last().map(|entry| entry.key.clone()))
+                    .map(|point| point.after()),
             }
         } else {
-            range.unwrap_or_else(|| KeyRange {
-                start: if backwards || around {
-                    if has_before {
-                        resume
-                            .clone()
-                            .or_else(|| entries.first().map(|e| e.key.clone()))
-                    } else {
-                        None
-                    }
-                } else {
-                    position.as_ref().map(ReadPosition::after)
-                },
-                end: if backwards {
-                    position.as_ref().map(ReadPosition::before)
-                } else if has_after {
-                    resume
-                        .clone()
-                        .or_else(|| entries.last().map(|e| e.key.clone()))
-                        .map(|point| point.after())
-                } else {
-                    None
-                },
-            })
-        };
-        let next = if backwards {
-            if has_before {
-                resume
-                    .clone()
-                    .or_else(|| entries.first().map(|e| e.key.clone()))
-            } else {
-                None
-            }
-        } else if has_after {
-            resume
-                .clone()
-                .or_else(|| entries.last().map(|e| e.key.clone()))
-        } else {
-            None
-        };
-        let next = if range_query {
-            next.map(|point| point.after())
-        } else {
-            next
+            read.range
         };
         Ok(ReadBatch {
             entries,
             range: coverage,
-            next,
             revision: reader.read_revision(&request)?,
             observed: view.revisions.sequence,
             snapshot,

@@ -685,7 +685,6 @@ async fn sparse_model_watch_remains_complete_across_unrelated_market_updates() {
                 id: "99".into(),
             }],
             attributes: [("tg.model".into(), Default::default())].into(),
-            ..Default::default()
         })),
     ];
     for id in ["rare", "common"] {

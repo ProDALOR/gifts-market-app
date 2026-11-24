@@ -10,6 +10,7 @@ pub(crate) enum TaskKind {
     MarketData,
     Valuation(&'static str),
     Replication,
+    Diagnostics,
     #[cfg(feature = "bot")]
     Bot,
     #[cfg(feature = "bot")]

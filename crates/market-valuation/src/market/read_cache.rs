@@ -12,6 +12,7 @@ pub(super) struct ReadCache(Mutex<Entries>);
 struct Entries {
     weak: VecDeque<(PreparedQuery, Weak<ValuationRead>)>,
     completed: VecDeque<Arc<ValuationRead>>,
+    gates: Vec<(PreparedQuery, Weak<tokio::sync::Mutex<()>>)>,
 }
 const COMPLETED_CAPACITY: usize = 8;
 impl Entries {
@@ -27,6 +28,27 @@ impl Entries {
     }
 }
 impl ReadCache {
+    /// Coalesce equal queries before read admission and snapshot pinning. Distinct
+    /// reports can prepare concurrently without duplicating or rolling back results.
+    pub fn gate(&self, key: &PreparedQuery) -> Result<Arc<tokio::sync::Mutex<()>>, ValuationError> {
+        let mut entries = self
+            .0
+            .lock()
+            .map_err(|_| ValuationError::unavailable("Valuation cache unavailable"))?;
+        entries.gates.retain(|(_, gate)| gate.strong_count() > 0);
+        if let Some(gate) = entries
+            .gates
+            .iter()
+            .find(|(candidate, _)| candidate.same_query(key))
+            .and_then(|(_, gate)| gate.upgrade())
+        {
+            return Ok(gate);
+        }
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        entries.gates.push((key.clone(), Arc::downgrade(&gate)));
+        Ok(gate)
+    }
+
     pub fn get(&self, key: &PreparedQuery) -> Result<Option<Arc<ValuationRead>>, ValuationError> {
         let mut entries = self
             .0

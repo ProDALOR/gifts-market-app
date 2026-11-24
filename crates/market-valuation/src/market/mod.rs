@@ -147,7 +147,7 @@ pub enum StrategyValuation {
     AskFloor(FloorValuation),
     ExecutionMean(ExecutionPriceValuation),
     ExecutionMedian(ExecutionPriceValuation),
-    GiftFloor(GiftFloorValuation),
+    GiftFloor(Box<GiftFloorValuation>),
 }
 impl StrategyValuation {
     pub fn strategy(&self) -> &'static str {

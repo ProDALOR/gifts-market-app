@@ -71,12 +71,12 @@ impl ReadSet {
         // Successful statistics already cover these books, their currency and catalog choices.
         let uncovered = collections
             .iter()
-            .cloned()
             .filter(|collection| {
                 !self.statistics.iter().any(|stats| {
-                    &stats.scope.collection == collection && &stats.scope.currency == currency
+                    &stats.scope.collection == *collection && &stats.scope.currency == currency
                 })
             })
+            .cloned()
             .collect::<Vec<_>>();
         if !uncovered.is_empty() || lookup.is_some() {
             self.metadata = Some(

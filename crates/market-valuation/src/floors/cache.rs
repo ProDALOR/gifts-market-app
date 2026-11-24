@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 use tokio::time::Instant;
 
@@ -25,6 +25,7 @@ struct CachedTraits {
 }
 #[derive(Clone)]
 struct CachedBook {
+    generation: u64,
     summary: Arc<Statistics>,
     traits: Option<CachedTraits>,
     refresh_after: Instant,
@@ -51,8 +52,26 @@ impl CachedBook {
 struct Index {
     books: HashMap<BookScope, CachedBook>,
     clock: u64,
+    gates: HashMap<BookScope, Weak<Mutex<()>>>,
 }
 impl Index {
+    fn active(&self, scope: &BookScope) -> bool {
+        self.gates
+            .get(scope)
+            .is_some_and(|gate| gate.strong_count() > 0)
+    }
+    fn gate(&mut self, scope: &BookScope) -> Arc<Mutex<()>> {
+        if self.gates.len() > COLLECTION_CACHE_LIMIT {
+            self.gates.retain(|_, gate| gate.strong_count() > 0);
+        }
+        if let Some(gate) = self.gates.get(scope).and_then(Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(Mutex::new(()));
+        self.gates.insert(scope.clone(), Arc::downgrade(&gate));
+        gate
+    }
+
     fn touch(&mut self) -> u64 {
         self.clock += 1;
         self.clock
@@ -71,6 +90,7 @@ impl Index {
             let oldest = self
                 .books
                 .iter()
+                .filter(|(scope, _)| !self.active(scope))
                 .filter_map(|(scope, book)| book.traits.as_ref().map(|traits| (scope, traits.used)))
                 .min_by_key(|(_, used)| *used)
                 .map(|(scope, _)| scope.clone())
@@ -83,7 +103,7 @@ impl Index {
             let oldest = self
                 .books
                 .iter()
-                .filter(|(_, book)| book.traits.is_none())
+                .filter(|(scope, book)| book.traits.is_none() && !self.active(scope))
                 .min_by_key(|(_, book)| book.used)
                 .map(|(scope, _)| scope.clone())
                 .expect("evictable summary");
@@ -119,7 +139,12 @@ impl BookCache {
         scope: &BookScope,
         requested: Preparation,
     ) -> Result<StatisticsRead, ValuationError> {
+        let gate = self.lock()?.gate(scope);
+        let _preparation = gate
+            .lock()
+            .map_err(|_| ValuationError::unavailable("Valuation preparation failed"))?;
         snapshot.check_cancelled()?;
+        let generation = snapshot.generation()?;
         let previous = {
             let mut index = self.lock()?;
             let used = index.touch();
@@ -133,6 +158,12 @@ impl BookCache {
                 entry.clone()
             })
         };
+        // Admission pins before this per-book gate. An older queued view may still
+        // finish, but must never replace or revalidate a newer cached generation.
+        let publish = previous
+            .as_ref()
+            .is_none_or(|entry| entry.generation <= generation);
+        let previous = previous.filter(|_| publish);
         if let Some(entry) = &previous
             && let Some(mut read) = entry.read(requested)
         {
@@ -141,11 +172,10 @@ impl BookCache {
                 if due {
                     snapshot.check_cancelled()?;
                     read.refresh_after = Instant::now() + REFRESH_INTERVAL;
-                    self.lock()?
-                        .books
-                        .get_mut(scope)
-                        .expect("validated book")
-                        .refresh_after = read.refresh_after;
+                    let mut index = self.lock()?;
+                    let entry = index.books.get_mut(scope).expect("validated book");
+                    entry.refresh_after = read.refresh_after;
+                    entry.generation = generation;
                 }
                 return Ok(read);
             }
@@ -159,8 +189,8 @@ impl BookCache {
         } else {
             Preparation::Collection
         };
-        // The shared heavy-read lane serializes validation, preparation and publication;
-        // all scans use its admitted pinned view and run outside the index lock.
+        // Per-book coalescing allows independent collections to prepare in parallel.
+        // Scans stay outside the global index lock; active books cannot be evicted.
         let statistics = Arc::new(Statistics::read(snapshot, scope, preparation)?);
         let summary = if preparation == Preparation::Traits {
             match &previous {
@@ -186,13 +216,16 @@ impl BookCache {
             },
         });
         let entry = CachedBook {
+            generation,
             summary,
             traits,
             refresh_after: Instant::now() + REFRESH_INTERVAL,
             used,
         };
         let read = entry.read(requested).expect("prepared projection");
-        index.insert(scope.clone(), entry);
+        if publish {
+            index.insert(scope.clone(), entry);
+        }
         Ok(read)
     }
 }

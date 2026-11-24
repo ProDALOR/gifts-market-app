@@ -24,6 +24,11 @@ impl MarketRuntime {
         );
         let market = market_replica::ReplicaRuntime::open(directory, source).await?;
         let supervisor = Arc::new(TaskSupervisor::new());
+        let diagnostics_stop = supervisor.token();
+        supervisor.spawn_critical(
+            TaskKind::Diagnostics,
+            super::worker::monitor("market-app", diagnostics_stop),
+        )?;
         let stop = supervisor.token();
         let reads = market_replica::ReadRuntime::new(market.reader, query_limit, stop.clone())?;
         let data = market_actors::MarketDataService::start_with_shutdown(
@@ -96,24 +101,22 @@ impl MarketRuntime {
         let data = self.handle();
         let valuation = self.valuation();
         self.supervisor.spawn_optional(TaskKind::Bot, async move {
-            use futures_util::FutureExt;
-            use std::panic::AssertUnwindSafe;
-            let invocations =
-                market_invocations::Runtime::start(Default::default()).map_err(|error| {
-                    tracing::error!(%error, "invocation runtime failed");
-                })?;
-            let bot = market_telegram_bot::BotService::new(worker, data, valuation);
-            let result = AssertUnwindSafe(bot.run_with_invocations(stop, invocations.handle()))
-                .catch_unwind()
-                .await;
-            invocations.shutdown().await;
-            result
-                .map_err(|_| {
-                    tracing::error!("bot worker panicked");
-                })?
+            super::worker::run("market-bot", stop, move |stop| async move {
+                let invocations =
+                    market_invocations::Runtime::start(Default::default()).map_err(|error| {
+                        tracing::error!(%error, "invocation runtime failed");
+                    })?;
+                let bot = market_telegram_bot::BotService::new(worker, data, valuation);
+                super::worker::with_cleanup(
+                    bot.run_with_invocations(stop, invocations.handle()),
+                    invocations.shutdown(),
+                )
+                .await
                 .map_err(|error| {
                     tracing::error!(%error, "bot worker stopped");
                 })
+            })
+            .await
         })
     }
 

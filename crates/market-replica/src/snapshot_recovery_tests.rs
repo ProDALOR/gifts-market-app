@@ -276,16 +276,17 @@ fn process_crashes_recover_a_complete_old_or_new_replica_at_every_boundary() {
         } else {
             "new"
         };
-        let cursor = if phase == "live" {
-            "live-cursor".to_owned()
+        let cursor = writer.reader().cursor().unwrap();
+        if phase == "live" {
+            assert!(matches!(cursor.as_str(), "new-cursor" | "live-cursor"));
         } else {
-            format!("{expected}-cursor")
-        };
+            assert_eq!(cursor, format!("{expected}-cursor"));
+        }
         verify(
             &writer.reader(),
             expected,
             &cursor,
-            if phase == "live" { "7" } else { "1" },
+            if cursor == "live-cursor" { "7" } else { "1" },
         );
         assert!(!directory.path().join("building.redb").exists());
     }

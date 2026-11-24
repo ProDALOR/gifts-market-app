@@ -636,28 +636,16 @@ async fn calculate(
         })
         .await?
 }
-pub(crate) struct HeldWorker(Option<std::sync::mpsc::Sender<()>>);
-impl Drop for HeldWorker {
-    fn drop(&mut self) {
-        if let Some(release) = self.0.take() {
-            let _ = release.send(());
-        }
-    }
+pub(crate) struct HeldWorker {
+    _permits: Vec<market_replica::ReadPermit>,
 }
 pub(crate) async fn hold(source: &ValuationSource) -> HeldWorker {
-    let (entered, started) = tokio::sync::oneshot::channel();
-    let (release, blocked) = std::sync::mpsc::channel();
-    let source = source.clone();
-    tokio::spawn(async move {
-        source
-            .prepare(move |_| {
-                let _ = entered.send(());
-                let _ = blocked.recv();
-            })
-            .await
-    });
-    started.await.unwrap();
-    HeldWorker(Some(release))
+    let budget = source.executor().budget();
+    let mut permits = Vec::new();
+    for _ in 0..budget.limit() {
+        permits.push(budget.wait().await.unwrap());
+    }
+    HeldWorker { _permits: permits }
 }
 
 #[cfg(feature = "portfolio")]

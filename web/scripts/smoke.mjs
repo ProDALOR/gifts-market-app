@@ -44,7 +44,9 @@ try {
   await page.waitForFunction(
     () =>
       document.querySelector(".gift-grid .quote-amount")?.textContent ===
-      "0.500000001",
+      "0.50.." &&
+      document.querySelector(".gift-grid .quote-amount")?.getAttribute("aria-label") ===
+      "0.500000001 GRAM",
   );
   assert.deepEqual(errors, []);
   console.log("Real-hub browser catalog and live order updates passed.");

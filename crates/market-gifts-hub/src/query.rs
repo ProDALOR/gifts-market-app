@@ -66,17 +66,8 @@ fn scope(filters: GiftFilters, mode: w::OrderMode) -> Result<w::Scope, InvalidVa
         }),
     })
 }
-fn sort(value: GiftSort) -> i32 {
-    (match value {
-        GiftSort::Identity => w::ReadSort::Identity,
-        GiftSort::PriceAsc => w::ReadSort::PriceAsc,
-        GiftSort::PriceDesc => w::ReadSort::PriceDesc,
-        GiftSort::TimeAsc => w::ReadSort::TimeAsc,
-        GiftSort::TimeDesc => w::ReadSort::TimeDesc,
-        GiftSort::NumberAsc => w::ReadSort::NumberAsc,
-        GiftSort::NumberDesc => w::ReadSort::NumberDesc,
-    }) as i32
-}
+/// Compile transport-compatible selection and paging limits. Local ranking and
+/// bid matching are chosen by the caller through native replica read options.
 pub fn compile(query: &GiftOrderQuery) -> Result<w::ReadRequest, InvalidValue> {
     if query.source != OrderSource::Bids && query.bid_match != BidMatch::Any {
         return Err(InvalidValue("bid_match all is only valid for bids"));
@@ -105,7 +96,6 @@ pub fn compile(query: &GiftOrderQuery) -> Result<w::ReadRequest, InvalidValue> {
         }),
         limit: query.limit,
         mode: w::ReadMode::Live as i32,
-        sort: sort(query.sort()),
         ..Default::default()
     })
 }
@@ -131,7 +121,7 @@ mod tests {
         query.limit = 500;
         let read = compile(&query).unwrap();
         assert_eq!(read.mode, w::ReadMode::Live as i32);
-        assert_eq!(read.sort, w::ReadSort::NumberDesc as i32);
+        assert_eq!(read.sort, w::ReadSort::Identity as i32);
         assert_eq!(read.limit, 500);
         assert!(read.page_token.is_empty());
         let Some(w::selection::Source::Scope(scope)) = read.selection.unwrap().source else {

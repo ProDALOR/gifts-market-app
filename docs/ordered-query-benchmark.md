@@ -74,4 +74,11 @@ The frontend benchmark retains 10,000 or 100,000 visited rows, repeatedly refres
 | 10,000 | 3.779 ms | 0.136 ms |
 | 100,000 | 52.460 ms | 0.388 ms |
 
-The server retains read, scan, byte, concurrency and snapshot budgets. A finite scan may return an empty slice with a `next` key when its scan budget is reached. That key advances past scanned candidates; its returned coverage never includes unscanned rows. A fixed range either returns complete coverage or an explicit capacity error.
+The server retains read, scan, byte, concurrency and snapshot budgets. A finite scan may return an empty page with a nonterminal `range.end` when its scan budget is reached. That boundary advances past scanned candidates; its returned coverage never includes unscanned rows. A fixed range either returns complete coverage or an explicit capacity error.
+
+
+## Range-only reader
+
+The current benchmark routes both an unbounded first page and a fixed covered range through `query_range_checked`. `SliceRequest`, directional/around navigation and the separate `ReadBatch.next` field have been removed. Case labels retain `head_200` for historical comparisons; it now means a 200-row page over open half-open bounds. Native `ReadOptions.sort` supplies time/number ranking without modifying the hub contract. Benchmark figures above describe their original revisions.
+
+A local release run on 2026-11-24 measured 68.21 µs for an open page and 110.58 µs for complete fixed coverage; encoding the 200 keys measured 106.88 µs and 148.50 µs respectively. Keys totaled 13,200 bytes for this fixture. These figures overlap other verification work and do not establish a latency improvement over the earlier revisions; the cleanup removes branching while preserving bounded reads.

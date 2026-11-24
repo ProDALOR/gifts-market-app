@@ -1,10 +1,7 @@
 //! App-owned read lifetime, shared admission and tracked blocking execution.
 use crate::ReplicaReader;
 use std::sync::Arc;
-use tokio::{
-    runtime::Handle,
-    sync::{OwnedSemaphorePermit, Semaphore},
-};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::{
     sync::{CancellationToken, DropGuard},
     task::TaskTracker,
@@ -24,19 +21,31 @@ impl ReadRuntime {
         if limit == 0 || limit > Semaphore::MAX_PERMITS {
             return Err(Status::invalid_argument("Invalid read limit"));
         }
-        let runtime = Handle::try_current()
+        let clock = tokio::runtime::Handle::try_current()
             .map_err(|_| Status::unavailable("Read runtime requires Tokio"))?;
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        let preparations = cores.clamp(1, 2).min(limit);
+        let queries = Arc::new(crate::blocking::BlockingPool::new(
+            "market-query",
+            cores.clamp(1, 4).min(limit),
+        )?);
+        let preparation_pool = Arc::new(crate::blocking::BlockingPool::new(
+            "market-prepare",
+            preparations,
+        )?);
         Ok(Self {
             handle: ReadExecutor {
                 reader,
+                clock,
                 budget: ReadBudget {
                     slots: Arc::new(Semaphore::new(limit)),
                     stop: stop.child_token(),
                     limit,
                 },
                 jobs: TaskTracker::new(),
-                runtime,
-                workers: Arc::new(Semaphore::new(1)),
+                queries,
+                preparations: preparation_pool,
+                workers: Arc::new(Semaphore::new(preparations)),
             },
         })
     }
@@ -47,6 +56,8 @@ impl ReadRuntime {
         self.handle.budget.stop.cancel();
         self.handle.jobs.close();
         self.handle.jobs.wait().await;
+        self.handle.queries.shutdown();
+        self.handle.preparations.shutdown();
     }
 }
 impl Drop for ReadRuntime {
@@ -120,10 +131,12 @@ fn capacity() -> Status {
 
 #[derive(Clone)]
 pub struct ReadExecutor {
+    clock: tokio::runtime::Handle,
     reader: ReplicaReader,
     budget: ReadBudget,
     jobs: TaskTracker,
-    runtime: Handle,
+    queries: Arc<crate::blocking::BlockingPool>,
+    preparations: Arc<crate::blocking::BlockingPool>,
     workers: Arc<Semaphore>,
 }
 impl ReadExecutor {
@@ -175,6 +188,7 @@ impl ReadExecutor {
         work: impl FnOnce(ReplicaReader, CancellationToken) -> T + Send + 'static,
     ) -> Result<T, Status> {
         let _admission = self.jobs.token();
+        let queued = std::time::Instant::now();
         self.budget.check()?;
         let cancelled = self.stop_token().child_token();
         let _cancel = cancelled.clone().drop_guard();
@@ -188,6 +202,15 @@ impl ReadExecutor {
         };
         let mut permit = self.budget.wait().await?;
         permit.cancelled = cancelled;
+        tracing::debug!(
+            kind = if heavy.is_some() {
+                "preparation"
+            } else {
+                "metadata"
+            },
+            admission_ms = queued.elapsed().as_millis(),
+            "market read admitted"
+        );
         self.dispatch(permit, heavy, work).await
     }
     async fn dispatch<T: Send + 'static>(
@@ -204,18 +227,25 @@ impl ReadExecutor {
         }
         check(&permit.cancelled)?;
         let reader = self.reader.with_cancellation(permit.cancelled.clone());
-        self.jobs
-            .spawn_blocking_on(
-                move || {
-                    let cancelled = permit.cancelled.clone();
-                    let (_heavy, _permit) = (heavy, permit);
-                    check(&cancelled)?;
-                    Ok(work(reader, cancelled))
-                },
-                &self.runtime,
-            )
-            .await
-            .map_err(|_| Status::unavailable("Market read worker stopped"))?
+        let pool = if heavy.is_some() {
+            &self.preparations
+        } else {
+            &self.queries
+        };
+        let token = self.jobs.token();
+        let clock = self.clock.clone();
+        pool.spawn(move || {
+            let _tracked = token;
+            // Execute on the isolated pool, retaining the read owner's clock and
+            // async context (not the worker pool's unused current-thread runtime).
+            let _context = clock.enter();
+            let cancelled = permit.cancelled.clone();
+            let (_heavy, _permit) = (heavy, permit);
+            check(&cancelled)?;
+            Ok(work(reader, cancelled))
+        })
+        .await
+        .map_err(|_| Status::unavailable("Market read worker stopped"))?
     }
 }
 #[cfg(test)]

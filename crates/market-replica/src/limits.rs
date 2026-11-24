@@ -4,6 +4,7 @@ pub(crate) const MAX_APPLY_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_SNAPSHOT_PAGES: usize = 8;
 pub(crate) const MAX_SNAPSHOT_ROWS: usize = 4_000;
 pub(crate) const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_HISTORY_INDEX_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReadLimits {

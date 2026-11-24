@@ -572,12 +572,13 @@ async fn saturated_snapshot_capacity_leaves_normal_reads_available() {
 #[tokio::test]
 async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_isolated() {
     let (_directory, writer) = fixture();
-    let service = TestData::start(writer.reader(), 2, 1).await.unwrap();
+    let service = TestData::start(writer.reader(), 4, 1).await.unwrap();
     let handle = service.handle.clone();
     let (_lease, mut updates) = handle.test_window(gift_query()).await.unwrap();
     let original = next_window(&mut updates, &writer.reader()).await;
-    let query_a = handle.orderbooks.budget.try_query().unwrap();
-    let query_b = handle.orderbooks.budget.try_query().unwrap();
+    let held_queries = (0..service.reads.budget().limit())
+        .map(|_| handle.orderbooks.budget.try_query().unwrap())
+        .collect::<Vec<_>>();
     writer.mark(market_replica::SyncState::Stale);
     let mut status = handle.status_updates();
     let sync = tokio::time::timeout(Duration::from_secs(2), async {
@@ -596,7 +597,7 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
         panic!("range missing")
     };
     assert!(Arc::ptr_eq(&original, &same));
-    drop((query_a, query_b));
+    drop(held_queries);
     let (heavy, heavy_task) = hold_read(service.reads.clone()).await;
     let reader = service.reads.clone();
     let mut work =
@@ -777,20 +778,41 @@ async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscrip
 
 async fn hold_read(
     reads: market_replica::ReadExecutor,
-) -> (std::sync::mpsc::Sender<()>, tokio::task::JoinHandle<()>) {
-    let (entered, started) = tokio::sync::oneshot::channel();
-    let (release, proceed) = std::sync::mpsc::channel();
-    let task = tokio::spawn(async move {
-        reads
-            .prepare(move |_, _| {
-                let _ = entered.send(());
-                let _ = proceed.recv();
-            })
-            .await
-            .unwrap();
-    });
-    started.await.unwrap();
-    (release, task)
+) -> (
+    Vec<std::sync::mpsc::Sender<()>>,
+    tokio::task::JoinHandle<()>,
+) {
+    // Occupy every preparation worker while leaving shared query admission free.
+    let lanes = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .clamp(1, 2)
+        .min(reads.budget().limit());
+    let mut releases = Vec::new();
+    let mut tasks = Vec::new();
+    for _ in 0..lanes {
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, proceed) = std::sync::mpsc::channel();
+        let reads = reads.clone();
+        tasks.push(tokio::spawn(async move {
+            reads
+                .prepare(move |_, _| {
+                    let _ = entered.send(());
+                    let _ = proceed.recv();
+                })
+                .await
+                .unwrap();
+        }));
+        started.await.unwrap();
+        releases.push(release);
+    }
+    (
+        releases,
+        tokio::spawn(async move {
+            for task in tasks {
+                task.await.unwrap();
+            }
+        }),
+    )
 }
 
 struct TestData {
@@ -1222,13 +1244,18 @@ fn query_projection_rejects_duplicate_identities_instead_of_silently_collapsing_
     request.mode = w::ReadMode::Live as i32;
     let mut read = writer
         .reader()
-        .read_slice_checked(
+        .query_range_checked(
             request,
-            market_replica::SliceRequest {
-                navigation: market_replica::Navigation::Head,
+            market_replica::RangeRequest {
+                range: market_replica::KeyRange {
+                    start: None,
+                    end: None,
+                },
+                options: Default::default(),
                 limit: 2,
                 snapshot: None,
             },
+            false,
             crate::query::validate_order_collection,
             crate::protocol::include_order,
         )

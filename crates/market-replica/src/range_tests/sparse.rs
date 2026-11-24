@@ -20,20 +20,25 @@ fn listing(id: &str, price: usize, kind: &str) -> w::Order {
     );
     row
 }
-fn request(sort: i32, selected: w::AttributePredicate) -> w::ReadRequest {
+fn request(sort: i32, selected: w::AttributePredicate) -> (w::ReadRequest, ReadOptions) {
     let mut request = read(1, false);
-    request.sort = sort;
     let Some(w::selection::Source::Scope(scope)) = &mut request.selection.as_mut().unwrap().source
     else {
         unreachable!()
     };
     scope.attributes.insert("model".into(), selected);
-    request
+    (
+        request,
+        ReadOptions {
+            sort: Some(Sort::try_from(sort).unwrap()),
+            ..Default::default()
+        },
+    )
 }
-fn complete(reader: &ReplicaReader, request: w::ReadRequest) -> ReadBatch {
+fn complete(reader: &ReplicaReader, request: (w::ReadRequest, ReadOptions)) -> ReadBatch {
     reader
         .query_range_checked(
-            request,
+            request.0,
             RangeRequest {
                 range: KeyRange {
                     start: None,
@@ -41,7 +46,7 @@ fn complete(reader: &ReplicaReader, request: w::ReadRequest) -> ReadBatch {
                 },
                 limit: 100,
                 snapshot: None,
-                options: Default::default(),
+                options: request.1,
             },
             true,
             |_, _| Ok(()),
@@ -100,7 +105,7 @@ fn sparse_ranked_filters_complete_page_and_refresh_without_scanning_unrelated_or
         let query = request(sort, model("rare"));
         let initial = reader
             .query_range_checked(
-                query.clone(),
+                query.0.clone(),
                 RangeRequest {
                     range: KeyRange {
                         start: None,
@@ -108,7 +113,7 @@ fn sparse_ranked_filters_complete_page_and_refresh_without_scanning_unrelated_or
                     },
                     limit: 80,
                     snapshot: None,
-                    options: Default::default(),
+                    options: query.1,
                 },
                 false,
                 |_, _| Ok(()),
@@ -127,7 +132,7 @@ fn sparse_ranked_filters_complete_page_and_refresh_without_scanning_unrelated_or
         loop {
             let page = reader
                 .query_range_checked(
-                    query.clone(),
+                    query.0.clone(),
                     RangeRequest {
                         range: KeyRange {
                             start: start.clone(),
@@ -135,7 +140,7 @@ fn sparse_ranked_filters_complete_page_and_refresh_without_scanning_unrelated_or
                         },
                         limit: 25,
                         snapshot: None,
-                        options: Default::default(),
+                        options: query.1,
                     },
                     false,
                     |_, _| Ok(()),

@@ -1,5 +1,5 @@
 //! Authenticated Market Hub transport for full snapshot and Watch replication.
-//! Owns credentials, one reusable channel, RPC deadlines and bounded capacity retries.
+//! Owns credentials, independent live/current/history channels, RPC deadlines and bounded capacity retries.
 use market_hub_protocol::wire as w;
 use std::time::Duration;
 use tonic::{
@@ -7,10 +7,14 @@ use tonic::{
     metadata::{Ascii, MetadataValue},
     transport::Channel,
 };
+mod snapshot;
+pub use snapshot::Snapshot;
 #[derive(Clone)]
 pub struct HubClient {
     auth: MetadataValue<Ascii>,
-    channel: Channel,
+    live: Channel,
+    current: Channel,
+    history: Channel,
     source: String,
 }
 impl HubClient {
@@ -45,13 +49,14 @@ impl HubClient {
         let mut auth: MetadataValue<Ascii> =
             format!("Bearer {token}").parse().map_err(|_| invalid())?;
         auth.set_sensitive(true);
-        let channel = Channel::from_shared(endpoint)
+        let endpoint = Channel::from_shared(endpoint)
             .map_err(|_| Status::invalid_argument("invalid hub URI"))?
-            .connect_timeout(Duration::from_secs(5))
-            .connect_lazy();
+            .connect_timeout(Duration::from_secs(5));
         Ok(Self {
             auth,
-            channel,
+            live: endpoint.connect_lazy(),
+            current: endpoint.connect_lazy(),
+            history: endpoint.connect_lazy(),
             source,
         })
     }
@@ -67,11 +72,19 @@ impl HubClient {
         request
     }
     fn rpc(&self) -> w::market_read_client::MarketReadClient<Channel> {
-        w::market_read_client::MarketReadClient::new(self.channel.clone())
+        w::market_read_client::MarketReadClient::new(self.live.clone())
+            .max_decoding_message_size(1024 * 1024)
+    }
+    fn current_rpc(&self) -> w::market_read_client::MarketReadClient<Channel> {
+        w::market_read_client::MarketReadClient::new(self.current.clone())
+            .max_decoding_message_size(1024 * 1024)
+    }
+    fn history_rpc(&self) -> w::market_read_client::MarketReadClient<Channel> {
+        w::market_read_client::MarketReadClient::new(self.history.clone())
             .max_decoding_message_size(1024 * 1024)
     }
     /// One complete snapshot page. Transient failures retry the same continuation.
-    pub async fn snapshot_page(&self, page_token: String) -> Result<w::Page, Status> {
+    async fn snapshot_page(&self, page_token: String) -> Result<w::Page, Status> {
         for attempt in 0..6 {
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
@@ -105,7 +118,7 @@ impl HubClient {
             ..Default::default()
         });
         request.set_timeout(Duration::from_secs(10));
-        let mut stream = self.rpc().read(request).await?.into_inner();
+        let mut stream = self.current_rpc().read(request).await?.into_inner();
         let page = stream
             .message()
             .await?

@@ -769,3 +769,85 @@ async fn previously_unrequested_pairs_use_the_cached_collection_generation_after
     );
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn older_pinned_preparation_cannot_overwrite_a_newer_collection_generation() {
+    let (_directory, mut writer) = book();
+    let runtime =
+        market_replica::ReadRuntime::new(writer.reader(), 4, CancellationToken::new()).unwrap();
+    let source = ValuationSource::new(runtime.handle());
+    let old = source.snapshot().unwrap();
+    writer
+        .apply(w::Batch {
+            cursor: "newer-generation".into(),
+            changes: vec![ask("newer", "m", "b", "1", 999, None)],
+        })
+        .unwrap();
+    let new = source.snapshot().unwrap();
+    let cache = Arc::new(BookCache::default());
+    let scope = BookScope {
+        collection: "gift".into(),
+        currency: "GRAM".into(),
+    };
+    let (cache, scope, fresh, stale) = source
+        .prepare(move |_| {
+            let fresh = cache.get(&new, &scope).unwrap().statistics;
+            let stale = cache.get(&old, &scope).unwrap().statistics;
+            assert_eq!(fresh.collection.price.as_ref().unwrap().as_str(), "1");
+            assert_ne!(stale.collection.price.as_ref().unwrap().as_str(), "1");
+            assert!(Arc::ptr_eq(
+                &fresh,
+                &cache.lock().unwrap().books[&scope]
+                    .traits
+                    .as_ref()
+                    .unwrap()
+                    .statistics
+            ));
+            (cache, scope, fresh, stale)
+        })
+        .await
+        .unwrap();
+    let current = source
+        .prepare(move |snapshot| cache.get(&snapshot, &scope).unwrap().statistics)
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&fresh, &current));
+    assert!(!Arc::ptr_eq(&stale, &current));
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_collection_requests_share_one_preparation() {
+    let (_directory, writer) = book();
+    let runtime =
+        market_replica::ReadRuntime::new(writer.reader(), 8, CancellationToken::new()).unwrap();
+    let source = ValuationSource::new(runtime.handle());
+    let cache = Arc::new(BookCache::default());
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let source = source.clone();
+        let cache = cache.clone();
+        tasks.push(tokio::spawn(async move {
+            source
+                .prepare(move |snapshot| {
+                    cache
+                        .get(
+                            &snapshot,
+                            &BookScope {
+                                collection: "gift".into(),
+                                currency: "GRAM".into(),
+                            },
+                        )
+                        .unwrap()
+                        .statistics
+                })
+                .await
+                .unwrap()
+        }));
+    }
+    let first = tasks.remove(0).await.unwrap();
+    for task in tasks {
+        assert!(Arc::ptr_eq(&first, &task.await.unwrap()));
+    }
+    runtime.shutdown().await;
+}

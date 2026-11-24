@@ -112,6 +112,7 @@ fn production_dependencies_follow_the_service_boundaries() {
                 "market-actors",
                 "market-gifts",
                 "market-invocations",
+                "market-media",
                 "market-valuation",
             ],
         ),

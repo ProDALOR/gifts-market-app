@@ -16,6 +16,8 @@ pub enum AttributeMatch {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ReadOptions {
     pub attribute_match: AttributeMatch,
+    /// Local ranking; omitted options use only the upstream wire sort contract.
+    pub sort: Option<crate::Sort>,
 }
 impl ReadOptions {
     /// An empty overlap selection browses all bids; an empty exact selection matches unrestricted bids.
@@ -26,7 +28,10 @@ impl ReadOptions {
         if self.attribute_match == AttributeMatch::Exact || has_filters {
             self
         } else {
-            Self::default()
+            Self {
+                attribute_match: AttributeMatch::Value,
+                ..self
+            }
         }
     }
 }

@@ -10,8 +10,6 @@ use std::ops::Bound::{Excluded, Unbounded};
 enum Boundary {
     Current(Option<Key>),
     History(Option<Position>),
-    // Accept pre-window price cursors while emitting one canonical ranked format.
-    #[serde(alias = "Price")]
     Ranked(Option<(String, Key)>),
     SortedHistory(Option<(String, Position)>),
 }
@@ -36,6 +34,7 @@ impl ReplicaReader {
     pub fn read(&self, request: w::ReadRequest) -> Result<ReadResult, Status> {
         self.read_inner(
             request,
+            ReadOptions::default(),
             None::<fn(&Self, &w::ReadRequest) -> Result<(), Status>>,
             &|_| Ok(true),
         )
@@ -51,11 +50,33 @@ impl ReplicaReader {
         validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
         include: impl Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadResult, Status> {
-        self.read_inner(request, Some(validate), &include)
+        self.read_checked_with_options(request, ReadOptions::default(), validate, include)
+    }
+    pub fn read_with_options(
+        &self,
+        request: w::ReadRequest,
+        options: ReadOptions,
+    ) -> Result<ReadResult, Status> {
+        self.read_inner(
+            request,
+            options,
+            None::<fn(&Self, &w::ReadRequest) -> Result<(), Status>>,
+            &|_| Ok(true),
+        )
+    }
+    pub fn read_checked_with_options(
+        &self,
+        request: w::ReadRequest,
+        options: ReadOptions,
+        validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
+        include: impl Fn(&w::Entity) -> Result<bool, Status>,
+    ) -> Result<ReadResult, Status> {
+        self.read_inner(request, options, Some(validate), &include)
     }
     fn read_inner(
         &self,
         request: w::ReadRequest,
+        options: ReadOptions,
         validate: Option<impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>>,
         include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadResult, Status> {
@@ -96,7 +117,7 @@ impl ReplicaReader {
         if let Some(validate) = validate {
             validate(&self.pin(view.clone()), &request)?;
         }
-        let filter = Filter::compile(&view.state, &request)?;
+        let filter = Filter::compile_with_options(&view.state, &request, options)?;
         if token
             .as_ref()
             .is_some_and(|t| t.selection != filter.fingerprint || t.sort != filter.sort)

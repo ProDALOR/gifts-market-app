@@ -8,17 +8,20 @@ mod read_options;
 mod reader;
 pub use limits::{READ_LIMITS, ReadLimits};
 pub use read_options::{AttributeMatch, ReadOptions};
-mod read_key;
-mod slice;
+mod range;
 #[cfg(test)]
-mod slice_tests;
-pub use slice::{KeyRange, Navigation, RangeRequest, ReadBatch, ReadEntry, SliceRequest};
+mod range_tests;
+mod read_key;
+pub use range::{KeyRange, RangeRequest, ReadBatch, ReadEntry};
+pub use types::Sort;
 mod revisions;
 pub use revisions::{DirectoryRevision, MetadataDependencies, MetadataRevision, ReadRevision};
 mod replication;
 mod runtime;
 pub use replication::ReplicationWorker;
 pub use runtime::ReplicaRuntime;
+mod pending_history;
+mod persistence;
 mod staging;
 mod state;
 mod storage;
@@ -61,6 +64,7 @@ pub struct ReadResult {
     pub page: w::Page,
     pub sync: SyncStatus,
 }
+#[derive(Clone)]
 struct ReplicaView {
     revisions: revisions::Revisions,
     state: State,
@@ -102,6 +106,7 @@ pub struct ReplicaWriter {
     store: Store,
     reader: ReplicaReader,
     publication: PublicationState,
+    persistence: Option<persistence::Persistence>,
     #[cfg(test)]
     fail_publish_once: bool,
     #[cfg(test)]
@@ -174,6 +179,7 @@ impl ReplicaWriter {
             store,
             reader: replica,
             publication: PublicationState::Current,
+            persistence: None,
             #[cfg(test)]
             fail_publish_once: false,
             #[cfg(test)]
@@ -245,6 +251,11 @@ impl ReplicaReader {
         status.updated_at = view.updated_at;
         status
     }
+    /// Monotonic publication sequence within this replica reader's lifetime.
+    /// A pinned reader retains its sequence across updates and dataset replacement.
+    pub fn generation(&self) -> Result<u64, Status> {
+        Ok(self.view()?.revisions.sequence)
+    }
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.0.changed.subscribe()
     }
@@ -278,6 +289,10 @@ impl ReplicaWriter {
         self.store.cursor()
     }
     fn resume_cursor(&mut self) -> Result<String, Status> {
+        if let Err(error) = self.finish_persistence() {
+            tracing::warn!(%error, "recovering replica from its durable checkpoint");
+            self.publication = PublicationState::Uncertain;
+        }
         if let PublicationState::Prepared { view, .. } = &self.publication {
             let cursor = view.cursor.clone();
             let availability = self.reader.status().state;
@@ -289,7 +304,6 @@ impl ReplicaWriter {
         let previous = self.reader.view()?;
         if matches!(self.publication, PublicationState::Uncertain)
             || previous.cursor != checkpoint.cursor
-            || previous.updated_at != checkpoint.updated_at
         {
             let cursor = checkpoint.cursor.clone();
             let state = history.state()?;
@@ -329,6 +343,7 @@ impl ReplicaWriter {
         if !matches!(self.publication, PublicationState::Current) {
             self.resume_cursor()?;
         }
+        self.finish_persistence()?;
         // Prepare everything fallible before changing the canonical file name.
         // Once rename succeeds, retain the new database and its directory barrier
         // even if syncing or publication fails; subsequent writes must recover it.
@@ -413,9 +428,17 @@ impl ReplicaWriter {
         })
     }
     pub fn apply(&mut self, batch: w::Batch) -> Result<(), Status> {
-        self.apply_deliveries(std::slice::from_ref(&batch))
+        self.apply_owned(vec![batch])
     }
+    #[cfg(test)]
     fn apply_deliveries(&mut self, batches: &[w::Batch]) -> Result<(), Status> {
+        self.apply_batches(std::borrow::Cow::Borrowed(batches))
+    }
+    fn apply_owned(&mut self, batches: Vec<w::Batch>) -> Result<(), Status> {
+        self.apply_batches(std::borrow::Cow::Owned(batches))
+    }
+    fn apply_batches(&mut self, batches: std::borrow::Cow<'_, [w::Batch]>) -> Result<(), Status> {
+        self.poll_persistence()?;
         let last = batches
             .last()
             .ok_or_else(|| Status::data_loss("missing replication delivery"))?;
@@ -428,44 +451,94 @@ impl ReplicaWriter {
         self.reader.expire();
         let previous = self.reader.view()?;
         if last.cursor == previous.cursor && batches.iter().all(|batch| batch.changes.is_empty()) {
-            // A reconnect ACK confirms availability but has nothing to persist.
             self.mark(SyncState::Live);
             return Ok(());
         }
         let changes = || batches.iter().flat_map(|batch| &batch.changes);
         let mut state = previous.state.clone();
         state.apply(changes())?;
-        let store = &self.store;
-        let applied = match store.apply(changes(), Some(&last.cursor)) {
-            Ok(applied) => applied,
-            Err(error) => {
-                if error.commit_attempted {
-                    self.publication = PublicationState::Uncertain;
-                }
-                return Err(error.status);
-            }
-        };
-        // Snapshot/revision construction may still fail after the commit. Keep
-        // that obligation until a prepared view can be retained for publication.
-        self.publication = PublicationState::Uncertain;
-        let revisions = if applied.data_changed {
-            previous.revisions.updated(
-                &previous.state,
-                &state,
-                changes(),
-                applied.history_changed,
-            )?
-        } else {
-            previous.revisions.clone()
-        };
+        if self.persistence.is_none() {
+            self.persistence = Some(persistence::Persistence::new(self.store.clone())?);
+        }
+        let sequence = self
+            .persistence
+            .as_ref()
+            .expect("persistence")
+            .next_sequence()?;
+        let (history, history_changed) = previous.history.stage(sequence, changes())?;
+        let revisions =
+            previous
+                .revisions
+                .updated(&previous.state, &state, changes(), history_changed)?;
+        let data_changed = revisions.sequence != previous.revisions.sequence;
         let view = Arc::new(ReplicaView {
             revisions,
             state,
-            history: store.snapshot()?,
+            history,
             cursor: last.cursor.clone(),
-            updated_at: applied.updated_at,
+            updated_at: Some(now()),
         });
-        self.publish(view, SyncState::Live, applied.data_changed)
+        self.persistence
+            .as_mut()
+            .expect("persistence")
+            .submit(batches.into_owned())?;
+        self.publish(view, SyncState::Live, data_changed)
+    }
+    fn storage_completed(&mut self, completed: persistence::Completed) -> Result<(), Status> {
+        let base = match &completed.snapshot {
+            Ok(base) => base,
+            Err(error) => {
+                self.publication = PublicationState::Uncertain;
+                self.mark(SyncState::Stale);
+                tracing::error!(%error,"replica background persistence failed");
+                return Err(error.clone());
+            }
+        };
+        if let PublicationState::Prepared { view, .. } = &mut self.publication {
+            *view = Arc::new(ReplicaView {
+                history: view.history.persisted(base, completed.sequence)?,
+                ..view.as_ref().clone()
+            });
+        } else if matches!(self.publication, PublicationState::Current) {
+            let previous = self.reader.view()?;
+            let view = Arc::new(ReplicaView {
+                history: previous.history.persisted(base, completed.sequence)?,
+                ..previous.as_ref().clone()
+            });
+            let old = self
+                .reader
+                .0
+                .published
+                .write()
+                .map_err(storage::failure)?
+                .replace(view);
+            drop(old);
+        }
+        Ok(())
+    }
+    fn poll_persistence(&mut self) -> Result<(), Status> {
+        while let Some(completed) = self
+            .persistence
+            .as_ref()
+            .map(|persistence| persistence.completed())
+            .transpose()
+            .inspect_err(|_| {
+                self.publication = PublicationState::Uncertain;
+                self.mark(SyncState::Stale);
+            })?
+            .flatten()
+        {
+            self.storage_completed(completed)?;
+        }
+        Ok(())
+    }
+    fn finish_persistence(&mut self) -> Result<(), Status> {
+        if let Some(persistence) = &mut self.persistence {
+            persistence.finish();
+        }
+        let result = self.poll_persistence();
+        self.persistence.take();
+        result
     }
     fn publish(
         &mut self,
@@ -556,6 +629,7 @@ mod tests;
 #[cfg(test)]
 mod benchmarks;
 
+mod blocking;
 mod execution;
 pub use execution::{ReadBudget, ReadExecutor, ReadPermit, ReadRuntime};
 pub mod catalog_read;
@@ -579,3 +653,11 @@ mod live_update_benchmark;
 
 #[cfg(test)]
 mod snapshot_recovery_tests;
+
+impl Drop for ReplicaWriter {
+    fn drop(&mut self) {
+        if let Err(error) = self.finish_persistence() {
+            tracing::warn!(%error, "replica persistence shutdown failed");
+        }
+    }
+}

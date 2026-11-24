@@ -27,13 +27,23 @@ fn ordered_query_benchmark() {
         sort: 1,
         ..Default::default()
     };
-    let seed = SliceRequest {
-        navigation: Navigation::Head,
+    let seed = RangeRequest {
+        range: KeyRange {
+            start: None,
+            end: None,
+        },
         limit: 200,
         snapshot: None,
+        options: ReadOptions::default(),
     };
     let first = reader
-        .read_slice_checked(query.clone(), seed.clone(), |_, _| Ok(()), |_| Ok(true))
+        .query_range_checked(
+            query.clone(),
+            seed.clone(),
+            false,
+            |_, _| Ok(()),
+            |_| Ok(true),
+        )
         .unwrap();
     assert_eq!(first.entries.len(), 200);
     println!(
@@ -54,9 +64,24 @@ fn ordered_query_benchmark() {
         for i in 0..72 {
             let start = Instant::now();
             let result = if let Some(range) = &bounds {
-                reader.read_range_checked(query.clone(), range.clone(), |_, _| Ok(()), |_| Ok(true))
+                reader.query_range_checked(
+                    query.clone(),
+                    RangeRequest {
+                        range: range.clone(),
+                        ..seed.clone()
+                    },
+                    true,
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
             } else {
-                reader.read_slice_checked(query.clone(), seed.clone(), |_, _| Ok(()), |_| Ok(true))
+                reader.query_range_checked(
+                    query.clone(),
+                    seed.clone(),
+                    false,
+                    |_, _| Ok(()),
+                    |_| Ok(true),
+                )
             };
             let result = black_box(result.unwrap());
             assert_eq!(result.entries.len(), 200);

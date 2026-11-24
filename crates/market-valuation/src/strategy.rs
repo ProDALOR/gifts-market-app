@@ -76,7 +76,7 @@ macro_rules! register {
                 let input = <$strategy as Strategy>::Input::resolve(target, period)?;
                 $strategy
                     .evaluate(&input, context)
-                    .map(StrategyValuation::$output)
+                    .map(|output| StrategyValuation::$output(output.into()))
             },
         }
     };

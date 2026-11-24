@@ -90,7 +90,9 @@ pub(crate) mod tests {
             currency_id: "GRAM".into(),
             evaluated_at: jiff::Timestamp::now(),
             stale: false,
-            results: vec![StrategyOutcome::Value(StrategyValuation::GiftFloor(report))],
+            results: vec![StrategyOutcome::Value(StrategyValuation::GiftFloor(
+                report.into(),
+            ))],
         }
     }
 }

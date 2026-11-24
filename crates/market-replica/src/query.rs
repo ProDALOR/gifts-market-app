@@ -64,6 +64,7 @@ pub struct Filter {
     pub fingerprint: String,
 }
 impl Filter {
+    #[cfg(test)]
     pub fn compile(state: &State, request: &w::ReadRequest) -> Result<Self, Status> {
         Self::compile_with_options(state, request, ReadOptions::default())
     }
@@ -191,7 +192,8 @@ impl Filter {
         {
             return Err(invalid("invalid execution period"));
         }
-        let sort = Sort::try_from(request.sort)?;
+        let wire_sort = Sort::from_wire(request.sort)?;
+        let sort = options.sort.unwrap_or(wire_sort);
         if sort != Sort::Identity
             && (!scope.as_ref().is_some_and(|scope| {
                 scope.item_type_id.is_some()

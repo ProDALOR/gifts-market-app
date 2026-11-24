@@ -48,6 +48,15 @@ pub(crate) fn compile(
         }
     };
     let options = market_replica::ReadOptions {
+        sort: Some(match query.sort() {
+            market_gifts::GiftSort::Identity => market_replica::Sort::Identity,
+            market_gifts::GiftSort::PriceAsc => market_replica::Sort::PriceAsc,
+            market_gifts::GiftSort::PriceDesc => market_replica::Sort::PriceDesc,
+            market_gifts::GiftSort::TimeAsc => market_replica::Sort::TimeAsc,
+            market_gifts::GiftSort::TimeDesc => market_replica::Sort::TimeDesc,
+            market_gifts::GiftSort::NumberAsc => market_replica::Sort::NumberAsc,
+            market_gifts::GiftSort::NumberDesc => market_replica::Sort::NumberDesc,
+        }),
         attribute_match: match (query.source, query.bid_match) {
             (market_gifts::OrderSource::Bids, market_gifts::BidMatch::Any) => {
                 market_replica::AttributeMatch::Overlap
@@ -92,6 +101,32 @@ mod tests {
     use market_gifts::{BidMatch, OrderSource};
     use market_replica::{AttributeMatch, ReadOptions};
     #[test]
+    fn all_local_sorts_use_native_options_and_leave_the_wire_contract_unchanged() {
+        use market_gifts::GiftSort;
+        use market_replica::Sort;
+        let mut query = GiftOrderQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
+        let mut baseline = None;
+        for (gift, local) in [
+            (GiftSort::Identity, Sort::Identity),
+            (GiftSort::PriceAsc, Sort::PriceAsc),
+            (GiftSort::PriceDesc, Sort::PriceDesc),
+            (GiftSort::TimeAsc, Sort::TimeAsc),
+            (GiftSort::TimeDesc, Sort::TimeDesc),
+            (GiftSort::NumberAsc, Sort::NumberAsc),
+            (GiftSort::NumberDesc, Sort::NumberDesc),
+        ] {
+            query.sort = Some(gift);
+            let (request, read) = compile(query.clone()).unwrap();
+            assert_eq!(request.sort, w::ReadSort::Identity as i32);
+            assert_eq!(read.options.sort, Some(local));
+            if let Some(baseline) = &baseline {
+                assert_eq!(&request, baseline);
+            } else {
+                baseline = Some(request);
+            }
+        }
+    }
+    #[test]
     fn bid_matching_changes_local_options_without_changing_wire_requests() {
         let mut query = GiftOrderQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
         query.source = OrderSource::Bids;
@@ -104,11 +139,18 @@ mod tests {
         assert_eq!(all_read.options.attribute_match, AttributeMatch::Exact);
         query.filters.models.clear();
         for (mode, options) in [
-            (BidMatch::Any, ReadOptions::default()),
+            (
+                BidMatch::Any,
+                ReadOptions {
+                    sort: Some(market_replica::Sort::PriceDesc),
+                    ..Default::default()
+                },
+            ),
             (
                 BidMatch::All,
                 ReadOptions {
                     attribute_match: AttributeMatch::Exact,
+                    sort: Some(market_replica::Sort::PriceDesc),
                 },
             ),
         ] {

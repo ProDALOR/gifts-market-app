@@ -189,7 +189,7 @@ async fn evaluate(handle: &ValuationHandle) -> Result<Evaluation, ValuationError
         panic!("unexpected gift outcome: {:?}", report.results)
     };
     Ok(Evaluation {
-        data: data.clone(),
+        data: data.as_ref().clone(),
         stale: report.stale,
     })
 }
@@ -515,8 +515,8 @@ async fn strategy_display_preserves_typed_values_precision_and_structured_unavai
         },
     };
     let currency = CurrencyId::from("GRAM");
-    let display =
-        StrategyOutcome::Value(StrategyValuation::GiftFloor(output.clone())).display(&currency);
+    let display = StrategyOutcome::Value(StrategyValuation::GiftFloor(output.clone().into()))
+        .display(&currency);
     let ids = display
         .fields
         .iter()

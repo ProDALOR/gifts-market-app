@@ -30,6 +30,30 @@ struct Peer {
 }
 #[tonic::async_trait]
 impl w::market_read_server::MarketRead for Peer {
+    type ReadSnapshotPartStream = Self::ReadStream;
+    async fn open_snapshot(
+        &self,
+        _: tonic::Request<w::Empty>,
+    ) -> Result<tonic::Response<w::SnapshotSession>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "coordinated snapshots unavailable",
+        ))
+    }
+    async fn read_snapshot_part(
+        &self,
+        _: tonic::Request<w::SnapshotPartRequest>,
+    ) -> Result<tonic::Response<Self::ReadSnapshotPartStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "coordinated snapshots unavailable",
+        ))
+    }
+    async fn close_snapshot(
+        &self,
+        _: tonic::Request<w::SnapshotToken>,
+    ) -> Result<tonic::Response<w::Empty>, tonic::Status> {
+        Ok(tonic::Response::new(w::Empty {}))
+    }
+
     async fn books(&self, r: Request<w::BooksRequest>) -> Result<Response<w::BooksPage>, Status> {
         assert_eq!(
             r.metadata().get("authorization").unwrap(),

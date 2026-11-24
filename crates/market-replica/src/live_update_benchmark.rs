@@ -70,10 +70,13 @@ fn live_update_benchmark() {
             writer.apply_deliveries(group).unwrap();
         }
         println!(
-            "256 real updates ({label}, {} commits): {:?}",
+            "256 foreground updates ({label}, {} delivery groups): {:?}",
             256 / size,
             start.elapsed()
         );
+        let flushing = Instant::now();
+        writer.finish_persistence().unwrap();
+        println!("{label} persistence drain: {:?}", flushing.elapsed());
         assert_eq!(writer.reader.cursor().unwrap(), format!("{label}-255"));
     }
 }
