@@ -25,6 +25,11 @@ window.mount=(name='slow')=>root.render(React.createElement('div',{style:{displa
  fallback:'X',playback:'static',placeholderKind:kind}))));
 window.brand=()=>root.render(React.createElement('div',null,React.createElement(BrandMark,{animated:true}),React.createElement(BrandMark)));
 window.unavailableSymbol=()=>root.render(React.createElement(GiftArtwork,{placeholderKind:'symbol',playback:'static',fallback:''}));
+window.card=(name,decorated=false)=>root.render(React.createElement('main',{className:'market-results'},
+ React.createElement('ul',{className:'gift-grid'},React.createElement('li',{className:'gift-card'},
+ React.createElement(GiftArtwork,{className:'card-preview',media:{preview_url:'/media/slow/'+name+'/preview'},
+ palette:decorated?{center:'#a6b67f',edge:'#62904b',pattern:'#37552a'}:undefined,
+ fallback:'X',playback:'static'},React.createElement('span',{className:'card-copy'},'Gift'))))));
 window.clear=()=>root.render(null);
 window.fixtureReady=true;
 </script></body></html>`;
@@ -217,6 +222,47 @@ try {
   );
   await page.evaluate(() => window.clear());
   await page.waitForFunction(() => !document.querySelector(".gift-preview"));
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    const name = `card-${width}`;
+    await page.evaluate((name) => window.card(name), name);
+    await page.locator(".gift-loading-placeholder").waitFor();
+    const model = page.locator(".gift-model-image");
+    assert.equal(
+      await model.evaluate((image) => getComputedStyle(image).visibility),
+      "hidden",
+      "pending artwork stays hidden without blocking native lazy loading",
+    );
+    const expected = width >= 960 ? 96 : 44;
+    const before = await page
+      .locator(".gift-loading-placeholder")
+      .boundingBox();
+    assert.equal(before.width, expected);
+    assert.equal(before.height, expected);
+    const path = `/media/slow/${name}/preview`;
+    const deadline = Date.now() + 5000;
+    while (!pending.has(path) && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert(pending.has(path), "invisible pending images still start loading");
+    release();
+    await page.locator(".gift-model-image.loaded").waitFor();
+    const loaded = await model.boundingBox();
+    assert.equal(loaded.width, expected);
+    assert.equal(loaded.height, expected);
+    await page.evaluate((name) => window.card(name, true), name);
+    await page.locator(".gift-preview-decorated").waitFor();
+    const decorated = await model.boundingBox();
+    assert.equal(
+      decorated.width,
+      expected,
+      "catalog decoration does not resize a loaded model",
+    );
+    assert.equal(decorated.height, expected);
+    assert.equal(decorated.x, loaded.x);
+    assert.equal(decorated.y, loaded.y);
+    assert.equal(await page.locator(".gift-loading-placeholder").count(), 0);
+    await page.evaluate(() => window.clear());
+  }
   assert.deepEqual(errors, []);
   console.log(
     "Placeholder browser passed: zero outline/thumbnail requests, SVG-first stills, local gift/symbol shapes, unique shimmer IDs, visibility/motion cleanup and cached Liberty Figure branding.",

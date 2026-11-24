@@ -196,10 +196,10 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             },
         })?,
         "portfolio.snapshot" => {
-            json!({"type":"portfolio.snapshot","id":"portfolio.1","data":{"user_id":123,"refresh_id":1,"progress":{"stage":"queued","checked":0,"pages":0,"valued":0,"collectibles":0}}})
+            json!({"type":"portfolio.snapshot","id":"portfolio.1","data":{"user_id":123,"refresh_id":1,"progress":{"stage":"queued","checked":0,"valued":0,"collectibles":0}}})
         }
         "portfolio.progress" => {
-            json!({"type":"portfolio.progress","id":"portfolio.1","refresh_id":1,"progress":{"stage":"loading_inventory","checked":100,"total":700,"pages":1,"valued":0,"collectibles":0}})
+            json!({"type":"portfolio.progress","id":"portfolio.1","refresh_id":1,"progress":{"stage":"loading_inventory","checked":100,"total":700,"valued":0,"collectibles":0}})
         }
         "catalog.watch" => serde_json::to_value(Command::WatchCatalog {
             id: "catalog".into(),
@@ -288,6 +288,12 @@ mod tests {
             .keys()
             .cloned()
             .collect();
+        assert!(
+            spec["components"]["schemas"]["PortfolioProgress"]["properties"]
+                .get("pages")
+                .is_none(),
+            "inventory paging is not public progress"
+        );
         assert!(refs.iter().all(|name| names.contains(name)));
         assert!(!names.contains("GiftCatalog"));
         assert!(!names.contains("Session"));

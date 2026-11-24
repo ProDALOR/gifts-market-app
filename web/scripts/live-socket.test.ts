@@ -831,7 +831,7 @@ for (const type of ["portfolio.snapshot", "portfolio.progress"] as const) {
     const progress = {
       stage: "queued",
       checked: 0,
-      pages: 0,
+
       valued: 0,
       collectibles: 0,
     };

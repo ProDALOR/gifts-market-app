@@ -246,13 +246,51 @@ const portfolioProgress = (p: unknown) =>
     "ready",
     "failed",
   ]) &&
-  [p.checked, p.pages, p.valued, p.collectibles].every(sequence) &&
+  [p.checked, p.valued, p.collectibles].every(sequence) &&
   (p.total == null || sequence(p.total));
+const money = (value: unknown) =>
+  text(value) && value.length <= 80 && /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value);
+const portfolioVersion = (value: unknown) =>
+  text(value) && /^[0-9a-f]{32}$/.test(value);
+const portfolioSelection = (s: unknown) =>
+  record(s) &&
+  [s.count, s.priced, s.unpriced, s.unverified].every(sequence) &&
+  s.count === (s.priced as number) + (s.unpriced as number) &&
+  (s.unverified as number) <= (s.count as number) &&
+  Array.isArray(s.collections) &&
+  s.collections.every(text) &&
+  (s.total == null || money(s.total));
+function portfolioItem(item: unknown) {
+  return (
+    record(item) &&
+    record(item.gift) &&
+    oneOf(item.gift.relation, ["owned", "hosted", "unverified"]) &&
+    record(item.gift.gift) &&
+    text(item.gift.gift.id) &&
+    text(item.gift.gift.slug) &&
+    integer(item.gift.gift.number) &&
+    (item.resolved == null || gift(item.resolved)) &&
+    (item.estimate == null || money(item.estimate))
+  );
+}
+function portfolioPage(p: unknown) {
+  return (
+    record(p) &&
+    portfolioVersion(p.version) &&
+    sequence(p.offset) &&
+    portfolioSelection(p.selection) &&
+    typeof p.has_more === "boolean" &&
+    Array.isArray(p.items) &&
+    p.items.length <= 100 &&
+    p.items.every(portfolioItem) &&
+    new Set(
+      p.items.map(
+        (item) => (item as { gift: { gift: { id: string } } }).gift.gift.id,
+      ),
+    ).size === p.items.length
+  );
+}
 function portfolio(d: unknown) {
-  const money = (value: unknown) =>
-    text(value) &&
-    value.length <= 80 &&
-    /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value);
   return (
     record(d) &&
     integer(d.user_id) &&
@@ -270,28 +308,15 @@ function portfolio(d: unknown) {
         typeof d.inventory.complete === "boolean")) &&
     (d.valuation == null ||
       (record(d.valuation) &&
+        portfolioSelection(d.valuation) &&
+        portfolioVersion(d.valuation.version) &&
         text(d.valuation.currency_id) &&
         text(d.valuation.evaluated_at) &&
         typeof d.valuation.stale === "boolean" &&
-        sequence(d.valuation.priced) &&
-        sequence(d.valuation.unpriced) &&
-        (d.valuation.total == null || money(d.valuation.total)) &&
-        Array.isArray(d.valuation.items) &&
-        d.valuation.items.length <= 10000 &&
-        d.valuation.items.every(
-          (item) =>
-            record(item) &&
-            record(item.gift) &&
-            oneOf(item.gift.relation, ["owned", "hosted", "unverified"]) &&
-            record(item.gift.gift) &&
-            text(item.gift.gift.id) &&
-            text(item.gift.gift.slug) &&
-            integer(item.gift.gift.number) &&
-            (item.resolved == null || gift(item.resolved)) &&
-            (item.estimate == null || money(item.estimate)),
-        )))
+        d.valuation.items === undefined))
   );
 }
+
 export function parseFrame(raw: unknown): LiveFrame {
   if (!text(raw) || raw.length > 8 * 1024 * 1024)
     throw new Error("Invalid WebSocket message");
@@ -372,28 +397,29 @@ export function parseFrame(raw: unknown): LiveFrame {
     case "result": {
       const d = value.data;
       valid =
-        value.method === "portfolio.query" ||
-        value.method === "portfolio.refresh"
-          ? portfolio(d)
-          : value.method === "orders.query"
-            ? readResult(value)
-            : value.method === "valuation.batch"
-              ? record(d) &&
-                Array.isArray(d.results) &&
-                d.results.length > 0 &&
-                d.results.length <= 100 &&
-                d.results.every(
-                  (item) =>
-                    record(item) &&
-                    (item.data != null
-                      ? valuationReport(item.data) && item.error == null
-                      : record(item.error) &&
-                        text(item.error.code) &&
-                        text(item.error.message)),
-                )
-              : value.method === "valuation.query"
-                ? valuationReport(d)
-                : false;
+        value.method === "portfolio.query"
+          ? portfolioPage(d)
+          : value.method === "portfolio.refresh"
+            ? portfolio(d)
+            : value.method === "orders.query"
+              ? readResult(value)
+              : value.method === "valuation.batch"
+                ? record(d) &&
+                  Array.isArray(d.results) &&
+                  d.results.length > 0 &&
+                  d.results.length <= 100 &&
+                  d.results.every(
+                    (item) =>
+                      record(item) &&
+                      (item.data != null
+                        ? valuationReport(item.data) && item.error == null
+                        : record(item.error) &&
+                          text(item.error.code) &&
+                          text(item.error.message)),
+                  )
+                : value.method === "valuation.query"
+                  ? valuationReport(d)
+                  : false;
       break;
     }
   }

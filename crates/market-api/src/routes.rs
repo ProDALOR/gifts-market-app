@@ -134,6 +134,7 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
         "/valuations/strategies/{strategy}/documentation",
         web::get().to(crate::valuation::documentation),
     )
+    .route("/portfolios/query", web::post().to(crate::portfolio::read))
     .route(
         "/portfolios/{user_id}",
         web::get().to(crate::portfolio::query),

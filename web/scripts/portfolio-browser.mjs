@@ -1,3 +1,4 @@
+import { portfolioSnapshot, portfolioPage } from "./portfolio-fixture.mjs";
 // Isolated UI workflow: no live Telegram sessions or hub connections.
 import assert from "node:assert/strict";
 import { readFile, mkdtemp, mkdir, rm } from "node:fs/promises";
@@ -88,7 +89,7 @@ const state = (user, count, refresh = 1) => ({
     stage: "ready",
     checked: count,
     total: count,
-    pages: Math.ceil(count / 100),
+
     valued: count,
     collectibles: count,
   },
@@ -220,6 +221,7 @@ try {
       holdRefresh = false,
       pendingRefreshId;
     const cancelledRequests = new Set();
+    const pageReads = [];
     const send = (socket, value) => socket.send(JSON.stringify(value));
     await page.routeWebSocket("**/ws", (socket) => {
       send(socket, { type: "market.status", status: "available" });
@@ -247,19 +249,32 @@ try {
             id: frame.id,
             data:
               report?.user_id === frame.params.user_id
-                ? report
+                ? portfolioSnapshot(report)
                 : {
                     user_id: frame.params.user_id,
                     refresh_id: 1,
                     progress: {
                       stage: "queued",
                       checked: 0,
-                      pages: 0,
+
                       valued: 0,
                       collectibles: 0,
                     },
                   },
           });
+        }
+        if (frame.type === "request" && frame.method === "portfolio.query") {
+          pageReads.push(frame.params);
+          try {
+            send(socket, {
+              type: "result",
+              id: frame.id,
+              method: frame.method,
+              data: portfolioPage(report, frame.params),
+            });
+          } catch (error) {
+            send(socket, { type: "error", id: frame.id, error });
+          }
         }
         if (frame.type === "request" && frame.method === "portfolio.refresh") {
           refreshCount++;
@@ -274,7 +289,6 @@ try {
               ...report.progress,
               stage: "loading_inventory",
               checked: 100,
-              pages: 1,
             },
           };
           send(socket, {
@@ -288,7 +302,7 @@ try {
             send(socket, {
               type: "portfolio.snapshot",
               id: watchId,
-              data: report,
+              data: portfolioSnapshot(report),
             });
             setTimeout(
               () =>
@@ -296,7 +310,7 @@ try {
                   type: "result",
                   id: frame.id,
                   method: frame.method,
-                  data: pending,
+                  data: portfolioSnapshot(pending),
                 }),
               20,
             );
@@ -368,7 +382,7 @@ try {
         stage: "loading_inventory",
         checked: 100,
         total: 700,
-        pages: 1,
+
         valued: 0,
         collectibles: 0,
       },
@@ -378,9 +392,19 @@ try {
       .filter({ hasText: "100 of 700" })
       .waitFor();
     report = state(7, 700);
-    send(peer, { type: "portfolio.snapshot", id: watchId, data: report });
-    await page.locator('.gift-grid[data-order-count="700"]').waitFor();
+    send(peer, {
+      type: "portfolio.snapshot",
+      id: watchId,
+      data: portfolioSnapshot(report),
+    });
+    await page.locator('.gift-grid[data-order-count="100"]').waitFor();
     assert((await page.locator(".portfolio-card").count()) < 150);
+    assert.equal(
+      pageReads.length,
+      1,
+      "first load requests only one 100-gift page",
+    );
+    assert.equal(pageReads[0].limit, 100);
     await page
       .locator(".portfolio-meta")
       .filter({ hasText: "1 unverified" })
@@ -462,8 +486,10 @@ try {
     await page
       .getByRole("button", { name: "Refresh gifts", exact: true })
       .click();
-    await page.locator('.gift-grid[data-order-count="701"]').waitFor();
-    await page.waitForTimeout(80);
+    await page
+      .locator(".portfolio-meta")
+      .filter({ hasText: "701 gifts" })
+      .waitFor();
     assert.equal(
       await page.locator(".portfolio-progress").innerText(),
       "Inventory checked",
@@ -548,8 +574,16 @@ try {
         traits: { model: "other-model", backdrop: "other-back" },
       },
     };
-    send(peer, { type: "portfolio.snapshot", id: watchId, data: report });
-    await page.locator('.gift-grid[data-order-count="6000"]').waitFor();
+    send(peer, {
+      type: "portfolio.snapshot",
+      id: watchId,
+      data: portfolioSnapshot(report),
+    });
+    await page
+      .locator(".portfolio-meta")
+      .filter({ hasText: "6,000 gifts" })
+      .waitFor();
+    await page.locator('.gift-grid[data-order-count="100"]').waitFor();
     const other = page.locator(".portfolio-card").filter({
       has: page.getByRole("button", {
         name: "View OtherGift-2",
@@ -586,14 +620,47 @@ try {
       .getByRole("button", { name: "Close details", exact: true })
       .click();
     assert((await page.locator(".portfolio-card").count()) < 150);
+    let loaded = Number(
+      await page.locator(".gift-grid").getAttribute("data-order-count"),
+    );
+    while (loaded < 6000) {
+      await page.evaluate(() =>
+        window.scrollTo(0, document.documentElement.scrollHeight),
+      );
+      await page.mouse.wheel(0, 500);
+      await page
+        .waitForFunction(
+          (previous) =>
+            Number(
+              document
+                .querySelector(".gift-grid")
+                ?.getAttribute("data-order-count"),
+            ) > previous,
+          loaded,
+        )
+        .catch(async (error) => {
+          console.log({
+            loaded,
+            reads: pageReads.slice(-3),
+            errors,
+            alerts: await page.locator(".error").allTextContents(),
+            loader: await page.locator(".scroll-loader").allTextContents(),
+          });
+          throw error;
+        });
+      loaded = Number(
+        await page.locator(".gift-grid").getAttribute("data-order-count"),
+      );
+    }
     await page.evaluate(() =>
       window.scrollTo(0, document.documentElement.scrollHeight),
     );
-    await page.waitForTimeout(100);
+    await page
+      .getByRole("button", { name: "View Gift-6000", exact: true })
+      .waitFor();
     assert(
-      (await page
-        .getByRole("button", { name: "View Gift-6000", exact: true })
-        .count()) > 0,
+      pageReads.every((query) => query.limit === 100),
+      "all scroll reads remain bounded",
     );
     const bottomReads = catalogDetails;
     send(peer, {

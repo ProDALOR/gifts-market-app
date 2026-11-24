@@ -172,6 +172,9 @@ function Artwork({
           key={`${source.url}:${source.attempt}`}
           src={source.url}
           alt=""
+          style={{
+            visibility: source.status !== "ready" ? "hidden" : undefined,
+          }}
           loading={playback === "detail" ? "eager" : "lazy"}
           decoding="async"
           className={`gift-model-image${source.status === "ready" ? " loaded" : ""}`}

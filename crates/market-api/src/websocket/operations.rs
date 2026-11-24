@@ -141,7 +141,7 @@ async fn portfolio_watch(
             } else {
                 ServerFrame::PortfolioSnapshot {
                     id: &key.id,
-                    data: &source,
+                    data: crate::portfolio::PortfolioResponse::from(source.as_ref()),
                 }
             };
             serde_json::to_writer(writer, &frame)
@@ -224,7 +224,7 @@ async fn request(market: &MarketApi, context: &OperationContext, query: ApiReque
                             writer,
                             &ServerFrame::Result(ApiResult::PortfolioRefresh {
                                 id: &id,
-                                data: &data,
+                                data: crate::portfolio::PortfolioResponse::from(data.as_ref()),
                             }),
                         )
                     })
@@ -457,7 +457,7 @@ mod tests {
     fn portfolio_progress_requires_the_entire_inventory_and_report_to_be_unchanged() {
         let original: market_portfolio::PortfolioState = serde_json::from_value(serde_json::json!({
             "user_id":7,"refresh_id":1,
-            "progress":{"stage":"ready","checked":1,"pages":1,"valued":1,"collectibles":1},
+            "progress":{"stage":"ready","checked":1,"valued":1,"collectibles":1},
             "inventory":{"checked_at":"2026-01-01T00:00:00Z","count":1,"scanned":1,"regular":0,"skipped":0,"complete":true},
             "valuation":{"currency_id":"GRAM","evaluated_at":"2026-01-01T00:00:00Z","stale":false,"total":"0","priced":0,"unpriced":0,"items":[]}
         })).unwrap();

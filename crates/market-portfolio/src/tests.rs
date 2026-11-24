@@ -117,7 +117,7 @@ impl ValuationProvider for Quotes {
         }))
     }
 }
-fn gift(id: &str) -> InventoryGift {
+pub(crate) fn gift(id: &str) -> InventoryGift {
     InventoryGift {
         gift: market_gifts::TelegramGiftDetails {
             id: id.to_owned().try_into().unwrap(),
@@ -535,22 +535,62 @@ async fn valuation_keeps_running_beyond_the_idle_interval_while_progress_advance
     for count in 1..=3 {
         tokio::time::sleep(Duration::from_millis(150)).await;
         quotes.0.lock().unwrap()[0].0.send_replace(count);
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while watch.current().progress.valued != count {
-                watch.changed().await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
+        // Public updates are sampled less often than this fixture's idle timeout.
+        // Internal progress must keep the run alive even when no frame is emitted.
         assert_eq!(watch.current().progress.stage, PortfolioStage::Valuing);
     }
     assert!(started.elapsed() > Duration::from_millis(300));
     quotes.0.lock().unwrap().remove(0).1.send(()).unwrap();
     let ready = stage(&mut watch, PortfolioStage::Ready).await;
     assert_eq!(ready.valuation.as_ref().unwrap().priced, 4);
+    assert_eq!(
+        ready.progress.valued, 4,
+        "completion bypasses progress sampling"
+    );
     service.task.shutdown().await.unwrap();
     runtime.shutdown().await;
 }
+#[tokio::test]
+async fn valuation_progress_coalesces_steps_and_completion_is_immediate() {
+    let (service, source, quotes, runtime) = progress_service(Duration::from_secs(2)).await;
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1", "2", "3", "4", "5", "6"], None, 6)));
+    progress_calls(&quotes, 1).await;
+    stage(&mut watch, PortfolioStage::Valuing).await;
+    for count in 1..=4 {
+        quotes.0.lock().unwrap()[0].0.send_replace(count);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), watch.changed())
+            .await
+            .is_err(),
+        "fast steps do not emit separate public updates"
+    );
+    let progress = tokio::time::timeout(Duration::from_secs(1), watch.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        progress.progress.valued, 4,
+        "the sampled update contains the latest count"
+    );
+    quotes.0.lock().unwrap().remove(0).1.send(()).unwrap();
+    let ready = tokio::time::timeout(
+        Duration::from_millis(250),
+        stage(&mut watch, PortfolioStage::Ready),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        ready.progress.valued, 6,
+        "completion does not wait for the next sample"
+    );
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn stalled_valuation_cancels_work_and_retains_the_previous_report() {
     let (service, source, quotes, runtime) = progress_service(Duration::from_millis(100)).await;
@@ -585,6 +625,40 @@ async fn stalled_valuation_cancels_work_and_retains_the_previous_report() {
         quotes.0.lock().unwrap()[0].1.is_closed(),
         "stalled provider future is dropped"
     );
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn item_versions_ignore_check_times_but_change_with_profile_order() {
+    let (service, source, _, runtime) = service(PortfolioConfig {
+        refresh_interval: Duration::from_millis(1),
+        ..Default::default()
+    })
+    .await;
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["90", "3", "25"], None, 3)));
+    let first = stage(&mut watch, PortfolioStage::Ready).await;
+    tokio::time::sleep(Duration::from_millis(3)).await;
+    service.handle.refresh(query(7, "GRAM")).await.unwrap();
+    calls(&source, 2).await;
+    source.reply(1, Ok(page(&["90", "3", "25"], None, 3)));
+    let same = stage(&mut watch, PortfolioStage::Ready).await;
+    assert_eq!(
+        first.version, same.version,
+        "unchanged revaluation needs no page downloads"
+    );
+    assert_ne!(
+        first.inventory.as_ref().unwrap().checked_at,
+        same.inventory.as_ref().unwrap().checked_at
+    );
+    tokio::time::sleep(Duration::from_millis(3)).await;
+    service.handle.refresh(query(7, "GRAM")).await.unwrap();
+    calls(&source, 3).await;
+    source.reply(2, Ok(page(&["25", "90", "3"], None, 3)));
+    let changed = stage(&mut watch, PortfolioStage::Ready).await;
+    assert_ne!(same.version, changed.version);
     service.task.shutdown().await.unwrap();
     runtime.shutdown().await;
 }

@@ -24,6 +24,7 @@ export function usePortfolio(user: number | undefined, currency: string) {
   const [error, setError] = useState("");
   const generation = useRef(0);
   const refreshing = useRef<AbortController | undefined>(undefined);
+  const watchId = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     const initial = cache.current.get(key);
     received.current = initial;
@@ -41,15 +42,17 @@ export function usePortfolio(user: number | undefined, currency: string) {
       refreshing.current = undefined;
       unsubscribe?.();
       unsubscribe = undefined;
+      watchId.current = undefined;
     };
     const attach = () => {
       detach();
       if (!user || document.hidden) return;
       const current = generation.current;
+      watchId.current = `portfolio.${++sequence}`;
       unsubscribe = liveSocket.subscribe(
         {
           type: "portfolio.watch",
-          id: `portfolio.${++sequence}`,
+          id: watchId.current,
           params: { user_id: user, currency_id: currency },
         },
         (frame) => {
@@ -112,5 +115,8 @@ export function usePortfolio(user: number | undefined, currency: string) {
     (!state.valuation || state.valuation.currency_id === currency)
       ? state
       : undefined;
-  return { state: currentState, error, refresh };
+  const resubscribe = useCallback(() => {
+    if (watchId.current && !document.hidden) liveSocket.retry(watchId.current);
+  }, []);
+  return { state: currentState, error, refresh, resubscribe };
 }

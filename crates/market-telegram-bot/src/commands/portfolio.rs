@@ -108,14 +108,8 @@ fn render(state: &PortfolioState, request: &PortfolioRequest) -> Reply {
         PortfolioStage::Idle => "Not checked yet".into(),
         PortfolioStage::Queued => "Waiting to check gifts…".into(),
         PortfolioStage::LoadingInventory => match state.progress.total {
-            Some(total) => format!(
-                "{} of {total} gifts checked · {} pages",
-                state.progress.checked, state.progress.pages
-            ),
-            None => format!(
-                "{} gifts checked · {} pages",
-                state.progress.checked, state.progress.pages
-            ),
+            Some(total) => format!("{} of {total} gifts checked", state.progress.checked),
+            None => format!("{} gifts checked", state.progress.checked),
         },
         PortfolioStage::Valuing => format!(
             "{} of {} gifts valued",
@@ -286,6 +280,7 @@ mod tests {
         })
         .collect();
         let state = PortfolioState {
+            version: None,
             user_id: UserId::new(123).unwrap(),
             refresh_id: 1,
             progress: market_portfolio::PortfolioProgress {
@@ -322,6 +317,7 @@ mod tests {
     fn reports_expose_partial_inventory_and_plain_text_fallback() {
         let request = callback("p:123:GRAM:v:0").unwrap();
         let state = PortfolioState {
+            version: None,
             user_id: UserId::new(123).unwrap(),
             refresh_id: 1,
             progress: market_portfolio::PortfolioProgress {

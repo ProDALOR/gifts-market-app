@@ -3,6 +3,8 @@ mod actor;
 mod config;
 mod inventory;
 mod provider;
+mod read;
+pub use read::*;
 mod service;
 mod types;
 pub use config::PortfolioConfig;

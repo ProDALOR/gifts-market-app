@@ -2244,10 +2244,12 @@ dependencies = [
  "market-gifts",
  "market-invocations",
  "market-valuation",
+ "rust_decimal",
  "serde",
  "tokio",
  "tokio-util",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]

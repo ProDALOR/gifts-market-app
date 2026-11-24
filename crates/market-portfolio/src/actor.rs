@@ -7,9 +7,11 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::sync::{Semaphore, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 struct View {
     tx: watch::Sender<Arc<PortfolioState>>,
     report: Option<Arc<InventoryValuation>>,
+    version: Option<PortfolioVersion>,
     inventory: Option<Arc<InventorySnapshot>>,
     progress: usize,
     error: Option<String>,
@@ -81,7 +83,6 @@ struct Progress {
     user: UserId,
     refresh: u64,
     checked: usize,
-    pages: usize,
     total: Option<usize>,
 }
 #[derive(Message)]
@@ -188,7 +189,6 @@ impl<P: InventoryProvider, V: ValuationProvider> Handler<Progress> for Portfolio
         {
             e.progress.stage = PortfolioStage::LoadingInventory;
             e.progress.checked = p.checked;
-            e.progress.pages = p.pages;
             e.progress.total = p.total;
             self.publish(p.user);
         }
@@ -239,6 +239,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
             progress,
             inventory,
             valuation: v.report.clone(),
+            version: v.version.clone(),
             refresh_after: e.refresh_after,
             error: e.error.clone().or_else(|| v.error.clone()),
         })
@@ -314,6 +315,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 progress: Default::default(),
                 inventory: None,
                 valuation: None,
+                version: None,
                 refresh_after: None,
                 error: None,
             });
@@ -323,6 +325,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 View {
                     tx,
                     report: None,
+                    version: None,
                     inventory: None,
                     progress: 0,
                     error: None,
@@ -395,6 +398,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                         .await
                         .map_err(|_| PortfolioError::Stopped)?;
                     let mut builder = crate::inventory::InventoryBuilder::default();
+                    let mut next_progress = Instant::now();
                     loop {
                         let limit = config.page_size.min(config.max_gifts - builder.scanned);
                         let ticket = calls
@@ -431,15 +435,17 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                         let completion = builder
                             .merge(page, limit, &config)
                             .map_err(PortfolioError::Inventory)?;
-                        address.do_send(Progress {
-                            user,
-                            refresh,
-                            checked: builder.scanned,
-                            pages: builder.pages,
-                            total: builder.total,
-                        });
                         if let Some(completion) = completion {
                             return Ok(builder.snapshot(completion));
+                        }
+                        if Instant::now() >= next_progress {
+                            address.do_send(Progress {
+                                user,
+                                refresh,
+                                checked: builder.scanned,
+                                total: builder.total,
+                            });
+                            next_progress = Instant::now() + PROGRESS_INTERVAL;
                         }
                     }
                 };
@@ -478,7 +484,6 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                             e.inventory_id = refresh;
                             e.progress.checked = inventory.gifts_scanned;
                             e.progress.total = inventory.reported_total;
-                            e.progress.pages = inventory.pages_read;
                             e.inventory = Some(Arc::new(inventory));
                             for view in e.views.values_mut() {
                                 if let Some(job) = view.job.take() {
@@ -563,7 +568,11 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 let stalled = tokio::time::sleep(idle_timeout);
                 tokio::pin!(stalled);
                 let mut completed = 0;
+                let mut published = 0;
                 let mut receiving = true;
+                let mut updates = tokio::time::interval(PROGRESS_INTERVAL);
+                updates.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                updates.reset();
                 loop {
                     tokio::select! {
                         biased;
@@ -577,12 +586,17 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                             if count > completed {
                                 completed = count;
                                 stalled.as_mut().reset(Instant::now() + idle_timeout);
-                                addr.do_send(Valued { user, currency: progress_currency.clone(), generation, attempt, count });
                             }
                         }
                         _ = &mut stalled => break Err(market_valuation::ValuationError::timed_out(
                             "Portfolio valuation made no progress",
                         )),
+                        _ = updates.tick() => {
+                            if completed > published {
+                                published = completed;
+                                addr.do_send(Valued { user, currency: progress_currency.clone(), generation, attempt, count: completed });
+                            }
+                        },
                     }
                 }
             }
@@ -601,6 +615,9 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                 v.attempted = Some(Instant::now());
                 match result {
                     Ok(report) => {
+                        if v.report.as_ref().is_none_or(|old| old.items != report.items) {
+                            v.version = Some(PortfolioVersion::new());
+                        }
                         v.progress = report.items.len();
                         v.report = Some(report);
                         v.inventory = Some(valued_inventory);
@@ -645,12 +662,14 @@ mod tests {
             progress: Default::default(),
             inventory: None,
             valuation: None,
+            version: None,
             refresh_after: None,
             error: None,
         });
         let view = |snapshot| View {
             tx: watch::channel(state.clone()).0,
             report: None,
+            version: None,
             inventory: Some(snapshot),
             progress: 0,
             error: None,

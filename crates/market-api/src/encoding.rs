@@ -37,6 +37,15 @@ impl ResponseEncoder {
     where
         F: FnOnce(&mut ResponseWriter) -> serde_json::Result<()> + Send + 'static,
     {
+        let limit = self.limit;
+        self.prepare(move |stop| encode_response(serialize, limit, stop))
+            .await
+    }
+    /// Small bounded projections share encoding admission, cancellation and shutdown.
+    pub async fn prepare<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(CancellationToken) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         let stop = self.stop.child_token();
         let _cancel = stop.clone().drop_guard();
         let permit = self
@@ -45,7 +54,6 @@ impl ResponseEncoder {
             .acquire_owned()
             .await
             .map_err(|_| ApiError::unavailable("Response encoding stopped"))?;
-        let limit = self.limit;
         // Shutdown and job registration share a gate; no job can appear after drain.
         let job = {
             let _registration = self
@@ -57,7 +65,10 @@ impl ResponseEncoder {
             }
             self.jobs.spawn_blocking(move || {
                 let _permit = permit;
-                encode_response(serialize, limit, stop)
+                if stop.is_cancelled() {
+                    return Err(ApiError::unavailable("Response work stopped"));
+                }
+                work(stop)
             })
         };
         job.await
@@ -236,7 +247,7 @@ mod tests {
     }
     #[tokio::test]
     async fn public_portfolio_frames_keep_progress_shape_and_byte_limits() {
-        let source: Arc<market_portfolio::PortfolioState> = Arc::new(serde_json::from_value(json!({"user_id":7,"refresh_id":3,"progress":{"stage":"queued","checked":0,"pages":0,"valued":0,"collectibles":0}})).unwrap());
+        let source: Arc<market_portfolio::PortfolioState> = Arc::new(serde_json::from_value(json!({"user_id":7,"refresh_id":3,"progress":{"stage":"queued","checked":0,"valued":0,"collectibles":0}})).unwrap());
         let encoder = ResponseEncoder::new(4096);
         let data = source.clone();
         let rest = encoder
@@ -244,23 +255,19 @@ mod tests {
             .await
             .unwrap();
         let rest: serde_json::Value = serde_json::from_slice(&rest).unwrap();
-        for kind in 0..4 {
+        for kind in 1..4 {
             let data = source.clone();
             let bytes = encoder
                 .encode(move |w| {
                     let id: OperationId = "portfolio.1".into();
                     let frame = match kind {
-                        0 => ServerFrame::Result(ApiResult::PortfolioQuery {
-                            id: &id,
-                            data: &data,
-                        }),
                         1 => ServerFrame::Result(ApiResult::PortfolioRefresh {
                             id: &id,
-                            data: &data,
+                            data: crate::portfolio::PortfolioResponse::from(data.as_ref()),
                         }),
                         2 => ServerFrame::PortfolioSnapshot {
                             id: &id,
-                            data: &data,
+                            data: crate::portfolio::PortfolioResponse::from(data.as_ref()),
                         },
                         _ => ServerFrame::PortfolioProgress {
                             id: &id,

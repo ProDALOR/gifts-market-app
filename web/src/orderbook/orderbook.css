@@ -382,9 +382,8 @@
     rgba(19, 12, 27, 0.56)
   );
 }
-.card-preview > .gift-loading-placeholder,
-.card-preview > .gift-model-image,
-.card-preview > .model-animation {
+.gift-preview.card-preview
+  > :is(.gift-loading-placeholder, .gift-model-image, .model-animation) {
   inset: var(--card-art-top, 8px) auto auto
     calc(50% - var(--card-art-size, 44px) / 2);
   width: var(--card-art-size, 44px);

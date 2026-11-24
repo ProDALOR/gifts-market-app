@@ -56,7 +56,7 @@ pub enum ApiRequest {
     #[serde(rename = "portfolio.query")]
     PortfolioQuery {
         id: OperationId,
-        params: market_portfolio::PortfolioQuery,
+        params: market_portfolio::PortfolioReadQuery,
     },
     #[serde(rename = "portfolio.refresh")]
     PortfolioRefresh {
@@ -96,7 +96,7 @@ pub enum ServerFrame<'a> {
     #[serde(rename = "portfolio.snapshot")]
     PortfolioSnapshot {
         id: &'a OperationId,
-        data: &'a market_portfolio::PortfolioState,
+        data: crate::portfolio::PortfolioResponse<'a>,
     },
     #[serde(rename = "portfolio.progress")]
     PortfolioProgress {
@@ -155,12 +155,12 @@ pub enum ApiResult<'a> {
     #[serde(rename = "portfolio.query")]
     PortfolioQuery {
         id: &'a OperationId,
-        data: &'a market_portfolio::PortfolioState,
+        data: &'a market_portfolio::PortfolioPage,
     },
     #[serde(rename = "portfolio.refresh")]
     PortfolioRefresh {
         id: &'a OperationId,
-        data: &'a market_portfolio::PortfolioState,
+        data: crate::portfolio::PortfolioResponse<'a>,
     },
     #[serde(rename = "valuation.batch")]
     ValuationBatch {

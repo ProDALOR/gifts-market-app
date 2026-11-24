@@ -4,7 +4,7 @@ use market_gifts::{Amount, CollectibleGift, CurrencyId, inventory::InventoryGift
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct InventoryValue {
     pub gift: InventoryGift,

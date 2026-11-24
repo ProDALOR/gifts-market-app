@@ -1,56 +1,50 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  compareValue,
-  selectItems,
   progressText,
-} from "../src/portfolio/model.ts";
-import type {
-  PortfolioFilters,
-  PortfolioItem,
-  PortfolioState,
+  portfolioRelation,
+  portfolioSort,
 } from "../src/portfolio/model.ts";
 import { parseFrame } from "../src/ws-protocol.ts";
-const filters: PortfolioFilters = {
-  collection: "",
-  traits: {},
-  number: "",
-  sort: "value_desc",
-};
-const item = (id: number, estimate?: string): PortfolioItem => ({
+import { PortfolioPager } from "../src/portfolio/pager.ts";
+import {
+  portfolioPage,
+  portfolioSnapshot,
+  portfolioVersion,
+} from "./portfolio-fixture.mjs";
+const item = (number: number, estimate?: string) => ({
   gift: {
     gift: {
-      id: String(id),
-      slug: `Gift-${id}`,
-      number: id,
+      id: String(number),
+      slug: `Gift-${number}`,
+      number,
       collection: "1",
       model: "2",
     },
     relation: "owned",
   },
   resolved: {
-    id: String(id),
-    number: id,
+    id: String(number),
+    number,
     collection_id: "gift",
-    traits: { model: "model", backdrop: "back", pattern: "symbol" },
+    traits: { model: "m", backdrop: "b" },
   },
   estimate,
 });
-const state: PortfolioState = {
+const report = (count = 6000, refresh = 1) => ({
   user_id: 7,
-  refresh_id: 1,
+  refresh_id: refresh,
   progress: {
     stage: "ready",
-    checked: 2,
-    total: 2,
-    pages: 1,
-    valued: 2,
-    collectibles: 2,
+    checked: count,
+    total: count,
+    valued: count,
+    collectibles: count,
   },
   inventory: {
     checked_at: "2026-11-24T00:00:00Z",
-    count: 2,
-    scanned: 2,
+    count,
+    scanned: count,
     regular: 0,
     skipped: 0,
     complete: true,
@@ -59,50 +53,36 @@ const state: PortfolioState = {
     currency_id: "GRAM",
     evaluated_at: "2026-11-24T00:00:00Z",
     stale: false,
-    total: "9999999999999999.01",
-    priced: 1,
-    unpriced: 1,
-    items: [item(1, "9999999999999999.01"), item(2)],
+    total: String(count * 2),
+    priced: count,
+    unpriced: 0,
+    items: Array.from({ length: count }, (_, i) => item(i + 1, "2")),
+  },
+});
+const query = {
+  user_id: 7,
+  currency_id: "GRAM",
+  sort: "position_asc" as const,
+  filters: {
+    collection_id: undefined,
+    models: [],
+    backdrops: [],
+    patterns: [],
+    number: undefined,
   },
 };
-test("portfolio sorting retains exact decimals and keeps unknown prices last", () => {
-  assert(compareValue("9999999999999999.02", "9999999999999999.01") > 0);
-  assert.equal(compareValue("001.00", "1"), 0);
-  const items = [
-    item(1, "9999999999999999.01"),
-    item(2, "9999999999999999.02"),
-    item(3),
-  ];
-  assert.deepEqual(
-    selectItems(items, filters).map((i) => i.gift.gift.number),
-    [2, 1, 3],
-  );
-  assert.deepEqual(
-    selectItems(items, { ...filters, sort: "value_asc" }).map(
-      (i) => i.gift.gift.number,
-    ),
-    [1, 2, 3],
-  );
+const eventually = async (predicate: () => boolean) => {
+  const end = Date.now() + 2000;
+  while (!predicate() && Date.now() < end)
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  assert(predicate());
+};
+const settled = async (pager: PortfolioPager) =>
+  eventually(() => !pager.current().loading);
+
+test("compact progress keeps counts without exposing inventory pages", () => {
+  const state = portfolioSnapshot(report(2));
   assert.equal(
-    selectItems(items, { ...filters, traits: { models: ["missing"] } }).length,
-    0,
-  );
-  assert.equal(
-    selectItems(items, {
-      ...filters,
-      traits: { models: ["model"], backdrops: ["back"], patterns: ["symbol"] },
-      number: "2",
-    }).length,
-    1,
-  );
-  assert.equal(
-    items[0].gift.gift.number,
-    1,
-    "selection does not mutate cached order",
-  );
-});
-test("portfolio progress handles unknown totals, partial inventory and retained failures", () => {
-  assert.match(
     progressText({
       ...state,
       progress: {
@@ -110,15 +90,14 @@ test("portfolio progress handles unknown totals, partial inventory and retained 
         stage: "loading_inventory",
         total: undefined,
         checked: 100,
-        pages: 1,
       },
     }),
-    /100 gifts checked/,
+    "100 gifts checked",
   );
   assert.equal(
     progressText({
       ...state,
-      inventory: { ...state.inventory!, complete: false },
+      inventory: { ...state.inventory, complete: false },
     }),
     "Partial inventory",
   );
@@ -130,162 +109,263 @@ test("portfolio progress handles unknown totals, partial inventory and retained 
     }),
     "Previous inventory retained",
   );
+  assert.equal(portfolioSort("position", true), "position_asc");
 });
-test("portfolio wire frames reject invalid identities, progress and malformed consumed gift fields", () => {
-  const frame = { type: "portfolio.snapshot", id: "p.1", data: state };
+test("summary frames reject malformed identities, counts and legacy full inventories", () => {
+  const frame = {
+    type: "portfolio.snapshot",
+    id: "p",
+    data: portfolioSnapshot(report(2)),
+  };
   assert.equal(parseFrame(JSON.stringify(frame)).type, "portfolio.snapshot");
   for (const change of [
-    (s: PortfolioState) => {
+    (s) => {
       s.user_id = 0;
     },
-    (s: PortfolioState) => {
+    (s) => {
       s.progress.checked = -1;
     },
-    (s: PortfolioState) => {
-      s.valuation!.items[0].gift.gift.number = 0;
+    (s) => {
+      s.valuation.version = "bad";
     },
-    (s: PortfolioState) => {
-      s.valuation!.items[0].estimate = "not a price";
+    (s) => {
+      s.valuation.count = 10;
+    },
+    (s) => {
+      s.valuation.items = [item(1, "2")];
     },
   ]) {
     const bad = structuredClone(frame);
     change(bad.data);
     assert.throws(() => parseFrame(JSON.stringify(bad)));
   }
-  const progress = {
-    type: "portfolio.progress",
-    id: "p.1",
-    refresh_id: 2,
-    progress: { ...state.progress, stage: "queued" },
-  };
-  assert.equal(parseFrame(JSON.stringify(progress)).type, "portfolio.progress");
-  assert.throws(() =>
-    parseFrame(
-      JSON.stringify({
-        ...progress,
-        progress: { ...progress.progress, stage: "unknown" },
-      }),
-    ),
-  );
   assert.equal(
     parseFrame(
       JSON.stringify({
-        type: "result",
-        id: "q.1",
-        method: "portfolio.query",
-        data: state,
+        type: "portfolio.progress",
+        id: "p",
+        refresh_id: 2,
+        progress: frame.data.progress,
       }),
     ).type,
-    "result",
+    "portfolio.progress",
   );
 });
-
-test("selection summaries keep unknown estimates distinct from empty portfolios", async () => {
-  const { portfolioSummary } = await import("../src/portfolio/model.ts");
-  assert.equal(
-    portfolioSummary([item(1, "1.23"), item(2, "2.34"), item(3)]).total,
-    "3.57",
-  );
-  assert.equal(portfolioSummary([item(1)]).total, undefined);
-  assert.equal(portfolioSummary([]).total, "0");
-  assert.equal(portfolioSummary([item(1), item(2)]).unpriced, 2);
-});
-
-test("visible unverified gifts remain filterable and counted without an ownership claim", async () => {
-  const { portfolioSummary, portfolioRelation } =
-    await import("../src/portfolio/model.ts");
-  const minted = item(2, "2.34");
-  minted.gift.relation = "unverified";
-  const hosted = item(3, "3.45");
-  hosted.gift.relation = "hosted";
-  const items = [item(1, "1.23"), minted, hosted];
-  assert.deepEqual(
-    selectItems(items, filters).map((i) => i.gift.gift.number),
-    [3, 2, 1],
-  );
-  assert.equal(selectItems(items, { ...filters, number: "2" })[0], minted);
-  assert.equal(portfolioSummary(items).total, "7.02");
-  assert.equal(portfolioSummary(items).unverified, 1);
+test("page frames validate bounded items and keep unpriced/unverified gifts", () => {
+  const source = report(2);
+  source.valuation.items[1].estimate = undefined;
+  source.valuation.items[1].gift.relation = "unverified";
+  const page = portfolioPage(source, { ...query, limit: 100 });
+  const frame = {
+    type: "result",
+    method: "portfolio.query",
+    id: "p",
+    data: page,
+  };
+  assert.equal(parseFrame(JSON.stringify(frame)).type, "result");
+  assert.equal(page.selection.unpriced, 1);
+  assert.equal(page.selection.unverified, 1);
+  for (const change of [
+    (p) => {
+      p.items[0].estimate = "bad";
+    },
+    (p) => {
+      p.items[0].gift.gift.number = 0;
+    },
+    (p) => {
+      p.items = Array.from({ length: 101 }, (_, i) => item(i + 1));
+    },
+  ]) {
+    const bad = structuredClone(frame);
+    change(bad.data);
+    assert.throws(() => parseFrame(JSON.stringify(bad)));
+  }
   assert.equal(portfolioRelation("owned"), undefined);
   assert.equal(portfolioRelation("hosted")?.label, "Hosted");
   assert.equal(
     portfolioRelation("unverified")?.description,
     "Visible on this profile; ownership unverified.",
   );
-  const frame = {
-    type: "portfolio.snapshot",
-    id: "p.1",
-    data: {
-      ...state,
-      valuation: {
-        ...state.valuation!,
-        items,
-        priced: 3,
-        unpriced: 0,
-        total: "7.02",
-      },
+});
+test("first load is 100 rows, scroll demand appends without changing full totals", async () => {
+  const source = report();
+  const calls = [];
+  const pager = new PortfolioPager({
+    query,
+    request: async (q) => {
+      calls.push(q);
+      return portfolioPage(source, q);
     },
-  };
-  assert.equal(parseFrame(JSON.stringify(frame)).type, "portfolio.snapshot");
+    changed: () => {},
+    refreshSummary: () => assert.fail(),
+  });
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  assert.equal(calls.length, 1);
+  assert.equal(pager.current().items.length, 100);
+  assert.equal(pager.current().selection!.count, 6000);
+  assert.equal(pager.current().selection!.total, "12000");
+  pager.loadMore();
+  pager.loadMore();
+  await settled(pager);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].offset, 100);
+  assert.deepEqual(
+    pager.current().items.map((i) => i.gift.gift.number),
+    Array.from({ length: 200 }, (_, i) => i + 1),
+  );
+  const initial = pager.current();
+  pager.dispose();
+  const restored = new PortfolioPager({
+    query,
+    initial,
+    request: async () =>
+      assert.fail("unchanged reconnect must reuse visited pages"),
+    changed: () => {},
+    refreshSummary: () => {},
+  });
+  restored.update(portfolioVersion(source));
+  assert.equal(restored.current().items.length, 200);
+  restored.dispose();
 });
-
-test("position sorting follows source order, including filtered and unpriced gifts", () => {
-  const source = [item(90, "1"), item(3), item(25, "9"), item(1, "2")];
-  assert.deepEqual(
-    selectItems(source, { ...filters, sort: "position_asc" }).map(
-      (i) => i.gift.gift.number,
-    ),
-    [90, 3, 25, 1],
-  );
-  assert.deepEqual(
-    selectItems(source, { ...filters, sort: "position_desc" }).map(
-      (i) => i.gift.gift.number,
-    ),
-    [1, 25, 3, 90],
-  );
-  assert.deepEqual(
-    source.map((i) => i.gift.gift.number),
-    [90, 3, 25, 1],
-  );
-  assert.equal(
-    selectItems(source, { ...filters, sort: "position_asc", number: "3" })[0],
-    source[1],
-  );
+test("server filtering finds gifts beyond the first page", async () => {
+  const source = report();
+  const pager = new PortfolioPager({
+    query: { ...query, filters: { ...query.filters, number: 5999 } },
+    request: async (q) => portfolioPage(source, q),
+    changed: () => {},
+    refreshSummary: () => {},
+  });
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  assert.equal(pager.current().items[0].gift.gift.number, 5999);
+  assert.equal(pager.current().selection!.count, 1);
+  assert.equal(pager.current().hasMore, false);
+  pager.dispose();
 });
-
-test("portfolio filters keep profile order across collection and trait changes", () => {
-  const source = [item(90, "1"), item(3), item(25, "9"), item(1, "2")];
-  source[1].resolved!.collection_id = "other";
-  source[2].resolved!.traits.model = "second-model";
-  source[3].resolved!.traits.backdrop = "second-backdrop";
-  const position = { ...filters, sort: "position_asc" as const };
-  const numbers = (f: PortfolioFilters, items = source) =>
-    selectItems(items, f).map((i) => i.gift.gift.number);
-  assert.deepEqual(numbers({ ...position, collection: "gift" }), [90, 25, 1]);
-  assert.deepEqual(
-    numbers({
-      ...position,
-      traits: { models: ["model"], backdrops: ["back"] },
-    }),
-    [90, 3],
-  );
-  assert.deepEqual(
-    numbers({
-      ...position,
-      collection: "gift",
-      traits: { models: ["second-model", "model"], patterns: ["symbol"] },
-      sort: "position_desc",
-    }),
-    [1, 25, 90],
-  );
-  assert.deepEqual(
-    numbers(position),
-    [90, 3, 25, 1],
-    "All gifts restores the source order",
-  );
-  assert.deepEqual(
-    numbers(position, [source[3], source[1], source[0]]),
-    [1, 3, 90],
-    "a refreshed inventory supplies the new profile order",
-  );
+test("changed versions refresh only visited coverage atomically with bounded concurrency", async () => {
+  let source = report();
+  let active = 0,
+    maximum = 0;
+  const calls = [],
+    committed = [];
+  const pager = new PortfolioPager({
+    query,
+    request: async (q) => {
+      calls.push(q);
+      active++;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active--;
+      return portfolioPage(source, q);
+    },
+    changed: (rows) => {
+      if (!rows.loading) committed.push(rows);
+    },
+    refreshSummary: () => {},
+  });
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  for (let i = 0; i < 3; i++) {
+    pager.loadMore();
+    await settled(pager);
+  }
+  const previous = pager.current().items;
+  source = report(6000, 2);
+  source.valuation.items.reverse();
+  const before = calls.length,
+    commits = committed.length;
+  pager.update(portfolioVersion(source));
+  assert.equal(pager.current().items, previous);
+  await settled(pager);
+  assert.equal(calls.length - before, 4);
+  assert.equal(committed.length - commits, 1);
+  assert.equal(pager.current().items.length, 400);
+  assert.equal(pager.current().items[0].gift.gift.number, 6000);
+  assert(maximum <= 2);
+  pager.dispose();
+});
+test("cancellation discards a late page and releases scroll intent on resume", async () => {
+  const source = report();
+  let finish;
+  let signal;
+  let calls = 0;
+  const pager = new PortfolioPager({
+    query,
+    request: (q, stop) => {
+      calls++;
+      signal = stop;
+      return calls === 1
+        ? new Promise((resolve) => {
+            finish = () => resolve(portfolioPage(source, q));
+          })
+        : Promise.resolve(portfolioPage(source, q));
+    },
+    changed: () => {},
+    refreshSummary: () => {},
+  });
+  pager.update(portfolioVersion(source));
+  pager.pause();
+  assert(signal.aborted);
+  finish();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(pager.current().items.length, 0);
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  assert.equal(pager.current().items.length, 100);
+  pager.dispose();
+});
+test("expired page versions wait for a fresh summary without mixing rows", async () => {
+  let source = report();
+  let refreshes = 0;
+  const pager = new PortfolioPager({
+    query,
+    request: async (q) => portfolioPage(source, q),
+    changed: () => {},
+    refreshSummary: () => {
+      refreshes++;
+    },
+  });
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  const previous = pager.current().items;
+  source = report(6000, 2);
+  pager.loadMore();
+  await eventually(() => refreshes === 1);
+  assert.equal(pager.current().items, previous);
+  pager.update(portfolioVersion(report()));
+  assert.equal(refreshes, 1);
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  assert.equal(pager.current().version, portfolioVersion(source));
+  assert.equal(pager.current().items.length, 100);
+  pager.dispose();
+});
+test("failed next pages retain data and retry the same offset", async () => {
+  const source = report();
+  let fail = false;
+  const offsets = [];
+  const pager = new PortfolioPager({
+    query,
+    request: async (q) => {
+      offsets.push(q.offset);
+      if (fail) throw new Error("temporary");
+      return portfolioPage(source, q);
+    },
+    changed: () => {},
+    refreshSummary: () => {},
+  });
+  pager.update(portfolioVersion(source));
+  await settled(pager);
+  fail = true;
+  pager.loadMore();
+  await settled(pager);
+  assert.equal(pager.current().items.length, 100);
+  assert.equal(pager.current().error, "temporary");
+  fail = false;
+  pager.retry();
+  await settled(pager);
+  assert.deepEqual(offsets, [0, 100, 100]);
+  assert.equal(pager.current().items.length, 200);
+  pager.dispose();
 });

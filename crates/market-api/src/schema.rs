@@ -5,6 +5,7 @@ use utoipa::OpenApi;
 #[openapi(
     paths(
         crate::portfolio::query,
+        crate::portfolio::read,
         crate::portfolio::refresh,
         crate::routes::catalog,
         crate::routes::collection,

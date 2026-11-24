@@ -1,3 +1,4 @@
+import { portfolioSnapshot, portfolioPage } from "./portfolio-fixture.mjs";
 // Shared shell with the real market and portfolio pages; all transport data is synthetic.
 import assert from "node:assert/strict";
 import { readFile, mkdtemp, mkdir, rm } from "node:fs/promises";
@@ -97,7 +98,7 @@ const state = (user, count, refresh = 1) => ({
     stage: "ready",
     checked: count,
     total: count,
-    pages: Math.ceil(count / 100),
+
     valued: count,
     collectibles: count,
   },
@@ -292,8 +293,20 @@ try {
           send(socket, {
             type: "portfolio.snapshot",
             id: frame.id,
-            data: report,
+            data: portfolioSnapshot(report),
           });
+        }
+        if (frame.type === "request" && frame.method === "portfolio.query") {
+          try {
+            send(socket, {
+              type: "result",
+              id: frame.id,
+              method: frame.method,
+              data: portfolioPage(report, frame.params),
+            });
+          } catch (error) {
+            send(socket, { type: "error", id: frame.id, error });
+          }
         }
         if (frame.type === "request" && frame.method === "portfolio.refresh") {
           refreshCount++;
@@ -304,7 +317,6 @@ try {
               ...report.progress,
               stage: "loading_inventory",
               checked: 100,
-              pages: 1,
             },
           };
           send(socket, {
@@ -318,7 +330,7 @@ try {
             send(socket, {
               type: "portfolio.snapshot",
               id: watchId,
-              data: report,
+              data: portfolioSnapshot(report),
             });
             setTimeout(
               () =>
@@ -326,7 +338,7 @@ try {
                   type: "result",
                   id: frame.id,
                   method: frame.method,
-                  data: pending,
+                  data: portfolioSnapshot(pending),
                 }),
               20,
             );

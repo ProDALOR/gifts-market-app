@@ -10,6 +10,7 @@ pub struct MarketApi {
     data: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
     encoder: Arc<crate::encoding::ResponseEncoder>,
+    pub(crate) portfolio_reads: Arc<market_portfolio::PortfolioReadCache>,
 }
 impl MarketApi {
     pub(crate) async fn watch_valuation(
@@ -49,6 +50,7 @@ impl MarketApi {
             data,
             valuation,
             portfolio: None,
+            portfolio_reads: Default::default(),
             encoder: Arc::new(crate::encoding::ResponseEncoder::new(limit)),
         }
     }
@@ -61,6 +63,12 @@ impl MarketApi {
         F: FnOnce(&mut crate::encoding::ResponseWriter) -> serde_json::Result<()> + Send + 'static,
     {
         self.encoder.encode(serialize).await
+    }
+    pub(crate) async fn prepare_response<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(tokio_util::sync::CancellationToken) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.encoder.prepare(work).await
     }
     pub(crate) async fn watch_orders(
         &self,

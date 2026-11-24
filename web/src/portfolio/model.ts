@@ -1,7 +1,6 @@
-import { sumAmounts } from "../amount.ts";
 import type { components } from "../gen/api";
 import type { TraitFilters } from "../market";
-export type PortfolioState = components["schemas"]["PortfolioState"];
+export type PortfolioState = components["schemas"]["PortfolioResponse"];
 export type PortfolioItem = components["schemas"]["InventoryValue"];
 const relations = {
   hosted: { label: "Hosted", description: "Hosted on this Telegram profile." },
@@ -38,62 +37,6 @@ export type PortfolioFilters = {
   number: string;
   sort: PortfolioSort;
 };
-export function compareValue(a: string, b: string) {
-  const [ar, af = ""] = a.split("."),
-    [br, bf = ""] = b.split(".");
-  const aw = ar.replace(/^0+(?=\d)/, ""),
-    bw = br.replace(/^0+(?=\d)/, "");
-  return (
-    aw.length - bw.length ||
-    aw.localeCompare(bw) ||
-    af
-      .padEnd(Math.max(af.length, bf.length), "0")
-      .localeCompare(bf.padEnd(Math.max(af.length, bf.length), "0"))
-  );
-}
-export function selectItems(items: PortfolioItem[], f: PortfolioFilters) {
-  const selected = items.filter((item) => {
-    const gift = item.resolved;
-    if (f.collection && gift?.collection_id !== f.collection) return false;
-    const t = gift?.traits;
-    if (
-      f.traits.models?.length &&
-      (!t?.model || !f.traits.models.includes(t.model))
-    )
-      return false;
-    if (
-      f.traits.backdrops?.length &&
-      (!t?.backdrop || !f.traits.backdrops.includes(t.backdrop))
-    )
-      return false;
-    if (
-      f.traits.patterns?.length &&
-      (!t?.pattern || !f.traits.patterns.includes(t.pattern))
-    )
-      return false;
-    if (f.number && item.gift.gift.number !== Number(f.number)) return false;
-    return true;
-  });
-  if (f.sort === "position_asc") return selected;
-  if (f.sort === "position_desc") return selected.reverse();
-  return selected.sort((a, b) => {
-    if (f.sort.startsWith("value")) {
-      if (a.estimate == null || b.estimate == null)
-        return a.estimate == null ? (b.estimate == null ? 0 : 1) : -1;
-      const n = compareValue(a.estimate, b.estimate);
-      return (
-        (f.sort === "value_desc" ? -n : n) ||
-        a.gift.gift.number - b.gift.gift.number ||
-        a.gift.gift.id.localeCompare(b.gift.gift.id)
-      );
-    }
-    const n = a.gift.gift.number - b.gift.gift.number;
-    return (
-      (f.sort === "number_desc" ? -n : n) ||
-      a.gift.gift.id.localeCompare(b.gift.gift.id)
-    );
-  });
-}
 export function progressText(state?: PortfolioState) {
   const p = state?.progress;
   if (!p) return "Connecting…";
@@ -103,7 +46,7 @@ export function progressText(state?: PortfolioState) {
     case "queued":
       return "Waiting to check gifts…";
     case "loading_inventory":
-      return `${p.checked.toLocaleString()}${p.total != null ? ` of ${p.total.toLocaleString()}` : ""} gifts checked · ${p.pages} pages`;
+      return `${p.checked.toLocaleString()}${p.total != null ? ` of ${p.total.toLocaleString()}` : ""} gifts checked`;
     case "valuing":
       return `${p.valued.toLocaleString()} of ${p.collectibles.toLocaleString()} gifts valued`;
     case "failed":
@@ -113,22 +56,4 @@ export function progressText(state?: PortfolioState) {
         ? "Inventory checked"
         : "Partial inventory";
   }
-}
-
-export function portfolioSummary(items: readonly PortfolioItem[]) {
-  const priced: string[] = [];
-  const collections = new Set<string>();
-  let unverified = 0;
-  for (const item of items) {
-    if (item.estimate != null) priced.push(item.estimate);
-    collections.add(item.gift.gift.collection);
-    if (item.gift.relation === "unverified") unverified++;
-  }
-  return {
-    count: items.length,
-    unverified,
-    unpriced: items.length - priced.length,
-    collections: collections.size,
-    total: priced.length || !items.length ? sumAmounts(priced) : undefined,
-  };
 }

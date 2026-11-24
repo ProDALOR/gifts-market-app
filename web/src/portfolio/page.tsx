@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { TelegramContext } from "../telegram";
 import { SessionBoundary, useSession } from "../app/session";
 import {
@@ -28,17 +35,12 @@ import {
 } from "./previews";
 import { useMarketStatus } from "../use-market-status";
 import { usePortfolio } from "./use-portfolio";
-import {
-  selectItems,
-  progressText,
-  portfolioSummary,
-  portfolioSort,
-  portfolioSortOptions,
-} from "./model";
+import { usePortfolioRows } from "./use-portfolio-rows";
+import { ScrollLoader } from "../orderbook/scroll-loader";
+import { progressText, portfolioSort, portfolioSortOptions } from "./model";
 import type { PortfolioFilters, PortfolioItem, PortfolioState } from "./model";
 import "./portfolio.css";
 const keyOf = (item: PortfolioItem) => item.gift.gift.id;
-const emptyItems: PortfolioItem[] = [];
 const initialFilters: PortfolioFilters = {
   collection: "",
   traits: {},
@@ -226,7 +228,25 @@ function PortfolioView({
     [ownerOpen, setOwnerOpen] = useState(!initialUser && !context.initData);
   const controls = useRef<HTMLElement>(null);
   const portfolio = usePortfolio(user, currency);
-  const items = portfolio.state?.valuation?.items || emptyItems;
+  const rows = usePortfolioRows(
+    user,
+    currency,
+    filters,
+    portfolio.state?.valuation,
+    portfolio.resubscribe,
+    !!selectedId,
+  );
+  const filterKey = JSON.stringify([filters, currency]);
+  const previousFilter = useRef({ user, key: filterKey });
+  useLayoutEffect(() => {
+    if (
+      previousFilter.current.user === user &&
+      previousFilter.current.key !== filterKey
+    )
+      window.scrollTo(0, 0);
+    previousFilter.current = { user, key: filterKey };
+  }, [filterKey, user]);
+  const items = rows.items;
   const selected = useMemo(
     () =>
       selectedId ? items.find((item) => keyOf(item) === selectedId) : undefined,
@@ -267,7 +287,7 @@ function PortfolioView({
     }
   }, [user, currency]);
   useNavigationBack(!!open, () => setOpen(undefined));
-  const filtered = useMemo(() => selectItems(items, filters), [items, filters]);
+  const filtered = items;
   const visible = useCallback(
     (start: number, end: number, anchor = start) => {
       const ids = [
@@ -286,18 +306,22 @@ function PortfolioView({
     },
     [filtered],
   );
-  const summary = useMemo(() => portfolioSummary(filtered), [filtered]);
+  const summary = rows.selection ?? {
+    count: 0,
+    total: undefined,
+    unverified: 0,
+    unpriced: 0,
+    collections: [],
+  };
   const isFiltered = !!(
     filters.collection ||
     filters.number ||
     Object.values(filters.traits).some((v) => v?.length)
   );
   const collections = useMemo(() => {
-    const owned = new Set<string>();
-    for (const item of items)
-      if (item.resolved) owned.add(item.resolved.collection_id);
+    const owned = new Set(portfolio.state?.valuation?.collections ?? []);
     return catalog.types.filter((c) => owned.has(c.id));
-  }, [catalog.types, items]);
+  }, [catalog.types, portfolio.state?.valuation?.collections]);
   const collectionIds = useMemo(
     () => collections.map((c) => c.id),
     [collections],
@@ -364,7 +388,7 @@ function PortfolioView({
               aria-pressed={!filters.collection}
               onClick={() => choose("")}
             >
-              All gifts <span>{items.length || ""}</span>
+              All gifts <span>{report?.count || ""}</span>
             </button>
             <CollectionRail
               collections={collections}
@@ -489,7 +513,7 @@ function PortfolioView({
                     <span>
                       {summary.count.toLocaleString()}
                       {isFiltered
-                        ? ` / ${items.length.toLocaleString()}`
+                        ? ` / ${(report?.count ?? 0).toLocaleString()}`
                         : ""}{" "}
                       gifts
                     </span>
@@ -503,7 +527,7 @@ function PortfolioView({
                         />
                       </span>
                     ) : (
-                      <span>{summary.collections} collections</span>
+                      <span>{summary.collections.length} collections</span>
                     )}
                     {summary.unverified > 0 && (
                       <span title="Visible on this profile; ownership unverified.">
@@ -571,7 +595,7 @@ function PortfolioView({
               <VirtualGiftGrid
                 orders={filtered}
                 keyOf={keyOf}
-                busy={busy}
+                busy={busy || rows.loading}
                 visible={visible}
                 label="Portfolio gifts"
                 render={(item, index) => (
@@ -583,18 +607,36 @@ function PortfolioView({
                     selected={selectedId === item.gift.gift.id}
                     select={setSelected}
                     position={index + 1}
-                    total={filtered.length}
+                    total={summary.count}
                   />
                 )}
               />
             )}
-            {!busy && user && state?.inventory && filtered.length === 0 && (
-              <p className="empty">
-                {items.length
-                  ? "No gifts match these filters."
-                  : "No collectible gifts available."}
+            {user && (
+              <ScrollLoader
+                loading={rows.loading}
+                hasMore={rows.hasMore}
+                disabled={!!rows.error}
+                loadMore={rows.loadMore}
+              />
+            )}
+            {rows.error && (
+              <p className="error" role="alert">
+                {rows.error} <button onClick={rows.retry}>Retry</button>
               </p>
             )}
+            {!busy &&
+              !rows.loading &&
+              !rows.error &&
+              user &&
+              state?.inventory &&
+              filtered.length === 0 && (
+                <p className="empty">
+                  {report?.count
+                    ? "No gifts match these filters."
+                    : "No collectible gifts available."}
+                </p>
+              )}
           </section>
         </main>
         <BackToTop target={controls} blocked={!!selected || ownerOpen} />

@@ -78,7 +78,6 @@ pub struct PortfolioProgress {
     pub checked: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<usize>,
-    pub pages: usize,
     pub valued: usize,
     pub collectibles: usize,
 }
@@ -88,7 +87,6 @@ impl Default for PortfolioProgress {
             stage: PortfolioStage::Idle,
             checked: 0,
             total: None,
-            pages: 0,
             valued: 0,
             collectibles: 0,
         }
@@ -115,6 +113,9 @@ pub struct PortfolioState {
     pub inventory: Option<InventorySummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valuation: Option<Arc<InventoryValuation>>,
+    /// Stable while item data/order is unchanged, independent of progress and check times.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<crate::PortfolioVersion>,
     #[cfg_attr(feature="schema", schema(value_type=Option<String>, format=DateTime))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_after: Option<jiff::Timestamp>,
@@ -123,6 +124,7 @@ pub struct PortfolioState {
 }
 #[derive(Debug, Clone)]
 pub enum PortfolioError {
+    RestartRead,
     Busy,
     Stopped,
     TimedOut,
@@ -134,6 +136,7 @@ pub enum PortfolioError {
 impl std::fmt::Display for PortfolioError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RestartRead => f.write_str("Portfolio changed; restart the paginated read"),
             Self::Busy => f.write_str("Portfolio capacity reached"),
             Self::Stopped => f.write_str("Portfolio service unavailable"),
             Self::TimedOut => f.write_str("Portfolio request timed out"),
