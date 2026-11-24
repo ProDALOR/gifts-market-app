@@ -292,7 +292,8 @@ def main():
                 headers={"Authorization": f"Bearer {token}"},
             )
             with urllib.request.urlopen(request, timeout=2) as response:
-                return "market_storage_pending_jobs 0\n" in response.read().decode()
+                metrics = response.read().decode()
+                return all(f'market_storage_pending_jobs{{lane="{lane}"}} 0\n' in metrics for lane in ("live", "history"))
 
         # All public queries remain available with the hub offline, including after an app restart.
         # Publishing is memory-first; pin the durable boundary before testing a hard hub crash.
