@@ -4,8 +4,6 @@ mod dependencies;
 mod gift;
 mod inventory;
 mod orders;
-#[cfg(feature = "portfolio")]
-mod resolve;
 pub use catalog::CatalogTrait;
 pub(crate) use dependencies::METADATA_KEY_LIMIT;
 pub(crate) use dependencies::OrderDependency;
@@ -13,8 +11,6 @@ pub use dependencies::ReadDependencies;
 use market_replica::{ReadExecutor, ReplicaReader};
 pub(crate) use orders::AskBookSnapshot;
 pub use orders::BookScope;
-#[cfg(feature = "portfolio")]
-pub use resolve::ResolvedModel;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tonic::Status;

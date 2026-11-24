@@ -46,7 +46,7 @@ impl Strategy for AskFloor {
             };
             return Ok(stats.selection(selection));
         }
-        matching_ask_floor(context, target)
+        context.matching_floor(target)
     }
 }
 pub(crate) fn matching_ask_floor(

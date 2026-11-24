@@ -1,7 +1,7 @@
 import { memo } from "react";
 import type { CatalogOption, GiftMedia } from "../market";
 import type { ValuationSubject } from "../order-target";
-import type { PortfolioItem } from "./model";
+import { portfolioRelation, type PortfolioItem } from "./model";
 import { GiftCardView } from "../previews/gift-card";
 import { GiftDetailsView } from "../previews/gift-details";
 import { useOrderValuation } from "../valuation/use-order-valuation";
@@ -44,10 +44,16 @@ export function PortfolioDetails({
 }) {
   const gift = portfolioSubject(item, currency)!;
   const valuation = useOrderValuation(gift);
+  const relation = portfolioRelation(item.gift.relation);
   return (
     <GiftDetailsView
       subject={gift}
       valuation={valuation}
+      notice={
+        relation && (
+          <p className="portfolio-ownership-note">{relation.description}</p>
+        )
+      }
       collectionId={gift.book.collection_id}
       currency={currency}
       collectionName={item.gift.gift.slug.split("-")[0]}
@@ -82,6 +88,7 @@ export const PortfolioGiftCard = memo(function PortfolioGiftCard({
   total: number;
 }) {
   const gift = portfolioSubject(item, currency);
+  const relation = portfolioRelation(item.gift.relation);
   return (
     <GiftCardView
       subject={gift}
@@ -92,6 +99,17 @@ export const PortfolioGiftCard = memo(function PortfolioGiftCard({
       }
       media={modelMedia(item)}
       identity={`#${item.gift.gift.number.toLocaleString()}`}
+      meta={
+        relation && (
+          <span
+            className="portfolio-relation"
+            title={relation.description}
+            aria-label={relation.description}
+          >
+            {relation.label}
+          </span>
+        )
+      }
       price={item.estimate ?? undefined}
       currency={currency}
       format="rounded"
@@ -104,6 +122,7 @@ export const PortfolioGiftCard = memo(function PortfolioGiftCard({
           <button
             className="card-open"
             aria-label={`View ${item.gift.gift.slug}`}
+            title={relation?.description}
             onClick={() => select(item.gift.gift.id)}
             aria-haspopup="dialog"
           />

@@ -12,6 +12,7 @@ import { portfolioUser } from "../app/routes";
 import { useCatalog } from "../catalog/use-catalog";
 import { CollectionRail } from "../collections/collection-picker";
 import { TraitPickers } from "../collections/trait-pickers";
+import { TraitPreview } from "../previews/trait-preview";
 import { FloorsProvider } from "../valuation/floors";
 import { CurrencyPicker, SortPicker } from "../ui/pickers";
 import { Quote } from "../ui/market-controls";
@@ -27,7 +28,13 @@ import {
 } from "./previews";
 import { useMarketStatus } from "../use-market-status";
 import { usePortfolio } from "./use-portfolio";
-import { selectItems, progressText, portfolioSummary } from "./model";
+import {
+  selectItems,
+  progressText,
+  portfolioSummary,
+  portfolioSort,
+  portfolioSortOptions,
+} from "./model";
 import type { PortfolioFilters, PortfolioItem, PortfolioState } from "./model";
 import "./portfolio.css";
 const keyOf = (item: PortfolioItem) => item.gift.gift.id;
@@ -36,8 +43,6 @@ const initialFilters: PortfolioFilters = {
   collection: "",
   traits: {},
   number: "",
-  min: "",
-  max: "",
   sort: "value_desc",
 };
 function RefreshButton({
@@ -285,8 +290,6 @@ function PortfolioView({
   const isFiltered = !!(
     filters.collection ||
     filters.number ||
-    filters.min ||
-    filters.max ||
     Object.values(filters.traits).some((v) => v?.length)
   );
   const collections = useMemo(() => {
@@ -316,7 +319,11 @@ function PortfolioView({
   const partial = state?.inventory?.complete === false;
   const error = portfolio.error || state?.error;
   const total = isFiltered ? summary.total : report?.total;
-  const sortKey = filters.sort.startsWith("number") ? "number" : "price";
+  const sortKey = filters.sort.startsWith("number")
+    ? "number"
+    : filters.sort.startsWith("position")
+      ? "position"
+      : "value";
   const ascending = filters.sort.endsWith("_asc");
   const share = context.app?.switchInlineQuery
     ? (slug: string, unit: string) =>
@@ -365,16 +372,28 @@ function PortfolioView({
               select={choose}
             />
             {filters.collection && (
-              <TraitPickers
-                collection={catalog.item}
-                options={catalog.options}
-                filters={filters.traits}
-                change={changeTrait}
-                open={open}
-                setOpen={setOpen}
-                loading={catalog.optionsLoading}
-                loadError={catalog.optionsError}
-              />
+              <>
+                <TraitPickers
+                  key={filters.collection}
+                  collection={catalog.item}
+                  options={catalog.options}
+                  filters={filters.traits}
+                  change={changeTrait}
+                  open={open}
+                  setOpen={setOpen}
+                  loading={catalog.optionsLoading}
+                  loadError={catalog.optionsError}
+                />
+                <TraitPreview
+                  collection={catalog.item}
+                  options={catalog.options}
+                  filters={filters.traits}
+                  reset={() => {
+                    setFilters((old) => ({ ...old, traits: {} }));
+                    setOpen(undefined);
+                  }}
+                />
+              </>
             )}
             <div className="portfolio-filters">
               <label>
@@ -388,47 +407,18 @@ function PortfolioView({
                   }
                 />
               </label>
-              <label>
-                Estimate from
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  pattern="[0-9]+([.][0-9]+)?"
-                  placeholder="Min"
-                  value={filters.min}
-                  onChange={(e) =>
-                    setFilters({ ...filters, min: e.target.value })
-                  }
-                />
-              </label>
-              <label>
-                Estimate to
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  pattern="[0-9]+([.][0-9]+)?"
-                  placeholder="Max"
-                  value={filters.max}
-                  onChange={(e) =>
-                    setFilters({ ...filters, max: e.target.value })
-                  }
-                />
-              </label>
             </div>
             <div className="sort-control portfolio-sort">
               <SortPicker
+                options={portfolioSortOptions}
                 value={sortKey}
-                change={(value) =>
+                change={(key) =>
                   setFilters({
                     ...filters,
-                    sort:
-                      value === "number"
-                        ? ascending
-                          ? "number_asc"
-                          : "number_desc"
-                        : ascending
-                          ? "value_asc"
-                          : "value_desc",
+                    sort: portfolioSort(
+                      key,
+                      key === "position" ? true : ascending,
+                    ),
                   })
                 }
               />
@@ -438,14 +428,7 @@ function PortfolioView({
                 onClick={() =>
                   setFilters({
                     ...filters,
-                    sort:
-                      sortKey === "number"
-                        ? ascending
-                          ? "number_desc"
-                          : "number_asc"
-                        : ascending
-                          ? "value_desc"
-                          : "value_asc",
+                    sort: portfolioSort(sortKey, !ascending),
                   })
                 }
               >
@@ -521,6 +504,11 @@ function PortfolioView({
                       </span>
                     ) : (
                       <span>{summary.collections} collections</span>
+                    )}
+                    {summary.unverified > 0 && (
+                      <span title="Visible on this profile; ownership unverified.">
+                        {summary.unverified.toLocaleString()} unverified
+                      </span>
                     )}
                     {summary.unpriced > 0 && (
                       <span

@@ -70,7 +70,7 @@ const item = (number) => ({
       model: "2",
       backdrop: 3,
     },
-    relation: "owned",
+    relation: number === 2 ? "unverified" : number === 3 ? "hosted" : "owned",
   },
   resolved: {
     id: String(number),
@@ -216,13 +216,17 @@ try {
       watchId,
       watchCount = 0,
       refreshCount = 0,
-      cancellations = 0;
+      cancellations = 0,
+      holdRefresh = false,
+      pendingRefreshId;
+    const cancelledRequests = new Set();
     const send = (socket, value) => socket.send(JSON.stringify(value));
     await page.routeWebSocket("**/ws", (socket) => {
       send(socket, { type: "market.status", status: "available" });
       socket.onMessage((raw) => {
         const frame = JSON.parse(String(raw));
         if (frame.type === "cancel" && frame.id === watchId) cancellations++;
+        if (frame.type === "cancel") cancelledRequests.add(frame.id);
         if (frame.type === "catalog.watch")
           send(socket, {
             type: "catalog.versions",
@@ -259,6 +263,10 @@ try {
         }
         if (frame.type === "request" && frame.method === "portfolio.refresh") {
           refreshCount++;
+          if (holdRefresh) {
+            pendingRefreshId = frame.id;
+            return;
+          }
           const pending = {
             ...report,
             refresh_id: 2,
@@ -343,6 +351,15 @@ try {
       });
     assert.equal(watchCount, 1);
     assert.equal(catalogDetails, 0);
+    assert.equal(
+      await page.getByLabel("Estimate from", { exact: true }).count(),
+      0,
+    );
+    assert.equal(
+      await page.getByLabel("Estimate to", { exact: true }).count(),
+      0,
+    );
+
     send(peer, {
       type: "portfolio.progress",
       id: watchId,
@@ -364,7 +381,25 @@ try {
     send(peer, { type: "portfolio.snapshot", id: watchId, data: report });
     await page.locator('.gift-grid[data-order-count="700"]').waitFor();
     assert((await page.locator(".portfolio-card").count()) < 150);
-    await page.getByLabel("Gift #", { exact: true }).fill("10");
+    await page
+      .locator(".portfolio-meta")
+      .filter({ hasText: "1 unverified" })
+      .waitFor();
+    assert.equal(
+      (await page.locator(".portfolio-total").innerText()).trim(),
+      "1,400",
+      "visible unverified gifts contribute to the same total",
+    );
+    const unverified = page.locator(".portfolio-card").filter({
+      has: page.getByRole("button", { name: "View Gift-2", exact: true }),
+    });
+    await unverified
+      .getByLabel("Visible on this profile; ownership unverified.", {
+        exact: true,
+      })
+      .waitFor();
+
+    await page.getByLabel("Gift #", { exact: true }).fill("2");
     await page.locator('.gift-grid[data-order-count="1"]').waitFor();
     assert.equal(watchCount, 1);
     assert.equal(refreshCount, 0);
@@ -384,6 +419,46 @@ try {
     await page.getByRole("button", { name: "Gift", exact: true }).click();
     await page.locator("#pick-models").waitFor();
     assert(catalogDetails >= 1);
+    await page.locator("#pick-models").click();
+    await page
+      .locator("#trait-panel")
+      .getByRole("button", { name: "Model", exact: true })
+      .click();
+    await page
+      .getByRole("figure", { name: "Virtual gift preview", exact: true })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Reset traits", exact: true })
+      .click();
+    assert.equal(
+      await page
+        .getByRole("figure", { name: "Virtual gift preview", exact: true })
+        .count(),
+      0,
+    );
+    await page.getByRole("combobox", { name: "Sort by", exact: true }).click();
+    await page.getByRole("option", { name: "Position", exact: true }).click();
+    assert.equal(
+      (
+        await page
+          .getByRole("combobox", { name: "Sort by", exact: true })
+          .innerText()
+      ).trim(),
+      "Position",
+    );
+    await page
+      .getByRole("button", { name: "Sort descending", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "View Gift-700", exact: true })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Sort ascending", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "View Gift-1", exact: true })
+      .waitFor();
+
     await page
       .getByRole("button", { name: "Refresh gifts", exact: true })
       .click();
@@ -435,6 +510,29 @@ try {
       .getByRole("button", { name: "Close details", exact: true })
       .click();
     await page.getByRole("dialog").waitFor({ state: "hidden" });
+    assert.equal(await page.locator(".portfolio-ownership-note").count(), 0);
+    await page
+      .getByRole("button", { name: "View Gift-2", exact: true })
+      .click();
+    await page
+      .getByRole("dialog")
+      .getByText("Visible on this profile; ownership unverified.", {
+        exact: true,
+      })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Close details", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "View Gift-3", exact: true })
+      .click();
+    await page
+      .getByRole("dialog")
+      .getByText("Hosted on this Telegram profile.", { exact: true })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Close details", exact: true })
+      .click();
     // All gifts must use the same resolved artwork and model labels as market asks.
     await page.getByRole("button", { name: /^All gifts/ }).click();
     report = state(7, 6000, 3);
@@ -452,14 +550,12 @@ try {
     };
     send(peer, { type: "portfolio.snapshot", id: watchId, data: report });
     await page.locator('.gift-grid[data-order-count="6000"]').waitFor();
-    const other = page
-      .locator(".portfolio-card")
-      .filter({
-        has: page.getByRole("button", {
-          name: "View OtherGift-2",
-          exact: true,
-        }),
-      });
+    const other = page.locator(".portfolio-card").filter({
+      has: page.getByRole("button", {
+        name: "View OtherGift-2",
+        exact: true,
+      }),
+    });
     await other.getByText("Other Model", { exact: true }).waitFor();
     assert(
       (await other.locator(".gift-backdrop").count()) > 0,
@@ -513,6 +609,29 @@ try {
       "progress does not refetch card catalogs",
     );
     await page.evaluate(() => window.scrollTo(0, 0));
+    send(peer, {
+      type: "portfolio.progress",
+      id: watchId,
+      refresh_id: 3,
+      progress: report.progress,
+    });
+    await page
+      .locator(".portfolio-progress")
+      .filter({ hasText: "Inventory checked" })
+      .waitFor();
+    holdRefresh = true;
+    await page.evaluate(() => {
+      const refresh = document.querySelector('[aria-label="Refresh gifts"]');
+      refresh.click();
+      refresh.click();
+    });
+    await page.waitForTimeout(50);
+    assert.equal(
+      refreshCount,
+      2,
+      "repeated clicks share one pending refresh request",
+    );
+    assert(pendingRefreshId);
     await page.locator(".portfolio-owner-trigger").click();
     await page.getByLabel("Telegram user ID").fill("8");
     await page.getByRole("button", { name: "Open", exact: true }).click();
@@ -520,6 +639,20 @@ try {
       document.querySelector("h1")?.textContent?.includes("8"),
     );
     await page.waitForTimeout(50);
+    assert(
+      cancelledRequests.has(pendingRefreshId),
+      "switching users cancels the pending refresh wait",
+    );
+    send(peer, {
+      type: "error",
+      id: pendingRefreshId,
+      error: { code: "unavailable", message: "Old refresh failed" },
+    });
+    await page.waitForTimeout(30);
+    assert.equal(
+      await page.getByText("Old refresh failed", { exact: true }).count(),
+      0,
+    );
     assert.equal(await page.locator(".portfolio-card").count(), 0);
     assert.deepEqual(errors, []);
     await page.close();

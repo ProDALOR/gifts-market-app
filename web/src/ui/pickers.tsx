@@ -23,22 +23,25 @@ export function CurrencyPicker({
     />
   );
 }
-export function SortPicker({
+export const marketSortOptions = [
+  { value: "time", label: "Time" },
+  { value: "number", label: "Gift #" },
+  { value: "price", label: "Price" },
+] as const;
+export function SortPicker<T extends string>({
   value,
   change,
+  options,
 }: {
-  value: "time" | "number" | "price";
-  change: (value: "time" | "number" | "price") => void;
+  value: T;
+  change: (value: T) => void;
+  options: readonly { value: T; label: string }[];
 }) {
   return (
     <SelectPicker
       label="Sort by"
       className="sort-picker"
-      options={[
-        { value: "time", label: "Time" },
-        { value: "number", label: "Gift #" },
-        { value: "price", label: "Price" },
-      ]}
+      options={options}
       value={value}
       change={change}
     />

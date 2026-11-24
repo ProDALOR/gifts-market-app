@@ -17,6 +17,15 @@ struct View {
     attempted: Option<Instant>,
     attempt: u64,
 }
+impl View {
+    fn due(&self) -> bool {
+        self.job.is_none()
+            && self
+                .attempted
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(60))
+    }
+}
+#[derive(Default)]
 struct Entry {
     inventory: Option<Arc<InventorySnapshot>>,
     inventory_id: u64,
@@ -28,6 +37,31 @@ struct Entry {
     error: Option<String>,
     views: BTreeMap<market_gifts::CurrencyId, View>,
     used: u64,
+}
+impl Entry {
+    fn retained_gifts(&self, replacement: Option<usize>) -> usize {
+        // Old reports pin their inventory until atomic valuation replacement.
+        // Count each shared gift vector once, including retained generations.
+        let mut seen = Vec::with_capacity(self.views.len() + 1);
+        let retained = self
+            .inventory
+            .iter()
+            .filter(|_| replacement.is_none())
+            .chain(
+                self.views
+                    .values()
+                    .filter_map(|view| view.inventory.as_ref()),
+            );
+        let mut count = replacement.unwrap_or(0);
+        for inventory in retained {
+            let key = Arc::as_ptr(&inventory.gifts);
+            if !seen.contains(&key) {
+                seen.push(key);
+                count += inventory.gifts.len();
+            }
+        }
+        count
+    }
 }
 struct PortfolioActor<P, V> {
     provider: Arc<P>,
@@ -113,10 +147,11 @@ impl<P: InventoryProvider, V: ValuationProvider> Actor for PortfolioActor<P, V> 
             let active: Vec<_> = actor
                 .entries
                 .iter()
+                .filter(|(_, e)| !e.refreshing && e.inventory.is_some())
                 .flat_map(|(user, e)| {
                     e.views
                         .iter()
-                        .filter(|(_, v)| v.tx.receiver_count() > 0)
+                        .filter(|(_, v)| v.tx.receiver_count() > 0 && v.due())
                         .map(|(c, _)| (*user, c.clone()))
                 })
                 .collect();
@@ -258,21 +293,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
                     .ok_or(PortfolioError::Busy)?;
                 self.entries.remove(&oldest);
             }
-            self.entries.insert(
-                q.user_id,
-                Entry {
-                    inventory: None,
-                    inventory_id: 0,
-                    refresh_id: 0,
-                    refreshing: false,
-                    last_refresh: None,
-                    refresh_after: None,
-                    progress: Default::default(),
-                    error: None,
-                    views: BTreeMap::new(),
-                    used: 0,
-                },
-            );
+            self.entries.insert(q.user_id, Entry::default());
         }
         self.clock = self.clock.saturating_add(1);
         let e = self.entries.get_mut(&q.user_id).unwrap();
@@ -484,10 +505,9 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
             let used: usize = self
                 .entries
                 .iter()
-                .filter(|(u, _)| **u != user)
-                .map(|(_, e)| e.inventory.as_ref().map_or(0, |i| i.gifts.len()))
+                .map(|(u, e)| e.retained_gifts((*u == user).then_some(incoming)))
                 .sum();
-            if used.saturating_add(incoming) <= 50000 {
+            if used <= 50000 {
                 return true;
             }
             let old = self
@@ -515,11 +535,7 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
             return;
         };
         let v = e.views.get_mut(&currency).unwrap();
-        if e.refreshing
-            || v.job.is_some()
-            || v.attempted
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
-        {
+        if e.refreshing || !v.due() {
             return;
         }
         v.attempted = Some(Instant::now());
@@ -602,5 +618,73 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
             .get_mut(&currency)
             .unwrap()
             .job = Some(handle);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cache_budget_counts_retained_generations_once_across_currency_views() {
+        let inventory = |ids: &[&str]| {
+            let mut builder = crate::inventory::InventoryBuilder::default();
+            builder
+                .merge(
+                    crate::tests::page(ids, None, ids.len()),
+                    100,
+                    &PortfolioConfig::default(),
+                )
+                .unwrap();
+            Arc::new(builder.snapshot(InventoryCompletion::Complete))
+        };
+        let older = inventory(&["1", "2"]);
+        let current = inventory(&["3"]);
+        let state = Arc::new(PortfolioState {
+            user_id: UserId::new(7).unwrap(),
+            refresh_id: 0,
+            progress: Default::default(),
+            inventory: None,
+            valuation: None,
+            refresh_after: None,
+            error: None,
+        });
+        let view = |snapshot| View {
+            tx: watch::channel(state.clone()).0,
+            report: None,
+            inventory: Some(snapshot),
+            progress: 0,
+            error: None,
+            job: None,
+            attempted: None,
+            attempt: 0,
+        };
+        let mut entry = Entry {
+            inventory: Some(current.clone()),
+            ..Default::default()
+        };
+        entry.views.insert("GRAM".into(), view(older.clone()));
+        // Separate summaries can still share the same immutable gift vector.
+        entry
+            .views
+            .insert("XTR".into(), view(Arc::new((*older).clone())));
+        assert_eq!(
+            entry.retained_gifts(None),
+            3,
+            "current and retained older inventories count once"
+        );
+        assert_eq!(
+            entry.retained_gifts(Some(5)),
+            7,
+            "replacement keeps the older report's inventory alive"
+        );
+        entry.views.insert("other".into(), view(current));
+        assert_eq!(entry.retained_gifts(None), 3);
+        assert_eq!(
+            entry.retained_gifts(Some(5)),
+            8,
+            "an old currency can also pin the current generation"
+        );
+        entry.views.clear();
+        assert_eq!(entry.retained_gifts(Some(5)), 5);
     }
 }

@@ -25,8 +25,6 @@ pub struct ValuationError {
     details: Option<Arc<ValuationErrorDetails>>,
     source: Option<Status>,
 }
-#[cfg(feature = "portfolio")]
-pub type Result<T> = std::result::Result<T, ValuationError>;
 impl ValuationError {
     fn new(code: ValuationErrorCode, message: impl Into<String>) -> Self {
         Self {

@@ -59,9 +59,6 @@ pub struct ValuationErrorDetails {
     pub required_samples: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available_samples: Option<u32>,
-    #[cfg(feature = "portfolio")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context: Option<crate::ValuationErrorContext>,
 }
 impl ValuationErrorDetails {
     pub fn strategy(strategy: StrategyId) -> Self {
@@ -71,19 +68,7 @@ impl ValuationErrorDetails {
             revision: None,
             required_samples: None,
             available_samples: None,
-            #[cfg(feature = "portfolio")]
-            context: None,
         }
-    }
-}
-
-#[cfg(feature = "portfolio")]
-impl StrategyId {
-    pub fn model_floor() -> Self {
-        Self("model_floor".into())
-    }
-    pub fn collection_floor() -> Self {
-        Self("collection_floor".into())
     }
 }
 

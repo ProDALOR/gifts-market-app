@@ -249,6 +249,14 @@ fn examples(name: &str) -> serde_json::Result<Vec<Value>> {
             )?),
         });
         examples.push(json!({"name":"target-valuations","payload":serde_json::to_value(request)?}));
+        let batch = Command::Request(ApiRequest::ValuationBatch {
+            id: "batch.1".into(),
+            params: Box::new(serde_json::from_value(json!({"queries":[
+                {"target":{"kind":"selection","collection_id":"tg.gift.123","criteria":{}},"currency_id":"GRAM","strategies":["ask_floor"]},
+                {"target":{"kind":"gift","gift":"Gift-123"},"currency_id":"GRAM","strategies":["gift_floor"]}
+            ]}))?),
+        });
+        examples.push(json!({"name":"valuation-batch","payload":serde_json::to_value(batch)?}));
     }
     if name == "orders.watch" {
         let bid = Command::WatchOrders {
@@ -297,11 +305,20 @@ mod tests {
             "request",
             "cancel",
         ] {
-            serde_json::from_value::<Command>(
-                spec["components"]["messages"][command]["examples"][0]["payload"].clone(),
-            )
-            .unwrap();
+            for example in spec["components"]["messages"][command]["examples"]
+                .as_array()
+                .unwrap()
+            {
+                serde_json::from_value::<Command>(example["payload"].clone()).unwrap();
+            }
         }
+        assert!(
+            spec["components"]["messages"]["request"]["examples"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|example| example["payload"]["method"] == "valuation.batch")
+        );
         assert_eq!(
             spec["operations"]["receiveCommands"]["messages"]
                 .as_array()

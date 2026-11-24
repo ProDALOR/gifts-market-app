@@ -94,6 +94,14 @@ impl MarketCommands {
             })
     }
 }
+fn relation_label(relation: market_portfolio::GiftRelation) -> Option<&'static str> {
+    use market_portfolio::GiftRelation;
+    match relation {
+        GiftRelation::Owned => None,
+        GiftRelation::Hosted => Some("Hosted"),
+        GiftRelation::Unverified => Some("Ownership unverified"),
+    }
+}
 fn render(state: &PortfolioState, request: &PortfolioRequest) -> Reply {
     use super::report::{amount, escape};
     let phase = match state.progress.stage {
@@ -137,9 +145,21 @@ fn render(state: &PortfolioState, request: &PortfolioRequest) -> Reply {
             report.currency_id, report.priced, report.unpriced
         ));
         html.push_str(&format!(
-            "<h2>{total} {}</h2><p>{} priced · {} unpriced</p><table>",
+            "<h2>{total} {}</h2><p>{} priced · {} unpriced</p>",
             report.currency_id, report.priced, report.unpriced
         ));
+        let unverified = report
+            .items
+            .iter()
+            .filter(|item| item.gift.relation == market_portfolio::GiftRelation::Unverified)
+            .count();
+        if unverified > 0 {
+            text.push_str(&format!("\n{unverified} visible · ownership unverified"));
+            html.push_str(&format!(
+                "<p>{unverified} visible · ownership unverified</p>"
+            ));
+        }
+        html.push_str("<table>");
         let page = request.page.min(report.items.len().saturating_sub(1) / 10);
         for item in report.items.iter().skip(page * 10).take(10) {
             let price = item
@@ -147,9 +167,16 @@ fn render(state: &PortfolioState, request: &PortfolioRequest) -> Reply {
                 .as_ref()
                 .map(amount)
                 .unwrap_or_else(|| "—".into());
+            let relation = relation_label(item.gift.relation);
             text.push_str(&format!("\n{} · {price}", item.gift.gift.slug));
+            if let Some(label) = relation {
+                text.push_str(&format!(" · {label}"));
+            }
+            let note = relation
+                .map(|label| format!("<br><small>{label}</small>"))
+                .unwrap_or_default();
             html.push_str(&format!(
-                "<tr><td><a href=\"https://t.me/nft/{}\">{}</a></td><td>{price}</td></tr>",
+                "<tr><td><a href=\"https://t.me/nft/{}\">{}</a>{note}</td><td>{price}</td></tr>",
                 item.gift.gift.slug,
                 escape(&item.gift.gift.slug.to_string())
             ));
@@ -225,6 +252,71 @@ mod tests {
         ] {
             assert!(callback(invalid).is_none(), "{invalid}");
         }
+    }
+    #[test]
+    fn visible_unverified_and_hosted_gifts_remain_in_reports_and_totals() {
+        use market_gifts::{TelegramDocumentId, TelegramGiftDetails, TelegramGiftId};
+        use market_portfolio::{GiftRelation, InventoryGift};
+        let items = [
+            GiftRelation::Owned,
+            GiftRelation::Unverified,
+            GiftRelation::Hosted,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, relation)| {
+            let number = index as u32 + 1;
+            market_valuation::InventoryValue {
+                gift: InventoryGift {
+                    gift: TelegramGiftDetails {
+                        id: number.to_string().try_into().unwrap(),
+                        slug: format!("Gift-{number}").try_into().unwrap(),
+                        number: number.try_into().unwrap(),
+                        collection: TelegramGiftId::new(123).unwrap(),
+                        model: TelegramDocumentId::new(456).unwrap(),
+                        backdrop: None,
+                        pattern: None,
+                    },
+                    relation,
+                },
+                resolved: None,
+                estimate: Some("2".into()),
+                error: None,
+            }
+        })
+        .collect();
+        let state = PortfolioState {
+            user_id: UserId::new(123).unwrap(),
+            refresh_id: 1,
+            progress: market_portfolio::PortfolioProgress {
+                stage: PortfolioStage::Ready,
+                ..Default::default()
+            },
+            inventory: None,
+            refresh_after: None,
+            error: None,
+            valuation: Some(std::sync::Arc::new(market_valuation::InventoryValuation {
+                currency_id: "GRAM".into(),
+                evaluated_at: jiff::Timestamp::now(),
+                stale: false,
+                total: Some("6".into()),
+                priced: 3,
+                unpriced: 0,
+                items,
+            })),
+        };
+        let reply = render(&state, &callback("p:123:GRAM:v:0").unwrap());
+        assert!(reply.text.contains("Estimate 6 GRAM"));
+        assert!(reply.text.contains("Gift-2 · 2 · Ownership unverified"));
+        assert!(reply.text.contains("Gift-3 · 2 · Hosted"));
+        assert!(
+            !reply.text.contains("Gift-1 · 2 ·"),
+            "owned gifts need no extra label"
+        );
+        let html = reply.rich_html.unwrap();
+        assert!(html.contains("1 visible · ownership unverified"));
+        assert!(html.contains("Gift-2</a><br><small>Ownership unverified</small>"));
+        assert!(html.contains("Gift-3</a><br><small>Hosted</small>"));
     }
     #[test]
     fn reports_expose_partial_inventory_and_plain_text_fallback() {

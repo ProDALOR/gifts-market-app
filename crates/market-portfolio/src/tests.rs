@@ -131,7 +131,7 @@ fn gift(id: &str) -> InventoryGift {
         relation: GiftRelation::Owned,
     }
 }
-fn page(ids: &[&str], next: Option<&str>, total: usize) -> InventoryPage {
+pub(crate) fn page(ids: &[&str], next: Option<&str>, total: usize) -> InventoryPage {
     InventoryPage {
         gifts: ids.iter().map(|id| gift(id)).collect(),
         scanned: ids.len(),
@@ -177,6 +177,26 @@ async fn service(config: PortfolioConfig) -> (PortfolioService, Source, Quotes, 
         .unwrap();
     (service, source, quotes, runtime)
 }
+#[test]
+fn inventory_preserves_profile_position_across_pages_and_duplicates() {
+    let mut builder = crate::inventory::InventoryBuilder::default();
+    let config = PortfolioConfig::default();
+    builder
+        .merge(page(&["90", "3", "25"], Some("next"), 5), 100, &config)
+        .unwrap();
+    builder
+        .merge(page(&["3", "1"], None, 5), 100, &config)
+        .unwrap();
+    let inventory = builder.snapshot(InventoryCompletion::Complete);
+    assert_eq!(
+        inventory
+            .gifts
+            .iter()
+            .map(|gift| gift.gift.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["90", "3", "25", "1"]
+    );
+}
 #[tokio::test]
 async fn bot_and_gui_share_paginated_refresh_and_currency_changes_do_not_fetch() {
     let (service, source, quotes, calls_runtime) = service(Default::default()).await;
@@ -189,7 +209,9 @@ async fn bot_and_gui_share_paginated_refresh_and_currency_changes_do_not_fetch()
     assert_eq!(source.request(0).cursor, None);
     service.handle.refresh(query(7, "GRAM")).await.unwrap();
     assert_eq!(source.count(), 1);
-    source.reply(0, Ok(page(&["1", "2"], Some("next"), 4)));
+    let mut first_page = page(&["1", "2"], Some("next"), 4);
+    first_page.gifts[1].relation = GiftRelation::Unverified;
+    source.reply(0, Ok(first_page));
     calls(&source, 2).await;
     assert_eq!(source.request(1).cursor.as_deref(), Some("next"));
     let progress = stage(&mut gui, PortfolioStage::LoadingInventory).await;
@@ -198,6 +220,11 @@ async fn bot_and_gui_share_paginated_refresh_and_currency_changes_do_not_fetch()
     source.reply(1, Ok(page(&["2", "3"], None, 4)));
     let result = stage(&mut bot, PortfolioStage::Ready).await;
     assert_eq!(result.inventory.as_ref().unwrap().count, 3);
+    assert_eq!(result.inventory.as_ref().unwrap().skipped, 0);
+    assert_eq!(
+        result.valuation.as_ref().unwrap().items[1].gift.relation,
+        GiftRelation::Unverified
+    );
     assert_eq!(
         result
             .valuation

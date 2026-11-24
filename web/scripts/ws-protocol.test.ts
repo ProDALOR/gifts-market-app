@@ -433,3 +433,35 @@ test("gift attribute valuation frames need no listed identity or number and vali
       ),
     );
 });
+
+test("valuation batches validate every ordered result and reject oversized or malformed rows", () => {
+  const frame = {
+    type: "result",
+    id: "batch.1",
+    method: "valuation.batch",
+    data: {
+      results: [
+        { data: result.data },
+        { error: { code: "invalid_query", message: "Unknown strategy" } },
+        { data: result.data },
+      ],
+    },
+  };
+  assert.deepEqual(parseFrame(JSON.stringify(frame)), frame);
+  for (const results of [
+    [],
+    Array(101).fill({ data: result.data }),
+    [{}],
+    [
+      {
+        data: result.data,
+        error: { code: "invalid_query", message: "ambiguous" },
+      },
+    ],
+    [{ error: { code: "invalid_query" } }],
+  ]) {
+    assert.throws(() =>
+      parseFrame(JSON.stringify({ ...frame, data: { results } })),
+    );
+  }
+});

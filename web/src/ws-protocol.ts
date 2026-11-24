@@ -377,9 +377,23 @@ export function parseFrame(raw: unknown): LiveFrame {
           ? portfolio(d)
           : value.method === "orders.query"
             ? readResult(value)
-            : value.method === "valuation.query"
-              ? valuationReport(d)
-              : false;
+            : value.method === "valuation.batch"
+              ? record(d) &&
+                Array.isArray(d.results) &&
+                d.results.length > 0 &&
+                d.results.length <= 100 &&
+                d.results.every(
+                  (item) =>
+                    record(item) &&
+                    (item.data != null
+                      ? valuationReport(item.data) && item.error == null
+                      : record(item.error) &&
+                        text(item.error.code) &&
+                        text(item.error.message)),
+                )
+              : value.method === "valuation.query"
+                ? valuationReport(d)
+                : false;
       break;
     }
   }

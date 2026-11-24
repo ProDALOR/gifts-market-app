@@ -16,97 +16,10 @@ fn gift_queries_accept_validated_lookups_and_reject_forged_facts() {
     }
 }
 
-#[cfg(feature = "portfolio")]
-#[test]
-fn valuation_validates_positive_positions_names_and_total_overflow() {
-    use crate::{ModelPosition, ValuationRequest};
-    use market_gifts::ModelLookup;
-    let mut request = ValuationRequest {
-        strategy: crate::StrategyId::model_floor(),
-        positions: vec![ModelPosition {
-            model: ModelLookup::Name {
-                collection: "Gift".into(),
-                model: "Model".into(),
-            },
-            quantity: 0,
-        }],
-        currency_id: "GRAM".into(),
-    };
-    assert!(request.validate().is_err());
-    request.positions[0].quantity = 1;
-    assert!(request.validate().is_ok());
-    request.positions[0].model = ModelLookup::Name {
-        collection: " ".into(),
-        model: "Model".into(),
-    };
-    assert!(request.validate().is_err());
-    request.positions[0].model = ModelLookup::Catalog {
-        collection: "collection".into(),
-        model: "model".into(),
-    };
-    request.positions[0].quantity = u32::MAX;
-    request.positions.push(request.positions[0].clone());
-    assert!(request.validate().is_err());
-}
-
-#[cfg(feature = "portfolio")]
-#[test]
-fn named_lookups_and_portfolios_share_the_same_name_validation() {
-    use crate::{ModelPosition, ValuationRequest};
-    use market_gifts::ModelLookup;
-    for name in [
-        "".to_owned(),
-        " \t".to_owned(),
-        "x".repeat(257),
-        "💎".repeat(65),
-    ] {
-        assert!(ModelLookup::named(name.clone(), "Model").is_err());
-        assert!(ModelLookup::named("Collection", name.clone()).is_err());
-        let raw = ModelLookup::Name {
-            collection: "Collection".into(),
-            model: name,
-        };
-        assert!(raw.validate().is_err());
-        let request = ValuationRequest {
-            strategy: crate::StrategyId::model_floor(),
-            positions: vec![ModelPosition {
-                model: raw,
-                quantity: 1,
-            }],
-            currency_id: "GRAM".into(),
-        };
-        assert!(request.validate().is_err());
-    }
-    for name in ["x".repeat(256), "💎".repeat(64)] {
-        let model = ModelLookup::named("Collection", name).unwrap();
-        assert!(
-            ValuationRequest {
-                strategy: crate::StrategyId::model_floor(),
-                positions: vec![ModelPosition { model, quantity: 1 }],
-                currency_id: "GRAM".into()
-            }
-            .validate()
-            .is_ok()
-        );
-    }
-}
-
 #[test]
 fn valuation_strategy_ids_are_stable_validated_and_selection_is_required() {
     use crate::StrategyId;
-    #[cfg(feature = "portfolio")]
-    assert!(
-        serde_json::from_value::<crate::ValuationRequest>(
-            serde_json::json!({"positions":[],"currency_id":"GRAM"})
-        )
-        .is_err()
-    );
-    for id in [
-        "gift_floor",
-        "model_floor",
-        "collection_floor",
-        "strategy_v2",
-    ] {
+    for id in ["gift_floor", "ask_floor", "catalog_floor", "strategy_v2"] {
         let parsed = StrategyId::new(id).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), id);
     }

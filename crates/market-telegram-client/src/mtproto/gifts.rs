@@ -177,7 +177,7 @@ impl Invocation for Page {
             next_cursor: response.next_offset,
         };
         for gift in response.gifts {
-            match map_gift(gift, Some(self.user as i64)) {
+            match map_gift(gift, self.user as i64) {
                 Ok(Some(gift)) => page.gifts.push(gift),
                 Ok(None) => page.regular_gifts += 1,
                 Err(reason) => *page.skipped.entry(reason).or_default() += 1,
@@ -188,7 +188,7 @@ impl Invocation for Page {
 }
 fn map_gift(
     saved: tl::enums::SavedStarGift,
-    user_id: Option<i64>,
+    user_id: i64,
 ) -> Result<Option<InventoryGift>, SkipReason> {
     let tl::enums::SavedStarGift::Gift(saved) = saved;
     if saved.refunded {
@@ -205,12 +205,7 @@ fn map_gift(
     }
     let collection_id =
         TelegramGiftId::new(gift.gift_id).map_err(|_| SkipReason::MissingCollection)?;
-    let relation = profile_relation(
-        gift.owner_id.as_ref(),
-        gift.host_id.as_ref(),
-        gift.owner_address.is_some(),
-        user_id,
-    )?;
+    let relation = profile_relation(gift.owner_id.as_ref(), gift.host_id.as_ref(), user_id)?;
     let model = gift
         .attributes
         .iter()
@@ -256,15 +251,16 @@ fn map_gift(
 fn profile_relation(
     owner: Option<&tl::enums::Peer>,
     host: Option<&tl::enums::Peer>,
-    wallet_owner: bool,
-    user_id: Option<i64>,
+    user_id: i64,
 ) -> Result<GiftRelation, SkipReason> {
-    let matches = |peer: &tl::enums::Peer| matches!(peer,tl::enums::Peer::User(user) if Some(user.user_id)==user_id);
+    let matches = |peer: &tl::enums::Peer| matches!(peer,tl::enums::Peer::User(user) if user.user_id==user_id);
     if owner.is_some_and(matches) {
         Ok(GiftRelation::Owned)
     } else if host.is_some_and(matches) {
         Ok(GiftRelation::Hosted)
-    } else if owner.is_none() && host.is_none() && !wallet_owner {
+    } else if owner.is_none() && host.is_none() {
+        // Presence in the queried profile inventory proves visibility, not wallet
+        // ownership. Minted gifts can have only an owner_address and no peer IDs.
         Ok(GiftRelation::Unverified)
     } else {
         Err(SkipReason::OtherProfile)
@@ -341,18 +337,72 @@ pub(crate) mod tests {
     #[test]
     fn profile_mapping_validates_source_ids_before_inventory_and_preserves_all_64_bits() {
         let id = 9_007_199_254_740_993;
-        let gift = map_gift(saved_gift(id, id + 1), Some(7)).unwrap().unwrap();
+        let gift = map_gift(saved_gift(id, id + 1), 7).unwrap().unwrap();
         assert_eq!(gift.gift.collection.get(), id);
         assert_eq!(gift.gift.model.get(), id + 1);
         assert_eq!(gift.relation, GiftRelation::Unverified);
         for invalid in [0, -1, i64::MIN] {
             assert_eq!(
-                map_gift(saved_gift(invalid, 1), Some(7)),
+                map_gift(saved_gift(invalid, 1), 7),
                 Err(SkipReason::MissingCollection)
             );
             assert_eq!(
-                map_gift(saved_gift(1, invalid), Some(7)),
+                map_gift(saved_gift(1, invalid), 7),
                 Err(SkipReason::MissingModel)
+            );
+        }
+    }
+    #[test]
+    fn minted_gifts_in_the_profile_inventory_keep_unverified_ownership() {
+        let minted = || {
+            let tl::enums::SavedStarGift::Gift(mut saved) = saved_gift(123, 456);
+            let tl::enums::StarGift::Unique(ref mut gift) = saved.gift else {
+                unreachable!()
+            };
+            gift.owner_address = Some("wallet-address".into());
+            gift.gift_address = Some("nft-address".into());
+            saved
+        };
+        let normalized = map_gift(tl::enums::SavedStarGift::Gift(minted()), 7)
+            .unwrap()
+            .unwrap();
+        assert_eq!(normalized.relation, GiftRelation::Unverified);
+        assert_eq!(normalized.gift.slug.to_string(), "Gift-1");
+        assert_eq!(normalized.gift.model.get(), 456);
+        // Wallet metadata never overrides an explicit link to a different profile.
+        for host in [false, true] {
+            let mut saved = minted();
+            let tl::enums::StarGift::Unique(ref mut gift) = saved.gift else {
+                unreachable!()
+            };
+            let peer = tl::enums::Peer::User(tl::types::PeerUser { user_id: 8 });
+            if host {
+                gift.host_id = Some(peer);
+            } else {
+                gift.owner_id = Some(peer);
+            }
+            assert_eq!(
+                map_gift(tl::enums::SavedStarGift::Gift(saved), 7),
+                Err(SkipReason::OtherProfile)
+            );
+        }
+        for (burned, refunded, missing_model, expected) in [
+            (true, false, false, SkipReason::Burned),
+            (false, true, false, SkipReason::Refunded),
+            (false, false, true, SkipReason::MissingModel),
+        ] {
+            let mut saved = minted();
+            saved.refunded = refunded;
+            let tl::enums::StarGift::Unique(ref mut gift) = saved.gift else {
+                unreachable!()
+            };
+            gift.burned = burned;
+            if missing_model {
+                gift.attributes.clear();
+            }
+            assert_eq!(
+                map_gift(tl::enums::SavedStarGift::Gift(saved), 7),
+                Err(expected)
             );
         }
     }
@@ -360,31 +410,27 @@ pub(crate) mod tests {
     fn ownership_hosting_and_missing_metadata_remain_distinct() {
         let user = |id| tl::enums::Peer::User(tl::types::PeerUser { user_id: id });
         assert_eq!(
-            profile_relation(Some(&user(7)), None, false, Some(7)),
+            profile_relation(Some(&user(7)), None, 7),
             Ok(GiftRelation::Owned)
         );
         assert_eq!(
-            profile_relation(None, Some(&user(7)), true, Some(7)),
+            profile_relation(None, Some(&user(7)), 7),
             Ok(GiftRelation::Hosted)
         );
         assert_eq!(
-            profile_relation(Some(&user(8)), Some(&user(7)), true, Some(7)),
+            profile_relation(Some(&user(8)), Some(&user(7)), 7),
             Ok(GiftRelation::Hosted)
         );
         assert_eq!(
-            profile_relation(None, None, false, Some(7)),
+            profile_relation(None, None, 7),
             Ok(GiftRelation::Unverified)
         );
         assert_eq!(
-            profile_relation(None, Some(&user(8)), true, Some(7)),
+            profile_relation(None, Some(&user(8)), 7),
             Err(SkipReason::OtherProfile)
         );
         assert_eq!(
-            profile_relation(Some(&user(8)), None, false, Some(7)),
-            Err(SkipReason::OtherProfile)
-        );
-        assert_eq!(
-            profile_relation(None, None, true, Some(7)),
+            profile_relation(Some(&user(8)), None, 7),
             Err(SkipReason::OtherProfile)
         );
     }

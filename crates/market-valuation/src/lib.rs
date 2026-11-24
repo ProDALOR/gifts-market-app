@@ -21,14 +21,7 @@ mod floors;
 pub use floor_projection::{
     CatalogFloor, CatalogFloorValuation, CollectionFloors, PairFloor, TraitFloors,
 };
-#[cfg(feature = "portfolio")]
-mod portfolio;
 mod runtime;
-#[cfg(feature = "portfolio")]
-pub use portfolio::{
-    FloorActor, FloorStrategyHandle, ModelPosition, ModelValue, PortfolioPositions,
-    PortfolioValuationHandle, UnpricedReason, Valuation, ValuationErrorContext, ValuationRequest,
-};
 pub use runtime::*;
 
 #[cfg(test)]

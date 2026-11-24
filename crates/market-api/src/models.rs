@@ -63,6 +63,11 @@ pub enum ApiRequest {
         id: OperationId,
         params: market_portfolio::PortfolioQuery,
     },
+    #[serde(rename = "valuation.batch")]
+    ValuationBatch {
+        id: OperationId,
+        params: Box<market_valuation::ValuationBatchQuery>,
+    },
     #[serde(rename = "valuation.query")]
     Valuation {
         id: OperationId,
@@ -79,6 +84,7 @@ impl ApiRequest {
         match self {
             Self::Orders { id, .. }
             | Self::Valuation { id, .. }
+            | Self::ValuationBatch { id, .. }
             | Self::PortfolioQuery { id, .. }
             | Self::PortfolioRefresh { id, .. } => id,
         }
@@ -155,6 +161,11 @@ pub enum ApiResult<'a> {
     PortfolioRefresh {
         id: &'a OperationId,
         data: &'a market_portfolio::PortfolioState,
+    },
+    #[serde(rename = "valuation.batch")]
+    ValuationBatch {
+        id: &'a OperationId,
+        data: crate::valuation::ValuationBatchResponse<'a>,
     },
     #[serde(rename = "valuation.query")]
     Valuation {

@@ -214,10 +214,8 @@ async fn valuation_and_data_actor_queries_share_one_admission_budget() {
     data.task.run(stop).await.unwrap();
 }
 
-#[cfg(feature = "portfolio")]
 #[tokio::test]
 async fn exact_collection_lookup_ignores_a_directory_larger_than_the_catalog_response_budget() {
-    use market_gifts::ModelLookup;
     let (_dir, mut writer) = fixture();
     writer
         .apply(w::Batch {
@@ -237,18 +235,11 @@ async fn exact_collection_lookup_ignores_a_directory_larger_than_the_catalog_res
     let data = MarketDataService::start(writer.reader(), 1, 1)
         .await
         .unwrap();
-    let resolved = data
-        .reader
-        .prepare(|snapshot| {
-            snapshot.resolve_models(vec![ModelLookup::Collection {
-                collection: "gift".into(),
-            }])
-        })
+    data.reader
+        .prepare(|snapshot| snapshot.require_collection(&"gift".into()))
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(resolved[0].collection.as_ref().unwrap().as_str(), "gift");
-    assert!(resolved[0].unresolved.is_none());
     let stop = CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();

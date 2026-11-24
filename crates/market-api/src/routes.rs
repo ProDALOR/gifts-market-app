@@ -73,6 +73,25 @@ pub(crate) async fn valuation(
         .content_type("application/json")
         .body(body))
 }
+#[utoipa::path(post,path="/valuations/batch",tag="Valuations",summary="Evaluate a batch of typed valuation queries",description="Accepts 1..100 ordinary valuation queries. Results preserve input order, including duplicates and independent errors. Queries share one pinned market snapshot and collection/currency preparations. Slug resolution uses the configured resolver with at most two in flight. Strategy outputs and contract revisions match /valuations/query. A batch has a 30-second service deadline, shared read admission and cancellation; HTTP and WebSocket limits still apply. Portfolio valuation uses the same batch engine internally without producing full per-gift strategy reports.",request_body=market_valuation::ValuationBatchQuery,responses((status=200,body=crate::valuation::ValuationBatchResponse),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+pub(crate) async fn valuation_batch(
+    state: web::Data<MarketApi>,
+    query: web::Json<market_valuation::ValuationBatchQuery>,
+) -> Result<HttpResponse> {
+    let report = state.valuation_batch(query.into_inner()).await?;
+    let body = state
+        .encode_response(move |writer| {
+            serde_json::to_writer(
+                writer,
+                &crate::valuation::ValuationBatchResponse::from(report.as_ref()),
+            )
+        })
+        .await?;
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CACHE_CONTROL, "no-store"))
+        .content_type("application/json")
+        .body(body))
+}
 #[utoipa::path(post,path="/orders/query",tag="Orders",summary="Read a latest or frozen ordered slice",description="Latest is the default and retains no view. Set view.kind to snapshot to open or reuse a snapshot lease. Ordering keys are portable across latest, frozen and WebSocket reads. The server enforces read budgets. Expired leases return restart_read.",request_body=GiftOrderQuery,responses((status=200,body=crate::orders::OrderReadResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn read_orders(
     state: web::Data<MarketApi>,
@@ -133,6 +152,7 @@ pub(crate) fn configure_with_limit(cfg: &mut web::ServiceConfig, json_bytes: usi
             .route(web::delete().to(release_read)),
     )
     .route("/valuations/query", web::post().to(valuation))
+    .route("/valuations/batch", web::post().to(valuation_batch))
     .service(
         web::resource("/media/{kind}/{id}/{variant:preview}")
             .wrap(actix_web::middleware::Compress::default())

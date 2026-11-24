@@ -51,34 +51,14 @@ impl ValuationRead {
                 }));
             }
         }
-        snapshot.require_currency(&input.currency_id)?;
-        let target = Arc::new(if let Some(gift) = &input.external_gift {
-            ResolvedTarget::Gift {
-                gift: snapshot.telegram_gift(gift)?,
-                slug: Some(gift.slug.clone()),
-            }
-        } else {
-            input.target.resolve(snapshot)?
-        });
+        let target = Arc::new(input.resolve_target(snapshot)?);
         let collections = match target.as_ref() {
             ResolvedTarget::Catalog(selection) => selection.collection_ids.clone(),
             target => vec![target.collection().expect("single selection").clone()],
         };
         let context = ValuationContext::new(snapshot, &input.currency_id, books);
-        let mut results = Vec::with_capacity(input.strategies.len());
-        for entry in &input.strategies {
-            snapshot.check_cancelled()?;
-            results.push(
-                match entry.evaluate(target.clone(), input.period, &context) {
-                    Ok(result) => StrategyOutcome::Value(result),
-                    Err(error) => StrategyOutcome::Error {
-                        strategy: StrategyId::new(entry.metadata().id)
-                            .expect("registered strategy ID"),
-                        error: error.into(),
-                    },
-                },
-            );
-        }
+        let results =
+            evaluate_strategies(target.clone(), &input.strategies, input.period, &context)?;
         snapshot.check_cancelled()?;
         let mut reads = context.reads.into_inner();
         reads.finish(

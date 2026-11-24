@@ -24,6 +24,12 @@ impl MarketApi {
     ) -> Result<Arc<market_valuation::ValuationReport>> {
         Ok(self.valuation.query(query).await?)
     }
+    pub async fn valuation_batch(
+        &self,
+        query: market_valuation::ValuationBatchQuery,
+    ) -> Result<Arc<market_valuation::ValuationBatchReport>> {
+        Ok(self.valuation.batch(query).await?)
+    }
     pub(crate) fn status_updates(&self) -> watch::Receiver<SyncStatus> {
         self.data.status_updates()
     }

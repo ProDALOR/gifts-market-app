@@ -52,11 +52,6 @@ impl ValuationSnapshot {
             "trait does not belong to the selected collection or kind",
         ))
     }
-    #[cfg(feature = "portfolio")]
-    pub fn resolve_models(&self, lookups: Vec<ModelLookup>) -> Result<Vec<ResolvedModel>> {
-        self.check_cancelled()?;
-        super::resolve::resolve(&self.reader, lookups, &self.cancelled)
-    }
     pub(super) fn entity(
         &self,
         kind: w::EntityKind,

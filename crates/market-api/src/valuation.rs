@@ -2,6 +2,40 @@
 use serde::Serialize;
 use utoipa::ToSchema;
 #[derive(Debug, Serialize, ToSchema)]
+pub struct ValuationBatchResponse<'a> {
+    pub results: Vec<ValuationBatchItemResponse<'a>>,
+}
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum ValuationBatchItemResponse<'a> {
+    Value {
+        data: ValuationResponse<'a>,
+    },
+    Error {
+        error: &'a market_valuation::StrategyFailure,
+    },
+}
+impl<'a> From<&'a market_valuation::ValuationBatchReport> for ValuationBatchResponse<'a> {
+    fn from(report: &'a market_valuation::ValuationBatchReport) -> Self {
+        Self {
+            results: report
+                .results
+                .iter()
+                .map(|item| match item {
+                    market_valuation::ValuationBatchItem::Value { data } => {
+                        ValuationBatchItemResponse::Value {
+                            data: ValuationResponse::from(data.as_ref()),
+                        }
+                    }
+                    market_valuation::ValuationBatchItem::Error { error } => {
+                        ValuationBatchItemResponse::Error { error }
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ValuationResponse<'a> {
     pub target: &'a market_valuation::ResolvedTarget,
     pub currency_id: &'a market_gifts::CurrencyId,

@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, HashSet};
 pub(crate) struct InventoryBuilder {
     pub cursor: Option<String>,
     cursors: HashSet<String>,
-    gifts: BTreeMap<GiftId, InventoryGift>,
+    gifts: Vec<InventoryGift>,
+    seen: HashSet<GiftId>,
     regular: usize,
     skipped: BTreeMap<SkipReason, usize>,
     pub pages: usize,
@@ -16,7 +17,7 @@ pub(crate) struct InventoryBuilder {
 impl InventoryBuilder {
     pub fn snapshot(self, completion: InventoryCompletion) -> InventorySnapshot {
         InventorySnapshot {
-            gifts: std::sync::Arc::new(self.gifts.into_values().collect()),
+            gifts: std::sync::Arc::new(self.gifts),
             regular_gifts: self.regular,
             skipped: self.skipped,
             pages_read: self.pages,
@@ -57,7 +58,9 @@ impl InventoryBuilder {
             *self.skipped.entry(reason).or_default() += count;
         }
         for gift in page.gifts {
-            self.gifts.entry(gift.gift.id.clone()).or_insert(gift);
+            if self.seen.insert(gift.gift.id.clone()) {
+                self.gifts.push(gift);
+            }
         }
         let Some(next) = page.next_cursor.filter(|cursor| !cursor.is_empty()) else {
             return Ok(Some(

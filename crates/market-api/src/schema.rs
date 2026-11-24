@@ -9,6 +9,7 @@ use utoipa::OpenApi;
         crate::routes::catalog,
         crate::routes::collection,
         crate::routes::valuation,
+        crate::routes::valuation_batch,
         crate::valuation::documentation,
         crate::valuation::strategies,
         crate::routes::read_orders,

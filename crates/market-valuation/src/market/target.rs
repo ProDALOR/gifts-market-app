@@ -105,6 +105,22 @@ pub enum ResolvedTarget {
     },
     GiftAttributes(GiftAttributes),
 }
+impl super::PreparedQuery {
+    pub(super) fn resolve_target(
+        &self,
+        snapshot: &ValuationSnapshot,
+    ) -> Result<ResolvedTarget, ValuationError> {
+        snapshot.require_currency(&self.currency_id)?;
+        if let Some(gift) = &self.external_gift {
+            Ok(ResolvedTarget::Gift {
+                gift: snapshot.telegram_gift(gift)?,
+                slug: Some(gift.slug.clone()),
+            })
+        } else {
+            self.target.resolve(snapshot)
+        }
+    }
+}
 impl ValuationTarget {
     pub(crate) fn normalize(&mut self) -> Result<(), ValuationError> {
         match self {

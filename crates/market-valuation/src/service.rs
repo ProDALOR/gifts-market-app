@@ -13,9 +13,13 @@ pub struct ValuationHandle {
     native: Handle<Work, Arc<crate::market::ValuationRead>, ValuationError>,
     status: watch::Receiver<market_replica::SyncStatus>,
     watch_slots: Arc<tokio::sync::Semaphore>,
+    batch_slots: Arc<tokio::sync::Semaphore>,
     gift_resolver: GiftResolverState,
 }
 impl ValuationHandle {
+    pub(crate) async fn closed(&self) {
+        self.native.closed().await;
+    }
     /// Configure once during application composition, before starting API/bot consumers.
     pub fn set_gift_resolver(
         &self,
@@ -30,6 +34,118 @@ impl ValuationHandle {
         request: ValuationQuery,
     ) -> Result<Arc<ValuationReport>, ValuationError> {
         Ok(self.read(request.prepare()?, None).await?.report.clone())
+    }
+    pub async fn batch(
+        &self,
+        query: ValuationBatchQuery,
+    ) -> Result<Arc<ValuationBatchReport>, ValuationError> {
+        query.validate()?;
+        let _permit = self
+            .batch_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ValuationError::capacity("Valuation batch capacity reached"))?;
+        let resolver = self.gift_resolver.get().cloned();
+        let source = self.source.clone();
+        let books = self.books.clone();
+        let work = async move {
+            // Normalize before coalescing. Repeated queries retain their output slots,
+            // but share lookup, calculation and the immutable completed report.
+            let mut unique: Vec<crate::market::PreparedQuery> = Vec::new();
+            let mut positions = Vec::with_capacity(query.queries.len());
+            for query in query.queries {
+                positions.push(
+                    query
+                        .prepare()
+                        .map(|input| {
+                            if let Some(index) =
+                                unique.iter().position(|old| old.same_query(&input))
+                            {
+                                index
+                            } else {
+                                let index = unique.len();
+                                unique.push(input);
+                                index
+                            }
+                        })
+                        .map_err(StrategyFailure::from),
+                );
+            }
+            if unique.is_empty() {
+                return Ok(Arc::new(ValuationBatchReport {
+                    results: positions
+                        .into_iter()
+                        .map(|item| ValuationBatchItem::Error {
+                            error: item.expect_err("no valid batch queries"),
+                        })
+                        .collect(),
+                }));
+            }
+            let mut prepared = Vec::with_capacity(unique.len());
+            let mut pending = unique.into_iter();
+            while let Some(first) = pending.next() {
+                if let Some(second) = pending.next() {
+                    let (first, second) = tokio::join!(
+                        batch_resolve(first, resolver.clone()),
+                        batch_resolve(second, resolver.clone())
+                    );
+                    prepared.extend([first, second]);
+                } else {
+                    prepared.push(batch_resolve(first, resolver.clone()).await);
+                }
+            }
+            source
+                .prepare(move |snapshot| -> Result<_, ValuationError> {
+                    let mut inputs = Vec::with_capacity(prepared.len());
+                    for item in prepared {
+                        snapshot.check_cancelled()?;
+                        inputs.push(item.and_then(|(query, failure)| {
+                            crate::market::BatchInput::resolve(&snapshot, query, failure)
+                                .map_err(Into::into)
+                        }));
+                    }
+                    let evaluated_at = jiff::Timestamp::now();
+                    let results = crate::market::evaluate_batch(
+                        &snapshot,
+                        &books,
+                        inputs,
+                        |input, results| {
+                            Arc::new(ValuationReport {
+                                target: input.target.as_ref().clone(),
+                                currency_id: input.currency.clone(),
+                                evaluated_at,
+                                stale: false,
+                                results,
+                            })
+                        },
+                        |_| {},
+                    )?;
+                    let stale = snapshot.sync()?.state != market_gifts::SyncState::Live;
+                    let results: Vec<_> = results
+                        .into_iter()
+                        .map(|item| match item {
+                            Ok(mut data) => {
+                                Arc::make_mut(&mut data).stale = stale;
+                                ValuationBatchItem::Value { data }
+                            }
+                            Err(error) => ValuationBatchItem::Error { error },
+                        })
+                        .collect();
+                    let results = positions
+                        .into_iter()
+                        .map(|position| match position {
+                            Ok(index) => results[index].clone(),
+                            Err(error) => ValuationBatchItem::Error { error },
+                        })
+                        .collect();
+                    Ok(Arc::new(ValuationBatchReport { results }))
+                })
+                .await?
+        };
+        tokio::select! { biased;
+            _ = self.native.closed() => Err(ValuationError::unavailable("Valuation service stopped")),
+            value = tokio::time::timeout(std::time::Duration::from_secs(30), work) => value.map_err(|_| ValuationError::timed_out("Valuation batch timed out"))?,
+        }
     }
     async fn read(
         &self,
@@ -97,11 +213,21 @@ impl ValuationHandle {
                 native: service.handle,
                 status,
                 watch_slots: Arc::new(tokio::sync::Semaphore::new(32)),
+                batch_slots: Arc::new(tokio::sync::Semaphore::new(32)),
                 gift_resolver,
             },
             service.task,
         ))
     }
+}
+async fn batch_resolve(
+    mut query: crate::market::PreparedQuery,
+    resolver: Option<Arc<dyn market_gifts::GiftResolver>>,
+) -> Result<(crate::market::PreparedQuery, Option<ValuationError>), StrategyFailure> {
+    let failure = crate::market::resolution::external(&mut query, resolver)
+        .await
+        .map_err(StrategyFailure::from)?;
+    Ok((query, failure))
 }
 /// Pull-based watch: dropping it or its pending next() releases all work through normal cancellation.
 pub struct ValuationWatch {

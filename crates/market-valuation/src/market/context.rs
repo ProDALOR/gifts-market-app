@@ -6,16 +6,35 @@ use crate::{
     source::{BookScope, ValuationSnapshot},
 };
 use market_gifts::{CollectionId, CurrencyId, GiftOrder, GiftOrderQuery, OrderSource};
-use std::{cell::RefCell, sync::Arc};
-type ExecutionCache = Option<(
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
+type ExecutionCache = VecDeque<(
     ExecutionInput,
     Result<Arc<ExecutionStatistics>, ValuationError>,
 )>;
+type MatchingFloorCache = Vec<(
+    super::ResolvedTarget,
+    Result<crate::FloorValuation, ValuationError>,
+)>;
+type PairFloorCache = BTreeMap<
+    (
+        CollectionId,
+        market_gifts::ModelId,
+        market_gifts::BackdropId,
+    ),
+    Result<crate::FloorValuation, ValuationError>,
+>;
 pub struct ValuationContext<'a> {
     snapshot: &'a ValuationSnapshot,
     currency: &'a CurrencyId,
     books: &'a BookCache,
     executions: RefCell<ExecutionCache>,
+    failed_books: RefCell<BTreeMap<CollectionId, ValuationError>>,
+    pairs: RefCell<PairFloorCache>,
+    matching_floors: RefCell<MatchingFloorCache>,
     pub(super) reads: RefCell<super::read_set::ReadSet>,
 }
 impl<'a> ValuationContext<'a> {
@@ -28,7 +47,10 @@ impl<'a> ValuationContext<'a> {
             snapshot,
             currency,
             books,
-            executions: RefCell::new(None),
+            executions: Default::default(),
+            failed_books: Default::default(),
+            pairs: Default::default(),
+            matching_floors: Default::default(),
             reads: RefCell::new(super::read_set::ReadSet::new()),
         }
     }
@@ -43,6 +65,9 @@ impl<'a> ValuationContext<'a> {
         collection: &CollectionId,
     ) -> Result<Arc<Statistics>, ValuationError> {
         self.snapshot.check_cancelled()?;
+        if let Some(error) = self.failed_books.borrow().get(collection) {
+            return Err(error.clone());
+        }
         // This context already pins its observations. Do not revisit the bounded
         // global LRU (or rescan an evicted book) for another appearance in the same read.
         if let Some(stats) = self
@@ -72,9 +97,29 @@ impl<'a> ValuationContext<'a> {
                     collection.clone(),
                     self.currency.clone(),
                 )))?;
+                self.failed_books
+                    .borrow_mut()
+                    .insert(collection.clone(), error.clone());
                 Err(error)
             }
         }
+    }
+    pub(crate) fn pair_floor(
+        &self,
+        collection: &CollectionId,
+        model: &market_gifts::ModelId,
+        backdrop: &market_gifts::BackdropId,
+    ) -> Result<crate::FloorValuation, ValuationError> {
+        self.snapshot.check_cancelled()?;
+        let key = (collection.clone(), model.clone(), backdrop.clone());
+        if let Some(value) = self.pairs.borrow().get(&key) {
+            return value.clone();
+        }
+        let value = self
+            .floor_statistics(collection)?
+            .pair_floor(self.snapshot, model, backdrop);
+        self.pairs.borrow_mut().insert(key, value.clone());
+        value
     }
 
     pub(crate) fn collection_statistics(
@@ -130,19 +175,57 @@ impl<'a> ValuationContext<'a> {
         self.reads.borrow_mut().observe(self.snapshot, query)
     }
 
+    pub(super) fn matching_floor(
+        &self,
+        target: &super::ResolvedTarget,
+    ) -> Result<crate::FloorValuation, ValuationError> {
+        self.snapshot.check_cancelled()?;
+        if let Some((_, result)) = self
+            .matching_floors
+            .borrow()
+            .iter()
+            .find(|(key, _)| key == target)
+        {
+            return result.clone();
+        }
+        let result = super::strategies::matching_ask_floor(self, target);
+        self.matching_floors
+            .borrow_mut()
+            .push((target.clone(), result.clone()));
+        result
+    }
+
     pub(super) fn executions(
         &self,
         input: &ExecutionInput,
     ) -> Result<Arc<ExecutionStatistics>, ValuationError> {
-        if let Some((key, result)) = &*self.executions.borrow()
-            && key == input
+        self.snapshot.check_cancelled()?;
         {
-            return result.clone();
+            let mut cache = self.executions.borrow_mut();
+            if let Some(index) = cache.iter().position(|(key, _)| key == input) {
+                let entry = cache.remove(index).expect("located execution input");
+                let result = entry.1.clone();
+                cache.push_back(entry);
+                return result;
+            }
         }
-        // One cache slot is enough for a query's shared mean/median traversal. Keep the key
-        // explicit so another selection or period can never reuse the wrong observations.
+        // Batches can alternate selections and periods. Bound retained samples across
+        // inputs to one full scan's budget, rather than retaining a full scan per query.
         let result = ExecutionStatistics::read(self, input).map(Arc::new);
-        *self.executions.borrow_mut() = Some((input.clone(), result.clone()));
+        let mut cache = self.executions.borrow_mut();
+        let samples = |result: &Result<Arc<ExecutionStatistics>, ValuationError>| {
+            result
+                .as_ref()
+                .map_or(0, |v| v.evidence.executions as usize)
+        };
+        let incoming = samples(&result);
+        while cache.len() >= super::MAX_VALUATION_BATCH
+            || cache.iter().map(|(_, v)| samples(v)).sum::<usize>() + incoming
+                > super::execution::MAX_OBSERVATIONS
+        {
+            cache.pop_front();
+        }
+        cache.push_back((input.clone(), result.clone()));
         result
     }
 }
@@ -218,6 +301,10 @@ mod tests {
                 )?;
                 let other = context.executions(&other_selection)?;
                 assert_eq!(other.evidence.executions, 0);
+                assert!(
+                    Arc::ptr_eq(&first, &context.executions(&input)?),
+                    "alternating batch inputs reuse their earlier scan"
+                );
                 Ok(())
             })
             .await

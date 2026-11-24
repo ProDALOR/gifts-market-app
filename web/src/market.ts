@@ -16,6 +16,14 @@ export const valuation = (
   signal?: AbortSignal,
 ): Promise<ValuationResponse> =>
   liveSocket.request({ method: "valuation.query", params: query }, signal);
+export type ValuationBatchQuery = components["schemas"]["ValuationBatchQuery"];
+export type ValuationBatchResponse =
+  components["schemas"]["ValuationBatchResponse"];
+export const valuationBatch = (
+  query: ValuationBatchQuery,
+  signal?: AbortSignal,
+): Promise<ValuationBatchResponse> =>
+  liveSocket.request({ method: "valuation.batch", params: query }, signal);
 export type MarketStatus = components["schemas"]["MarketStatus"];
 export type Order = components["schemas"]["OrderResponse"];
 export type Sort = components["schemas"]["GiftSort"];

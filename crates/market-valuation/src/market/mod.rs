@@ -1,11 +1,18 @@
 //! Independently queryable targets and typed strategies, evaluated in one admitted snapshot.
 mod actor;
+mod batch;
+use batch::evaluate_strategies;
+pub(crate) use batch::{BatchInput, evaluate_batch};
+pub use batch::{
+    MAX_VALUATION_BATCH, ValuationBatchItem, ValuationBatchQuery, ValuationBatchReport,
+};
 mod context;
 mod execution;
 mod inputs;
 mod read;
 mod read_cache;
 mod read_set;
+pub(crate) mod resolution;
 pub(crate) use read::ValuationRead;
 mod strategies;
 mod target;
@@ -104,7 +111,7 @@ pub(crate) struct PreparedQuery {
     external_gift: Option<market_gifts::TelegramGiftDetails>,
 }
 impl PreparedQuery {
-    fn same_query(&self, other: &Self) -> bool {
+    pub(crate) fn same_query(&self, other: &Self) -> bool {
         self.target == other.target
             && self.external_gift == other.external_gift
             && self.currency_id == other.currency_id

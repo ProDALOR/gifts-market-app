@@ -15,8 +15,6 @@ const filters: PortfolioFilters = {
   collection: "",
   traits: {},
   number: "",
-  min: "",
-  max: "",
   sort: "value_desc",
 };
 const item = (id: number, estimate?: string): PortfolioItem => ({
@@ -67,7 +65,7 @@ const state: PortfolioState = {
     items: [item(1, "9999999999999999.01"), item(2)],
   },
 };
-test("portfolio sorting and price filters retain exact decimals and keep unknown prices last", () => {
+test("portfolio sorting retains exact decimals and keeps unknown prices last", () => {
   assert(compareValue("9999999999999999.02", "9999999999999999.01") > 0);
   assert.equal(compareValue("001.00", "1"), 0);
   const items = [
@@ -84,12 +82,6 @@ test("portfolio sorting and price filters retain exact decimals and keep unknown
       (i) => i.gift.gift.number,
     ),
     [1, 2, 3],
-  );
-  assert.deepEqual(
-    selectItems(items, { ...filters, min: "9999999999999999.02" }).map(
-      (i) => i.gift.gift.number,
-    ),
-    [2],
   );
   assert.equal(
     selectItems(items, { ...filters, traits: { models: ["missing"] } }).length,
@@ -197,4 +189,103 @@ test("selection summaries keep unknown estimates distinct from empty portfolios"
   assert.equal(portfolioSummary([item(1)]).total, undefined);
   assert.equal(portfolioSummary([]).total, "0");
   assert.equal(portfolioSummary([item(1), item(2)]).unpriced, 2);
+});
+
+test("visible unverified gifts remain filterable and counted without an ownership claim", async () => {
+  const { portfolioSummary, portfolioRelation } =
+    await import("../src/portfolio/model.ts");
+  const minted = item(2, "2.34");
+  minted.gift.relation = "unverified";
+  const hosted = item(3, "3.45");
+  hosted.gift.relation = "hosted";
+  const items = [item(1, "1.23"), minted, hosted];
+  assert.deepEqual(
+    selectItems(items, filters).map((i) => i.gift.gift.number),
+    [3, 2, 1],
+  );
+  assert.equal(selectItems(items, { ...filters, number: "2" })[0], minted);
+  assert.equal(portfolioSummary(items).total, "7.02");
+  assert.equal(portfolioSummary(items).unverified, 1);
+  assert.equal(portfolioRelation("owned"), undefined);
+  assert.equal(portfolioRelation("hosted")?.label, "Hosted");
+  assert.equal(
+    portfolioRelation("unverified")?.description,
+    "Visible on this profile; ownership unverified.",
+  );
+  const frame = {
+    type: "portfolio.snapshot",
+    id: "p.1",
+    data: {
+      ...state,
+      valuation: {
+        ...state.valuation!,
+        items,
+        priced: 3,
+        unpriced: 0,
+        total: "7.02",
+      },
+    },
+  };
+  assert.equal(parseFrame(JSON.stringify(frame)).type, "portfolio.snapshot");
+});
+
+test("position sorting follows source order, including filtered and unpriced gifts", () => {
+  const source = [item(90, "1"), item(3), item(25, "9"), item(1, "2")];
+  assert.deepEqual(
+    selectItems(source, { ...filters, sort: "position_asc" }).map(
+      (i) => i.gift.gift.number,
+    ),
+    [90, 3, 25, 1],
+  );
+  assert.deepEqual(
+    selectItems(source, { ...filters, sort: "position_desc" }).map(
+      (i) => i.gift.gift.number,
+    ),
+    [1, 25, 3, 90],
+  );
+  assert.deepEqual(
+    source.map((i) => i.gift.gift.number),
+    [90, 3, 25, 1],
+  );
+  assert.equal(
+    selectItems(source, { ...filters, sort: "position_asc", number: "3" })[0],
+    source[1],
+  );
+});
+
+test("portfolio filters keep profile order across collection and trait changes", () => {
+  const source = [item(90, "1"), item(3), item(25, "9"), item(1, "2")];
+  source[1].resolved!.collection_id = "other";
+  source[2].resolved!.traits.model = "second-model";
+  source[3].resolved!.traits.backdrop = "second-backdrop";
+  const position = { ...filters, sort: "position_asc" as const };
+  const numbers = (f: PortfolioFilters, items = source) =>
+    selectItems(items, f).map((i) => i.gift.gift.number);
+  assert.deepEqual(numbers({ ...position, collection: "gift" }), [90, 25, 1]);
+  assert.deepEqual(
+    numbers({
+      ...position,
+      traits: { models: ["model"], backdrops: ["back"] },
+    }),
+    [90, 3],
+  );
+  assert.deepEqual(
+    numbers({
+      ...position,
+      collection: "gift",
+      traits: { models: ["second-model", "model"], patterns: ["symbol"] },
+      sort: "position_desc",
+    }),
+    [1, 25, 90],
+  );
+  assert.deepEqual(
+    numbers(position),
+    [90, 3, 25, 1],
+    "All gifts restores the source order",
+  );
+  assert.deepEqual(
+    numbers(position, [source[3], source[1], source[0]]),
+    [1, 3, 90],
+    "a refreshed inventory supplies the new profile order",
+  );
 });

@@ -364,3 +364,77 @@ async fn unlisted_slug_facts_are_shared_by_rest_websocket_queries_and_watches() 
     stop.cancel();
     runtime.shutdown().await.unwrap();
 }
+
+#[actix_web::test]
+async fn batch_valuation_has_matching_rest_ws_results_and_independent_errors() {
+    let (state, runtime, peer, stop) = setup().await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let query = serde_json::json!({"currency_id":"GRAM","strategies":["ask_floor"],"target":{"kind":"selection","collection_id":"tg.gift.123","criteria":{}}});
+    let mut bad = query.clone();
+    bad["strategies"] = serde_json::json!(["unknown"]);
+    let params = serde_json::json!({"queries":[query,bad,query]});
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/valuations/batch")
+            .set_json(&params)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let rest: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(rest["results"].as_array().unwrap().len(), 3);
+    assert_eq!(rest["results"][1]["error"]["code"], "invalid_query");
+    assert_eq!(
+        rest["results"][0]["data"]["results"][0]["data"]["value"],
+        "1.000000001"
+    );
+    assert!(rest["results"][0]["data"]["results"][0]["revision"].is_string());
+    let web_dir = peer._directory.path().join("batch-web");
+    std::fs::create_dir_all(&web_dir).unwrap();
+    std::fs::write(web_dir.join("index.html"), "<html></html>").unwrap();
+    let server = api_server(&runtime, web_dir);
+    let address = server.local_addr().unwrap();
+    let api_stop = CancellationToken::new();
+    let job = tokio::spawn(server.run(api_stop.child_token()));
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    bid_filters::send(&mut socket, serde_json::json!({"type":"request","id":"batch","method":"valuation.batch","params":params})).await;
+    let ws = bid_filters::frame(&mut socket, "batch", "result").await;
+    assert_eq!(ws["method"], "valuation.batch");
+    for index in [0, 2] {
+        assert_eq!(
+            ws["data"]["results"][index]["data"]["results"],
+            rest["results"][index]["data"]["results"]
+        );
+        assert_eq!(
+            ws["data"]["results"][index]["data"]["target"],
+            rest["results"][index]["data"]["target"]
+        );
+    }
+    assert_eq!(ws["data"]["results"][1], rest["results"][1]);
+    assert_eq!(
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/valuations/batch")
+                .set_json(serde_json::json!({"queries":[]}))
+                .to_request()
+        )
+        .await
+        .status(),
+        400
+    );
+    socket.close(None).await.unwrap();
+    api_stop.cancel();
+    job.await.unwrap().unwrap();
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}

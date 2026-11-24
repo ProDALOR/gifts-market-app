@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Order, GiftMedia } from "../market";
 import type { CatalogOption } from "../orderbook";
 import { listingLink, modelName, serial } from "../orderbook";
@@ -27,6 +28,7 @@ export function GiftDetailsView({
   slug,
   collectionPreview,
   removed = false,
+  notice,
   close,
   share,
   label = "Gift details",
@@ -43,6 +45,7 @@ export function GiftDetailsView({
   slug?: string;
   collectionPreview?: GiftMedia;
   removed?: boolean;
+  notice?: ReactNode;
   close: () => void;
   share?: (slug: string, currency: string) => void;
   label?: string;
@@ -174,6 +177,7 @@ export function GiftDetailsView({
       </div>
       <div className="detail-content">
         <div className="detail-body">
+          {notice}
           <div className="detail-pricing">
             {order && (
               <section className="listing-price" aria-label={priceLabel}>

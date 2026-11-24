@@ -23,6 +23,7 @@ export function usePortfolio(user: number | undefined, currency: string) {
   const received = useRef(state);
   const [error, setError] = useState("");
   const generation = useRef(0);
+  const refreshing = useRef<AbortController | undefined>(undefined);
   useLayoutEffect(() => {
     const initial = cache.current.get(key);
     received.current = initial;
@@ -36,6 +37,8 @@ export function usePortfolio(user: number | undefined, currency: string) {
     let unsubscribe: (() => void) | undefined;
     const detach = () => {
       ++generation.current;
+      refreshing.current?.abort();
+      refreshing.current = undefined;
       unsubscribe?.();
       unsubscribe = undefined;
     };
@@ -82,18 +85,25 @@ export function usePortfolio(user: number | undefined, currency: string) {
     };
   }, [user, currency]);
   const refresh = useCallback(async () => {
-    if (!user) return;
+    if (!user || refreshing.current || document.hidden) return;
     const current = generation.current;
+    const request = new AbortController();
+    refreshing.current = request;
     try {
       // The watch owns state. A late acknowledgement must never overwrite newer progress.
-      await liveSocket.request({
-        method: "portfolio.refresh",
-        params: { user_id: user, currency_id: currency },
-      });
+      await liveSocket.request(
+        {
+          method: "portfolio.refresh",
+          params: { user_id: user, currency_id: currency },
+        },
+        request.signal,
+      );
       if (current === generation.current) setError("");
     } catch (error) {
-      if (current === generation.current)
+      if (!request.signal.aborted && current === generation.current)
         setError(error instanceof Error ? error.message : "Refresh failed");
+    } finally {
+      if (refreshing.current === request) refreshing.current = undefined;
     }
   }, [user, currency]);
   const currentState =

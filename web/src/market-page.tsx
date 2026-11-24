@@ -21,7 +21,7 @@ import { OrderDetails } from "./orderbook/order-details";
 import { FloorsProvider, FloorsStatus } from "./valuation/floors";
 import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
-import { CurrencyPicker, SortPicker } from "./ui/pickers";
+import { CurrencyPicker, SortPicker, marketSortOptions } from "./ui/pickers";
 import { ScrollLoader } from "./orderbook/scroll-loader";
 import { BrandMark } from "./brand/brand-mark";
 import { BackToTop } from "./ui/back-to-top";
@@ -501,6 +501,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                 aria-label="Sort listings"
               >
                 <SortPicker
+                  options={marketSortOptions}
                   value={
                     choice.sort.split("_")[0] as "time" | "number" | "price"
                   }

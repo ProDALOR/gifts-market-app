@@ -1,10 +1,8 @@
 //! Bounded inventory valuation using the same gift strategy and collection preparation.
-use crate::{
-    GiftAttributes, GiftFloor, Strategy, ValuationContext, ValuationError, ValuationMetric,
-};
+use crate::{GiftAttributes, GiftFloor, Strategy, ValuationError, ValuationMetric};
 use market_gifts::{Amount, CollectibleGift, CurrencyId, inventory::InventoryGift};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -41,7 +39,8 @@ impl crate::ValuationHandle {
         }
         let books = self.books.clone();
         let queued = std::time::Instant::now();
-        self.source
+        let read = self
+            .source
             .prepare(move |snapshot| -> Result<_, ValuationError> {
                 snapshot.require_currency(&currency)?;
                 let started = std::time::Instant::now();
@@ -63,92 +62,89 @@ impl crate::ValuationHandle {
                         error: None,
                     })
                     .collect();
-                let mut groups: BTreeMap<_, Vec<_>> = BTreeMap::new();
-                let mut completed = 0;
-                for (index, resolution) in resolved.into_iter().enumerate() {
+                let strategies: Arc<[_]> =
+                    Arc::from([crate::strategy::registration(GiftFloor::ID)
+                        .expect("gift floor registered")]);
+                let mut inputs = Vec::with_capacity(gifts.len());
+                for (item, resolution) in items.iter_mut().zip(resolved) {
                     snapshot.check_cancelled()?;
-                    match resolution {
-                        Ok(gift) => groups
-                            .entry(gift.collection_id.clone())
-                            .or_default()
-                            .push((index, gift)),
-                        Err(error) => {
-                            items[index].error = Some(error);
-                            completed += 1;
-                        }
-                    }
+                    inputs.push(
+                        resolution
+                            .map(|gift| {
+                                let attributes = GiftAttributes {
+                                    collection_id: gift.collection_id.clone(),
+                                    traits: gift.traits.clone(),
+                                    number: gift.number,
+                                };
+                                item.resolved = Some(gift);
+                                crate::market::BatchInput {
+                                    target: Arc::new(crate::ResolvedTarget::GiftAttributes(
+                                        attributes,
+                                    )),
+                                    currency: currency.clone(),
+                                    strategies: strategies.clone(),
+                                    period: None,
+                                }
+                            })
+                            .map_err(|message| crate::StrategyFailure {
+                                code: crate::StrategyFailureCode::NotFound,
+                                message,
+                            }),
+                    );
                 }
-                progress.send_replace(completed);
+                let collections = inputs
+                    .iter()
+                    .filter_map(|input| input.as_ref().ok()?.target.collection())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
                 tracing::info!(
                     gifts = gifts.len(),
-                    collections = groups.len(),
+                    collections,
                     resolution_ms,
                     "portfolio attributes resolved"
                 );
-                let collections = groups.len();
-                let mut appearances = 0;
+                let estimates = crate::market::evaluate_batch(
+                    &snapshot,
+                    &books,
+                    inputs,
+                    |_, outcomes| match outcomes.into_iter().next().expect("one inventory strategy")
+                    {
+                        crate::StrategyOutcome::Value(crate::StrategyValuation::GiftFloor(
+                            value,
+                        )) => match value.final_mark {
+                            ValuationMetric::Value { value } => Ok(value),
+                            ValuationMetric::Unavailable { error } => {
+                                Err(format!("{:?}", error.code))
+                            }
+                        },
+                        crate::StrategyOutcome::Error { error, .. } => Err(error.message),
+                        _ => unreachable!("inventory requests the gift floor strategy"),
+                    },
+                    |count| {
+                        progress.send_replace(count);
+                    },
+                )?;
                 let mut total = rust_decimal::Decimal::ZERO;
                 let mut priced = 0;
-                for (collection, entries) in groups {
-                    let context = ValuationContext::new(&snapshot, &currency, &books);
-                    // A failing book preparation is shared too; never retry it for every pair.
-                    let prepared = context
-                        .floor_statistics(&collection)
-                        .map(|_| ())
-                        .map_err(|e| e.to_string());
-                    let mut estimates = BTreeMap::new();
-                    for (index, resolved) in entries {
-                        snapshot.check_cancelled()?;
-                        let key = (
-                            resolved.traits.model.clone(),
-                            resolved.traits.backdrop.clone(),
-                        );
-                        let estimate = estimates
-                            .entry(key)
-                            .or_insert_with(|| {
-                                appearances += 1;
-                                prepared.clone()?;
-                                GiftFloor
-                                    .evaluate(
-                                        &GiftAttributes {
-                                            collection_id: collection.clone(),
-                                            traits: resolved.traits.clone(),
-                                            number: resolved.number,
-                                        },
-                                        &context,
-                                    )
-                                    .map_err(|e| e.to_string())
-                                    .and_then(|v| match v.final_mark {
-                                        ValuationMetric::Value { value } => Ok(value),
-                                        ValuationMetric::Unavailable { error } => {
-                                            Err(format!("{:?}", error.code))
-                                        }
-                                    })
-                            })
-                            .clone();
-                        let item = &mut items[index];
-                        item.resolved = Some(resolved);
-                        match estimate {
-                            Ok(value) => {
-                                total = total.checked_add(value.decimal()).ok_or_else(|| {
-                                    ValuationError::unavailable("portfolio total overflow")
-                                })?;
-                                priced += 1;
-                                item.estimate = Some(value);
-                            }
-                            Err(error) => item.error = Some(error),
+                for (item, estimate) in items.iter_mut().zip(estimates) {
+                    snapshot.check_cancelled()?;
+                    match estimate
+                        .map_err(|error| error.message)
+                        .and_then(|result| result)
+                    {
+                        Ok(value) => {
+                            total = total.checked_add(value.decimal()).ok_or_else(|| {
+                                ValuationError::unavailable("portfolio total overflow")
+                            })?;
+                            priced += 1;
+                            item.estimate = Some(value);
                         }
-                        completed += 1;
-                        if completed.is_multiple_of(25) || completed == gifts.len() {
-                            progress.send_replace(completed);
-                        }
+                        Err(error) => item.error = Some(error),
                     }
-                    progress.send_replace(completed);
                 }
                 tracing::info!(
                     gifts = gifts.len(),
                     collections,
-                    appearances,
                     priced,
                     resolution_ms,
                     elapsed_ms = started.elapsed().as_millis(),
@@ -170,8 +166,11 @@ impl crate::ValuationHandle {
                     unpriced: gifts.len() - priced,
                     items,
                 }))
-            })
-            .await?
+            });
+        tokio::select! { biased;
+            _ = self.closed() => Err(ValuationError::unavailable("Valuation service stopped")),
+            result = read => result?,
+        }
     }
 }
 
@@ -198,6 +197,47 @@ mod tests {
             },
             relation: GiftRelation::Hosted,
         }
+    }
+    #[tokio::test]
+    async fn service_shutdown_cancels_queued_inventory_and_rejects_new_work() {
+        let (_dir, writer) = crate::gift_floor::tests::book();
+        let data = MarketDataService::start(writer.reader(), 1, 1)
+            .await
+            .unwrap();
+        let (handle, task) = crate::ValuationHandle::start(&data.arbiter(), data.reader.executor())
+            .await
+            .unwrap();
+        let held = crate::integration_tests::hold(&handle.source).await;
+        let pending = handle.clone();
+        let job = tokio::spawn(async move {
+            let (progress, _) = tokio::sync::watch::channel(0);
+            pending
+                .inventory(Arc::new(vec![gift(1)]), "GRAM".into(), progress)
+                .await
+        });
+        // A queued read cannot complete until a permit is released.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        task.shutdown().await.unwrap();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), job)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code(), crate::ValuationErrorCode::Unavailable);
+        let (progress, _) = tokio::sync::watch::channel(0);
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                handle.inventory(Arc::new(vec![]), "GRAM".into(), progress)
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+        drop(held);
+        let stop = tokio_util::sync::CancellationToken::new();
+        stop.cancel();
+        data.task.run(stop).await.unwrap();
     }
     #[tokio::test]
     async fn inventory_uses_the_gift_strategy_and_keeps_unknown_gifts_unpriced() {
@@ -250,12 +290,14 @@ mod tests {
         let (handle, task) = crate::ValuationHandle::start(&data.arbiter(), data.reader.executor())
             .await
             .unwrap();
+        let mut minted = gift(2);
+        minted.relation = GiftRelation::Unverified;
         let mut unknown = gift(3);
         unknown.gift.model = TelegramDocumentId::new(999).unwrap();
         let (tx, progress) = tokio::sync::watch::channel(0);
         let report = handle
             .inventory(
-                Arc::new(vec![gift(1), gift(2), unknown.clone()]),
+                Arc::new(vec![gift(1), minted, unknown.clone()]),
                 "GRAM".into(),
                 tx,
             )
@@ -278,6 +320,8 @@ mod tests {
             "symbol"
         );
         assert_eq!(report.items[0].gift.relation, GiftRelation::Hosted);
+        assert_eq!(report.items[1].gift.relation, GiftRelation::Unverified);
+        assert_eq!(report.items[1].estimate.as_ref().unwrap().as_str(), "18");
         assert!(report.items[2].error.is_some());
         let (tx, _) = tokio::sync::watch::channel(0);
         let unknown = handle
@@ -304,6 +348,7 @@ mod tests {
 #[cfg(test)]
 mod scaling_tests {
     use super::*;
+    use crate::ValuationContext;
     use market_gifts::{
         TelegramDocumentId, TelegramGiftDetails, TelegramGiftId, inventory::GiftRelation,
     };

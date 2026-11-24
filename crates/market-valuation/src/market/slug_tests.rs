@@ -5,7 +5,15 @@ use market_hub_protocol::wire as w;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-struct Resolver(Mutex<Result<TelegramGiftDetails, GiftResolutionError>>);
+struct Resolver(
+    Mutex<Result<TelegramGiftDetails, GiftResolutionError>>,
+    std::sync::atomic::AtomicUsize,
+);
+impl Resolver {
+    fn new(value: Result<TelegramGiftDetails, GiftResolutionError>) -> Self {
+        Self(Mutex::new(value), Default::default())
+    }
+}
 impl GiftResolver for Resolver {
     fn resolve<'a>(
         &'a self,
@@ -18,6 +26,7 @@ impl GiftResolver for Resolver {
         >,
     > {
         Box::pin(async move {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut value = self.0.lock().unwrap().clone()?;
             value.slug = slug.clone();
             value.number = slug.number();
@@ -130,7 +139,7 @@ async fn user_session_facts_resolve_unlisted_gifts_without_canonical_slugs_and_p
         handle.query(query(123)).await.unwrap_err().code(),
         ValuationErrorCode::NotFound
     );
-    let resolver = Arc::new(Resolver(Mutex::new(Ok(facts()))));
+    let resolver = Arc::new(Resolver::new(Ok(facts())));
     handle.set_gift_resolver(resolver.clone()).unwrap();
     assert!(handle.set_gift_resolver(resolver.clone()).is_err());
     let listed = handle.query(query(123)).await.unwrap();
@@ -174,7 +183,7 @@ async fn temporary_user_session_failure_falls_back_to_observed_market_gifts() {
     let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
         .await
         .unwrap();
-    let resolver = Arc::new(Resolver(Mutex::new(Err(GiftResolutionError::Unavailable))));
+    let resolver = Arc::new(Resolver::new(Err(GiftResolutionError::Unavailable)));
     handle.set_gift_resolver(resolver.clone()).unwrap();
     assert_eq!(
         handle
@@ -245,6 +254,84 @@ async fn cancelling_slug_lookup_releases_work_without_reserving_a_replica_read_w
     .unwrap();
     // The only read worker stays available while Telegram is pending.
     let mut selection = query(9999);
+    selection.target = ValuationTarget::Selection {
+        collection_id: "gift".into(),
+        criteria: Default::default(),
+    };
+    selection.strategies = vec![StrategyId::new("ask_floor").unwrap()];
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle.query(selection))
+        .await
+        .unwrap()
+        .unwrap();
+    request.abort();
+    let _ = request.await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        pending.cancelled.cancelled(),
+    )
+    .await
+    .unwrap();
+    close(data, task).await;
+}
+
+#[tokio::test]
+async fn batches_reuse_external_lookup_and_cancellation_without_occupying_a_read_worker() {
+    let (_dir, mut writer) = book();
+    aliases(&mut writer, true);
+    let data = MarketDataService::start(writer.reader(), 1, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let resolver = Arc::new(Resolver::new(Ok(facts())));
+    handle.set_gift_resolver(resolver.clone()).unwrap();
+    let report = handle
+        .batch(ValuationBatchQuery {
+            queries: vec![query(9991), query(9992), query(9991)],
+        })
+        .await
+        .unwrap();
+    for (item, number) in report.results.iter().zip([9991, 9992, 9991]) {
+        let ValuationBatchItem::Value { data } = item else {
+            panic!("expected externally resolved gift")
+        };
+        assert_eq!(data.target.gift().unwrap().number.unwrap().get(), number);
+    }
+    assert_eq!(
+        resolver.1.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "duplicate queries resolve their slug once"
+    );
+    close(data, task).await;
+
+    let (_dir, writer) = book();
+    let data = MarketDataService::start(writer.reader(), 1, 1)
+        .await
+        .unwrap();
+    let (handle, task) = ValuationHandle::start(&data.arbiter(), data.reader.executor())
+        .await
+        .unwrap();
+    let pending = Arc::new(Pending {
+        started: CancellationToken::new(),
+        cancelled: CancellationToken::new(),
+    });
+    handle.set_gift_resolver(pending.clone()).unwrap();
+    let clone = handle.clone();
+    let request = tokio::spawn(async move {
+        clone
+            .batch(ValuationBatchQuery {
+                queries: vec![query(1), query(2), query(3)],
+            })
+            .await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        pending.started.cancelled(),
+    )
+    .await
+    .unwrap();
+    let mut selection = query(1);
     selection.target = ValuationTarget::Selection {
         collection_id: "gift".into(),
         criteria: Default::default(),

@@ -6,8 +6,12 @@ use std::{collections::BTreeMap, time::Duration};
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum GiftRelation {
+    /// Telegram identifies the queried peer as the owner.
     Owned,
+    /// Telegram identifies the queried peer as the host, rather than the owner.
     Hosted,
+    /// Returned in the profile inventory without a verifiable owner/host peer.
+    /// This includes minted gifts identified only by wallet addresses.
     Unverified,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

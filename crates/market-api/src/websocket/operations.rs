@@ -230,6 +230,22 @@ async fn request(market: &MarketApi, context: &OperationContext, query: ApiReque
                     })
                     .await
             }
+            ApiRequest::ValuationBatch { id, params } => {
+                let report = market.valuation_batch(*params).await?;
+                market
+                    .encode_response(move |writer| {
+                        serde_json::to_writer(
+                            writer,
+                            &ServerFrame::Result(ApiResult::ValuationBatch {
+                                id: &id,
+                                data: crate::valuation::ValuationBatchResponse::from(
+                                    report.as_ref(),
+                                ),
+                            }),
+                        )
+                    })
+                    .await
+            }
             ApiRequest::Valuation { id, params } => {
                 let report = market.valuation(*params).await?;
                 market
