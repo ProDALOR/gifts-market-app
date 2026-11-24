@@ -31,14 +31,26 @@ impl MarketRuntime {
         )?;
         let stop = supervisor.token();
         let reads = market_replica::ReadRuntime::new(market.reader, query_limit, stop.clone())?;
+        let starting = std::time::Instant::now();
+        tracing::info!("starting market data actors");
         let data = market_actors::MarketDataService::start_with_shutdown(
             reads.handle(),
             subscription_limit,
             stop.clone(),
         )
         .await?;
+        tracing::info!(
+            elapsed_ms = starting.elapsed().as_millis(),
+            "market data actors started"
+        );
+        let starting = std::time::Instant::now();
+        tracing::info!("starting valuation service");
         let (registry, valuation_task) =
             market_valuation::ValuationHandle::start(&data.arbiter(), reads.handle()).await?;
+        tracing::info!(
+            elapsed_ms = starting.elapsed().as_millis(),
+            "valuation service started"
+        );
         let valuation_stop = supervisor.token();
         supervisor.spawn_critical(TaskKind::Valuation("valuation"), async move {
             valuation_task.run(valuation_stop).await.map_err(|error| {

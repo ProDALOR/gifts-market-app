@@ -216,54 +216,20 @@ where
 fn needs_authorization<T>(result: &Result<T, InvocationError>) -> bool {
     matches!(result, Err(InvocationError::Rpc(error)) if error.code == 401 && error.name == "AUTH_KEY_UNREGISTERED")
 }
-// Never log arbitrary server descriptions, request bodies, IDs or credential-bearing errors.
-fn safe_rpc_name(name: &str) -> &str {
-    match name {
-        "QUERY_ID_INVALID"
-        | "SEND_MESSAGE_TYPE_INVALID"
-        | "SEND_MESSAGE_MEDIA_INVALID"
-        | "RICH_MESSAGE_INVALID"
-        | "RICH_MESSAGE_PARSE_ERROR"
-        | "RICH_MESSAGE_TOO_LONG"
-        | "MESSAGE_ID_INVALID"
-        | "MESSAGE_EDIT_TIME_EXPIRED"
-        | "INLINE_BOT_REQUIRED"
-        | "AUTH_KEY_UNREGISTERED"
-        | "AUTH_BYTES_INVALID"
-        | "DC_ID_INVALID"
-        | "MESSAGE_EMPTY"
-        | "MESSAGE_TOO_LONG"
-        | "MESSAGE_NOT_MODIFIED"
-        | "PHOTO_INVALID"
-        | "DOCUMENT_INVALID"
-        | "FILE_REFERENCE_EXPIRED"
-        | "FILE_REFERENCE_INVALID"
-        | "ENTITY_BOUNDS_INVALID"
-        | "ENTITIES_TOO_LONG"
-        | "CUSTOM_EMOJI_INVALID"
-        | "BUTTON_DATA_INVALID"
-        | "BUTTON_TYPE_INVALID"
-        | "BUTTON_URL_INVALID"
-        | "REPLY_MARKUP_INVALID"
-        | "REPLY_MARKUP_TOO_LONG"
-        | "START_PARAM_INVALID"
-        | "ARTICLE_TITLE_EMPTY"
-        | "RESULT_TYPE_INVALID"
-        | "RESULT_ID_INVALID"
-        | "RESULT_ID_DUPLICATE"
-        | "RESULTS_TOO_MUCH"
-        | "NEXT_OFFSET_INVALID"
-        | "BOT_INLINE_DISABLED"
-        | "BOT_RESPONSE_TIMEOUT"
-        | "BOT_DOMAIN_INVALID"
-        | "PREMIUM_ACCOUNT_REQUIRED"
-        | "USER_IS_BLOCKED"
-        | "CHAT_WRITE_FORBIDDEN"
-        | "PEER_ID_INVALID"
-        | "FLOOD_WAIT"
-        | "SLOWMODE_WAIT"
-        | "INTERNAL" => name,
-        _ => "UNRECOGNIZED_RPC_ERROR",
+// Log bounded RPC identifiers, never free-form descriptions or request contents.
+// A fixed allowlist hides new Telegram validation codes exactly when diagnostics matter.
+pub(super) fn safe_rpc_name(name: &str) -> &str {
+    if !name.is_empty()
+        && name.len() <= 96
+        && name.as_bytes()[0].is_ascii_uppercase()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        && (name.contains('_') || name == "INTERNAL")
+    {
+        name
+    } else {
+        "UNRECOGNIZED_RPC_ERROR"
     }
 }
 
@@ -462,7 +428,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
     #[test]
-    fn rpc_diagnostics_name_known_failures_without_exposing_arbitrary_descriptions() {
+    fn rpc_diagnostics_keep_new_bounded_identifiers_without_logging_descriptions() {
         assert_eq!(safe_rpc_name("MESSAGE_ID_INVALID"), "MESSAGE_ID_INVALID");
         assert_eq!(safe_rpc_name("QUERY_ID_INVALID"), "QUERY_ID_INVALID");
         assert_eq!(
@@ -470,8 +436,25 @@ mod tests {
             "SEND_MESSAGE_TYPE_INVALID"
         );
         for name in [
+            "RICH_MESSAGE_BLOCK_INVALID",
+            "NEW_VALIDATION_ERROR_42",
+            "AUTH_KEY_UNREGISTERED",
+        ] {
+            assert_eq!(safe_rpc_name(name), name);
+        }
+        let limit = format!("E_{}", "X".repeat(94));
+        assert_eq!(safe_rpc_name(&limit), limit);
+        assert_eq!(
+            safe_rpc_name(&format!("{limit}X")),
+            "UNRECOGNIZED_RPC_ERROR"
+        );
+        for name in [
+            "",
+            "_INVALID",
+            "400_INVALID",
             "private-api-hash",
-            "AUTH_KEY_SECRET",
+            "AUTH_KEY_abcdef123456",
+            "MESSAGE_INVALID\nprivate content",
             "400:PRIVATE_TOKEN",
             "bad html: <p>private message</p>",
         ] {

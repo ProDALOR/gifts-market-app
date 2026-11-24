@@ -1,3 +1,4 @@
+mod startup;
 use clap::Parser;
 use market_app::{
     MarketRuntime,
@@ -54,6 +55,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
+    let started = std::time::Instant::now();
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "market app starting");
     #[cfg(feature = "bot")]
     let mut bot = market_app::bot_config::worker(&args)?;
     let token = args
@@ -61,22 +64,31 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("MARKET_HUB_TOKEN is required"))?;
     let hub = HubClient::new(args.hub_url.clone(), token)?;
-    let runtime = MarketRuntime::open(
-        &args.data_dir,
-        hub.source(),
-        args.max_concurrent_queries,
-        args.max_live_queries,
+    let runtime = startup::phase(
+        "market_runtime",
+        MarketRuntime::open(
+            &args.data_dir,
+            hub.source(),
+            args.max_concurrent_queries,
+            args.max_live_queries,
+        ),
     )
     .await?;
     #[cfg(feature = "bot")]
-    if let Some(accounts) = market_app::account_config::worker(&args).await? {
+    if let Some(accounts) = startup::phase(
+        "telegram_accounts",
+        market_app::account_config::worker(&args),
+    )
+    .await?
+    {
         runtime.start_accounts(accounts)?;
     }
     let media_dir = args
         .media_dir
         .clone()
         .unwrap_or_else(|| args.data_dir.join("media"));
-    let (media, downloads) = market_media::MediaCache::open(&media_dir).await?;
+    let (media, downloads) =
+        startup::phase("media_cache", market_media::MediaCache::open(&media_dir)).await?;
     #[cfg(feature = "bot")]
     if let Some(bot) = bot.as_mut() {
         bot.set_media(media.clone(), downloads);
@@ -86,12 +98,15 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(not(feature = "bot"))]
     drop(downloads);
 
-    let api = market_app::api_config::server(
-        &args,
-        runtime.handle(),
-        runtime.valuation(),
-        #[cfg(feature = "bot")]
-        bot.as_mut(),
+    let api = startup::phase(
+        "http_api",
+        market_app::api_config::server(
+            &args,
+            runtime.handle(),
+            runtime.valuation(),
+            #[cfg(feature = "bot")]
+            bot.as_mut(),
+        ),
     )
     .await?
     .with_media(media);
@@ -101,6 +116,10 @@ async fn main() -> anyhow::Result<()> {
         runtime.start_bot(bot)?;
     }
     runtime.start_api(api)?;
+    tracing::info!(
+        elapsed_ms = started.elapsed().as_millis(),
+        "market app services started"
+    );
     let signal = tokio::select! {
         signal = shutdown_signal() => signal,
         _ = runtime.cancelled() => Ok(()),

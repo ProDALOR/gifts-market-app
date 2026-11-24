@@ -2,7 +2,7 @@
 use super::{
     client::MtProtoActions,
     invocations::{CallError, Group},
-    requests::{inline_request, reply_request},
+    requests::{chat_edit_request, inline_edit_request, inline_request, reply_request},
 };
 use crate::{
     BotError, LaunchButton, Reply, ReplyButton,
@@ -253,24 +253,7 @@ impl MtProtoActions {
                         self.invocations
                             .rpc_call(
                                 &self.client,
-                                tl::functions::messages::EditMessage {
-                                    no_webpage: true,
-                                    invert_media: false,
-                                    peer: message.peer.into(),
-                                    id: message.id,
-                                    message: Some(if reply.rich_html.is_some() {
-                                        String::new()
-                                    } else {
-                                        reply.text.clone()
-                                    }),
-                                    media: None,
-                                    reply_markup: markup,
-                                    entities: None,
-                                    schedule_date: None,
-                                    schedule_repeat_period: None,
-                                    quick_reply_shortcut_id: None,
-                                    rich_message: prepared,
-                                },
+                                chat_edit_request(message, reply, prepared, markup),
                                 Group::Reply(
                                     message.peer.id.bare_id().ok_or(BotError::InvalidResponse)?,
                                 ),
@@ -287,20 +270,7 @@ impl MtProtoActions {
                         self.invocations
                             .rpc_call_at(
                                 &self.client,
-                                tl::functions::messages::EditInlineBotMessage {
-                                    no_webpage: true,
-                                    invert_media: false,
-                                    id,
-                                    message: Some(if reply.rich_html.is_some() {
-                                        String::new()
-                                    } else {
-                                        reply.text.clone()
-                                    }),
-                                    media: None,
-                                    reply_markup: markup,
-                                    entities: None,
-                                    rich_message: prepared,
-                                },
+                                inline_edit_request(id, reply, prepared, markup),
                                 Group::Inline,
                                 Priority::Interactive,
                                 Replay::Safe,

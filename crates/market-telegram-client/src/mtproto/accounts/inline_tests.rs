@@ -1,4 +1,5 @@
-//! Explicit opt-in live probes. Never send an inline result to a chat or acknowledge bot updates.
+//! Explicit opt-in live probes. Query probes do not send messages; edit probes
+//! require an explicit authorized recipient. Neither acknowledges bot updates.
 use super::*;
 use crate::mtproto::{interactions::inline_result, requests::inline_request};
 use crate::{
@@ -151,6 +152,133 @@ fn captured_reply(path: &str) -> Reply {
         ..Default::default()
     }
     .bounded()
+}
+
+#[tokio::test]
+#[ignore = "sends and edits one report with an explicitly authorized bot and recipient"]
+async fn existing_bot_accepts_rich_message_edits() {
+    use crate::interactions::{CallbackTarget, Event};
+    use grammers_session::types::{PeerAuth, PeerId, PeerRef};
+    let credentials = BotCredentials::new(
+        std::env::var("TELEGRAM_BOT_TOKEN").unwrap(),
+        std::env::var("TELEGRAM_API_ID").unwrap().parse().unwrap(),
+        std::env::var("TELEGRAM_API_HASH").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        credentials.bot_id(),
+        std::env::var("MARKET_TEST_BOT_ID")
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+    );
+    let recipient = std::env::var("MARKET_TEST_RECIPIENT")
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    let directory = PathBuf::from(std::env::var("MARKET_TEST_SESSION_DIR").unwrap());
+    assert!(
+        directory.is_absolute(),
+        "use the existing bot session's absolute directory; Cargo runs tests from the crate directory"
+    );
+    assert!(
+        directory
+            .join(format!(
+                "{}-{}.mtproto.sqlite",
+                credentials.bot_id(),
+                credentials.api_id
+            ))
+            .is_file(),
+        "the edit probe must reuse an existing bot session"
+    );
+
+    let scheduler = market_invocations::Runtime::start(Default::default()).unwrap();
+    let mut bot = Connection::open(credentials.clone(), &directory, scheduler.handle())
+        .await
+        .unwrap();
+    let (cache, mut downloader) = market_media::MediaCache::open(PathBuf::from(
+        std::env::var("MARKET_TEST_MEDIA_DIR").unwrap(),
+    ))
+    .await
+    .unwrap();
+    bot.transport.bind_artwork(cache.clone());
+    let actions = bot.transport.actions();
+    let media = actions.clone();
+    let downloads = tokio::spawn(async move {
+        downloader.run(|key| media.media(key)).await;
+    });
+    let result: anyhow::Result<()> = async {
+        assert_eq!(actions.identity().await?.id, credentials.bot_id());
+        let floors = captured_reply(&std::env::var("MARKET_TEST_FLOORS_REPLY").unwrap());
+        let sales = captured_reply(&std::env::var("MARKET_TEST_SALES_REPLY").unwrap());
+        let mut message = crate::transport::Message {
+            peer: PeerRef {
+                id: PeerId::user(recipient).unwrap(),
+                auth: PeerAuth::from_hash(0),
+            },
+            id: (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .subsec_nanos()
+                & 0x7fffffff) as i32,
+            outgoing: false,
+            text: String::new(),
+        };
+        let mut request =
+            crate::mtproto::requests::reply_request(credentials.bot_id(), &message, &floors, None);
+        request.rich_message = actions.prepare_rich(Some(&floors)).await;
+        anyhow::ensure!(
+            request.rich_message.is_some(),
+            "probe requires rich content"
+        );
+        let updates = actions
+            .invocations
+            .rpc_call(
+                &actions.client,
+                request,
+                Group::Reply(recipient),
+                Priority::Interactive,
+                Replay::Deduplicated,
+            )
+            .await
+            .map_err(CallError::bot)?;
+        message.id = match updates {
+            tl::enums::Updates::UpdateShortSentMessage(sent) => sent.id,
+            updates => {
+                let rows = match updates {
+                    tl::enums::Updates::Updates(updates) => updates.updates,
+                    tl::enums::Updates::Combined(updates) => updates.updates,
+                    _ => anyhow::bail!("unexpected send response"),
+                };
+                rows.into_iter()
+                    .find_map(|update| match update {
+                        tl::enums::Update::NewMessage(update) => match update.message {
+                            tl::enums::Message::Message(message) => Some(message.id),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("sent message ID missing"))?
+            }
+        };
+        eprintln!("LIVE EDIT: sent one report to the explicitly authorized recipient");
+        let event = Event::Callback {
+            id: 0,
+            user_id: recipient as u64,
+            data: vec![],
+            target: CallbackTarget::Message(message),
+        };
+        actions.send(&event, Some(&floors), None).await?;
+        actions.send(&event, Some(&sales), None).await?;
+        eprintln!("LIVE EDIT: corrected Floors / Sales edits both accepted");
+        Ok(())
+    }
+    .await;
+    cache.shutdown().await;
+    let _ = downloads.await;
+    let closed = bot.close().await;
+    scheduler.shutdown().await;
+    closed.unwrap();
+    result.unwrap();
 }
 
 #[tokio::test]

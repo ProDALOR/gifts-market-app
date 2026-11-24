@@ -107,18 +107,37 @@ impl MtProtoActions {
             .into(),
         };
         let client = self.client.clone();
-        let media = self.invocations.run(Group::Media, Priority::Interactive, Replay::Safe, move || {
-            let client = client.clone();
-            let request = request.clone();
-            async move { client.invoke(&request).await }
-        }).await.map_err(|error| {
-            if let super::invocations::CallError::Remote(InvocationError::Rpc(rpc)) = &error {
+        let media = self
+            .invocations
+            .run(
+                Group::Media,
+                Priority::Interactive,
+                Replay::Safe,
+                move || {
+                    let client = client.clone();
+                    let request = request.clone();
+                    async move { client.invoke(&request).await }
+                },
+            )
+            .await
+            .map_err(|error| {
+                if let super::invocations::CallError::Remote(InvocationError::Rpc(rpc)) = &error {
                     #[cfg(test)]
-                    eprintln!("Artwork upload RPC rejected: {} ({})", rpc.name, rpc.code);
-                tracing::warn!(stage = "photo_upload", document_id = id, rpc_code = rpc.code, rpc_name = %rpc.name, "Telegram bot photo upload failed");
-            }
-            error.bot()
-        })?;
+                    eprintln!(
+                        "Artwork upload RPC rejected: {} ({})",
+                        super::invocations::safe_rpc_name(&rpc.name),
+                        rpc.code
+                    );
+                    tracing::warn!(
+                        stage = "photo_upload",
+                        document_id = id,
+                        rpc_code = rpc.code,
+                        rpc_name = super::invocations::safe_rpc_name(&rpc.name),
+                        "Telegram bot photo upload failed"
+                    );
+                }
+                error.bot()
+            })?;
         let tl::enums::MessageMedia::Photo(media) = media else {
             return Err(BotError::InvalidResponse);
         };

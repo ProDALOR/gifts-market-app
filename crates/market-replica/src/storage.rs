@@ -93,7 +93,13 @@ impl Store {
                 .ok_or_else(|| failure("missing data directory"))?,
         )
         .map_err(failure)?;
+        let started = Instant::now();
+        tracing::info!("opening replica database");
         let database = Database::create(path).map_err(failure)?;
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "replica database opened"
+        );
         let tx = database.begin_write().map_err(failure)?;
         {
             let mut meta = tx.open_table(META).map_err(failure)?;
@@ -115,16 +121,41 @@ impl Store {
             let mut ranked = tx.open_table(SORTED).map_err(failure)?;
             if value(&meta, "execution_ranks_v1")?.is_empty() {
                 let executions = tx.open_table(EXECUTIONS).map_err(failure)?;
-                for row in executions.iter().map_err(failure)? {
+                let rows = executions.len().map_err(failure)?;
+                let indexing = Instant::now();
+                let mut progress = Instant::now();
+                tracing::info!(rows, "building missing execution ranks");
+                for (index, row) in executions.iter().map_err(failure)?.enumerate() {
                     let (_, raw) = row.map_err(failure)?;
                     let order = w::Order::decode(raw.value()).map_err(failure)?;
                     insert_ranks(&mut ranked, &order)?;
+                    let indexed = index + 1;
+                    if indexed.is_multiple_of(10_000)
+                        && progress.elapsed() >= Duration::from_secs(5)
+                    {
+                        tracing::info!(
+                            indexed,
+                            rows,
+                            elapsed_ms = indexing.elapsed().as_millis(),
+                            "execution rank rebuild progress"
+                        );
+                        progress = Instant::now();
+                    }
                 }
+                tracing::info!(
+                    rows,
+                    elapsed_ms = indexing.elapsed().as_millis(),
+                    "execution ranks prepared"
+                );
                 meta.insert("execution_ranks_v1", b"1".as_slice())
                     .map_err(failure)?;
             }
         }
         tx.commit().map_err(failure)?;
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "replica storage initialized"
+        );
         Ok(Self(
             Arc::new(database),
             #[cfg(test)]
@@ -586,11 +617,30 @@ impl Snapshot {
     }
     pub fn state(&self) -> Result<State, Status> {
         let table = self.read.open_table(CURRENT).map_err(failure)?;
+        let rows = table.len().map_err(failure)?;
+        let started = Instant::now();
+        let mut progress = Instant::now();
+        tracing::info!(rows, "restoring replica state and order indexes");
         let mut state = State::default();
-        for row in table.iter().map_err(failure)? {
+        for (index, row) in table.iter().map_err(failure)?.enumerate() {
             let (_, payload) = row.map_err(failure)?;
             state.upsert(w::Entity::decode(payload.value()).map_err(failure)?)?;
+            let restored = index + 1;
+            if restored.is_multiple_of(10_000) && progress.elapsed() >= Duration::from_secs(5) {
+                tracing::info!(
+                    restored,
+                    rows,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "replica state restore progress"
+                );
+                progress = Instant::now();
+            }
         }
+        tracing::info!(
+            rows,
+            elapsed_ms = started.elapsed().as_millis(),
+            "replica state restored"
+        );
         Ok(state)
     }
     pub fn ranked_history(

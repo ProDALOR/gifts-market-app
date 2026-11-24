@@ -135,7 +135,13 @@ impl ReplicaWriter {
         let store = Store::open(&path, source)?;
         let building = directory.join("building.redb");
         if building.exists() {
+            let started = std::time::Instant::now();
+            tracing::info!("discarding interrupted replica snapshot build");
             std::fs::remove_file(building).map_err(storage::failure)?;
+            tracing::info!(
+                elapsed_ms = started.elapsed().as_millis(),
+                "interrupted replica snapshot build discarded"
+            );
         }
         let history = store.snapshot()?;
         let storage::Checkpoint { cursor, updated_at } = history.checkpoint()?;
@@ -143,8 +149,15 @@ impl ReplicaWriter {
             None
         } else {
             let state = history.state()?;
+            let started = std::time::Instant::now();
+            tracing::info!("rebuilding replica revision indexes");
+            let revisions = revisions::Revisions::replaced(None, &state);
+            tracing::info!(
+                elapsed_ms = started.elapsed().as_millis(),
+                "replica revision indexes restored"
+            );
             Some(Arc::new(ReplicaView {
-                revisions: revisions::Revisions::replaced(None, &state),
+                revisions,
                 state,
                 history,
                 cursor,
