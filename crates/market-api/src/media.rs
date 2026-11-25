@@ -1,11 +1,11 @@
-//! Public catalog keys resolve through actors; only validated image bytes leave the cache.
+//! Catalog media and curated UI icons share validated downloads and derived SVG caching.
 use crate::{
     MarketApi,
     error::{ApiError, ErrorCode, Result},
 };
 use actix_web::{HttpRequest, HttpResponse, http::header, web};
 use market_gifts::{MediaTarget, ModelId, PatternId};
-use market_media::{MediaCache, MediaError, MediaKey, MediaKind};
+use market_media::{MediaCache, MediaError, MediaKey, MediaKind, UiIcon};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 #[derive(Clone)]
@@ -26,6 +26,7 @@ impl MediaApi {
 pub(crate) enum MediaCategory {
     Models,
     Patterns,
+    Icons,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -41,7 +42,14 @@ pub(crate) struct MediaPath {
     variant: MediaVariant,
 }
 impl MediaPath {
-    fn target(self) -> Result<(MediaTarget, MediaKind)> {
+    fn target(self) -> Result<(Target, MediaKind)> {
+        if matches!(self.kind, MediaCategory::Icons) {
+            if self.variant != MediaVariant::Preview {
+                return Err(ApiError::not_found());
+            }
+            let icon = UiIcon::from_name(&self.id).ok_or_else(ApiError::not_found)?;
+            return Ok((Target::Icon(icon), MediaKind::Preview));
+        }
         let target = match self.kind {
             MediaCategory::Models => MediaTarget::Model(
                 ModelId::new(self.id).map_err(|_| ApiError::invalid("Invalid model ID"))?,
@@ -54,19 +62,24 @@ impl MediaPath {
                     PatternId::new(self.id).map_err(|_| ApiError::invalid("Invalid pattern ID"))?,
                 )
             }
+            MediaCategory::Icons => unreachable!("icons resolved above"),
         };
         let kind = match self.variant {
             MediaVariant::Thumbnail => MediaKind::Thumbnail,
             MediaVariant::Preview => MediaKind::Preview,
             MediaVariant::Animation => MediaKind::Animation,
         };
-        Ok((target, kind))
+        Ok((Target::Catalog(target), kind))
     }
 }
+enum Target {
+    Catalog(MediaTarget),
+    Icon(UiIcon),
+}
 #[utoipa::path(get,tag="Media",path="/media/{kind}/{id}/{variant}",
-    params(("kind"=MediaCategory,Path,description="Catalog media category"),
-           ("id"=String,Path,description="Catalog model or pattern ID; never an arbitrary Telegram file ID"),
-           ("variant"=MediaVariant,Path,description="Models support thumbnail, preview and animation; patterns support thumbnail only.")),
+    params(("kind"=MediaCategory,Path,description="Catalog media or curated UI icons"),
+           ("id"=String,Path,description="Catalog model/pattern ID or curated icon name (for example collection, search, stars, gram); never an arbitrary Telegram file ID"),
+           ("variant"=MediaVariant,Path,description="Models support thumbnail, preview and animation; patterns support thumbnail only; icons support static preview only.")),
     responses((status=200,description="Thumbnail (PNG/JPEG/WebP), preview (passive SVG), or animation (validated, expression-free gzip-compressed TGS)",
                content(("image/png"),("image/jpeg"),("image/webp"),("image/svg+xml"),("application/x-tgsticker"))),
               (status=304,description="Cached media unchanged"),(status=400,body=crate::error::ErrorResponse),
@@ -85,16 +98,22 @@ pub(crate) async fn get(
     let Ok(_slot) = media.slots.try_acquire() else {
         return Ok(failure(MediaError::Busy));
     };
-    let document = match market.media_document(target).await {
-        Ok(document) => document,
-        Err(error) => return Ok(error_response(error, None)),
-    };
-    let document = market_media::DocumentId::new(document.get()).ok_or_else(ApiError::not_found)?;
-    let asset = match kind {
-        MediaKind::Thumbnail => media.cache.get(MediaKey::thumbnail(document)).await,
-        MediaKind::Animation => media.cache.get(MediaKey::animation(document)).await,
-        MediaKind::Preview => media.cache.preview(document).await,
-        MediaKind::Cover => Err(MediaError::NotFound),
+    let asset = match target {
+        Target::Icon(icon) => media.cache.preview(icon.definition().document).await,
+        Target::Catalog(target) => {
+            let document = match market.media_document(target).await {
+                Ok(document) => {
+                    market_media::DocumentId::new(document.get()).ok_or_else(ApiError::not_found)?
+                }
+                Err(error) => return Ok(error_response(error, None)),
+            };
+            match kind {
+                MediaKind::Thumbnail => media.cache.get(MediaKey::thumbnail(document)).await,
+                MediaKind::Animation => media.cache.get(MediaKey::animation(document)).await,
+                MediaKind::Preview => media.cache.preview(document).await,
+                MediaKind::Cover => Err(MediaError::NotFound),
+            }
+        }
     };
     let image = match asset {
         Ok(image) => image,
@@ -200,7 +219,7 @@ mod tests {
         }
         assert_eq!(
             schema["components"]["schemas"]["MediaCategory"]["enum"],
-            serde_json::json!(["models", "patterns"])
+            serde_json::json!(["models", "patterns", "icons"])
         );
         assert_eq!(
             schema["components"]["schemas"]["MediaVariant"]["enum"],
@@ -295,6 +314,21 @@ mod tests {
         )
         .await
         .unwrap();
+        // Curated icons reuse the same source/derivative cache without catalog entries.
+        let icon_id = UiIcon::Collection.definition().document.get();
+        tokio::fs::write(media_path.join(format!("{icon_id}.tgs")), &tgs)
+            .await
+            .unwrap();
+        tokio::fs::write(
+            media_path.join(format!(
+                "{icon_id}.preview-{}-{:x}.svg",
+                market_media::PREVIEW_VERSION,
+                sha2::Sha256::digest(&tgs)
+            )),
+            &svg,
+        )
+        .await
+        .unwrap();
         let media = web::Data::new(MediaApi::new(cache.clone()));
         let app = test::init_service(
             App::new()
@@ -307,6 +341,53 @@ mod tests {
                 .configure(crate::configure),
         )
         .await;
+        let icon = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/media/icons/collection/preview")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(icon.status(), 200);
+        assert_eq!(
+            icon.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/svg+xml"
+        );
+        let icon_etag = icon
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(test::read_body(icon).await.as_ref(), svg.as_bytes());
+        let reads = cache.stats().disk_reads;
+        for _ in 0..3 {
+            let unchanged = test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/media/icons/collection/preview")
+                    .insert_header((header::IF_NONE_MATCH, icon_etag.as_str()))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(unchanged.status(), 304);
+        }
+        assert_eq!(cache.stats().disk_reads, reads);
+        for path in [
+            "/media/icons/collection/animation",
+            "/media/icons/collection/thumbnail",
+            "/media/icons/5773677501825945508/preview",
+            "/media/icons/unknown/preview",
+        ] {
+            assert_eq!(
+                test::call_service(&app, test::TestRequest::get().uri(path).to_request())
+                    .await
+                    .status(),
+                404,
+                "{path}"
+            );
+        }
         let preview = test::call_service(
             &app,
             test::TestRequest::get()

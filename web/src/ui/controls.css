@@ -27,14 +27,9 @@
   color: white;
   box-shadow: 0 4px 18px #0005;
 }
-.back-to-top svg {
+.back-to-top > .shared-icon {
   width: 20px;
   height: 20px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.75;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 body:has(dialog[open], [role="listbox"]) .back-to-top {
   display: none;
@@ -297,6 +292,38 @@ body:has(dialog[open], [role="listbox"]) .back-to-top {
 .picker-check {
   margin-left: auto;
 }
+.shared-icon {
+  position: relative;
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  vertical-align: -0.12em;
+}
+.shared-icon > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+}
+.shared-icon-mask {
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  mask: center / contain no-repeat;
+}
+.shared-icon-fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  line-height: 1;
+}
+.shared-icon-fallback::before {
+  content: attr(data-fallback);
+}
 .currency-symbol {
   width: 1em;
   height: 1em;
@@ -418,7 +445,7 @@ body:has(.detail[open]) {
   flex: none;
   color: var(--accent);
 }
-.attribute-visual > svg {
+.attribute-visual > .shared-icon {
   width: 26px;
   height: 26px;
 }
@@ -473,14 +500,10 @@ body:has(.detail[open]) {
   color: var(--ink);
   line-height: 1;
 }
-.modal-close svg {
+.modal-close > .shared-icon {
   display: block;
   width: 20px;
   height: 20px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
 }
 .modal > .modal-close {
   position: absolute;

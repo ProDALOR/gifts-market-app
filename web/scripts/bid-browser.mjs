@@ -305,7 +305,11 @@ try {
     0,
   );
   assert.equal(
-    await any.locator(".trait-preview img,.gift-preview-fallback").count(),
+    await any
+      .locator(
+        ".trait-preview img:not(.shared-icon > img),.gift-preview-fallback",
+      )
+      .count(),
     0,
   );
   const missing = page
@@ -709,7 +713,7 @@ try {
         .getBoundingClientRect();
       const close = dialog.querySelector(".modal-close");
       const button = close.getBoundingClientRect();
-      const glyph = close.querySelector("svg").getBoundingClientRect();
+      const glyph = close.querySelector(".shared-icon").getBoundingClientRect();
       return {
         contained:
           bounds.top >= 0 &&

@@ -39,7 +39,7 @@ pub struct MtProtoActions {
     pub(super) profile: Arc<std::sync::OnceLock<BotUser>>,
     pub(super) artwork: Option<market_media::MediaCache>,
     pub(super) photos: super::photos::Photos,
-    documents: super::media::Documents,
+    pub(super) documents: super::media::Documents,
     inventory: Option<(super::gifts::InventoryClient, Arc<super::gifts::Live>)>,
 }
 pub struct MtProtoTransport {

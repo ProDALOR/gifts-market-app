@@ -1,0 +1,93 @@
+{
+  "preview_version": 5,
+  "icons": {
+    "collection": {
+      "document_id": "5773677501825945508",
+      "alternative": "🎁"
+    },
+    "model": {
+      "document_id": "6030466823290360017",
+      "alternative": "🖼"
+    },
+    "backdrop": {
+      "document_id": "6050679691004612757",
+      "alternative": "🖌"
+    },
+    "model_backdrop": {
+      "document_id": "5837069325034331827",
+      "alternative": "🧩"
+    },
+    "symbol": {
+      "document_id": "5778226250149532337",
+      "alternative": "✨"
+    },
+    "estimate": {
+      "document_id": "5778421276024509124",
+      "alternative": "💰"
+    },
+    "history": {
+      "document_id": "5775896410780079073",
+      "alternative": "🕓"
+    },
+    "current_gift": {
+      "document_id": "5884332803016891855",
+      "alternative": "⚪️"
+    },
+    "market_link": {
+      "document_id": "6028171274939797252",
+      "alternative": "🔗"
+    },
+    "stars": {
+      "document_id": "6028338546736107668",
+      "alternative": "⭐️"
+    },
+    "warning": {
+      "document_id": "6030563507299160824",
+      "alternative": "❗️"
+    },
+    "search": {
+      "document_id": "6032850693348399258",
+      "alternative": "🔎"
+    },
+    "close": {
+      "document_id": "5774077015388852135",
+      "alternative": "❌"
+    },
+    "info": {
+      "document_id": "6028435952299413210",
+      "alternative": "ℹ"
+    },
+    "up": {
+      "document_id": "5963103826075456248",
+      "alternative": "⬆️"
+    },
+    "filter": {
+      "document_id": "5776424837786374634",
+      "alternative": "🎛"
+    },
+    "sort": {
+      "document_id": "5893316448670978477",
+      "alternative": "↔️"
+    },
+    "user": {
+      "document_id": "6032994772321309200",
+      "alternative": "👤"
+    },
+    "refresh": {
+      "document_id": "6030657343744644592",
+      "alternative": "🔁"
+    },
+    "gram": {
+      "document_id": "5935758241748230351",
+      "alternative": "💎"
+    },
+    "market": {
+      "document_id": "5936143551854285132",
+      "alternative": "📊"
+    },
+    "portfolio": {
+      "document_id": "5769126056262898415",
+      "alternative": "👛"
+    }
+  }
+}

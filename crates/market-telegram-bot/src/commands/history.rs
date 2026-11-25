@@ -440,7 +440,10 @@ mod tests {
         let mut html = String::new();
         let mut text = String::new();
         assert!(render_sale(&report, &sale(time), &mut html, &mut text));
-        assert!(html.contains("● <b><a href=\"https://t.me/nft/Gift-123\">#123</a></b>"));
+        assert!(html.contains(&format!(
+            "{} <b><a href=\"https://t.me/nft/Gift-123\">#123</a></b>",
+            report.icons.html(crate::ReportIcon::CurrentGift)
+        )));
         assert!(html.contains("<td align=\"right\"><b>1234.56</b></td>"));
         assert!(html.contains("23 Nov 12:34"));
         assert!(
@@ -448,7 +451,10 @@ mod tests {
             "UTC belongs to the table's period caption"
         );
         assert!(html.contains("https://example.com/sale?gift=123&amp;venue=tonnel"));
-        assert!(html.contains("Tonnel ↗</a>"));
+        assert!(html.contains(&format!(
+            "Tonnel {}</a>",
+            report.icons.html(crate::ReportIcon::MarketLink)
+        )));
         assert!(text.contains("1234.56 GRAM"));
         for url in [
             "javascript:alert(1)",

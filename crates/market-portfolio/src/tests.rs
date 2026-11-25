@@ -177,6 +177,52 @@ async fn service(config: PortfolioConfig) -> (PortfolioService, Source, Quotes, 
         .unwrap();
     (service, source, quotes, runtime)
 }
+#[tokio::test]
+async fn cached_reads_never_fetch_value_or_evict_a_checked_portfolio() {
+    let config = PortfolioConfig {
+        cached_users: 1,
+        refresh_interval: Duration::from_millis(5),
+        ..Default::default()
+    };
+    let (service, source, quotes, runtime) = service(config).await;
+    for user in 1..10 {
+        assert!(matches!(
+            service.handle.cached(query(user, "GRAM")).await,
+            Err(PortfolioError::NotChecked)
+        ));
+    }
+    assert_eq!(source.count(), 0);
+    assert_eq!(quotes.0.load(Ordering::SeqCst), 0);
+    let mut watch = service.handle.watch(query(7, "GRAM")).await.unwrap();
+    calls(&source, 1).await;
+    source.reply(0, Ok(page(&["1", "2"], None, 2)));
+    let ready = stage(&mut watch, PortfolioStage::Ready).await;
+    drop(watch);
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    for user in 10..20 {
+        assert!(matches!(
+            service.handle.cached(query(user, "GRAM")).await,
+            Err(PortfolioError::NotChecked)
+        ));
+    }
+    assert!(matches!(
+        service.handle.cached(query(7, "XTR")).await,
+        Err(PortfolioError::NotChecked)
+    ));
+    let cached = service.handle.cached(query(7, "GRAM")).await.unwrap();
+    assert!(Arc::ptr_eq(
+        cached.valuation.as_ref().unwrap(),
+        ready.valuation.as_ref().unwrap()
+    ));
+    assert_eq!(source.count(), 1);
+    assert_eq!(
+        quotes.0.load(Ordering::SeqCst),
+        1,
+        "an overdue cached view stays read-only"
+    );
+    service.task.shutdown().await.unwrap();
+    runtime.shutdown().await;
+}
 #[test]
 fn inventory_preserves_profile_position_across_pages_and_duplicates() {
     let mut builder = crate::inventory::InventoryBuilder::default();

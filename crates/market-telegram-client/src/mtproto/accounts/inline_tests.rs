@@ -134,6 +134,13 @@ fn captured_reply(path: &str) -> Reply {
         title: data["title"].as_str().map(str::to_owned),
         summary: data["summary"].as_str().map(str::to_owned),
         rich_html: data["rich_html"].as_str().map(str::to_owned),
+        emoji_documents: data
+            .get("emoji_documents")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap()
+            .unwrap_or_default(),
         artwork: data["artwork"]
             .as_object()
             .map(|cover| market_media::GiftCover {
@@ -354,7 +361,8 @@ async fn existing_sessions_accept_patched_inline_answers() {
         let peer = user.client.resolve_username(&identity.username).await.map_err(crate::mtproto::client::rpc)?
             .ok_or(BotError::InvalidResponse)?;
         let input: tl::enums::InputUser = peer.to_ref().await.map_err(|_| BotError::Session)?.ok_or(BotError::InvalidResponse)?.into();
-        let floors = captured_reply(&std::env::var("MARKET_TEST_FLOORS_REPLY").unwrap());
+        let portfolio = std::env::var("MARKET_TEST_PORTFOLIO_REPLY").ok().map(|path| captured_reply(&path));
+        let floors = std::env::var("MARKET_TEST_FLOORS_REPLY").ok().map(|path| captured_reply(&path)).unwrap_or_default();
         if std::env::var("MARKET_TEST_GUEST_MODE").is_ok_and(|v| v == "1") {
             anyhow::ensure!(identity.guest_enabled, "Guest Mode is disabled");
             let target = std::env::var("MARKET_TEST_GUEST_CHAT").expect("explicitly authorized guest test destination");
@@ -366,9 +374,11 @@ async fn existing_sessions_accept_patched_inline_answers() {
             };
             return guest_probe(&user.client, chat, user_id, &actions, &mut updates, &identity, &floors).await;
         }
-        let sales = captured_reply(&std::env::var("MARKET_TEST_SALES_REPLY").unwrap());
+        let sales = std::env::var("MARKET_TEST_SALES_REPLY").ok().map(|path| captured_reply(&path)).unwrap_or_default();
         let plain = Reply::text("Inline transport live probe");
-        for (label, reply) in [("plain", Some(&plain)), ("floors", Some(&floors)), ("sales", Some(&sales)), ("empty", None)] {
+        let cases = if let Some(portfolio) = &portfolio { vec![("portfolio", Some(portfolio))] }
+            else { vec![("plain", Some(&plain)), ("floors", Some(&floors)), ("sales", Some(&sales)), ("empty", None)] };
+        for (label, reply) in cases {
             let prepared = actions.prepare_rich(reply).await;
             if label == "floors" || label == "sales" {
                 let Some(tl::enums::InputRichMessage::Html(html)) = &prepared else { anyhow::bail!("rich probe lost markup") };

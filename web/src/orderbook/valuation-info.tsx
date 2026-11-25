@@ -5,6 +5,7 @@ import type {
   OrderValuation,
 } from "../valuation/use-order-valuation";
 import { Modal } from "../ui/modal";
+import { SharedIcon } from "../ui/icons";
 import { ValuationFields } from "../valuation/display";
 import { ValuationStatus } from "./valuation-status";
 import { playbackBudget } from "../previews/playback-budget";
@@ -31,10 +32,7 @@ export function ValuationInfo({
         disabled={!state.report}
         onClick={() => setOpen(true)}
       >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="12" r="8.5" />
-          <path d="M12 11v6m0-10v1" />
-        </svg>
+        <SharedIcon name="info" />
       </button>
       {open && (
         <CalculationPopup

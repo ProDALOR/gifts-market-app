@@ -1,6 +1,8 @@
 //! Bounded validated media caching, paced downloads and lifecycle management.
 mod asset;
 mod cache;
+mod icons;
+pub use icons::{IconDefinition, UiIcon};
 mod cover;
 pub use cover::{COVER_HEIGHT, COVER_WIDTH, CoverPalette, GiftCover, render_cover_png};
 mod disk;

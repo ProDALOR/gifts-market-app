@@ -1,4 +1,5 @@
 import { useNavigationBack } from "../app/navigation";
+import { SharedIcon } from "./icons";
 import { useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { usePreviewEnvironment } from "../previews/preview-environment";
@@ -104,9 +105,7 @@ export function Modal({
       onClick={dismiss}
       autoFocus
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="m6 6 12 12M18 6 6 18" />
-      </svg>
+      <SharedIcon name="close" />
     </button>
   );
   return (

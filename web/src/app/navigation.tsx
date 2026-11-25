@@ -1,4 +1,5 @@
 import { selectionAt, selectionHref } from "../market-selection";
+import { SharedIcon } from "../ui/icons";
 import "./navigation.css";
 import {
   createContext,
@@ -357,13 +358,7 @@ export function AppNavigation({ page }: { page: Page }) {
           className={page === item ? "active" : ""}
           aria-current={page === item ? "page" : undefined}
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            {item === "market" ? (
-              <path d="M4 20V10m5 10V4m6 16v-7m5 7V7" />
-            ) : (
-              <path d="m3 7 9-5 9 5v10l-9 5-9-5V7Zm0 0 9 5 9-5M12 12v10" />
-            )}
-          </svg>
+          <SharedIcon name={item === "market" ? "market" : "portfolio"} />
           <span>{item === "market" ? "Market" : "Portfolio"}</span>
         </AppLink>
       ))}

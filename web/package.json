@@ -14,6 +14,7 @@
     "test:previews": "node scripts/preview-browser.mjs",
     "test:placeholders": "node scripts/placeholder-browser.mjs",
     "test:media-retries": "node scripts/media-retry-browser.mjs",
+    "test:icons": "node scripts/shared-icons-browser.mjs",
     "test:orderbook": "node scripts/orderbook-browser.mjs",
     "test:grid": "node scripts/grid-browser.mjs",
     "test:traits": "node scripts/trait-preview-browser.mjs",

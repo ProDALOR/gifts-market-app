@@ -70,22 +70,14 @@ pub(crate) fn parse<S: AsRef<str>>(
         .find(|kind| Some(kind.name()) == name.strip_prefix('/'))?;
     let command = match kind {
         CommandKind::Portfolio => {
-            let mut words = text.split_whitespace().skip(1);
-            let user_id = words
-                .next()
-                .map(|v| v.parse::<u64>().ok())
-                .unwrap_or(message.user_id)?;
-            market_portfolio::UserId::new(user_id).ok()?;
-            let currency_id = words.next().unwrap_or("GRAM").to_owned().try_into().ok()?;
-            if words.next().is_some() {
-                return None;
-            }
-            Command::Portfolio(super::PortfolioRequest {
-                user_id,
-                currency_id,
-                refresh: false,
-                page: 0,
-            })
+            let args = text
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, args)| args);
+            Command::Portfolio(super::portfolio::parse_args(
+                args,
+                message.user_id?,
+                super::PortfolioMode::Private,
+            )?)
         }
         CommandKind::Start => Command::Start,
         CommandKind::Market => {

@@ -212,7 +212,10 @@ fn price_formatting_is_consistent_in_rich_plain_and_inline_summaries() {
         let html = reply.rich_html.unwrap();
         assert!(html.contains(&format!("<h1>{expected} <tg-emoji")));
         assert!(!html.contains("Bot preview test"));
-        assert!(!html.contains("💎"));
+        assert!(
+            !html.contains("💎 GRAM"),
+            "custom emoji alternatives must not become standalone icons"
+        );
     }
 }
 #[test]
@@ -515,9 +518,10 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     assert!(html.contains("Gift #123"));
     assert!(html.contains("<table compact>"));
     assert!(html.contains("<th align=\"right\">"));
-    assert!(html.contains(
-        "<tr><td>🎁 Collection</td><td align=\"right\">10</td><td align=\"right\">1500</td></tr>"
-    ));
+    assert!(html.contains(&format!(
+        "<tr><td>{} Collection</td><td align=\"right\">10</td><td align=\"right\">1500</td></tr>",
+        crate::ReportIcons::default().html(crate::ReportIcon::Collection)
+    )));
     assert!(html.contains("Stars</th>"));
     assert!(!html.contains(">GRAM</tg-button>"));
     assert!(!html.contains(">Stars</tg-button>"));
@@ -763,7 +767,7 @@ async fn send_live_rich_preview_to_authorized_recipient() {
     let scheduler = market_invocations::Runtime::start(Default::default()).unwrap();
     let session_directory = std::env::var_os("MARKET_TEST_SESSION_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| dir.path().to_owned());
+        .expect("reuse an authorized session directory for live previews");
     let mut connection = Connection::open(credentials, &session_directory, scheduler.handle())
         .await
         .unwrap();
@@ -949,11 +953,7 @@ async fn send_live_rich_preview_to_authorized_recipient() {
             id: PeerId::user(recipient).unwrap(),
             auth: PeerAuth::from_hash(0),
         },
-        id: (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-            & 0x7fffffff) as i32,
+        id: preview_message_id(),
         outgoing: false,
         text: String::new(),
     });
@@ -978,7 +978,7 @@ async fn send_live_rich_preview_to_authorized_recipient() {
     );
 }
 
-fn static_preview(mut reply: Reply) -> Reply {
+pub(super) fn static_preview(mut reply: Reply) -> Reply {
     if let Some(html) = reply.rich_html.take() {
         let mut remaining = html.as_str();
         let mut output = String::new();
@@ -986,13 +986,40 @@ fn static_preview(mut reply: Reply) -> Reply {
             output.push_str(&remaining[..index]);
             let start = &remaining[index..];
             let end = start.find('>').expect("rendered button tag");
-            output.push_str("<tg-button type=\"disabled\">");
+            output.push_str(if start[..end].contains("style=\"primary\"") {
+                "<tg-button type=\"disabled\" style=\"primary\">"
+            } else {
+                "<tg-button type=\"disabled\">"
+            });
             remaining = &start[end + 1..];
         }
         output.push_str(remaining);
         reply.rich_html = Some(output);
     }
     reply
+}
+
+/// Separate opt-in preview runs are new deliveries; retries within a run keep one ID.
+pub(super) fn preview_message_id() -> i32 {
+    use std::sync::{
+        OnceLock,
+        atomic::{AtomicI32, Ordering},
+    };
+    static NEXT: OnceLock<AtomicI32> = OnceLock::new();
+    NEXT.get_or_init(|| {
+        AtomicI32::new((jiff::Timestamp::now().as_millisecond() as i32 & i32::MAX).max(1))
+    })
+    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
+        Some(if id == i32::MAX { 1 } else { id + 1 })
+    })
+    .unwrap()
+}
+#[test]
+fn preview_runs_use_distinct_positive_delivery_identities() {
+    let first = preview_message_id();
+    let second = preview_message_id();
+    assert!(first > 0 && second > 0);
+    assert_ne!(first, second);
 }
 #[test]
 fn one_shot_previews_preserve_tab_layout_without_expiring_callbacks() {
@@ -1077,7 +1104,7 @@ fn attribute_table_keeps_native_quote_columns_names_and_missing_values_separate(
     assert!(!header.contains("&lt;b&gt;Model&lt;/b&gt;"));
     assert!(!header.contains("Green"));
     assert!(!header.contains("Sun &amp; Moon"));
-    assert!(html.contains("<td>🧸 &lt;b&gt;Model&lt;/b&gt;</td><td align=\"right\">10.35</td><td align=\"right\">1500</td>"));
+    assert!(html.contains(&format!("<td>{} &lt;b&gt;Model&lt;/b&gt;</td><td align=\"right\">10.35</td><td align=\"right\">1500</td>", report.icons.html(crate::ReportIcon::Model))));
     assert!(html.contains("Green &lt;&amp;&gt;"));
     assert!(html.contains("Sun &amp; Moon"));
     assert!(html.contains("Stars</th>"));

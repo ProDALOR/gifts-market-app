@@ -5,6 +5,7 @@ pub use user_login::{AccountExports, LoginStep, UserLogin};
 mod client;
 pub use accounts::{AccountGiftResolver, AccountWorker};
 mod connection;
+mod emojis;
 mod gifts;
 mod interactions;
 mod invocations;

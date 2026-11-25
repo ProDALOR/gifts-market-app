@@ -158,7 +158,10 @@ impl MtProtoActions {
         reply: Option<&Reply>,
     ) -> Option<tl::enums::InputRichMessage> {
         let reply = reply?;
-        let fallback = super::interactions::rich(reply);
+        let fallback = self.prepare_emojis(reply).await;
+        if fallback.is_none() {
+            return None;
+        }
         let Some(id) = reply.artwork.filter(|_| {
             self.artwork.is_some()
                 && reply
@@ -169,7 +172,12 @@ impl MtProtoActions {
             return fallback;
         };
         match tokio::time::timeout(Duration::from_secs(6), self.photo(id)).await {
-            Ok(Ok(photo)) => Some(rich_with_photo(reply.rich_html.as_deref().unwrap(), photo)),
+            Ok(Ok(photo)) => {
+                let Some(tl::enums::InputRichMessage::Html(html)) = &fallback else {
+                    return fallback;
+                };
+                Some(rich_with_photo(&html.html, photo))
+            }
             Ok(Err(error)) => {
                 tracing::warn!(
                     document_id = id.model.get(),

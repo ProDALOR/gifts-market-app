@@ -3,7 +3,10 @@ mod commands;
 mod icons;
 pub use icons::{ReportIcon, ReportIcons};
 mod service;
-pub use commands::{Command, CommandKind, CommandRequest, MarketCommands, ValueRequest};
+pub use commands::{
+    Command, CommandKind, CommandRequest, MarketCommands, PortfolioMode, PortfolioRequest,
+    ValueRequest,
+};
 pub use service::{BotService, configure};
 #[cfg(test)]
 mod tests;

@@ -57,9 +57,8 @@ export function BackToTop({
         target.current?.focus({ preventScroll: true });
       }}
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="m6 9 6-6 6 6M12 3v18" />
-      </svg>
+      <SharedIcon name="up" />
     </button>
   );
 }
+import { SharedIcon } from "./icons";

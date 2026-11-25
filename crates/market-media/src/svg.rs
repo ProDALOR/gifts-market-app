@@ -12,6 +12,7 @@ struct SvgSink {
     layers: Vec<Layer>,
     warnings: Vec<String>,
     over_budget: bool,
+    even_odd: bool,
 }
 struct Layer {
     backdrop: String,
@@ -140,8 +141,14 @@ impl SvgSink {
             return Err(crate::MediaError::InvalidMedia);
         }
         Ok(format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"512\" height=\"512\" viewBox=\"0 0 512 512\"><defs>{}</defs>{}</svg>",
-            self.defs, self.body
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"512\" height=\"512\" viewBox=\"0 0 512 512\"{}><defs>{}</defs>{}</svg>",
+            if self.even_odd {
+                " fill-rule=\"evenodd\""
+            } else {
+                ""
+            },
+            self.defs,
+            self.body
         ))
     }
 }
@@ -305,8 +312,14 @@ pub fn first_frame_svg(json: &[u8]) -> Result<Vec<u8>, crate::MediaError> {
         json
     };
     let json = crate::tgs::parse_json(json)?;
+    // Velato's public sink omits fill rules. Preserve a uniform authored even-odd
+    // rule at the SVG root, including compound paths such as the Telegram info icon.
+    let even_odd = uniform_even_odd(&json);
     let animation = adapter::composition(json)?;
-    let mut sink = SvgSink::default();
+    let mut sink = SvgSink {
+        even_odd,
+        ..Default::default()
+    };
     Renderer::new().append(
         &animation,
         0.0,
@@ -334,6 +347,35 @@ pub fn first_frame_svg(json: &[u8]) -> Result<Vec<u8>, crate::MediaError> {
     crate::preview::validate(&bytes)
         .inspect_err(|_| tracing::warn!(stage = "svg_validation", "SVG export rejected"))?;
     Ok(bytes)
+}
+
+fn uniform_even_odd(source: &serde_json::Value) -> bool {
+    fn visit(value: &serde_json::Value, fills: &mut usize, even_odd: &mut bool) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if matches!(
+                    object.get("ty").and_then(serde_json::Value::as_str),
+                    Some("fl" | "gf")
+                ) {
+                    *fills += 1;
+                    *even_odd &= object.get("r").and_then(serde_json::Value::as_u64) == Some(2);
+                }
+                for child in object.values() {
+                    visit(child, fills, even_odd);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    visit(item, fills, even_odd);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut fills = 0;
+    let mut even_odd = true;
+    visit(source, &mut fills, &mut even_odd);
+    fills > 0 && even_odd
 }
 
 mod adapter;

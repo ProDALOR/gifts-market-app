@@ -120,15 +120,12 @@
   flex: none;
   width: var(--unrestricted-size, 96px);
   height: var(--unrestricted-size, 96px);
-  --gift-placeholder-opacity: 0.4;
 }
-.unrestricted-trait > .gift-loading-placeholder {
-  position: static;
+.unrestricted-trait > .shared-icon {
   width: 100%;
   height: 100%;
-  opacity: 1;
 }
-.unrestricted-trait > span {
+.unrestricted-trait > span:last-child {
   position: absolute;
   right: 0;
   bottom: 0;

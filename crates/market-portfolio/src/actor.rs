@@ -288,6 +288,19 @@ impl<P: InventoryProvider, V: ValuationProvider> PortfolioActor<P, V> {
         if self.stop.is_cancelled() {
             return Err(PortfolioError::Stopped);
         }
+        if matches!(action, Action::Cached) {
+            let entry = self
+                .entries
+                .get_mut(&q.user_id)
+                .ok_or(PortfolioError::NotChecked)?;
+            let view = entry
+                .views
+                .get(&q.currency_id)
+                .ok_or(PortfolioError::NotChecked)?;
+            self.clock = self.clock.saturating_add(1);
+            entry.used = self.clock;
+            return Ok(view.tx.subscribe());
+        }
         if !self.entries.contains_key(&q.user_id) {
             if self.entries.len() >= self.config.cached_users {
                 let oldest = self

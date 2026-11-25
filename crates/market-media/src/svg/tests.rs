@@ -4,6 +4,41 @@ fn fixture() -> Value {
     json!({"v":"5.7.4","w":512,"h":512,"fr":60,"ip":0,"op":60,"assets":[],"layers":[{"ty":4,"ind":1,"ip":0,"op":60,"st":0,"ks":{},"shapes":[{"ty":"rc","p":{"a":0,"k":[256,256]},"s":{"a":0,"k":[100,100]},"r":{"a":0,"k":0}},{"ty":"fl","c":{"a":0,"k":[1,0,0,1]},"o":{"a":0,"k":100},"r":1}]}]})
 }
 #[test]
+fn uniform_even_odd_compound_paths_keep_transparent_holes() {
+    let mut source = fixture();
+    let mut inner = source["layers"][0]["shapes"][0].clone();
+    inner["s"]["k"] = json!([50, 50]);
+    source["layers"][0]["shapes"]
+        .as_array_mut()
+        .unwrap()
+        .insert(1, inner);
+    for (rule, expected_alpha) in [(1, 255), (2, 0)] {
+        source["layers"][0]["shapes"][2]["r"] = json!(rule);
+        let svg = first_frame_svg(&serde_json::to_vec(&source).unwrap()).unwrap();
+        let tree = resvg::usvg::Tree::from_data(&svg, &Default::default()).unwrap();
+        let mut pixels = resvg::tiny_skia::Pixmap::new(512, 512).unwrap();
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::identity(),
+            &mut pixels.as_mut(),
+        );
+        assert_eq!(
+            pixels.pixel(256, 256).unwrap().alpha(),
+            expected_alpha,
+            "fill rule {rule}"
+        );
+        assert_eq!(pixels.pixel(215, 256).unwrap().alpha(), 255);
+    }
+    source["layers"]
+        .as_array_mut()
+        .unwrap()
+        .push(fixture()["layers"][0].clone());
+    assert!(
+        !uniform_even_odd(&source),
+        "mixed paint rules cannot become a document-wide rule"
+    );
+}
+#[test]
 fn omitted_transforms_match_authored_identity_without_normalizing_the_input() {
     let omitted = fixture();
     let mut explicit = omitted.clone();

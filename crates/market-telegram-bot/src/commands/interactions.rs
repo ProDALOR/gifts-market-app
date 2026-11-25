@@ -1,7 +1,7 @@
 //! Parse entry points into common commands; callback tokens retain only bounded public report state.
 use super::views::View;
 use super::*;
-use market_telegram::Event;
+use market_telegram::{CallbackTarget, Event};
 use std::{
     collections::{VecDeque, hash_map::RandomState},
     hash::BuildHasher,
@@ -60,7 +60,12 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
             if !offset.is_empty() {
                 return None;
             }
-            (Command::Gift(super::parse::gift(query, &[])?), *user_id, 0)
+            let command = if let Some(query) = super::portfolio::inline(query, *user_id) {
+                Command::Portfolio(query)
+            } else {
+                Command::Gift(super::parse::gift(query, &[])?)
+            };
+            (command, *user_id, 0)
         }
         Event::Guest {
             user_id,
@@ -75,9 +80,18 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
                 0,
             )
         }
-        Event::Callback { user_id, data, .. } => {
+        Event::Callback {
+            user_id,
+            data,
+            target,
+            ..
+        } => {
             let text = std::str::from_utf8(data).ok()?;
-            if let Some(query) = super::portfolio::callback(text) {
+            if let Some(mut query) = super::portfolio::callback(text) {
+                if matches!(target, CallbackTarget::Inline(_)) {
+                    query.mode = PortfolioMode::Inline;
+                    query.refresh = false;
+                }
                 return Some(CommandRequest {
                     command: Command::Portfolio(query),
                     user_id: *user_id,
@@ -105,6 +119,68 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inline_portfolios_use_cached_subjects_and_reject_more_result_pages() {
+        for query in [
+            "",
+            "portfolio",
+            "portfolio sort=price_desc",
+            "/portfolio 123 XTR sort=number_desc",
+        ] {
+            let event = Event::Inline {
+                id: 1,
+                user_id: 7,
+                query: query.into(),
+                offset: String::new(),
+            };
+            let request = parse_event(&event, &[]).unwrap();
+            let Command::Portfolio(portfolio) = request.command else {
+                panic!("portfolio query")
+            };
+            assert_eq!(portfolio.mode, PortfolioMode::Inline);
+            assert!(!portfolio.refresh);
+            assert_eq!(request.user_id, 7);
+        }
+        let event = Event::Inline {
+            id: 1,
+            user_id: 7,
+            query: "portfolio".into(),
+            offset: "next".into(),
+        };
+        assert!(parse_event(&event, &[]).is_none());
+        let gift = Event::Inline {
+            id: 2,
+            user_id: 7,
+            query: "SakuraFlower-59197".into(),
+            offset: String::new(),
+        };
+        assert!(matches!(
+            parse_event(&gift, &[]).unwrap().command,
+            Command::Gift(_)
+        ));
+        let callback = Event::Callback {
+            id: 3,
+            user_id: 99,
+            data: b"p:123:GRAM:r:1:vd".to_vec(),
+            target: CallbackTarget::Inline(market_telegram::InlineMessageId::Standard {
+                dc_id: 2,
+                id: 1,
+                access_hash: 0,
+            }),
+        };
+        let Command::Portfolio(shared) = parse_event(&callback, &[]).unwrap().command else {
+            panic!("portfolio callback")
+        };
+        assert_eq!(
+            (shared.user_id, shared.mode, shared.sort, shared.refresh),
+            (
+                123,
+                PortfolioMode::Inline,
+                market_portfolio::PortfolioSort::ValueDesc,
+                false
+            )
+        );
+    }
     #[test]
     fn callbacks_expire_even_when_recently_accessed() {
         let views = Views::default();

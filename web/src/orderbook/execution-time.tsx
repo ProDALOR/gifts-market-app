@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ExecutionAge } from "./execution-age";
 import { DetailFactPopup } from "./detail-fact-popup";
 import { fullTimestamp } from "../ui/time";
+import { SharedIcon } from "../ui/icons";
 
 export function ExecutionTime({ at }: { at: string }) {
   const [open, setOpen] = useState(false);
@@ -18,10 +19,7 @@ export function ExecutionTime({ at }: { at: string }) {
         aria-expanded={open}
         title={exact}
       >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="12" r="8.5" />
-          <path d="M12 6.5V12l3.5 2" />
-        </svg>
+        <SharedIcon name="history" />
         <ExecutionAge at={at} className="execution-time-age" ago />
       </button>
       {open && (

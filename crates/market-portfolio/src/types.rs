@@ -125,6 +125,7 @@ pub struct PortfolioState {
 }
 #[derive(Debug, Clone)]
 pub enum PortfolioError {
+    NotChecked,
     RestartRead,
     Busy,
     Stopped,
@@ -137,6 +138,7 @@ pub enum PortfolioError {
 impl std::fmt::Display for PortfolioError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NotChecked => f.write_str("Portfolio has not been checked"),
             Self::RestartRead => f.write_str("Portfolio changed; restart the paginated read"),
             Self::Busy => f.write_str("Portfolio capacity reached"),
             Self::Stopped => f.write_str("Portfolio service unavailable"),

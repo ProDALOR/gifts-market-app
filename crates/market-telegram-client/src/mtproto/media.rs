@@ -138,6 +138,20 @@ async fn download_bytes(
     });
     let mut download = match key.kind() {
         MediaKind::Preview | MediaKind::Cover => return Err(MediaError::InvalidMedia.into()),
+        MediaKind::Thumbnail
+            if matches!(
+                media.mime_type(),
+                Some("image/webp" | "image/png" | "image/jpeg")
+            ) =>
+        {
+            if media
+                .size()
+                .is_none_or(|size| size == 0 || size > key.max_bytes())
+            {
+                return Err(MediaError::InvalidMedia.into());
+            }
+            client.iter_download(&media)
+        }
         MediaKind::Thumbnail => {
             let thumb = media
                 .thumbs()
@@ -214,7 +228,7 @@ fn failure(error: BotError) -> MediaError {
     }
 }
 
-// References stay private and short-lived; thumbnail/TGS misses share one resolver RPC.
+// References stay private and short-lived; assets and inline emoji share metadata.
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -225,10 +239,67 @@ struct Entry {
     value: tokio::sync::OnceCell<Result<tl::enums::Document, MediaError>>,
 }
 #[derive(Clone, Default)]
-pub(super) struct Documents(Arc<Mutex<HashMap<i64, Arc<Entry>>>>);
+pub(super) struct Documents {
+    entries: Arc<Mutex<HashMap<i64, Arc<Entry>>>>,
+    batches: Arc<tokio::sync::Mutex<()>>,
+}
 impl Documents {
+    /// Metadata-only batches share document entries with thumbnail/TGS downloads.
+    pub(super) async fn emoji_alternatives<F, Fut>(
+        &self,
+        ids: &[market_gifts::TelegramDocumentId],
+        fetch: F,
+    ) -> Result<std::collections::BTreeMap<i64, String>, BotError>
+    where
+        F: FnOnce(Vec<i64>) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<tl::enums::Document>, BotError>>,
+    {
+        let _batch = self.batches.lock().await;
+        let entries: std::collections::BTreeMap<_, _> = ids
+            .iter()
+            .take(64)
+            .map(|id| (id.get(), self.entry(id.get())))
+            .collect();
+        let missing = entries
+            .iter()
+            .filter(|(_, entry)| entry.value.get().is_none())
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            let mut found: HashMap<_, _> = fetch(missing.clone())
+                .await?
+                .into_iter()
+                .map(|document| (document.id(), document))
+                .collect();
+            for id in missing {
+                let _ = entries[&id]
+                    .value
+                    .set(found.remove(&id).ok_or(MediaError::NotFound));
+            }
+        }
+        Ok(entries
+            .iter()
+            .filter_map(|(id, entry)| {
+                let tl::enums::Document::Document(document) = entry.value.get()?.as_ref().ok()?
+                else {
+                    return None;
+                };
+                document
+                    .attributes
+                    .iter()
+                    .find_map(|attribute| match attribute {
+                        tl::enums::DocumentAttribute::CustomEmoji(emoji)
+                            if !emoji.alt.is_empty() =>
+                        {
+                            Some((*id, emoji.alt.clone()))
+                        }
+                        _ => None,
+                    })
+            })
+            .collect())
+    }
     fn entry(&self, id: i64) -> Arc<Entry> {
-        let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         entries.retain(|_, entry| entry.created.elapsed() < Duration::from_secs(300));
         if entries.len() >= 128
             && !entries.contains_key(&id)
@@ -250,7 +321,7 @@ impl Documents {
             .clone()
     }
     fn invalidate(&self, id: i64, entry: &Arc<Entry>) {
-        let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         if entries
             .get(&id)
             .is_some_and(|current| Arc::ptr_eq(current, entry))
@@ -262,6 +333,48 @@ impl Documents {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn emoji_batches_coalesce_and_cache_unusable_documents_without_downloading_files() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let documents = Documents::default();
+        let id = market_gifts::TelegramDocumentId::new(7).unwrap();
+        let count = AtomicUsize::new(0);
+        let fetch = |ids: Vec<i64>| {
+            let count = &count;
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(ids, vec![7]);
+                tokio::task::yield_now().await;
+                Ok(vec![tl::types::DocumentEmpty { id: 7 }.into()])
+            }
+        };
+        let ids = [id, id];
+        let (a, b) = tokio::join!(
+            documents.emoji_alternatives(&ids, fetch),
+            documents.emoji_alternatives(&ids, fetch)
+        );
+        assert!(a.unwrap().is_empty());
+        assert!(b.unwrap().is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn temporary_emoji_lookup_failure_does_not_poison_document_cache() {
+        let documents = Documents::default();
+        let ids = [market_gifts::TelegramDocumentId::new(7).unwrap()];
+        assert!(
+            documents
+                .emoji_alternatives(&ids, |_| async { Err(BotError::Transport) })
+                .await
+                .is_err()
+        );
+        assert!(
+            documents
+                .emoji_alternatives(&ids, |_| async { Ok(vec![]) })
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
     #[tokio::test]
     async fn references_coalesce_and_an_old_failure_cannot_remove_a_refresh() {
         let documents = Documents::default();
@@ -287,6 +400,6 @@ mod tests {
         for id in 1..=1000 {
             documents.entry(id);
         }
-        assert_eq!(documents.0.lock().unwrap().len(), 128);
+        assert_eq!(documents.entries.lock().unwrap().len(), 128);
     }
 }

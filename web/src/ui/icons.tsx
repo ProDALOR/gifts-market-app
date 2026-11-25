@@ -1,39 +1,84 @@
 import mrktLogo from "../icons/mrkt.svg?no-inline";
+import registry from "../../../crates/market-media/assets/icons.json";
+import { useArtworkImage } from "../previews/use-artwork-image";
+import { usePreviewEnvironment } from "../previews/preview-environment";
+
+const manifest = registry.icons;
+export type IconName = keyof typeof manifest;
+/** Static SVG masks share the media cache and image recovery; no animation player. */
+export function SharedIcon({
+  name,
+  className = "",
+  label,
+}: {
+  name: IconName;
+  className?: string;
+  label?: string;
+}) {
+  return (
+    <StaticIcon key={name} name={name} className={className} label={label} />
+  );
+}
+function StaticIcon({
+  name,
+  className,
+  label,
+}: {
+  name: IconName;
+  className: string;
+  label?: string;
+}) {
+  const url = `/media/icons/${name}/preview?v=${registry.preview_version}-${manifest[name].document_id}`;
+  const { pageVisible } = usePreviewEnvironment();
+  const image = useArtworkImage(url, undefined, pageVisible);
+  return (
+    <span
+      className={`shared-icon ${className}`}
+      role={label ? "img" : undefined}
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
+    >
+      {!image.ready && (
+        <span
+          className="shared-icon-fallback"
+          data-fallback={manifest[name].alternative}
+        />
+      )}
+      {image.sources.map((source) => (
+        <img
+          key={source.attempt}
+          src={source.url}
+          alt=""
+          crossOrigin="anonymous"
+          decoding="async"
+          loading="lazy"
+          onLoad={source.loaded}
+          onError={source.failed}
+        />
+      ))}
+      {image.ready && (
+        <span
+          className="shared-icon-mask"
+          style={{ maskImage: `url("${url}")` }}
+        />
+      )}
+    </span>
+  );
+}
 export function CurrencySymbol({ currency }: { currency: string }) {
   if (currency !== "GRAM" && currency !== "XTR")
     return <small>{currency}</small>;
   return (
-    <svg
+    <SharedIcon
+      name={currency === "XTR" ? "stars" : "gram"}
       className={`currency-symbol ${currency === "XTR" ? "star" : "gram"}`}
-      viewBox="0 0 24 24"
-      role="img"
-      aria-label={currency === "XTR" ? "Stars" : "GRAM"}
-    >
-      {currency === "XTR" ? (
-        <path
-          fill="currentColor"
-          d="m12 2.5 2.93 5.94 6.56.95-4.75 4.63 1.12 6.53L12 17.47l-5.86 3.08 1.12-6.53L2.51 9.39l6.56-.95Z"
-        />
-      ) : (
-        <path
-          d="M5 4h14a2 2 0 0 1 1.7 3L12 21 3.3 7A2 2 0 0 1 5 4Zm7 0v17"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinejoin="round"
-        />
-      )}
-    </svg>
+      label={currency === "XTR" ? "Stars" : "GRAM"}
+    />
   );
 }
 
 export function SearchIcon() {
-  return (
-    <svg className="search-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="10" cy="10" r="6.5" />
-      <path d="m15 15 6 6" />
-    </svg>
-  );
+  return <SharedIcon name="search" className="search-icon" />;
 }
 export function VenueIcon({ name }: { name: string }) {
   const venue = name.toLowerCase();

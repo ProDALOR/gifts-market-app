@@ -89,7 +89,7 @@ pub(super) fn inline_result(
         .into()
     };
     tl::types::InputBotInlineResult {
-        id: "valuation".into(),
+        id: "report".into(),
         r#type: "article".into(),
         title: Some(reply.title.clone().unwrap_or_else(|| {
             reply
@@ -513,7 +513,7 @@ mod tests {
             panic!()
         };
         assert_eq!(message.message, reply.text);
-        assert_eq!(result.id, "valuation");
+        assert_eq!(result.id, "report");
     }
     #[tokio::test]
     async fn inline_expiry_buttons_and_ambiguous_failures_do_not_send_fallbacks() {

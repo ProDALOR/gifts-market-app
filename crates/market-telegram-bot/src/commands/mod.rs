@@ -3,7 +3,7 @@ use market_links::MarketSelection;
 mod browse;
 mod history;
 mod portfolio;
-pub use portfolio::PortfolioRequest;
+pub use portfolio::{PortfolioMode, PortfolioRequest};
 mod interactions;
 mod parse;
 mod render;
@@ -41,6 +41,7 @@ pub struct CommandRequest {
 pub struct MarketCommands {
     public_url: Option<url::Url>,
     portfolio: Option<market_portfolio::PortfolioHandle>,
+    portfolio_reads: std::sync::Arc<market_portfolio::PortfolioReadCache>,
     market: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
     views: interactions::Views,
@@ -53,6 +54,7 @@ impl MarketCommands {
             market,
             valuation,
             portfolio: None,
+            portfolio_reads: Default::default(),
             views: Default::default(),
             icons: Default::default(),
         }

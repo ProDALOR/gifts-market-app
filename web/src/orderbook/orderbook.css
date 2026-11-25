@@ -816,13 +816,9 @@
   }
 }
 
-.valuation-info-button svg {
+.valuation-info-button > .shared-icon {
   width: 16px;
   height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
 }
 .valuation-popup {
   width: min(640px, calc(100% - 24px));
@@ -1142,12 +1138,12 @@
   place-items: center;
 }
 .attribute-pair-model .option-art,
-.attribute-pair-model > .gift-loading-placeholder {
+.attribute-pair-model > .shared-icon {
   width: 22px;
   height: 22px;
   border-radius: 4px;
 }
-.attribute-pair-model > .gift-loading-placeholder {
+.attribute-pair-model > .shared-icon {
   inset: 0;
   margin: auto;
 }
@@ -1181,14 +1177,9 @@
   line-height: 16px;
   font-variant-numeric: tabular-nums;
 }
-.execution-time-trigger svg {
+.execution-time-trigger > .shared-icon {
   width: 13px;
   height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 .execution-time-age {
   white-space: nowrap;

@@ -31,11 +31,22 @@ pub struct Reply {
     pub title: Option<String>,
     pub summary: Option<String>,
     pub rich_html: Option<String>,
+    /// Inline emoji placeholders resolved from Telegram metadata before sending.
+    pub emoji_documents: Vec<market_gifts::TelegramDocumentId>,
     pub artwork: Option<market_media::GiftCover>,
     pub buttons: Vec<Vec<ReplyButton>>,
 }
 
 impl Reply {
+    pub fn custom_emoji(&mut self, document: market_gifts::TelegramDocumentId) -> String {
+        if !self.emoji_documents.contains(&document) {
+            self.emoji_documents.push(document);
+        }
+        Self::emoji_placeholder(document)
+    }
+    pub(crate) fn emoji_placeholder(document: market_gifts::TelegramDocumentId) -> String {
+        format!("<tg-emoji emoji-id=\"{}\">🎁</tg-emoji>", document.get())
+    }
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -43,6 +54,7 @@ impl Reply {
         }
     }
     pub fn bounded(mut self) -> Self {
+        self.emoji_documents.truncate(64);
         if let Some(title) = &mut self.title {
             *title = title.chars().take(100).collect();
         }

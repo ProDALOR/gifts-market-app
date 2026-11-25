@@ -1,7 +1,7 @@
 import type { CatalogOption, GiftMedia } from "../market";
 import { OptionArt } from "../previews/option-art";
 import { GiftArtwork } from "../previews/gift-artwork";
-import { GiftPlaceholder } from "../previews/gift-placeholder";
+import { SharedIcon } from "../ui/icons";
 export type AttributeArtKind = CatalogOption["kind"] | "collection" | "pair";
 
 /** Static attribute artwork shares the preview cache; no animation or pattern renderer. */
@@ -23,7 +23,7 @@ export function AttributeArt({
     return collectionPreview ? (
       <GiftArtwork media={collectionPreview} fallback="" playback="static" />
     ) : (
-      <GiftPlaceholder active={false} loading={false} />
+      <SharedIcon name="collection" />
     );
   if (kind === "pair")
     return (
@@ -37,7 +37,7 @@ export function AttributeArt({
           {model?.kind === "model" ? (
             <OptionArt option={model} />
           ) : (
-            <GiftPlaceholder active={false} loading={false} />
+            <SharedIcon name="model" />
           )}
         </span>
       </>

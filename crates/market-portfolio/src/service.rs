@@ -4,6 +4,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 #[derive(Clone, Copy)]
 pub(crate) enum Action {
+    Cached,
     Query,
     Watch,
     Refresh,
@@ -29,6 +30,18 @@ pub struct PortfolioWatch {
     _permit: OwnedSemaphorePermit,
 }
 impl PortfolioHandle {
+    /// Observe an existing view without allocating a cache entry or scheduling work.
+    pub async fn cached(
+        &self,
+        query: PortfolioQuery,
+    ) -> Result<Arc<PortfolioState>, PortfolioError> {
+        let _permit = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| PortfolioError::Busy)?;
+        Ok(self.invoke(query, Action::Cached).await?.borrow().clone())
+    }
     async fn invoke(
         &self,
         query: PortfolioQuery,
