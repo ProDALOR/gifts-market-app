@@ -89,7 +89,7 @@ fn gift_queries_accept_named_traits_and_reject_the_generic_contract() {
         "number":{"min":1,"max":100}
     }}))
     .unwrap();
-    assert_eq!(query.filters.models[0].as_str(), "model");
+    assert_eq!(query.filters.models[0].as_id().unwrap().as_str(), "model");
     for value in [
         serde_json::json!({"scope":{"attributes":{}}}),
         serde_json::json!({"filters":{}}),
@@ -117,7 +117,7 @@ fn domain_ranges_reject_reversed_bounds_and_zero_gift_numbers() {
     for value in [serde_json::json!({"min":0}), serde_json::json!({"max":0})] {
         assert!(serde_json::from_value::<GiftNumberRange>(value).is_err());
     }
-    let mut filters = GiftFilters::new("collection".into(), "GRAM".into());
+    let mut filters: GiftFilters = GiftFilters::new("collection".into(), "GRAM".into());
     filters.number = Some(GiftNumberRange {
         min: Some(GiftNumber::new(10).unwrap()),
         max: Some(GiftNumber::new(1).unwrap()),
@@ -138,7 +138,7 @@ fn domain_ranges_reject_reversed_bounds_and_zero_gift_numbers() {
             .is_ok()
         );
     }
-    let mut filters = GiftFilters::new("collection".into(), "GRAM".into());
+    let mut filters: GiftFilters = GiftFilters::new("collection".into(), "GRAM".into());
     filters.price = Some(PriceRange {
         min: Some("10".into()),
         max: Some("1".into()),
@@ -365,7 +365,8 @@ fn one_range_query_resolves_defaults_and_rejects_legacy_navigation_and_invalid_v
         (OrderSource::Bids, GiftSort::PriceDesc),
         (OrderSource::History, GiftSort::TimeDesc),
     ] {
-        let mut query = GiftOrderQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
+        let mut query: GiftOrderQuery =
+            GiftOrderQuery::new(GiftFilters::new("gift".into(), "GRAM".into()));
         query.source = source;
         assert_eq!(query.sort(), expected);
         query.sort = Some(GiftSort::NumberAsc);

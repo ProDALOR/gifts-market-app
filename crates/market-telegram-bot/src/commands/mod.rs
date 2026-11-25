@@ -1,4 +1,6 @@
 //! Typed command requests, services and reply rendering.
+use market_actors::input::GiftFilters;
+mod browse;
 mod history;
 mod portfolio;
 pub use portfolio::PortfolioRequest;
@@ -12,10 +14,11 @@ use market_telegram::{BotError, IncomingMessage, MenuCommand, MessageHandler, Re
 pub use parse::CommandKind;
 pub(crate) use parse::parse;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Start,
     Market,
+    Browse(GiftFilters),
     Help,
     Status,
     Gift(ValueRequest),
@@ -29,7 +32,7 @@ pub struct ValueRequest {
     pub currency_id: market_gifts::CurrencyId,
 }
 /// Identity comes from the authenticated transport event.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CommandRequest {
     pub command: Command,
     pub user_id: u64,
@@ -104,6 +107,7 @@ impl MessageHandler for MarketCommands {
                 ),
             }),
             Command::Portfolio(query) => Ok(self.portfolio_reply(query, None).await),
+            Command::Browse(filters) => Ok(self.browse(filters).await),
             Command::Gift(query) => Ok(self.value(query).await),
             Command::View(id) => Ok(self.view(id).await),
             command => {

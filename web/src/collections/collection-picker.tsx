@@ -1,3 +1,4 @@
+import { GiftPlaceholder } from "../previews/gift-placeholder";
 import {
   memo,
   useCallback,
@@ -226,6 +227,8 @@ export const CollectionRail = memo(function CollectionRail({
                     label={item.name}
                     playback="collection"
                   />
+                ) : !item.id ? (
+                  <GiftPlaceholder active={false} loading={false} />
                 ) : (
                   <span>{item.name[0]}</span>
                 )}

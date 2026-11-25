@@ -56,7 +56,7 @@ pub(super) fn start_catalog(
     environment: &ActorEnvironment,
     feed: &QueryFeed,
     catalog: crate::catalog::handle::CatalogHandle,
-    ids: Vec<market_gifts::CollectionId>,
+    ids: Vec<market_gifts_hub::input::CollectionRef>,
     reader: market_replica::ReplicaReader,
     permit: OwnedSemaphorePermit,
 ) {
@@ -111,7 +111,7 @@ pub(super) fn start_orders(
     environment: &ActorEnvironment,
     feed: &QueryFeed,
     orders: OrderbooksHandle,
-    request: w::ReadRequest,
+    request: crate::query::OrderQuery,
     options: market_replica::ReadOptions,
     reader: market_replica::ReplicaReader,
     permit: OwnedSemaphorePermit,
@@ -138,7 +138,7 @@ pub(super) fn start_orders(
                     return Ok(());
                 }
                 changed.borrow_and_update();
-                let current = reader.read_revision(&request)?;
+                let current = orders.revision(&reader, &request)?;
                 let published = match &*sender.borrow() {
                     DataUpdate::Orders { version, .. } => *version,
                     _ => return Ok(()),
@@ -154,7 +154,7 @@ pub(super) fn start_orders(
                         DataUpdate::Orders {
                             version, observed, ..
                         } => {
-                            if *version == reader.read_revision(&request)? {
+                            if *version == orders.revision(&reader, &request)? {
                                 continue;
                             }
                             *observed

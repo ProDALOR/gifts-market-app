@@ -2159,7 +2159,9 @@ dependencies = [
  "market-gifts",
  "market-hub-protocol",
  "rust_decimal",
+ "serde",
  "serde_json",
+ "utoipa",
 ]
 
 [[package]]

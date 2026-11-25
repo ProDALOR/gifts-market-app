@@ -23,6 +23,9 @@ macro_rules! identifiers {
                 if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) || value.trim() != value {
                     return Err(InvalidValue("identifier must contain 1..256 bytes without surrounding whitespace or control characters"));
                 }
+                if matches!(stringify!($name), "CollectionId" | "ModelId" | "BackdropId" | "PatternId") && value.starts_with('@') {
+                    return Err(InvalidValue("native catalog identifier cannot contain an alias selector"));
+                }
                 Ok(Self(value))
             }
             pub fn as_str(&self) -> &str { &self.0 }

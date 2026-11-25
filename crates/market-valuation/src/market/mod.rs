@@ -26,8 +26,8 @@ use market_gifts::{Amount, CurrencyId, Period};
 use serde::{Deserialize, Serialize};
 pub use strategies::{AskFloor, ExecutionMean, ExecutionMedian};
 pub use target::{
-    CatalogDetails, CatalogSelection, GiftAttributes, PairSelection, ResolvedTarget,
-    ValuationTarget, ValuationTargetKind,
+    CatalogDetails, CatalogSelection, GiftAttributes, GiftAttributesInput, PairSelection,
+    ResolvedCatalogSelection, ResolvedTarget, ValuationTarget, ValuationTargetKind,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

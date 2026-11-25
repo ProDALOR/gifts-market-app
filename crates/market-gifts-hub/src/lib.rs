@@ -1,4 +1,7 @@
 //! Interpretation of generic hub facts as gifts. No actors, storage, HTTP or clients.
+mod aliases;
+pub mod input;
+pub use aliases::{AliasCatalog, aliases};
 mod catalog;
 mod lookup;
 mod orders;
@@ -32,3 +35,22 @@ mod tests;
 
 #[cfg(test)]
 mod order_tests;
+
+/// Hub namespace translation belongs in the adapter, not in domain types.
+pub fn trait_attribute(kind: market_gifts::GiftTraitKind) -> &'static str {
+    use market_gifts::GiftTraitKind::*;
+    match kind {
+        Model => MODEL,
+        Backdrop => BACKDROP,
+        Pattern => PATTERN,
+    }
+}
+pub fn trait_kind(attribute: &str) -> Option<market_gifts::GiftTraitKind> {
+    use market_gifts::GiftTraitKind::*;
+    match attribute {
+        MODEL => Some(Model),
+        BACKDROP => Some(Backdrop),
+        PATTERN => Some(Pattern),
+        _ => None,
+    }
+}

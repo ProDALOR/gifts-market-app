@@ -143,9 +143,9 @@ impl ValuationSnapshot {
                     .map_err(|_| Status::unavailable("Invalid collection catalog"))?;
                 let mut maps = Vec::with_capacity(3);
                 for (kind, needed, all) in [
-                    (market_gifts_hub::MODEL, &needed.model, &all.model),
-                    (market_gifts_hub::BACKDROP, &needed.backdrop, &all.backdrop),
-                    (market_gifts_hub::PATTERN, &needed.pattern, &all.pattern),
+                    (GiftTraitKind::Model, &needed.model, &all.model),
+                    (GiftTraitKind::Backdrop, &needed.backdrop, &all.backdrop),
+                    (GiftTraitKind::Pattern, &needed.pattern, &all.pattern),
                 ] {
                     self.check_cancelled()?;
                     let map = if needed.is_empty() {
@@ -153,7 +153,7 @@ impl ValuationSnapshot {
                     } else if let Some(ids) = rules.trait_option_ids(kind) {
                         let options = market_replica::catalog_read::trait_options(
                             &self.reader,
-                            kind,
+                            market_gifts_hub::trait_attribute(kind),
                             Some(&ids),
                             &self.cancelled,
                         )?;
@@ -165,16 +165,16 @@ impl ValuationSnapshot {
                     } else {
                         // This rule accepts every option of the kind. Share only requested
                         // aliases, rather than cloning the entire directory for each collection.
-                        if !unrestricted.contains_key(kind) {
+                        if !unrestricted.contains_key(&kind) {
                             let options = market_replica::catalog_read::trait_options(
                                 &self.reader,
-                                kind,
+                                market_gifts_hub::trait_attribute(kind),
                                 None,
                                 &self.cancelled,
                             )?;
                             unrestricted.insert(kind, aliases(options, all, &self.cancelled)?);
                         }
-                        unrestricted[kind].clone()
+                        unrestricted[&kind].clone()
                     };
                     maps.push(map);
                 }

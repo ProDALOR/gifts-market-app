@@ -9,7 +9,7 @@ use crate::{
 };
 use actix::Addr;
 use market_gifts::*;
-use market_hub_protocol::wire as w;
+use market_gifts_hub::input::{CollectionRef, GiftFilters, GiftOrderQuery};
 use tokio::sync::watch;
 #[derive(Clone)]
 pub struct MarketDataHandle {
@@ -19,13 +19,20 @@ pub struct MarketDataHandle {
     pub(crate) subscriptions: Addr<MarketSubscriptionsActor>,
 }
 impl MarketDataHandle {
+    pub async fn resolve_filters(
+        &self,
+        filters: GiftFilters,
+    ) -> error::Result<ResolvedGiftFilters> {
+        Ok(self.catalog.resolve_filters(filters).await?)
+    }
+
     pub fn status_updates(&self) -> watch::Receiver<SyncStatus> {
         self.status_updates.clone()
     }
     pub async fn watch_orders(&self, query: GiftOrderQuery) -> error::Result<DataWatch> {
         self.orderbooks.budget.check()?;
         let (request, read) = crate::query::compile(query)?;
-        if request.mode != w::ReadMode::Live as i32 {
+        if !request.is_live() {
             return Err(error::DataError::invalid("watches require latest reads"));
         }
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -55,11 +62,11 @@ impl MarketDataHandle {
     }
     pub async fn collection_snapshot(
         &self,
-        id: CollectionId,
+        id: CollectionRef,
     ) -> error::Result<crate::CatalogSnapshot<GiftCollectionCatalog>> {
         Ok(self.catalog.collection(id).await?)
     }
-    pub async fn subscribe_catalog(&self, ids: Vec<CollectionId>) -> error::Result<DataWatch> {
+    pub async fn subscribe_catalog(&self, ids: Vec<CollectionRef>) -> error::Result<DataWatch> {
         self.catalog.budget.check()?;
         Ok(self
             .subscriptions

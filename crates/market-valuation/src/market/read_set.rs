@@ -4,12 +4,13 @@ use crate::{
     floors::{REFRESH_INTERVAL, Statistics, StatisticsRead},
     source::{BookScope, OrderDependency, ReadDependencies, ValuationSnapshot},
 };
-use market_gifts::{CollectionId, CurrencyId, GiftLookup, GiftOrderQuery};
+use market_gifts::{CollectionId, CurrencyId, ResolvedGiftOrderQuery};
 use std::sync::Arc;
 use tokio::time::Instant;
 #[derive(Clone)]
 pub(super) struct ReadSet {
     metadata: Option<ReadDependencies>,
+    aliases: Option<market_replica::MetadataRevision>,
     pub(super) statistics: Vec<Arc<Statistics>>,
     observations: Vec<OrderDependency>,
     expires_at: Option<jiff::Timestamp>,
@@ -19,6 +20,7 @@ impl ReadSet {
     pub fn new() -> Self {
         Self {
             metadata: None,
+            aliases: None,
             statistics: vec![],
             observations: vec![],
             expires_at: None,
@@ -44,7 +46,7 @@ impl ReadSet {
     pub fn observe(
         &mut self,
         snapshot: &ValuationSnapshot,
-        query: &GiftOrderQuery,
+        query: &ResolvedGiftOrderQuery,
     ) -> Result<(), ValuationError> {
         let dependency = snapshot.order_dependency(query)?;
         if !self
@@ -66,8 +68,11 @@ impl ReadSet {
         snapshot: &ValuationSnapshot,
         collections: Vec<CollectionId>,
         currency: &CurrencyId,
-        lookup: Option<&GiftLookup>,
+        lookup: Option<&market_gifts_hub::input::GiftLookupInput>,
     ) -> Result<(), ValuationError> {
+        if snapshot.used_aliases() {
+            self.aliases = Some(snapshot.alias_revision()?);
+        }
         // Successful statistics already cover these books, their currency and catalog choices.
         let uncovered = collections
             .iter()
@@ -125,6 +130,11 @@ impl ReadSet {
         // Changes and expirations are intentionally sampled at most once a minute.
         if Instant::now() < self.deadline {
             return Ok(true);
+        }
+        if let Some(previous) = self.aliases
+            && snapshot.alias_revision()? != previous
+        {
+            return Ok(false);
         }
         if self
             .expires_at

@@ -9,6 +9,18 @@ pub(crate) struct CatalogHandle {
     pub projections: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl CatalogHandle {
+    pub async fn resolve_filters(
+        &self,
+        filters: market_gifts_hub::input::GiftFilters,
+    ) -> Result<market_gifts::ResolvedGiftFilters, Status> {
+        let permit = self.budget.try_query()?;
+        let _cancel = permit.cancel_on_drop();
+        self.address
+            .send(super::messages::ResolveFilters { filters, permit })
+            .await
+            .map_err(closed)?
+    }
+
     pub async fn bootstrap(
         &self,
     ) -> Result<super::CatalogSnapshot<market_gifts::GiftCatalog>, Status> {
@@ -26,7 +38,7 @@ impl CatalogHandle {
     }
     pub async fn collection(
         &self,
-        id: market_gifts::CollectionId,
+        id: market_gifts_hub::input::CollectionRef,
     ) -> Result<super::CatalogSnapshot<market_gifts::GiftCollectionCatalog>, Status> {
         let projection = self
             .projections
@@ -46,8 +58,8 @@ impl CatalogHandle {
     }
     pub async fn versions(
         &self,
-        ids: Vec<market_gifts::CollectionId>,
-    ) -> Result<market_gifts::CatalogVersions, Status> {
+        ids: Vec<market_gifts_hub::input::CollectionRef>,
+    ) -> Result<market_gifts_hub::input::CatalogVersions, Status> {
         let projection = tokio::select! { biased;
             _ = self.budget.cancelled() => return Err(Status::unavailable("Catalog stopped")),
             result = self.projections.clone().acquire_owned() => result.map_err(|_| Status::unavailable("Catalog stopped"))?,

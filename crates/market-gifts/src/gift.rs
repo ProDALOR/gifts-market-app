@@ -211,29 +211,33 @@ impl utoipa::ToSchema for GiftSlug {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub enum GiftLookup {
+pub enum GiftLookup<C = CollectionId> {
     Slug(GiftSlug),
     Catalog {
-        collection_id: CollectionId,
+        collection_id: C,
         number: GiftNumber,
     },
 }
-impl From<GiftSlug> for GiftLookup {
+impl<C> From<GiftSlug> for GiftLookup<C> {
     fn from(slug: GiftSlug) -> Self {
         Self::Slug(slug)
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct GiftTraits {
+#[serde(bound(deserialize = "M: Deserialize<'de>, B: Deserialize<'de>, P: Deserialize<'de>"))]
+pub struct GiftTraits<M = ModelId, B = BackdropId, P = PatternId> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<ModelId>,
+    #[serde(default)]
+    pub model: Option<M>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backdrop: Option<BackdropId>,
+    #[serde(default)]
+    pub backdrop: Option<B>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pattern: Option<PatternId>,
+    #[serde(default)]
+    pub pattern: Option<P>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,4 +249,41 @@ pub struct CollectibleGift {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<GiftNumber>,
     pub traits: GiftTraits,
+}
+
+pub type GiftTraitsInput = GiftTraits<crate::ModelRef, crate::BackdropRef, crate::PatternRef>;
+pub type GiftLookupInput = GiftLookup<crate::CollectionRef>;
+
+impl<M, B, P> Default for GiftTraits<M, B, P> {
+    fn default() -> Self {
+        Self {
+            model: None,
+            backdrop: None,
+            pattern: None,
+        }
+    }
+}
+
+impl From<GiftTraits> for GiftTraitsInput {
+    fn from(t: GiftTraits) -> Self {
+        Self {
+            model: t.model.map(Into::into),
+            backdrop: t.backdrop.map(Into::into),
+            pattern: t.pattern.map(Into::into),
+        }
+    }
+}
+impl From<GiftLookup> for GiftLookupInput {
+    fn from(t: GiftLookup) -> Self {
+        match t {
+            GiftLookup::Slug(slug) => Self::Slug(slug),
+            GiftLookup::Catalog {
+                collection_id,
+                number,
+            } => Self::Catalog {
+                collection_id: collection_id.into(),
+                number,
+            },
+        }
+    }
 }

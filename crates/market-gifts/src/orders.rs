@@ -38,16 +38,21 @@ pub enum GiftOrderKind {
     Executed,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct GiftCriteria {
-    pub models: Vec<ModelId>,
-    pub backdrops: Vec<BackdropId>,
-    pub patterns: Vec<PatternId>,
+#[serde(bound(deserialize = "M: Deserialize<'de>, B: Deserialize<'de>, P: Deserialize<'de>"))]
+pub struct GiftCriteria<M = ModelId, B = BackdropId, P = PatternId> {
+    #[serde(default)]
+    pub models: Vec<M>,
+    #[serde(default)]
+    pub backdrops: Vec<B>,
+    #[serde(default)]
+    pub patterns: Vec<P>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<GiftNumberRange>,
 }
+pub type GiftCriteriaInput = GiftCriteria<crate::ModelRef, crate::BackdropRef, crate::PatternRef>;
 impl GiftCriteria {
     /// True when these conditions accept every gift allowed by the selection.
     /// An omitted selection dimension is unrestricted, not an unknown singleton.
@@ -206,4 +211,26 @@ pub fn market_link(value: &str) -> Option<String> {
         && url.username().is_empty()
         && url.password().is_none())
     .then(|| url.to_string())
+}
+
+impl<M, B, P> Default for GiftCriteria<M, B, P> {
+    fn default() -> Self {
+        Self {
+            models: vec![],
+            backdrops: vec![],
+            patterns: vec![],
+            number: None,
+        }
+    }
+}
+
+impl From<GiftCriteria> for GiftCriteriaInput {
+    fn from(c: GiftCriteria) -> Self {
+        Self {
+            models: c.models.into_iter().map(Into::into).collect(),
+            backdrops: c.backdrops.into_iter().map(Into::into).collect(),
+            patterns: c.patterns.into_iter().map(Into::into).collect(),
+            number: c.number,
+        }
+    }
 }

@@ -40,6 +40,7 @@ pub fn collection_slug(item: &w::ItemType) -> Result<Option<CollectionSlug>> {
 pub fn collection(item: w::ItemType) -> Result<GiftCollection> {
     let slug = collection_slug(&item)?;
     Ok(GiftCollection {
+        aliases: crate::aliases(&item.aliases),
         slug,
         id: item.id.try_into().map_err(invalid)?,
         name: item.name,
@@ -151,21 +152,20 @@ impl CollectionChoices {
             .ids()
             .map(|ids| ids.iter().map(ToString::to_string).collect())
     }
-    pub fn trait_option_ids(&self, attribute: &str) -> Option<Vec<String>> {
-        match attribute {
-            MODEL => self
+    pub fn trait_option_ids(&self, kind: GiftTraitKind) -> Option<Vec<String>> {
+        match kind {
+            GiftTraitKind::Model => self
                 .models
                 .ids()
                 .map(|ids| ids.iter().map(ToString::to_string).collect()),
-            BACKDROP => self
+            GiftTraitKind::Backdrop => self
                 .backdrops
                 .ids()
                 .map(|ids| ids.iter().map(ToString::to_string).collect()),
-            PATTERN => self
+            GiftTraitKind::Pattern => self
                 .patterns
                 .ids()
                 .map(|ids| ids.iter().map(ToString::to_string).collect()),
-            _ => Some(Vec::new()),
         }
     }
     pub fn unrestricted_attributes(&self) -> Vec<String> {
@@ -230,18 +230,21 @@ fn rarity(option: &w::AttributeOption) -> Option<GiftRarity> {
 pub fn choice(option: w::AttributeOption) -> Result<Option<Choice>> {
     Ok(match option.attribute_id.as_str() {
         MODEL => Some(Choice::Model(GiftModel {
+            aliases: crate::aliases(&option.aliases),
             id: option.id.clone().try_into().map_err(invalid)?,
             name: option.name.clone(),
             media: media(&option),
             rarity: rarity(&option),
         })),
         BACKDROP => Some(Choice::Backdrop(GiftBackdrop {
+            aliases: crate::aliases(&option.aliases),
             id: option.id.clone().try_into().map_err(invalid)?,
             name: option.name.clone(),
             palette: palette(&option),
             rarity: rarity(&option),
         })),
         PATTERN => Some(Choice::Pattern(GiftPattern {
+            aliases: crate::aliases(&option.aliases),
             id: option.id.clone().try_into().map_err(invalid)?,
             name: option.name.clone(),
             media: media(&option),

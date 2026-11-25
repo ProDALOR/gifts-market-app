@@ -89,14 +89,25 @@ const venues = ["Telegram", "Portals", "MRKT"].map((name) => ({
 }));
 let historyExtras = [];
 function result(query, executed = query.source === "history") {
-  const filters = query.filters;
+  const filters = {
+    ...query.filters,
+    ...Object.fromEntries(
+      Object.entries({ models, backdrops, patterns }).map(([kind, options]) => [
+        kind,
+        query.filters[kind]?.map(
+          (id) => options.find((row) => id === `@name:${row.name}`)?.id ?? id,
+        ),
+      ]),
+    ),
+  };
   const mode = executed ? "executed" : query.source === "bids" ? "bid" : "ask";
   let rows = Array.from(
     { length: executed ? 75 : mode === "bid" ? 4 : 125 },
     (_, index) => ({
       id: `order-${index}`,
       book: {
-        collection_id: filters.collection_id,
+        collection_id:
+          filters.collection_id || collections[index % collections.length].id,
         currency_id: filters.currency_id,
         venue_id: venues[index % 3].id,
       },
@@ -245,6 +256,15 @@ try {
       headers: { etag: `"${directoryRevision}"` },
       json: {
         collections,
+        backdrops: [
+          {
+            ...backdrops[0],
+            aliases: [{ namespace: "name", id: "Raspberry" }],
+          },
+        ],
+        patterns: [
+          { ...patterns[0], aliases: [{ namespace: "name", id: "Stars" }] },
+        ],
         venues,
         currencies: [
           { id: "GRAM", name: "Gram", decimals: 9 },
@@ -772,12 +792,14 @@ try {
     return true;
   });
   assert.equal(
-    await page.locator(".collection-tile").evaluateAll((tiles) =>
-      tiles.every((tile) => {
-        const width = tile.getBoundingClientRect().width;
-        return width > 60 && width < 148;
-      }),
-    ),
+    await page
+      .locator('.collection-tile:not([data-collection-id=""])')
+      .evaluateAll((tiles) =>
+        tiles.every((tile) => {
+          const width = tile.getBoundingClientRect().width;
+          return width > 60 && width < 148;
+        }),
+      ),
     true,
     "Both collection tiles interpolate their width instead of jumping to their minimum",
   );
@@ -1169,7 +1191,16 @@ try {
           ) < 2,
       ),
     true,
-    "Short books keep the footer at the viewport bottom",
+    "Short books keep the footer at the viewport bottom: " +
+      JSON.stringify(
+        await page.locator(".app-footer").evaluate((footer) => ({
+          footer: footer.getBoundingClientRect().toJSON(),
+          height: innerHeight,
+          scrollY,
+          padding: getComputedStyle(footer.closest(".orderbook")).paddingBottom,
+          main: footer.closest(".orderbook").getBoundingClientRect().toJSON(),
+        })),
+      ),
   );
   assert.equal(await button("Model").isDisabled(), false);
   assert.equal(
@@ -1485,7 +1516,9 @@ try {
       .count(),
     0,
   );
-  const inspect = page.locator('[data-attribute="model"] .floor-value');
+  const inspect = page.locator(
+    '[data-attribute="model"] .floor-value:not(.bid-value)',
+  );
   const beforeInspect = floorRequests;
   await inspect.click();
   const floorInfo = page.getByRole("dialog", {
@@ -1751,6 +1784,29 @@ try {
   }
   await button("Bids").click();
   assert.equal(new URL(page.url()).searchParams.get("sort"), "time_asc");
+  // Global pickers reuse the directory projection rather than downloading every collection.
+  await button("Asks").click();
+  await page.locator('.collection-tile[data-collection-id=""]').click();
+  await page.getByRole("heading", { name: "All gifts", exact: true }).waitFor();
+  await cards(80);
+  assert.equal(await button("Model").isDisabled(), true);
+  const globalOptions = optionRequests;
+  await button("Backdrop").click();
+  await page
+    .getByRole("group", { name: "Backdrop options", exact: true })
+    .getByRole("button", { name: "Raspberry", exact: true })
+    .click();
+  await page.waitForFunction(() =>
+    JSON.parse(
+      new URL(location.href).searchParams.get("filters") || "{}",
+    ).backdrops?.includes("@name:Raspberry"),
+  );
+  assert.equal(
+    optionRequests,
+    globalOptions,
+    "global pickers do not load other collection models",
+  );
+  await page.getByRole("button", { name: "Reset traits", exact: true }).click();
   assert.deepEqual(errors, []);
   console.log(
     "Orderbook browser passed: unlimited trait previews, infinite scroll, Time/Gift #/Price sorting, currencies, URL restore, modes, live history/backfills with scroll anchors, accessible details and automatic Mini App catalog updates.",

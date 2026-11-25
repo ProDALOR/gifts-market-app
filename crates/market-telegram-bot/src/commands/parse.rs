@@ -88,7 +88,13 @@ pub(crate) fn parse<S: AsRef<str>>(
             })
         }
         CommandKind::Start => Command::Start,
-        CommandKind::Market => Command::Market,
+        CommandKind::Market => {
+            if text.split_whitespace().count() > 1 {
+                Command::Browse(super::browse::parse(text)?)
+            } else {
+                Command::Market
+            }
+        }
         CommandKind::Help => Command::Help,
         CommandKind::Status => Command::Status,
     };

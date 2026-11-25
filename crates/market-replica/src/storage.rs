@@ -802,6 +802,25 @@ impl Snapshot {
         limit: usize,
         include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<RankedHistoryPage, Status> {
+        let mut scanned = 0;
+        self.ranked_history_scoped(filter, after, end, limit, include, &mut scanned)
+    }
+    fn ranked_history_scoped(
+        &self,
+        filter: &Filter,
+        after: Option<(String, Position)>,
+        end: Option<(String, Position)>,
+        limit: usize,
+        include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
+        scanned: &mut usize,
+    ) -> Result<RankedHistoryPage, Status> {
+        if filter
+            .scope
+            .as_ref()
+            .is_some_and(|s| s.item_type_id.is_none())
+        {
+            return self.ranked_history_collections(filter, after, end, limit, include, scanned);
+        }
         use std::ops::Bound::{Excluded, Included};
         let scope = filter
             .scope
@@ -913,10 +932,11 @@ impl Snapshot {
         let mut data = Vec::new();
         let mut bytes = 0;
         let mut position = after;
-        for (count, row) in rows.enumerate() {
-            if count == crate::READ_LIMITS.max_scan_candidates {
+        for row in rows {
+            if *scanned >= crate::READ_LIMITS.max_scan_candidates {
                 return Ok((data, position));
             }
+            *scanned += 1;
             let (_, row) = row?;
             let order = self
                 .order_from(&executions, &row)?
@@ -943,6 +963,119 @@ impl Snapshot {
             position = Some((rank, row));
         }
         Ok((data, None))
+    }
+    /// Merge one bounded head per collection; do not allocate a full page for every book.
+    fn ranked_history_collections(
+        &self,
+        filter: &Filter,
+        after: Option<(String, Position)>,
+        end: Option<(String, Position)>,
+        limit: usize,
+        include: &dyn Fn(&w::Entity) -> Result<bool, Status>,
+        scanned: &mut usize,
+    ) -> Result<RankedHistoryPage, Status> {
+        use std::collections::BTreeMap;
+        let scope = filter.scope.as_ref().unwrap();
+        let collections = scope
+            .collection_attributes
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("missing collection scopes"))?;
+        let mut heads = BTreeMap::new();
+        let mut retained = 0usize;
+        for (id, attributes) in collections.iter() {
+            let mut scoped = filter.clone();
+            let target = scoped.scope.as_mut().unwrap();
+            target.item_type_id = Some(id.clone());
+            target.attributes = attributes.clone();
+            target.collection_attributes = None;
+            let (mut rows, next) = self.ranked_history_scoped(
+                &scoped,
+                after.clone(),
+                end.clone(),
+                1,
+                include,
+                scanned,
+            )?;
+            if let Some(entity) = rows.pop() {
+                retained += entity.encoded_len() + 8;
+                if retained > crate::READ_LIMITS.max_read_bytes {
+                    return Err(Status::resource_exhausted(
+                        "history merge exceeds byte budget",
+                    ));
+                }
+                let order = state::order(&entity).ok_or_else(|| failure("expected execution"))?;
+                let point = Position {
+                    executed_at_ms: order
+                        .executed_at_ms
+                        .ok_or_else(|| failure("missing execution time"))?,
+                    venue_id: order
+                        .book
+                        .as_ref()
+                        .ok_or_else(|| failure("missing book"))?
+                        .venue_id
+                        .clone(),
+                    order_id: order.id.clone(),
+                };
+                heads.insert((filter.sort.rank(order, true)?, point), (entity, scoped));
+            } else if next.is_some() {
+                return Err(Status::resource_exhausted(
+                    "history merge exceeds scan budget",
+                ));
+            }
+        }
+        let mut rows = Vec::new();
+        let mut bytes = 0;
+        while let Some(((rank, point), (entity, scoped))) = if filter.sort.descending() {
+            heads.pop_last()
+        } else {
+            heads.pop_first()
+        } {
+            let size = entity.encoded_len() + 8;
+            if rows.len() >= limit || bytes + size > crate::READ_LIMITS.max_read_bytes {
+                // A continuation is only safe after an emitted global ordering position.
+                return Err(Status::resource_exhausted(
+                    "history merge exceeds page budget",
+                ));
+            }
+            bytes += size;
+            retained -= size;
+            rows.push(entity);
+            let cursor = Some((rank.to_string(), point.clone()));
+            let (mut next, continuation) = self.ranked_history_scoped(
+                &scoped,
+                cursor.clone(),
+                end.clone(),
+                1,
+                include,
+                scanned,
+            )?;
+            if let Some(entity) = next.pop() {
+                retained += entity.encoded_len() + 8;
+                if retained + bytes > crate::READ_LIMITS.max_read_bytes {
+                    return Err(Status::resource_exhausted(
+                        "history merge exceeds byte budget",
+                    ));
+                }
+                let order = state::order(&entity).unwrap();
+                let point = Position {
+                    executed_at_ms: order.executed_at_ms.unwrap(),
+                    venue_id: order.book.as_ref().unwrap().venue_id.clone(),
+                    order_id: order.id.clone(),
+                };
+                heads.insert((filter.sort.rank(order, true)?, point), (entity, scoped));
+            } else if continuation.is_some() {
+                return Err(Status::resource_exhausted(
+                    "history merge exceeds scan budget",
+                ));
+            }
+            if rows.len() == limit {
+                return Ok((
+                    rows,
+                    (!heads.is_empty()).then_some((rank.to_string(), point)),
+                ));
+            }
+        }
+        Ok((rows, None))
     }
     /// Scan a necessary index in chronological order, checking the full predicate afterwards.
     pub fn history(

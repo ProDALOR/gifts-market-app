@@ -466,3 +466,25 @@
 .tile-color-5 {
   background: #2a3140;
 }
+
+.collection-all {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 9px;
+  margin-bottom: 8px;
+}
+.collection-all span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.collection-all[aria-pressed="true"] {
+  background: var(--tint);
+  color: var(--accent);
+}
+
+.trait-group.shared {
+  grid-template-columns: minmax(0, 1fr);
+}

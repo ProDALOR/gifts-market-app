@@ -63,6 +63,26 @@ impl ReplicaReader {
         validate: impl FnOnce(&Self, &w::ReadRequest) -> Result<(), Status>,
         include: impl Fn(&w::Entity) -> Result<bool, Status>,
     ) -> Result<ReadBatch, Status> {
+        self.query_range_prepared(
+            request,
+            read,
+            complete,
+            |reader, request| {
+                validate(reader, &request)?;
+                Ok(request)
+            },
+            include,
+        )
+    }
+    /// Resolve application selectors inside the retained/pinned view, before compiling indexes.
+    pub fn query_range_prepared(
+        &self,
+        request: w::ReadRequest,
+        read: RangeRequest,
+        complete: bool,
+        prepare: impl FnOnce(&Self, w::ReadRequest) -> Result<w::ReadRequest, Status>,
+        include: impl Fn(&w::Entity) -> Result<bool, Status>,
+    ) -> Result<ReadBatch, Status> {
         let size = read.limit as usize;
         if size == 0 || size > READ_LIMITS.max_batch_rows as usize {
             return Err(Status::invalid_argument("query exceeds row budget"));
@@ -99,7 +119,7 @@ impl ReplicaReader {
         } else {
             self.snapshot()?
         };
-        validate(&reader, &request)?;
+        let request = prepare(&reader, request)?;
         let view = reader.view()?;
         let filter = Filter::compile_with_options(&view.state, &request, read.options)?;
         if filter.scope.is_none() {

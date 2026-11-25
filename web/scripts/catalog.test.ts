@@ -626,3 +626,65 @@ test("mixed portfolio previews share bounded reads, live versions and the select
   controller.close();
   assert.equal(watches.size, 0);
 });
+
+test("all collections use shared alias choices without requesting collection models", async (t) => {
+  let choiceReads = 0;
+  const controller = new CatalogController({
+    random: () => 0.5,
+    catalog: async (_signal, received) => {
+      received?.("shared-v1");
+      return {
+        collections: [],
+        books: [],
+        venues: [],
+        currencies: [],
+        backdrops: [
+          {
+            id: "native-black",
+            name: "Black",
+            palette: null,
+            aliases: [{ namespace: "name", id: "Black" }],
+          },
+        ],
+        patterns: [
+          {
+            id: "native-crown",
+            name: "Crown",
+            media: null,
+            aliases: [{ namespace: "name", id: "Crown" }],
+          },
+        ],
+      };
+    },
+    collection: async () => {
+      choiceReads++;
+      throw new Error("unexpected collection read");
+    },
+    socket: {
+      subscribe: (_command, frame) => {
+        queueMicrotask(() =>
+          frame({
+            type: "catalog.versions",
+            id: "catalog",
+            versions: { directory: "shared-v1", collections: {} },
+          }),
+        );
+        return () => {};
+      },
+      update: () => {},
+      retry: () => {},
+    },
+  });
+  t.after(() => controller.close());
+  controller.start();
+  await until(() => controller.getSnapshot().options.has("@name:Black"));
+  const snapshot = controller.getSnapshot();
+  assert.equal(snapshot.item?.name, "All gifts");
+  assert.equal(snapshot.options.get("@name:Crown")?.kind, "pattern");
+  assert.equal(snapshot.optionsLoading, false);
+  assert.equal(
+    [...snapshot.options.values()].filter((row) => row.kind === "model").length,
+    0,
+  );
+  assert.equal(choiceReads, 0);
+});

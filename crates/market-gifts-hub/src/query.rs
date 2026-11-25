@@ -26,7 +26,7 @@ fn number(value: GiftNumber) -> w::AttributeValue {
         value: Some(w::attribute_value::Value::Integer(i64::from(value.get()))),
     }
 }
-fn scope(filters: GiftFilters, mode: w::OrderMode) -> Result<w::Scope, InvalidValue> {
+fn scope(filters: ResolvedGiftFilters, mode: w::OrderMode) -> Result<w::Scope, InvalidValue> {
     filters.validate()?;
     let mut attributes = BTreeMap::new();
     if !filters.models.is_empty() {
@@ -56,7 +56,7 @@ fn scope(filters: GiftFilters, mode: w::OrderMode) -> Result<w::Scope, InvalidVa
     }
     Ok(w::Scope {
         venue_id: filters.venue_id.map(Into::into),
-        item_type_id: Some(filters.collection_id.into()),
+        item_type_id: filters.collection_id.map(Into::into),
         currency_id: Some(filters.currency_id.into()),
         modes: vec![mode as i32],
         attributes,
@@ -68,16 +68,8 @@ fn scope(filters: GiftFilters, mode: w::OrderMode) -> Result<w::Scope, InvalidVa
 }
 /// Compile transport-compatible selection and paging limits. Local ranking and
 /// bid matching are chosen by the caller through native replica read options.
-pub fn compile(query: &GiftOrderQuery) -> Result<w::ReadRequest, InvalidValue> {
-    if query.source != OrderSource::Bids && query.bid_match != BidMatch::Any {
-        return Err(InvalidValue("bid_match all is only valid for bids"));
-    }
-    if query.source != OrderSource::History && query.period.is_some() {
-        return Err(InvalidValue("period is only valid for history"));
-    }
-    if let Some(period) = &query.period {
-        period.validate()?;
-    }
+pub fn compile(query: &ResolvedGiftOrderQuery) -> Result<w::ReadRequest, InvalidValue> {
+    query.validate_context()?;
     Ok(w::ReadRequest {
         selection: Some(w::Selection {
             source: Some(w::selection::Source::Scope(scope(

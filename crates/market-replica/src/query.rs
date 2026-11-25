@@ -26,6 +26,14 @@ pub struct Scope {
     pub modes: BTreeSet<OrderMode>,
     pub attributes: std::collections::BTreeMap<String, w::AttributePredicate>,
     pub attribute_match: AttributeMatch,
+    pub collection_attributes: Option<
+        std::sync::Arc<
+            std::collections::BTreeMap<
+                String,
+                std::collections::BTreeMap<String, w::AttributePredicate>,
+            >,
+        >,
+    >,
     pub price: Option<ExactPriceRange>,
 }
 impl TryFrom<w::Scope> for Scope {
@@ -42,6 +50,7 @@ impl TryFrom<w::Scope> for Scope {
                 .collect::<Result<_, _>>()?,
             attributes: scope.attributes,
             attribute_match: AttributeMatch::Value,
+            collection_attributes: None,
             price: scope
                 .price
                 .map(|price| {
@@ -143,6 +152,19 @@ impl Filter {
                 if scope.attributes.len() > 64 {
                     return Err(invalid("too many attribute filters"));
                 }
+                if scope.item_type_id.is_none()
+                    && scope
+                        .attributes
+                        .values()
+                        .map(|p| match &p.predicate {
+                            Some(w::attribute_predicate::Predicate::OneOf(v)) => v.values.len(),
+                            _ => 0,
+                        })
+                        .sum::<usize>()
+                        > 16_384
+                {
+                    return Err(invalid("expanded attribute selection exceeds query budget"));
+                }
                 if attribute_match != AttributeMatch::Value
                     && scope.modes != [w::OrderMode::Bid as i32]
                 {
@@ -159,16 +181,17 @@ impl Filter {
                         .item_type_id
                         .as_ref()
                         .and_then(|id| state.get(EntityKind::ItemType, id));
-                    let Some(w::entity::Entity::ItemType(item)) = item else {
-                        return Err(invalid("attribute filters require an item type"));
-                    };
                     let mut nodes = 0;
                     for (id, predicate) in &mut scope.attributes {
-                        let rule = item
-                            .attributes
-                            .get(id)
-                            .ok_or_else(|| invalid("attribute does not apply to item type"))?;
-                        validate_predicate(state, id, Some(rule), predicate, 0, &mut nodes)?;
+                        let rule = match item {
+                            Some(w::entity::Entity::ItemType(item)) => {
+                                Some(item.attributes.get(id).ok_or_else(|| {
+                                    invalid("attribute does not apply to item type")
+                                })?)
+                            }
+                            _ => None,
+                        };
+                        validate_predicate(state, id, rule, predicate, 0, &mut nodes)?;
                         if attribute_match != AttributeMatch::Value
                             && !constraints::supported(predicate)
                         {
@@ -180,6 +203,57 @@ impl Filter {
                 }
                 let mut compiled = Scope::try_from(scope.clone())?;
                 compiled.attribute_match = attribute_match;
+                if compiled.item_type_id.is_none() {
+                    let mut collections = std::collections::BTreeMap::new();
+                    for (_, entity) in state.range(None, Some(EntityKind::ItemType)) {
+                        let Some(w::entity::Entity::ItemType(item)) = &entity.entity else {
+                            continue;
+                        };
+                        let mut attributes = std::collections::BTreeMap::new();
+                        let mut valid = true;
+                        for (id, predicate) in &compiled.attributes {
+                            let Some(rule) = item.attributes.get(id) else {
+                                valid = false;
+                                break;
+                            };
+                            let mut predicate = predicate.clone();
+                            if let Some(w::attribute_predicate::Predicate::OneOf(values)) =
+                                &mut predicate.predicate
+                            {
+                                values.values.retain(|v| match &v.value {
+                                    Some(w::attribute_value::Value::OptionId(v)) => rule
+                                        .allowed_values
+                                        .as_ref()
+                                        .is_none_or(|allowed| allowed.ids.contains(v)),
+                                    _ => true,
+                                });
+                                if values.values.is_empty() {
+                                    valid = false;
+                                    break;
+                                }
+                            }
+                            let mut nodes = 0;
+                            if validate_predicate(
+                                state,
+                                id,
+                                Some(rule),
+                                &mut predicate,
+                                0,
+                                &mut nodes,
+                            )
+                            .is_err()
+                            {
+                                valid = false;
+                                break;
+                            }
+                            attributes.insert(id.clone(), predicate);
+                        }
+                        if valid {
+                            collections.insert(item.id.clone(), attributes);
+                        }
+                    }
+                    compiled.collection_attributes = Some(std::sync::Arc::new(collections));
+                }
                 Some(compiled)
             }
             Some(w::selection::Source::FeedId(_)) => {
@@ -196,15 +270,12 @@ impl Filter {
         let sort = options.sort.unwrap_or(wire_sort);
         if sort != Sort::Identity
             && (!scope.as_ref().is_some_and(|scope| {
-                scope.item_type_id.is_some()
-                    && scope.currency_id.is_some()
+                scope.currency_id.is_some()
                     && !scope.modes.is_empty()
                     && (!scope.modes.contains(&OrderMode::Executed) || scope.modes.len() == 1)
             }))
         {
-            return Err(invalid(
-                "sorting requires orders in one item type and currency",
-            ));
+            return Err(invalid("sorting requires orders in one currency"));
         }
         let mut digest = Sha256::new();
         digest.update(selection.encode_to_vec());
@@ -286,15 +357,23 @@ impl Filter {
                 return Ok(false);
             }
         }
+        let attributes = if let Some(collections) = &scope.collection_attributes {
+            let Some(attributes) = collections.get(&book.item_type_id) else {
+                return Ok(false);
+            };
+            attributes
+        } else {
+            &scope.attributes
+        };
         if scope.attribute_match != AttributeMatch::Value {
             if scope.attribute_match == AttributeMatch::Exact
-                && scope.attributes.len() != order.attributes.len()
+                && attributes.len() != order.attributes.len()
             {
                 return Ok(false);
             }
             // Unknown complex restrictions must never be treated as unrestricted bids.
             return Ok(order.attributes.values().all(constraints::supported)
-                && scope.attributes.iter().all(|(id, requested)| {
+                && attributes.iter().all(|(id, requested)| {
                     order
                         .attributes
                         .get(id)
@@ -303,7 +382,7 @@ impl Filter {
                         })
                 }));
         }
-        for (id, predicate) in &scope.attributes {
+        for (id, predicate) in attributes {
             let Some(w::attribute_predicate::Predicate::Eq(value)) =
                 order.attributes.get(id).and_then(|v| v.predicate.as_ref())
             else {
@@ -583,13 +662,19 @@ fn validate_predicate(
         P::Eq(value) => validate_value(state, id, rule, value, 0, nodes)?,
         P::OneOf(values) => {
             if values.values.is_empty()
-                || values.values.len() > 128
+                || values.values.len() > if rule.is_none() { 4096 } else { 500 }
                 || !(1..=3).contains(&attr.value_type)
             {
                 return Err(invalid("one_of requires enum or numeric values"));
             }
             for v in &mut values.values {
-                validate_value(state, id, rule, v, 0, nodes)?;
+                // Global scalar alternatives expand across collections; their total has
+                // its own bounded budget, while nested values retain the ordinary depth limit.
+                if rule.is_none() {
+                    validate_value(state, id, rule, v, 0, &mut 0)?;
+                } else {
+                    validate_value(state, id, rule, v, 0, nodes)?;
+                }
             }
             values.values.sort_by_key(Message::encode_to_vec);
             values.values.dedup();
@@ -651,4 +736,88 @@ fn validate_predicate(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod multi_scope_tests {
+    use super::*;
+    #[test]
+    fn expanded_alias_values_are_validated_globally_and_clipped_per_collection() {
+        let mut state = State::default();
+        let mut insert = |value| {
+            state
+                .upsert(w::Entity {
+                    entity: Some(value),
+                })
+                .unwrap()
+        };
+        insert(w::entity::Entity::Currency(w::Currency {
+            id: "GRAM".into(),
+            ..Default::default()
+        }));
+        insert(w::entity::Entity::Attribute(w::Attribute {
+            id: "color".into(),
+            value_type: 1,
+            ..Default::default()
+        }));
+        let mut values = Vec::new();
+        for collection in 0..3 {
+            let mut ids = Vec::new();
+            for index in 0..400 {
+                let id = format!("color-{collection}-{index}");
+                ids.push(id.clone());
+                insert(w::entity::Entity::AttributeOption(w::AttributeOption {
+                    id: id.clone(),
+                    attribute_id: "color".into(),
+                    ..Default::default()
+                }));
+                values.push(w::AttributeValue {
+                    value: Some(w::attribute_value::Value::OptionId(id)),
+                });
+            }
+            insert(w::entity::Entity::ItemType(w::ItemType {
+                id: format!("collection-{collection}"),
+                attributes: [(
+                    "color".into(),
+                    w::AttributeRule {
+                        allowed_values: Some(w::AllowedAttributeValues { ids }),
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+                ..Default::default()
+            }));
+        }
+        let request = w::ReadRequest {
+            selection: Some(w::Selection {
+                source: Some(w::selection::Source::Scope(w::Scope {
+                    currency_id: Some("GRAM".into()),
+                    modes: vec![w::OrderMode::Ask as i32],
+                    attributes: [(
+                        "color".into(),
+                        w::AttributePredicate {
+                            predicate: Some(w::attribute_predicate::Predicate::OneOf(
+                                w::AttributeValues { values },
+                            )),
+                        },
+                    )]
+                    .into(),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let filter = Filter::compile(&state, &request).unwrap();
+        let scopes = filter.scope.unwrap().collection_attributes.unwrap();
+        assert_eq!(scopes.len(), 3);
+        for predicates in scopes.values() {
+            let Some(w::attribute_predicate::Predicate::OneOf(values)) =
+                &predicates["color"].predicate
+            else {
+                panic!()
+            };
+            assert_eq!(values.values.len(), 400);
+        }
+    }
 }

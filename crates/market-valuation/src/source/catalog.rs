@@ -2,21 +2,6 @@ use super::*;
 use market_gifts::*;
 use market_hub_protocol::wire as w;
 use std::collections::BTreeSet;
-#[derive(Clone, Copy, Debug)]
-pub enum CatalogTrait {
-    Model,
-    Backdrop,
-    Pattern,
-}
-impl CatalogTrait {
-    pub(super) fn attribute(self) -> &'static str {
-        match self {
-            Self::Model => market_gifts_hub::MODEL,
-            Self::Backdrop => market_gifts_hub::BACKDROP,
-            Self::Pattern => market_gifts_hub::PATTERN,
-        }
-    }
-}
 impl ValuationSnapshot {
     pub fn require_collection(&self, collection: &CollectionId) -> Result<()> {
         let item = self.entity(w::EntityKind::ItemType, collection)?;
@@ -31,7 +16,7 @@ impl ValuationSnapshot {
     pub fn require_trait(
         &self,
         collection: &CollectionId,
-        kind: CatalogTrait,
+        kind: GiftTraitKind,
         id: &str,
     ) -> Result<()> {
         let Some(w::entity::Entity::ItemType(item)) =
@@ -43,7 +28,7 @@ impl ValuationSnapshot {
             .map_err(|e| Status::unavailable(e.to_string()))?;
         if let Some(w::entity::Entity::AttributeOption(option)) =
             self.entity(w::EntityKind::AttributeOption, id)?
-            && option.attribute_id == kind.attribute()
+            && option.attribute_id == market_gifts_hub::trait_attribute(kind)
             && rules.accepts(&option)
         {
             return Ok(());
@@ -72,7 +57,7 @@ impl ValuationSnapshot {
             .ok_or_else(|| Status::invalid_argument("unknown quote currency"))?;
         Ok(())
     }
-    fn options(&self, collection: &CollectionId, kind: CatalogTrait) -> Result<Vec<String>> {
+    fn options(&self, collection: &CollectionId, kind: GiftTraitKind) -> Result<Vec<String>> {
         let Some(w::entity::Entity::ItemType(item)) =
             self.entity(w::EntityKind::ItemType, collection)?
         else {
@@ -83,10 +68,10 @@ impl ValuationSnapshot {
         }
         let rules = market_gifts_hub::CollectionChoices::new(&item)
             .map_err(|e| Status::unavailable(e.to_string()))?;
-        let ids = rules.trait_option_ids(kind.attribute());
+        let ids = rules.trait_option_ids(kind);
         let options = market_replica::catalog_read::trait_options(
             &self.reader,
-            kind.attribute(),
+            market_gifts_hub::trait_attribute(kind),
             ids.as_deref(),
             &self.cancelled,
         )?;
@@ -97,7 +82,7 @@ impl ValuationSnapshot {
             .collect())
     }
     pub fn model_ids(&self, collection: &CollectionId) -> Result<BTreeSet<ModelId>> {
-        self.options(collection, CatalogTrait::Model)?
+        self.options(collection, GiftTraitKind::Model)?
             .into_iter()
             .map(|id| {
                 id.try_into()
@@ -106,7 +91,7 @@ impl ValuationSnapshot {
             .collect()
     }
     pub fn backdrop_ids(&self, collection: &CollectionId) -> Result<BTreeSet<BackdropId>> {
-        self.options(collection, CatalogTrait::Backdrop)?
+        self.options(collection, GiftTraitKind::Backdrop)?
             .into_iter()
             .map(|id| {
                 id.try_into()
@@ -115,7 +100,7 @@ impl ValuationSnapshot {
             .collect()
     }
     pub fn pattern_ids(&self, collection: &CollectionId) -> Result<BTreeSet<PatternId>> {
-        self.options(collection, CatalogTrait::Pattern)?
+        self.options(collection, GiftTraitKind::Pattern)?
             .into_iter()
             .map(|id| {
                 id.try_into()

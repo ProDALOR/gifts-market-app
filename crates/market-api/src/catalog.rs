@@ -15,6 +15,8 @@ pub struct GiftMedia {
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GiftCollection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<gifts::GiftAlias>,
     pub id: gifts::CollectionId,
     pub name: String,
     pub slug: Option<gifts::CollectionSlug>,
@@ -22,6 +24,8 @@ pub struct GiftCollection {
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GiftModel {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<gifts::GiftAlias>,
     pub id: gifts::ModelId,
     pub name: String,
     pub media: Option<GiftMedia>,
@@ -30,6 +34,8 @@ pub struct GiftModel {
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GiftPattern {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<gifts::GiftAlias>,
     pub id: gifts::PatternId,
     pub name: String,
     pub media: Option<GiftMedia>,
@@ -38,6 +44,10 @@ pub struct GiftPattern {
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GiftCatalog {
+    #[serde(default)]
+    pub backdrops: Arc<Vec<gifts::GiftBackdrop>>,
+    #[serde(default)]
+    pub patterns: Arc<Vec<GiftPattern>>,
     pub collections: Arc<Vec<GiftCollection>>,
     pub venues: Arc<Vec<gifts::Venue>>,
     pub currencies: Arc<Vec<gifts::Currency>>,
@@ -77,6 +87,7 @@ impl From<gifts::GiftMedia> for GiftMedia {
 impl From<gifts::GiftCollection> for GiftCollection {
     fn from(value: gifts::GiftCollection) -> Self {
         Self {
+            aliases: value.aliases,
             id: value.id,
             slug: value.slug,
             name: value.name,
@@ -87,6 +98,19 @@ impl From<gifts::GiftCollection> for GiftCollection {
 impl From<gifts::GiftCatalog> for GiftCatalog {
     fn from(value: gifts::GiftCatalog) -> Self {
         Self {
+            backdrops: value.backdrops,
+            patterns: value
+                .patterns
+                .iter()
+                .map(|p| GiftPattern {
+                    aliases: p.aliases.clone(),
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    media: p.media.clone().map(Into::into),
+                    rarity: None,
+                })
+                .collect::<Vec<_>>()
+                .into(),
             collections: value
                 .collections
                 .iter()
@@ -108,6 +132,7 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
                 .models
                 .iter()
                 .map(|m| GiftModel {
+                    aliases: m.aliases.clone(),
                     id: m.id.clone(),
                     name: m.name.clone(),
                     media: m.media.clone().map(Into::into),
@@ -119,6 +144,7 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
                 .patterns
                 .iter()
                 .map(|p| GiftPattern {
+                    aliases: p.aliases.clone(),
                     id: p.id.clone(),
                     name: p.name.clone(),
                     media: p.media.clone().map(Into::into),
@@ -131,7 +157,7 @@ impl From<gifts::GiftCollectionCatalog> for GiftCollectionCatalog {
     }
 }
 /// Internal representation namespace; update if URL/JSON mapping changes.
-const REPRESENTATION: &[u8] = b"gift-catalog:rarity\0";
+const REPRESENTATION: &[u8] = b"gift-catalog:slug-name\0";
 /// A stable 128-bit cache validator; tokens are opaque and provide no authentication.
 pub(crate) fn revision(domain: &str) -> String {
     let mut hash = Sha256::new();
@@ -140,7 +166,9 @@ pub(crate) fn revision(domain: &str) -> String {
     let digest = hash.finalize();
     URL_SAFE_NO_PAD.encode(&digest[..16])
 }
-pub(crate) fn versions(mut value: gifts::CatalogVersions) -> gifts::CatalogVersions {
+pub(crate) fn versions(
+    mut value: market_actors::input::CatalogVersions,
+) -> market_actors::input::CatalogVersions {
     value.directory = revision(&value.directory);
     for version in value.collections.values_mut().flatten() {
         *version = revision(version);
@@ -158,12 +186,14 @@ mod tests {
         };
         let data = GiftCollectionCatalog::from(gifts::GiftCollectionCatalog {
             collection: gifts::GiftCollection {
+                aliases: Default::default(),
                 id: "gift".into(),
                 name: "Gift".into(),
                 slug: None,
                 preview: None,
             },
             models: vec![gifts::GiftModel {
+                aliases: Default::default(),
                 id: "model".into(),
                 name: "Model".into(),
                 media: None,
@@ -171,6 +201,7 @@ mod tests {
             }]
             .into(),
             backdrops: vec![gifts::GiftBackdrop {
+                aliases: Default::default(),
                 id: "backdrop".into(),
                 name: "Backdrop".into(),
                 palette: None,
@@ -178,6 +209,7 @@ mod tests {
             }]
             .into(),
             patterns: vec![gifts::GiftPattern {
+                aliases: Default::default(),
                 id: "pattern".into(),
                 name: "Pattern".into(),
                 media: None,
@@ -198,12 +230,12 @@ mod tests {
     }
     #[test]
     fn revisions_are_short_stable_opaque_tokens_derived_from_the_full_content_version() {
-        assert_eq!(revision("content"), "XXtBQfdU3H2Yg0031Mkh5w");
+        assert_eq!(revision("content"), "NTmNeEUKPaNIhk42HQwVjA");
         let old = Sha256::digest([b"gift-catalog:svg-media\0".as_slice(), b"content"].concat());
         assert_ne!(
             revision("content"),
             URL_SAFE_NO_PAD.encode(&old[..16]),
-            "Adding rarity must invalidate existing catalog ETags and watch tokens"
+            "Alias support must invalidate existing catalog ETags and watch tokens"
         );
         let original = "0".repeat(64);
         let mut changed = original.clone();
@@ -219,7 +251,7 @@ mod tests {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
             );
         }
-        let versions = versions(gifts::CatalogVersions {
+        let versions = versions(market_actors::input::CatalogVersions {
             directory: "content".into(),
             collections: [
                 ("gift".into(), Some(original.clone())),
@@ -229,11 +261,11 @@ mod tests {
         });
         assert_eq!(versions.directory, revision("content"));
         assert_eq!(
-            versions.collections[&gifts::CollectionId::from("gift")],
+            versions.collections[&market_actors::input::CollectionRef::from("gift")],
             Some(revision(&original))
         );
         assert_eq!(
-            versions.collections[&gifts::CollectionId::from("missing")],
+            versions.collections[&market_actors::input::CollectionRef::from("missing")],
             None
         );
     }

@@ -331,13 +331,13 @@ impl MarketCommands {
                 .clone()
                 .zip(gift.traits.backdrop.clone())
                 .map(|(model_id, backdrop_id)| PairSelection {
-                    model_id,
-                    backdrop_id,
+                    model_id: model_id.into(),
+                    backdrop_id: backdrop_id.into(),
                 });
             let target = ValuationTarget::Catalog(CatalogSelection {
-                collection_ids: vec![gift.collection_id.clone()],
+                collection_ids: vec![gift.collection_id.clone().into()],
                 details: Some(CatalogDetails {
-                    collection_id: gift.collection_id.clone(),
+                    collection_id: gift.collection_id.clone().into(),
                     pair,
                 }),
             });
@@ -374,7 +374,8 @@ impl MarketCommands {
                 tokio::join!(model, pattern)
             };
             let (catalog, gram, stars, artwork) = tokio::join!(
-                self.market.collection_snapshot(gift.collection_id.clone()),
+                self.market
+                    .collection_snapshot(gift.collection_id.clone().into()),
                 self.valuation.query(request("GRAM")),
                 self.valuation.query(request("XTR")),
                 artwork

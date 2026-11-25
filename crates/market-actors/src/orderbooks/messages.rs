@@ -1,5 +1,4 @@
 use actix::Message;
-use market_hub_protocol::wire as w;
 use market_replica::SyncStatus;
 use tonic::Status;
 #[derive(Message)]
@@ -15,7 +14,7 @@ pub(crate) struct ReleaseSnapshot {
 #[derive(Message)]
 #[rtype(result = "Result<crate::OrderSnapshot,Status>")]
 pub(crate) struct ReadRange {
-    pub request: w::ReadRequest,
+    pub request: crate::query::OrderQuery,
     pub read: market_replica::RangeRequest,
     pub complete: bool,
     pub permit: market_replica::ReadPermit,

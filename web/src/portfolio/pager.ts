@@ -5,6 +5,8 @@ export type PortfolioRows = {
   items: PortfolioPage["items"];
   selection?: PortfolioPage["selection"];
   version?: string;
+  /** Continuation identity may include resolved catalog aliases in addition to inventory data. */
+  pageVersion?: string;
   hasMore: boolean;
   loading: boolean;
   error: string;
@@ -35,6 +37,8 @@ export class PortfolioPager {
   private waiting?: string;
   private paused = false;
   private disposed = false;
+  private restart = false;
+  private aliasRestarts = 0;
   private desired: number;
   private ids: Set<string>;
   constructor(private options: Options) {
@@ -60,6 +64,7 @@ export class PortfolioPager {
       this.request?.abort();
       this.request = undefined;
       this.version = version;
+      this.aliasRestarts = 0;
     }
     if (changed || resuming || !this.rows.error) void this.run();
   }
@@ -79,6 +84,7 @@ export class PortfolioPager {
   };
   retry = () => {
     if (this.disposed || this.paused || this.request) return;
+    this.aliasRestarts = 0;
     if (this.waiting) this.options.refreshSummary();
     else void this.run();
   };
@@ -102,7 +108,18 @@ export class PortfolioPager {
     )
       return;
     const version = this.version;
-    const reset = this.rows.version !== version || !this.rows.selection;
+    const reset =
+      this.restart || this.rows.version !== version || !this.rows.selection;
+    let pageVersion = reset ? version : (this.rows.pageVersion ?? version);
+    let restartAfter = false;
+    const filters = this.options.query.filters;
+    const aliases =
+      filters?.collection_id?.startsWith("@") ||
+      [
+        ...(filters?.models ?? []),
+        ...(filters?.backdrops ?? []),
+        ...(filters?.patterns ?? []),
+      ].some((id) => id.startsWith("@"));
     if (
       !reset &&
       this.rows.items.length >=
@@ -121,12 +138,19 @@ export class PortfolioPager {
       this.version === version;
     const read = async (offset: number) => {
       const page = await this.options.request(
-        { ...this.options.query, offset, limit: PAGE_SIZE, version },
+        {
+          ...this.options.query,
+          offset,
+          limit: PAGE_SIZE,
+          version: pageVersion,
+        },
         stop.signal,
       );
       stop.signal.throwIfAborted();
+      if (offset === 0 && aliases && /^[0-9a-f]{32}$/.test(page.version))
+        pageVersion = page.version;
       if (
-        page.version !== version ||
+        page.version !== pageVersion ||
         page.offset !== offset ||
         page.items.length > PAGE_SIZE ||
         page.selection.count < offset + page.items.length ||
@@ -167,7 +191,10 @@ export class PortfolioPager {
       }
       if (reset) this.ids = addedIds;
       else for (const id of addedIds) this.ids.add(id);
+      this.restart = false;
+      this.aliasRestarts = 0;
       this.publish({
+        pageVersion,
         items: reset ? additions : this.rows.items.concat(additions),
         selection: reset ? first.selection : this.rows.selection,
         version,
@@ -183,9 +210,21 @@ export class PortfolioPager {
         typeof error === "object" &&
         (error as { code?: string }).code === "restart_read"
       ) {
-        this.waiting = version;
-        this.publish({ loading: true, error: "" });
-        this.options.refreshSummary();
+        if (aliases && pageVersion !== version) {
+          this.restart = true;
+          if (this.aliasRestarts++ === 0) {
+            restartAfter = true;
+            this.publish({ loading: true, error: "" });
+          } else
+            this.publish({
+              loading: false,
+              error: "Gift filters changed while loading. Retry.",
+            });
+        } else {
+          this.waiting = version;
+          this.publish({ loading: true, error: "" });
+          this.options.refreshSummary();
+        }
       } else
         this.publish({
           loading: false,
@@ -196,6 +235,7 @@ export class PortfolioPager {
         });
     } finally {
       if (this.request === stop) this.request = undefined;
+      if (restartAfter) queueMicrotask(() => void this.run());
     }
   }
 }

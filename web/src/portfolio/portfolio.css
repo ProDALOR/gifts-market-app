@@ -77,23 +77,6 @@
   border-radius: 9px;
   padding: 9px;
 }
-.portfolio-any {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 9px 10px;
-  border-radius: 9px;
-  margin-bottom: 8px;
-}
-.portfolio-any span {
-  color: var(--muted);
-  font-size: 12px;
-}
-.portfolio-any[aria-pressed="true"] {
-  background: var(--tint);
-  color: var(--accent);
-}
 .portfolio-filters {
   --portfolio-control-height: 40px;
   display: grid;

@@ -1,10 +1,16 @@
 //! Public visible portfolios. Numeric IDs identify subjects; Telegram still enforces visibility.
+pub type PortfolioReadQuery = market_portfolio::PortfolioReadQuery<
+    market_actors::input::CollectionRef,
+    market_actors::input::ModelRef,
+    market_actors::input::BackdropRef,
+    market_actors::input::PatternRef,
+>;
 use crate::{
     MarketApi,
     error::{ApiError, ErrorCode, Result},
 };
 use actix_web::{HttpResponse, web};
-use market_portfolio::{PortfolioQuery, PortfolioReadQuery, PortfolioState, UserId};
+use market_portfolio::{PortfolioQuery, PortfolioState, UserId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -92,13 +98,72 @@ impl MarketApi {
         query: PortfolioReadQuery,
     ) -> Result<market_portfolio::PortfolioPage> {
         query.validate().map_err(failure)?;
-        let state = self
+        let input = market_actors::input::GiftFilters {
+            collection_id: query.filters.collection_id,
+            currency_id: query.currency_id.clone(),
+            venue_id: None,
+            models: query.filters.models,
+            backdrops: query.filters.backdrops,
+            patterns: query.filters.patterns,
+            number: None,
+            price: None,
+        };
+        let uses_aliases = input.has_aliases();
+        let filters = if uses_aliases {
+            self.data.resolve_filters(input).await?
+        } else {
+            input
+                .into_resolved()
+                .map_err(|e| ApiError::invalid(e.to_string()))?
+        };
+        let mut query = market_portfolio::ResolvedPortfolioReadQuery {
+            user_id: query.user_id,
+            currency_id: query.currency_id,
+            filters: market_portfolio::ResolvedPortfolioFilters {
+                collection_id: filters.collection_id,
+                models: filters.models,
+                backdrops: filters.backdrops,
+                patterns: filters.patterns,
+                number: query.filters.number,
+            },
+            sort: query.sort,
+            offset: query.offset,
+            limit: query.limit,
+            version: query.version,
+        };
+        query.validate().map_err(failure)?;
+        let mut state = self
             .portfolio_service()?
             .query(query.subject())
             .await
             .map_err(failure)?;
         if state.valuation.is_none() {
             return Err(ApiError::unavailable("Portfolio is still being checked"));
+        }
+        if uses_aliases {
+            use sha2::{Digest, Sha256};
+            let base = state
+                .version
+                .as_ref()
+                .ok_or_else(|| failure(market_portfolio::PortfolioError::RestartRead))?;
+            let base_text: String = base.clone().into();
+            let mut digest = Sha256::new();
+            digest.update(b"portfolio-alias-selection-v1\0");
+            digest.update(base_text.as_bytes());
+            digest.update(
+                serde_json::to_vec(&query.filters)
+                    .map_err(|_| ApiError::unavailable("Cannot encode portfolio selection"))?,
+            );
+            let mut token = format!("{:x}", digest.finalize());
+            token.truncate(32);
+            let version = market_portfolio::PortfolioVersion::try_from(token)
+                .map_err(|_| ApiError::unavailable("Cannot version portfolio selection"))?;
+            if query.offset == 0 && query.version.as_ref() == Some(base) {
+                query.version = Some(version.clone());
+            }
+            let mut selected = state.as_ref().clone();
+            selected.version = Some(version);
+            state = std::sync::Arc::new(selected);
         }
         let reads = self.portfolio_reads.clone();
         self.prepare_response(move |stop| {

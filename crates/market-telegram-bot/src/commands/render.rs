@@ -13,7 +13,7 @@ pub(crate) fn launch_reply(command: &super::Command) -> Option<Reply> {
     Some(Reply::text(match command {
         Command::Start | Command::Market => format!("{usage}\nOpen the market to browse gifts."),
         Command::Help => format!(
-            "{usage}\nYou can also use this bot’s username in another chat.\n/status — market status\n/market — browse gifts\n/portfolio — visible gift portfolio\nSales show observed executions; history may be incomplete."
+            "{usage}\nYou can also use this bot’s username in another chat.\n/status — market status\n/market — browse gifts; add collection=ResistanceDog, model=Dogfather, backdrop=Black or symbol=Crown (space-separated)\n/portfolio — visible gift portfolio\nSales show observed executions; history may be incomplete."
         ),
         Command::GiftHelp => usage.to_owned(),
         _ => return None,

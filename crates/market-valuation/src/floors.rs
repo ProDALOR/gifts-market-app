@@ -2,7 +2,7 @@
 use crate::{FloorValuation, ValuationIssueCode, ValuationMetric};
 use crate::{
     ValuationError,
-    source::{BookScope, CatalogTrait, ReadDependencies, ValuationSnapshot},
+    source::{BookScope, GiftTraitKind, ReadDependencies, ValuationSnapshot},
 };
 use market_gifts::*;
 use std::{
@@ -190,9 +190,9 @@ impl Statistics {
                 &scope.currency,
                 if preparation == Preparation::Traits {
                     &[
-                        CatalogTrait::Model,
-                        CatalogTrait::Backdrop,
-                        CatalogTrait::Pattern,
+                        GiftTraitKind::Model,
+                        GiftTraitKind::Backdrop,
+                        GiftTraitKind::Pattern,
                     ]
                 } else {
                     &[]

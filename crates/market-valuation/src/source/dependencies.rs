@@ -81,7 +81,7 @@ impl ValuationSnapshot {
         &self,
         scopes: impl IntoIterator<Item = BookScope>,
         currency: &CurrencyId,
-        kinds: &[CatalogTrait],
+        kinds: &[GiftTraitKind],
         lookups: &[ModelLookup],
     ) -> Result<ReadDependencies> {
         self.dependencies_with_books(scopes, currency, kinds, lookups, true)
@@ -90,16 +90,16 @@ impl ValuationSnapshot {
         &self,
         scopes: impl IntoIterator<Item = BookScope>,
         currency: &CurrencyId,
-        lookup: Option<&GiftLookup>,
+        lookup: Option<&market_gifts_hub::input::GiftLookupInput>,
     ) -> Result<ReadDependencies> {
         let scopes: Vec<_> = scopes.into_iter().collect();
         self.dependencies_with_books(
             scopes.clone(),
             currency,
             &[
-                CatalogTrait::Model,
-                CatalogTrait::Backdrop,
-                CatalogTrait::Pattern,
+                GiftTraitKind::Model,
+                GiftTraitKind::Backdrop,
+                GiftTraitKind::Pattern,
             ],
             &[],
             false,
@@ -137,7 +137,7 @@ impl ValuationSnapshot {
         &self,
         scopes: impl IntoIterator<Item = BookScope>,
         currency: &CurrencyId,
-        kinds: &[CatalogTrait],
+        kinds: &[GiftTraitKind],
         lookups: &[ModelLookup],
         include_books: bool,
     ) -> Result<ReadDependencies> {
@@ -168,19 +168,15 @@ impl ValuationSnapshot {
             {
                 let rules = market_gifts_hub::CollectionChoices::new(&item)
                     .map_err(|e| Status::unavailable(e.to_string()))?;
-                for attribute in kinds
-                    .iter()
-                    .map(|kind| kind.attribute())
-                    .collect::<BTreeSet<_>>()
-                {
-                    if let Some(ids) = rules.trait_option_ids(attribute) {
+                for kind in kinds.iter().copied().collect::<BTreeSet<_>>() {
+                    if let Some(ids) = rules.trait_option_ids(kind) {
                         keys.extend(ids.into_iter().map(|id| w::Key {
                             kind: w::EntityKind::AttributeOption as i32,
                             id,
                             ..Default::default()
                         }));
                     } else {
-                        attributes.push(attribute.into());
+                        attributes.push(market_gifts_hub::trait_attribute(kind).into());
                     }
                 }
             }
@@ -267,7 +263,10 @@ impl OrderDependency {
     }
 }
 impl ValuationSnapshot {
-    pub(crate) fn order_dependency(&self, query: &GiftOrderQuery) -> Result<OrderDependency> {
+    pub(crate) fn order_dependency(
+        &self,
+        query: &ResolvedGiftOrderQuery,
+    ) -> Result<OrderDependency> {
         let request = market_gifts_hub::query::compile(query)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let revision = self.reader.read_revision(&request)?;

@@ -178,7 +178,7 @@ impl MarketCommands {
                 .read(query, |query| async {
                     tokio::time::timeout(
                         std::time::Duration::from_secs(3),
-                        self.market.query_orders(query),
+                        self.market.query_orders(market_actors::input::query(query)),
                     )
                     .await
                     .ok()?

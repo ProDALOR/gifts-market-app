@@ -446,7 +446,37 @@ impl BookIndex {
         };
         let mut iterators: Vec<RankedIterator<'a>> = Vec::new();
         let mut candidate_budget = crate::READ_LIMITS.max_scan_candidates;
-        for b in self.groups.get(&pair).into_iter().flatten() {
+        let books: Box<dyn Iterator<Item = &Book> + '_> = if scope.item_type_id.is_some() {
+            Box::new(self.groups.get(&pair).into_iter().flatten())
+        } else {
+            Box::new(
+                self.groups
+                    .iter()
+                    .filter(|(group, _)| {
+                        scope
+                            .currency_id
+                            .as_ref()
+                            .is_none_or(|id| id == &group.currency_id)
+                    })
+                    .flat_map(|(_, books)| books.iter()),
+            )
+        };
+        for b in books {
+            let scoped;
+            let scope = if let Some(collections) = &scope.collection_attributes {
+                let Some(attributes) = collections.get(&b.item_type_id) else {
+                    continue;
+                };
+                scoped = {
+                    let mut copy = scope.clone();
+                    copy.attributes = attributes.clone();
+                    copy.collection_attributes = None;
+                    copy
+                };
+                &scoped
+            } else {
+                scope
+            };
             if scope
                 .venue_id
                 .as_ref()

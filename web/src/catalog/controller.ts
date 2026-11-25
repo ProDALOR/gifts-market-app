@@ -1,3 +1,4 @@
+import { allCollections, preferredSelector } from "./aliases.ts";
 import { catalog, collectionCatalog } from "../market.ts";
 import type {
   Catalog,
@@ -60,6 +61,7 @@ export class CatalogController {
 
   private materialized = emptyCatalog;
   private types: Collection[] = [];
+  private sharedOptions: Options = emptyOptions;
   private state: CatalogState = {
     selectedId: "",
     types: [],
@@ -316,6 +318,21 @@ export class CatalogController {
               : row;
           })
           .sort((a, b) => a.name.localeCompare(b.name));
+        this.sharedOptions = new Map(
+          [
+            ...(directory.backdrops ?? []).map((row) => ({
+              ...row,
+              kind: "backdrop" as const,
+            })),
+            ...(directory.patterns ?? []).map((row) => ({
+              ...row,
+              kind: "pattern" as const,
+            })),
+          ].map((row) => {
+            const id = preferredSelector(row)!;
+            return [id, { ...row, id }];
+          }),
+        );
         this.materialized = directory;
       }
       const allowed = this.started && (!!this.manifest || this.fallback);
@@ -354,11 +371,15 @@ export class CatalogController {
   private publish() {
     if (this.closed) return;
     const directory = this.directory.value ?? emptyCatalog;
-    const item = this.types.find((row) => row.id === this.selectedId);
-    const resource = item
+    const item = this.selectedId
+      ? this.types.find((row) => row.id === this.selectedId)
+      : allCollections;
+    const resource = item?.id
       ? this.collections.get(this.selectedId)?.resource
       : undefined;
-    const options = resource?.value ?? emptyOptions;
+    const options = this.selectedId
+      ? (resource?.value ?? emptyOptions)
+      : this.sharedOptions;
     const previous = this.state;
     const maps = [...this.collections.values()].flatMap((e) =>
       e.resource.value ? [e.resource.value] : [],
@@ -396,7 +417,7 @@ export class CatalogController {
       startupError: this.directory.error || this.liveError,
       optionsError: resource?.error ?? "",
       optionsLoading:
-        !!item &&
+        !!item?.id &&
         (!!resource?.loading ||
           (resource?.value === undefined && !resource?.error)),
     };

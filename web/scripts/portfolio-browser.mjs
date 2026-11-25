@@ -185,6 +185,15 @@ try {
         r.fulfill({
           headers: { etag: '"directory"' },
           json: {
+            backdrops: [
+              {
+                ...backdrops[0],
+                aliases: [{ namespace: "name", id: "Green" }],
+              },
+            ],
+            patterns: [
+              { ...patterns[0], aliases: [{ namespace: "name", id: "Star" }] },
+            ],
             collections: [
               collection,
               { ...collection, id: "other", name: "Other Gift" },
@@ -325,7 +334,24 @@ try {
               type: "result",
               id: frame.id,
               method: frame.method,
-              data: portfolioPage(report, frame.params),
+              data: portfolioPage(report, {
+                ...frame.params,
+                filters: {
+                  ...frame.params.filters,
+                  ...Object.fromEntries(
+                    Object.entries({ models, backdrops, patterns }).map(
+                      ([kind, options]) => [
+                        kind,
+                        frame.params.filters?.[kind]?.map(
+                          (id) =>
+                            options.find((row) => id === `@name:${row.name}`)
+                              ?.id ?? id,
+                        ),
+                      ],
+                    ),
+                  ),
+                },
+              }),
             });
           } catch (error) {
             send(socket, { type: "error", id: frame.id, error });
@@ -1054,6 +1080,43 @@ try {
       .locator(".portfolio-progress")
       .filter({ hasText: "Inventory checked" })
       .waitFor();
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Model", exact: true })
+        .isDisabled(),
+      true,
+    );
+    const beforeGlobalPicker = catalogDetails;
+    await page.getByRole("button", { name: "Backdrop", exact: true }).click();
+    await page
+      .getByRole("group", { name: "Backdrop options", exact: true })
+      .getByRole("button", { name: "Green", exact: true })
+      .click();
+    for (
+      let attempt = 0;
+      attempt < 100 &&
+      !pageReads.at(-1)?.filters.backdrops?.includes("@name:Green");
+      attempt++
+    )
+      await page.waitForTimeout(10);
+    assert(pageReads.at(-1).filters.backdrops.includes("@name:Green"));
+    assert.equal(
+      catalogDetails,
+      beforeGlobalPicker,
+      "all-gift trait pickers reuse shared catalog choices",
+    );
+    assert.equal(
+      await page
+        .locator(".portfolio-shell")
+        .evaluate((el) => el.scrollWidth <= el.clientWidth),
+      true,
+    );
+    await page.screenshot({
+      path: join(output, `portfolio-global-aliases-${viewport.width}.png`),
+    });
+    await page
+      .getByRole("button", { name: "Reset traits", exact: true })
+      .click();
     holdRefresh = true;
     await page.evaluate(() => {
       const refresh = document.querySelector('[aria-label="Refresh gifts"]');

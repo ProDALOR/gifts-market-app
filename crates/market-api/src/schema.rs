@@ -26,7 +26,15 @@ use utoipa::OpenApi;
         (name="Media",description="Cached gift thumbnails, first-frame SVGs, original TGS animations and transparent loading silhouettes."),
         (name="WebSocket",description="See /docs/ws for live-message documentation and a test console.")
     ),
-    components(schemas(Command, ServerFrame, crate::media::MediaCategory, crate::media::MediaVariant)),
+    components(schemas(
+        // Register default generic payloads explicitly: utoipa follows a generic parameter's
+        // children but does not register that parameter's own default schema.
+        market_actors::input::CollectionRef, market_actors::input::ModelRef, market_actors::input::BackdropRef, market_actors::input::PatternRef,
+        GiftFilters, GiftCriteria, GiftTraits, market_actors::input::GiftLookupInput,
+        market_valuation::GiftAttributesInput, market_valuation::CatalogSelection,
+        market_valuation::CatalogDetails, market_valuation::PairSelection,
+        market_portfolio::PortfolioFilters,
+        Command, ServerFrame, crate::media::MediaCategory, crate::media::MediaVariant)),
     info(title = "Market App", description = "Browse gift markets and calculate estimates. Start with /catalog for collection and currency IDs, then use /collections/{id} for model, backdrop and pattern choices. Prices are exact decimal strings. One orders/query model covers asks, bids and history; the connection-level market.status message reports market availability. Live message documentation and an interactive subscription console are available at /docs/ws. Public market reads do not require sign-in.")
 )]
 struct MarketDoc;

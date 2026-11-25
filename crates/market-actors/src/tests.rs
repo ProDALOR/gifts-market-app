@@ -37,8 +37,11 @@ pub(crate) fn order(price: &str) -> w::Change {
         ..Default::default()
     }))
 }
-fn gift_query() -> market_gifts::GiftOrderQuery {
-    market_gifts::GiftOrderQuery::new(market_gifts::GiftFilters::new("gift".into(), "GRAM".into()))
+fn gift_query() -> market_gifts_hub::input::GiftOrderQuery {
+    market_gifts_hub::input::GiftOrderQuery::new(market_gifts_hub::input::GiftFilters::new(
+        "gift".into(),
+        "GRAM".into(),
+    ))
 }
 fn raw_query() -> w::ReadRequest {
     w::ReadRequest {
@@ -385,13 +388,13 @@ async fn catalog_and_orderbooks_serve_distinct_typed_projections() {
                 limit: 50,
                 snapshot: None,
             },
-            request: w::ReadRequest {
+            request: crate::query::OrderQuery::Native(w::ReadRequest {
                 selection: Some(w::Selection {
                     kinds: vec![w::EntityKind::Venue as i32],
                     ..Default::default()
                 }),
                 ..Default::default()
-            },
+            }),
             permit: handle.orderbooks.budget.try_query().unwrap(),
         })
         .await
@@ -476,7 +479,8 @@ async fn market_watch_leases_cancel_independently_and_release_capacity() {
 
 #[tokio::test]
 async fn gift_snapshot_pages_survive_requests_and_catalog_replacement() {
-    use market_gifts::{GiftFilters, GiftOrderQuery, ReadView};
+    use market_gifts::ReadView;
+    use market_gifts_hub::input::{GiftFilters, GiftOrderQuery};
     let (_directory, mut writer) = fixture();
     let row = |id: &str, mode: w::OrderMode, price: &str| {
         let mut change = order(price);
@@ -625,7 +629,8 @@ async fn freshness_does_not_wait_for_query_capacity_and_snapshot_admission_is_is
 
 #[tokio::test]
 async fn exhausted_orders_fill_pages_across_sorts_and_keep_snapshot_and_subscription_boundaries() {
-    use market_gifts::{GiftFilters, GiftOrderQuery, GiftSide, GiftSort, ReadView};
+    use market_gifts::{GiftSide, GiftSort, ReadView};
+    use market_gifts_hub::input::{GiftFilters, GiftOrderQuery};
     let (_directory, mut writer) = fixture();
     let mut changes = vec![entity(w::entity::Entity::Attribute(w::Attribute {
         id: "tg.number".into(),
@@ -855,7 +860,7 @@ async fn range_watches_keep_open_edges_freshness_and_independent_leases() {
     let (_dir, mut writer) = fixture();
     let service = TestData::start(writer.reader(), 4, 2).await.unwrap();
     let query = Seed {
-        filters: market_gifts::GiftFilters::new("gift".into(), "GRAM".into()),
+        filters: market_gifts_hub::input::GiftFilters::new("gift".into(), "GRAM".into()),
         side: Default::default(),
         sort: Default::default(),
         anchor: None,
@@ -968,7 +973,7 @@ async fn range_watches_keep_open_edges_freshness_and_independent_leases() {
 
 #[derive(Clone)]
 struct Seed {
-    filters: market_gifts::GiftFilters,
+    filters: market_gifts_hub::input::GiftFilters,
     side: market_gifts::GiftSide,
     sort: market_gifts::GiftSort,
     anchor: Option<String>,
@@ -976,8 +981,8 @@ struct Seed {
     after: u32,
 }
 impl Seed {
-    fn query(self) -> market_gifts::GiftOrderQuery {
-        market_gifts::GiftOrderQuery {
+    fn query(self) -> market_gifts_hub::input::GiftOrderQuery {
+        market_gifts_hub::input::GiftOrderQuery {
             filters: self.filters,
             source: if self.side == market_gifts::GiftSide::Bid {
                 market_gifts::OrderSource::Bids
@@ -1023,7 +1028,7 @@ impl MarketDataHandle {
     }
     async fn test_window(
         &self,
-        mut query: market_gifts::GiftOrderQuery,
+        mut query: market_gifts_hub::input::GiftOrderQuery,
     ) -> crate::error::Result<(Arc<DataSubscription>, watch::Receiver<DataUpdate>)> {
         query.view = market_gifts::ReadView::Latest {};
         self.watch_orders(query).await.map(DataWatch::test_parts)
@@ -1055,7 +1060,7 @@ async fn fixed_ranges_remove_exiting_rows_and_new_watches_seed_independently() {
         .unwrap();
     let service = TestData::start(writer.reader(), 4, 5).await.unwrap();
     let mut query = Seed {
-        filters: market_gifts::GiftFilters::new("gift".into(), "GRAM".into()),
+        filters: market_gifts_hub::input::GiftFilters::new("gift".into(), "GRAM".into()),
         side: Default::default(),
         sort: Default::default(),
         anchor: None,
@@ -1143,7 +1148,7 @@ async fn frozen_windows_reject_overload_while_live_producers_wait_and_cleanup_st
         before: 0,
         after: 49,
     };
-    let frozen = market_gifts::GiftOrderQuery {
+    let frozen = market_gifts_hub::input::GiftOrderQuery {
         view: market_gifts::ReadView::Snapshot { id: None },
         ..query.clone().query()
     };
@@ -1276,7 +1281,7 @@ struct TestPage {
 impl MarketDataHandle {
     async fn test_page(
         &self,
-        query: market_gifts::GiftOrderQuery,
+        query: market_gifts_hub::input::GiftOrderQuery,
     ) -> crate::error::Result<TestPage> {
         let read = self.query_orders(query).await?;
         Ok(TestPage {
@@ -1290,7 +1295,7 @@ impl MarketDataHandle {
         })
     }
 }
-fn advance(query: &mut market_gifts::GiftOrderQuery, page: &TestPage) {
+fn advance(query: &mut market_gifts_hub::input::GiftOrderQuery, page: &TestPage) {
     query.range.start = page.end.clone();
     if page.snapshot.is_some() {
         query.view = market_gifts::ReadView::Snapshot {
@@ -1380,7 +1385,7 @@ async fn queries_and_watches_enforce_the_same_hundred_order_limit() {
             crate::error::DataErrorCode::InvalidQuery
         );
     }
-    let query: market_gifts::GiftOrderQuery = serde_json::from_value(
+    let query: market_gifts_hub::input::GiftOrderQuery = serde_json::from_value(
         serde_json::json!({"filters":{"collection_id":"gift","currency_id":"GRAM"}}),
     )
     .unwrap();

@@ -1,3 +1,4 @@
+import { resolveSelector } from "./aliases.ts";
 import {
   useEffect,
   useLayoutEffect,
@@ -23,17 +24,18 @@ export function useCatalog(
     controller.start();
     return () => controller.close();
   }, [controller]);
+  const resolvedId = resolveSelector(state.types, selectedId)?.id ?? selectedId;
   useLayoutEffect(
-    () => controller.select(selectedId),
-    [controller, selectedId],
+    () => controller.select(resolvedId),
+    [controller, resolvedId],
   );
   useLayoutEffect(() => controller.previews(previews), [controller, previews]);
   const view =
-    state.selectedId === selectedId
+    state.selectedId === resolvedId
       ? state
       : {
           ...state,
-          item: state.types.find((row) => row.id === selectedId),
+          item: state.types.find((row) => row.id === resolvedId),
           options: empty,
           optionsLoading: !!selectedId,
           optionsError: "",

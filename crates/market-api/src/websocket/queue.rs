@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum Payload {
     Encoded(actix_web::web::Bytes),
     MarketStatus(crate::models::MarketStatus),
-    Catalog(market_gifts::CatalogVersions),
+    Catalog(market_actors::input::CatalogVersions),
     Error(ApiError),
     CommandError(ApiError),
 }

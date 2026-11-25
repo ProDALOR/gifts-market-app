@@ -7,7 +7,7 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub struct MarketApi {
     pub(crate) portfolio: Option<market_portfolio::PortfolioHandle>,
-    data: MarketDataHandle,
+    pub(crate) data: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
     encoder: Arc<crate::encoding::ResponseEncoder>,
     pub(crate) portfolio_reads: Arc<market_portfolio::PortfolioReadCache>,
@@ -72,7 +72,7 @@ impl MarketApi {
     }
     pub(crate) async fn watch_orders(
         &self,
-        params: market_gifts::GiftOrderQuery,
+        params: market_actors::input::GiftOrderQuery,
     ) -> Result<DataWatch> {
         Ok(self.data.watch_orders(params).await?)
     }
@@ -93,11 +93,14 @@ impl MarketApi {
     }
     pub(crate) async fn collection_snapshot(
         &self,
-        id: CollectionId,
+        id: market_actors::input::CollectionRef,
     ) -> Result<market_actors::CatalogSnapshot<market_gifts::GiftCollectionCatalog>> {
         Ok(self.data.collection_snapshot(id).await?)
     }
-    pub(crate) async fn subscribe_catalog(&self, ids: Vec<CollectionId>) -> Result<DataWatch> {
+    pub(crate) async fn subscribe_catalog(
+        &self,
+        ids: Vec<market_actors::input::CollectionRef>,
+    ) -> Result<DataWatch> {
         Ok(self.data.subscribe_catalog(ids).await?)
     }
     pub(crate) async fn media_document(&self, target: MediaTarget) -> Result<TelegramDocumentId> {

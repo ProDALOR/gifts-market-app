@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub enum DataUpdate {
     Connecting,
-    Catalog(market_gifts::CatalogVersions),
+    Catalog(market_gifts_hub::input::CatalogVersions),
     Orders {
         result: Arc<crate::OrderResult>,
         version: market_replica::ReadRevision,
@@ -15,23 +15,22 @@ pub enum DataUpdate {
 }
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum QueryKey {
-    Catalog(Vec<market_gifts::CollectionId>),
+    Catalog(Vec<market_gifts_hub::input::CollectionRef>),
     Range {
         options: market_replica::ReadOptions,
         selection: Vec<u8>,
-        sort: i32,
         range: Box<market_replica::KeyRange>,
     },
 }
 pub(super) struct OrdersFeed {
-    pub request: market_hub_protocol::wire::ReadRequest,
+    pub request: crate::query::OrderQuery,
     pub options: market_replica::ReadOptions,
     pub initial: Arc<crate::OrderResult>,
     pub version: market_replica::ReadRevision,
     pub observed: u64,
 }
 pub(super) enum FeedSpec {
-    Catalog(Vec<market_gifts::CollectionId>),
+    Catalog(Vec<market_gifts_hub::input::CollectionRef>),
     Orders(Box<OrdersFeed>),
 }
 /// An immutable per-caller baseline, followed by coalesced updates from a shared producer.

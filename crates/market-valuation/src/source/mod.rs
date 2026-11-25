@@ -1,13 +1,14 @@
 //! Gift-specific read projections over the generic replica and its shared executor.
+mod aliases;
 mod catalog;
 mod dependencies;
 mod gift;
 mod inventory;
 mod orders;
-pub use catalog::CatalogTrait;
 pub(crate) use dependencies::METADATA_KEY_LIMIT;
 pub(crate) use dependencies::OrderDependency;
 pub use dependencies::ReadDependencies;
+pub use market_gifts::GiftTraitKind;
 use market_replica::{ReadExecutor, ReplicaReader};
 pub(crate) use orders::AskBookSnapshot;
 pub use orders::BookScope;
@@ -23,6 +24,7 @@ pub struct ValuationSource {
 pub struct ValuationSnapshot {
     reader: ReplicaReader,
     cancelled: CancellationToken,
+    aliases: std::sync::OnceLock<Result<Arc<market_gifts_hub::AliasCatalog>>>,
 }
 impl ValuationSource {
     #[cfg(test)]
@@ -36,6 +38,7 @@ impl ValuationSource {
         Ok(ValuationSnapshot {
             reader: self.executor.snapshot()?,
             cancelled: self.executor.stop_token().child_token(),
+            aliases: Default::default(),
         })
     }
     pub async fn prepare<T: Send + 'static>(
@@ -43,7 +46,13 @@ impl ValuationSource {
         work: impl FnOnce(ValuationSnapshot) -> T + Send + 'static,
     ) -> Result<T> {
         self.executor
-            .prepare(move |reader, cancelled| work(ValuationSnapshot { reader, cancelled }))
+            .prepare(move |reader, cancelled| {
+                work(ValuationSnapshot {
+                    reader,
+                    cancelled,
+                    aliases: Default::default(),
+                })
+            })
             .await
     }
 }

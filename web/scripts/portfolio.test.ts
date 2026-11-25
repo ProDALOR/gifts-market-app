@@ -528,3 +528,40 @@ test("duplicate page failures do not poison subsequent append validation", async
   assert.equal(pager.current().selection, rows.selection);
   pager.dispose();
 });
+
+test("alias pages retain their continuation version and atomically restart after retargeting", async () => {
+  const source = report(300),
+    base = portfolioVersion(source),
+    calls = [];
+  let revision = "1".repeat(32);
+  const pager = new PortfolioPager({
+    query: { ...query, filters: { backdrops: ["@tg:42"] } },
+    request: async (q) => {
+      calls.push({ ...q });
+      if (q.offset > 0 && q.version !== revision)
+        throw { code: "restart_read" };
+      return {
+        ...portfolioPage(source, { ...q, filters: {}, version: base }),
+        version: revision,
+      };
+    },
+    changed: () => {},
+    refreshSummary: () =>
+      assert.fail("Alias retargets do not require an inventory recheck"),
+  });
+  pager.update(base);
+  await settled(pager);
+  assert.equal(pager.current().pageVersion, revision);
+  revision = "2".repeat(32);
+  pager.loadMore();
+  await settled(pager);
+  assert.equal(pager.current().items.length, 200);
+  assert.equal(pager.current().version, base);
+  assert.equal(pager.current().pageVersion, revision);
+  assert.deepEqual(
+    calls.map((q) => q.offset),
+    [0, 100, 0, 100],
+  );
+  assert.equal(calls.at(-1).version, revision);
+  pager.dispose();
+});

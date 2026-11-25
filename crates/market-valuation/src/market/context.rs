@@ -5,7 +5,7 @@ use crate::{
     floors::{BookCache, Statistics},
     source::{BookScope, ValuationSnapshot},
 };
-use market_gifts::{CollectionId, CurrencyId, GiftOrder, GiftOrderQuery, OrderSource};
+use market_gifts::{CollectionId, CurrencyId, GiftOrder, OrderSource, ResolvedGiftOrderQuery};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
@@ -95,10 +95,12 @@ impl<'a> ValuationContext<'a> {
                 Ok(statistics)
             }
             Err(error) => {
-                self.observe(&GiftOrderQuery::new(market_gifts::GiftFilters::new(
-                    collection.clone(),
-                    self.currency.clone(),
-                )))?;
+                self.observe(&ResolvedGiftOrderQuery::new(
+                    market_gifts::ResolvedGiftFilters::new(
+                        collection.clone(),
+                        self.currency.clone(),
+                    ),
+                ))?;
                 self.failed_books
                     .borrow_mut()
                     .insert(collection.clone(), error.clone());
@@ -152,7 +154,7 @@ impl<'a> ValuationContext<'a> {
     /// Record the sources that the next periodic refresh needs to validate.
     pub fn orders(
         &self,
-        query: &GiftOrderQuery,
+        query: &ResolvedGiftOrderQuery,
         continuation: String,
     ) -> Result<crate::source::Page<GiftOrder>, ValuationError> {
         self.observe(query)?;
@@ -173,7 +175,7 @@ impl<'a> ValuationContext<'a> {
         Ok(page)
     }
 
-    fn observe(&self, query: &GiftOrderQuery) -> Result<(), ValuationError> {
+    fn observe(&self, query: &ResolvedGiftOrderQuery) -> Result<(), ValuationError> {
         self.reads.borrow_mut().observe(self.snapshot, query)
     }
 
@@ -188,7 +190,7 @@ impl<'a> ValuationContext<'a> {
             return result.clone();
         }
         let result = (|| {
-            let mut query = GiftOrderQuery::new(market_gifts::GiftFilters::new(
+            let mut query = ResolvedGiftOrderQuery::new(market_gifts::ResolvedGiftFilters::new(
                 collection.clone(),
                 self.currency.clone(),
             ));

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 [features]
 default = []
-schema = ["dep:utoipa", "market-gifts/schema"]
+schema = ["market-gifts-hub/schema", "dep:utoipa", "market-gifts/schema"]
 [dependencies]
 market-replica.workspace = true
 market-gifts-hub.workspace = true

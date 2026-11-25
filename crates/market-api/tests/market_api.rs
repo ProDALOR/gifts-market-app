@@ -1,3 +1,5 @@
+#[path = "market_api/aliases.rs"]
+mod aliases;
 use actix_web::{App, test, web};
 #[path = "market_api/portfolios.rs"]
 mod portfolios;
@@ -2600,13 +2602,13 @@ struct TestOrders {
 trait QueryFixture {
     async fn test_orders(
         &self,
-        query: market_gifts::GiftOrderQuery,
+        query: market_actors::input::GiftOrderQuery,
     ) -> Result<TestOrders, market_api::error::ApiError>;
 }
 impl QueryFixture for MarketApi {
     async fn test_orders(
         &self,
-        query: market_gifts::GiftOrderQuery,
+        query: market_actors::input::GiftOrderQuery,
     ) -> Result<TestOrders, market_api::error::ApiError> {
         Ok(TestOrders {
             data: self

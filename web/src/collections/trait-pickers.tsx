@@ -188,29 +188,35 @@ export const TraitPickers = memo(function TraitPickers({
               </button>
               {groups.map((group) => (
                 <div
-                  className="trait-group"
+                  className={`trait-group${collection?.id ? "" : " shared"}`}
                   data-craft={group.craft}
                   role="group"
-                  aria-label={`${group.label} rarity`}
+                  aria-label={
+                    collection?.id
+                      ? `${group.label} rarity`
+                      : "Shared attributes"
+                  }
                   key={group.key}
                 >
-                  <button
-                    type="button"
-                    className="trait-group-toggle"
-                    aria-pressed={groupSelection(group.options, chosen)}
-                    aria-label={`${group.label} rarity`}
-                    title="Select or deselect all matching attributes in this group"
-                    onClick={() =>
-                      change(shown, toggleRarityGroup(group.options, chosen))
-                    }
-                  >
-                    <span className="trait-group-label">{group.label}</span>
-                    {group.options.length >= 3 && (
-                      <span className="trait-group-count">
-                        {group.options.length}
-                      </span>
-                    )}
-                  </button>
+                  {collection?.id && (
+                    <button
+                      type="button"
+                      className="trait-group-toggle"
+                      aria-pressed={groupSelection(group.options, chosen)}
+                      aria-label={`${group.label} rarity`}
+                      title="Select or deselect all matching attributes in this group"
+                      onClick={() =>
+                        change(shown, toggleRarityGroup(group.options, chosen))
+                      }
+                    >
+                      <span className="trait-group-label">{group.label}</span>
+                      {group.options.length >= 3 && (
+                        <span className="trait-group-count">
+                          {group.options.length}
+                        </span>
+                      )}
+                    </button>
+                  )}
                   <div className="trait-group-options">
                     {group.options.map((option) => (
                       <button
@@ -232,7 +238,7 @@ export const TraitPickers = memo(function TraitPickers({
                           <span className="trait-option-name">
                             {option.name}
                           </span>
-                          {option.kind !== "pattern" && (
+                          {collection?.id && option.kind !== "pattern" && (
                             <span className="trait-option-value">
                               <TraitFloor
                                 rounded

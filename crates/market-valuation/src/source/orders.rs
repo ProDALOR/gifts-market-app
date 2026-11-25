@@ -78,7 +78,7 @@ impl AskBookSnapshot {
         })
     }
 }
-fn read_options(query: &GiftOrderQuery) -> market_replica::ReadOptions {
+fn read_options(query: &ResolvedGiftOrderQuery) -> market_replica::ReadOptions {
     use market_replica::Sort;
     market_replica::ReadOptions {
         sort: Some(match query.sort() {
@@ -107,7 +107,7 @@ impl ValuationSnapshot {
     /// Bounded, domain-projected observations for target estimators. The snapshot stays pinned.
     pub(crate) fn valuation_orders(
         &self,
-        query: &GiftOrderQuery,
+        query: &ResolvedGiftOrderQuery,
         continuation: String,
     ) -> Result<Page<GiftOrder>> {
         self.check_cancelled()?;
@@ -150,7 +150,7 @@ impl ValuationSnapshot {
     }
     pub(super) fn gifts(
         &self,
-        query: GiftOrderQuery,
+        query: ResolvedGiftOrderQuery,
         continuation: String,
     ) -> Result<Page<CollectibleGift>> {
         self.check_cancelled()?;

@@ -3,7 +3,11 @@ name = "market-gifts-hub"
 version.workspace = true
 edition.workspace = true
 description = "Pure mapping between generic hub facts and gift-domain models"
+[features]
+schema = ["market-gifts/schema", "dep:utoipa"]
 [dependencies]
+serde.workspace = true
+utoipa = {workspace=true, optional=true}
 market-gifts.workspace = true
 market-hub-protocol.workspace = true
 jiff.workspace = true

@@ -12,12 +12,12 @@ pub use crate::orders::{
 };
 pub use crate::protocol::OperationId;
 pub use crate::status::MarketStatus;
+pub use market_actors::input::{CatalogVersions, GiftFilters, GiftOrderQuery};
 pub use market_gifts::{
-    Amount, BackdropId, BackdropPalette, BidMatch, CatalogVersions, CollectibleGift, CollectionId,
-    CollectionSlug, Currency, CurrencyId, GiftBackdrop, GiftBook, GiftCriteria, GiftFilters,
-    GiftNumber, GiftNumberRange, GiftOrderKind, GiftOrderQuery, GiftSide, GiftSlug, GiftSort,
-    GiftTraits, ModelId, OrderId, PatternId, Period, PriceRange, UnsupportedGiftReason, Venue,
-    VenueId,
+    Amount, BackdropId, BackdropPalette, BidMatch, CollectibleGift, CollectionId, CollectionSlug,
+    Currency, CurrencyId, GiftBackdrop, GiftBook, GiftCriteria, GiftNumber, GiftNumberRange,
+    GiftOrderKind, GiftSide, GiftSlug, GiftSort, GiftTraits, ModelId, OrderId, PatternId, Period,
+    PriceRange, UnsupportedGiftReason, Venue, VenueId,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -38,7 +38,7 @@ pub enum Command {
     #[serde(rename = "orders.watch")]
     WatchOrders {
         id: OperationId,
-        params: Box<market_gifts::GiftOrderQuery>,
+        params: Box<market_actors::input::GiftOrderQuery>,
     },
     Cancel {
         id: OperationId,
@@ -46,7 +46,7 @@ pub enum Command {
     #[serde(rename = "catalog.watch")]
     WatchCatalog {
         id: OperationId,
-        collection_ids: Vec<CollectionId>,
+        collection_ids: Vec<market_actors::input::CollectionRef>,
     },
 }
 /// Finite, typed request methods; each method owns its parameters.
@@ -56,7 +56,7 @@ pub enum ApiRequest {
     #[serde(rename = "portfolio.query")]
     PortfolioQuery {
         id: OperationId,
-        params: market_portfolio::PortfolioReadQuery,
+        params: crate::portfolio::PortfolioReadQuery,
     },
     #[serde(rename = "portfolio.refresh")]
     PortfolioRefresh {
@@ -76,7 +76,7 @@ pub enum ApiRequest {
     #[serde(rename = "orders.query")]
     Orders {
         id: OperationId,
-        params: Box<market_gifts::GiftOrderQuery>,
+        params: Box<market_actors::input::GiftOrderQuery>,
     },
 }
 impl ApiRequest {

@@ -54,6 +54,8 @@ pub enum GiftRarity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftCollection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<crate::GiftAlias>,
     pub id: CollectionId,
     pub name: String,
     pub slug: Option<CollectionSlug>,
@@ -63,6 +65,8 @@ pub struct GiftCollection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftModel {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<crate::GiftAlias>,
     pub id: ModelId,
     pub name: String,
     pub media: Option<GiftMedia>,
@@ -81,6 +85,8 @@ pub struct BackdropPalette {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftBackdrop {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<crate::GiftAlias>,
     pub id: BackdropId,
     pub name: String,
     pub palette: Option<BackdropPalette>,
@@ -91,6 +97,8 @@ pub struct GiftBackdrop {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftPattern {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<crate::GiftAlias>,
     pub id: PatternId,
     pub name: String,
     pub media: Option<GiftMedia>,
@@ -116,6 +124,11 @@ pub struct Currency {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GiftCatalog {
+    /// Collection-independent picker choices, grouped only by explicit source aliases.
+    #[serde(default)]
+    pub backdrops: std::sync::Arc<Vec<GiftBackdrop>>,
+    #[serde(default)]
+    pub patterns: std::sync::Arc<Vec<GiftPattern>>,
     pub collections: std::sync::Arc<Vec<GiftCollection>>,
     pub venues: std::sync::Arc<Vec<Venue>>,
     pub currencies: std::sync::Arc<Vec<Currency>>,
@@ -134,8 +147,9 @@ pub struct GiftCollectionCatalog {
 /// Content revisions for catalog cache revalidation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct CatalogVersions {
+#[serde(bound(deserialize = "C: Ord + Deserialize<'de>"))]
+pub struct CatalogVersions<C = crate::CollectionRef> {
     pub directory: String,
     /// Null means that collection no longer exists as a gift collection.
-    pub collections: std::collections::BTreeMap<CollectionId, Option<String>>,
+    pub collections: std::collections::BTreeMap<C, Option<String>>,
 }

@@ -1,4 +1,5 @@
 //! Read-only order-book, catalog and market-subscription actors.
+mod aliases;
 mod catalog;
 pub mod error;
 mod handle;
@@ -18,3 +19,5 @@ pub use subscriptions::{DataSubscription, DataUpdate, DataWatch};
 
 mod reads;
 pub use reads::*;
+
+pub use market_gifts_hub::input;

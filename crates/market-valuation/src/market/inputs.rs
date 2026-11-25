@@ -166,10 +166,10 @@ mod tests;
 
 #[derive(Debug, Clone)]
 pub struct CatalogInput {
-    selection: crate::CatalogSelection,
+    selection: crate::ResolvedCatalogSelection,
 }
 impl CatalogInput {
-    pub fn selection(&self) -> &crate::CatalogSelection {
+    pub fn selection(&self) -> &crate::ResolvedCatalogSelection {
         &self.selection
     }
 }

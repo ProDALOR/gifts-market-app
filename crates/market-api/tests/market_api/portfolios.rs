@@ -354,7 +354,7 @@ async fn large_portfolio_watch_stays_small_and_rest_ws_pages_share_global_filter
         bid_filters::frame(&mut socket, "page", "result").await["data"],
         rest
     );
-    let filtered = serde_json::json!({"user_id":7,"currency_id":"GRAM","filters":{"models":["otherm"],"number":1}});
+    let filtered = serde_json::json!({"user_id":7,"currency_id":"GRAM","filters":{"collection_id":"gift","models":["otherm"],"number":1}});
     let response = test::call_service(
         &app,
         test::TestRequest::post()
@@ -402,6 +402,155 @@ async fn large_portfolio_watch_stays_small_and_rest_ws_pages_share_global_filter
     socket.close(None).await.unwrap();
     api_stop.cancel();
     job.await.unwrap().unwrap();
+    portfolio.task.shutdown().await.unwrap();
+    invocations.shutdown().await;
+    stop.cancel();
+    runtime.shutdown().await.unwrap();
+}
+
+#[actix_web::test]
+async fn alias_filtered_portfolio_pages_reject_changed_selection_without_rechecking_inventory() {
+    let (state, runtime, peer, stop) = setup().await;
+    let mut page = valuation_page("1");
+    page.cursor = "portfolio-aliases".into();
+    for entity in &mut page.entities {
+        match &mut entity.entity {
+            Some(w::entity::Entity::ItemType(item)) => {
+                item.id = "gift".into();
+                item.aliases.push(w::ExternalId {
+                    namespace: "tg.slug".into(),
+                    id: "One".into(),
+                });
+                item.attributes.get_mut("tg.model").unwrap().allowed_values =
+                    Some(w::AllowedAttributeValues {
+                        ids: vec!["m".into(), "otherm".into()],
+                    });
+            }
+            Some(w::entity::Entity::AttributeOption(option)) => {
+                option.id = "m".into();
+                option.name = "Dogfather".into();
+            }
+            Some(w::entity::Entity::Order(order)) => {
+                order.book.as_mut().unwrap().item_type_id = "gift".into();
+                order.attributes.get_mut("tg.model").unwrap().predicate =
+                    Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                        value: Some(w::attribute_value::Value::OptionId("m".into())),
+                    }));
+            }
+            _ => {}
+        }
+    }
+    page.entities.push(w::Entity {
+        entity: Some(w::entity::Entity::AttributeOption(w::AttributeOption {
+            id: "otherm".into(),
+            name: "Other".into(),
+            attribute_id: "tg.model".into(),
+            ..Default::default()
+        })),
+    });
+    peer.page.send_replace(page.clone());
+    checkpoint(&runtime, "portfolio-aliases").await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let invocations = market_invocations::Runtime::start(Default::default()).unwrap();
+    let portfolio = market_portfolio::PortfolioService::start(
+        Inventory {
+            count: 400,
+            calls: calls.clone(),
+            release: Arc::new(tokio::sync::Semaphore::new(100)),
+        },
+        Values,
+        Default::default(),
+        invocations.handle(),
+    )
+    .await
+    .unwrap();
+    let subject = market_portfolio::PortfolioQuery {
+        user_id: market_portfolio::UserId::new(7).unwrap(),
+        currency_id: "GRAM".into(),
+    };
+    let mut watch = portfolio.handle.watch(subject).await.unwrap();
+    let ready = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let state = watch.current();
+            if state.valuation.is_some() {
+                break state;
+            }
+            watch.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    let initial_inventory_reads = calls.load(Ordering::SeqCst);
+    let base = serde_json::to_value(ready.version.as_ref().unwrap()).unwrap();
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(
+                state.with_portfolio(portfolio.handle.clone()),
+            ))
+            .configure(configure),
+    )
+    .await;
+    let mut query = serde_json::json!({"user_id":7,"currency_id":"GRAM","version":base,"filters":{"collection_id":"@tg.slug:One","models":["@name:Dogfather"]},"limit":100});
+    let first: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/portfolios/query")
+            .set_json(&query)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(first["selection"]["count"], 200);
+    assert_ne!(first["version"], base);
+    query["offset"] = 100.into();
+    query["version"] = first["version"].clone();
+    let next: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/portfolios/query")
+            .set_json(&query)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(next["items"].as_array().unwrap().len(), 100);
+    page.cursor = "portfolio-alias-retarget".into();
+    for entity in &mut page.entities {
+        if let Some(w::entity::Entity::AttributeOption(option)) = &mut entity.entity {
+            option.name = if option.id == "m" {
+                "Other"
+            } else {
+                "Dogfather"
+            }
+            .into();
+        }
+    }
+    peer.page.send_replace(page);
+    checkpoint(&runtime, "portfolio-alias-retarget").await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/portfolios/query")
+            .set_json(&query)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 409);
+    query["offset"] = 0.into();
+    query["version"] = base.clone();
+    let changed: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/portfolios/query")
+            .set_json(&query)
+            .to_request(),
+    )
+    .await;
+    assert_ne!(changed["version"], first["version"]);
+    assert_ne!(
+        changed["items"][0]["gift"]["gift"]["number"],
+        first["items"][0]["gift"]["gift"]["number"]
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), initial_inventory_reads);
+    drop(watch);
     portfolio.task.shutdown().await.unwrap();
     invocations.shutdown().await;
     stop.cancel();

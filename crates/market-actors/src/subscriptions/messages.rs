@@ -1,15 +1,14 @@
 use super::DataWatch;
 use actix::Message;
-use market_hub_protocol::wire as w;
 use tonic::Status;
 #[derive(Message)]
 #[rtype(result = "Result<DataWatch,Status>")]
-pub(crate) struct SubscribeCatalog(pub Vec<market_gifts::CollectionId>);
+pub(crate) struct SubscribeCatalog(pub Vec<market_gifts_hub::input::CollectionRef>);
 
 #[derive(Message)]
 #[rtype(result = "Result<DataWatch,Status>")]
 pub(crate) struct WatchOrders {
-    pub request: w::ReadRequest,
+    pub request: crate::query::OrderQuery,
     pub read: market_replica::RangeRequest,
     pub cancel: tokio_util::sync::CancellationToken,
 }

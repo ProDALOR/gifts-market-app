@@ -51,7 +51,12 @@ struct Index {
     catalog_revision: Cached<String, (MetadataRevision, DirectoryRevision)>,
 }
 #[derive(Default)]
-pub(crate) struct ProjectionCache(Mutex<Index>);
+pub(crate) struct ProjectionCache(Mutex<Index>, pub std::sync::Arc<crate::aliases::AliasCache>);
+impl ProjectionCache {
+    pub fn with_aliases(aliases: std::sync::Arc<crate::aliases::AliasCache>) -> Self {
+        Self(Default::default(), aliases)
+    }
+}
 impl ProjectionCache {
     fn lock(&self) -> std::sync::MutexGuard<'_, Index> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
@@ -101,7 +106,10 @@ impl ProjectionCache {
             ),
             || projection::books(&reader, &collections),
         )?;
+        let shared = self.1.get(&reader)?;
         Ok(GiftCatalog {
+            backdrops: shared.backdrops.clone().into(),
+            patterns: shared.patterns.clone().into(),
             collections,
             venues,
             currencies,
@@ -237,7 +245,7 @@ impl ProjectionCache {
         &self,
         reader: ReplicaReader,
         ids: Vec<CollectionId>,
-    ) -> Result<market_gifts::CatalogVersions, Status> {
+    ) -> Result<market_gifts_hub::input::CatalogVersions, Status> {
         let reader = reader.snapshot()?;
         let directory = self.bootstrap_snapshot(reader.clone())?.revision;
         let mut collections = std::collections::BTreeMap::new();
@@ -247,9 +255,9 @@ impl ProjectionCache {
                 Err(error) if error.code() == tonic::Code::NotFound => None,
                 Err(error) => return Err(error),
             };
-            collections.insert(id, revision);
+            collections.insert(id.into(), revision);
         }
-        Ok(market_gifts::CatalogVersions {
+        Ok(market_gifts_hub::input::CatalogVersions {
             directory,
             collections,
         })

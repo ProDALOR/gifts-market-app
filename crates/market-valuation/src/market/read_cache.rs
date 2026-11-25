@@ -110,7 +110,8 @@ mod tests {
     fn query(index: usize) -> PreparedQuery {
         crate::ValuationQuery {
             target: crate::ValuationTarget::Selection {
-                collection_id: market_gifts::CollectionId::new(index.to_string()).unwrap(),
+                collection_id: market_gifts_hub::input::CollectionRef::new(index.to_string())
+                    .unwrap(),
                 criteria: Default::default(),
             },
             currency_id: "GRAM".into(),

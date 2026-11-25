@@ -100,17 +100,24 @@ impl MarketDataService {
                 let _guard = exit_guard;
                 let system = actix::System::new();
                 let actors = system.block_on(async move {
+                    let aliases = Arc::new(crate::aliases::AliasCache::default());
                     let orders = OrderbooksActor {
+                        aliases: aliases.clone(),
                         reader: reader.clone(),
                         environment: environment.clone(),
                     }
                     .start();
                     let orderbooks = OrderbooksHandle {
+                        aliases: aliases.clone(),
                         address: orders,
                         budget: budget.clone(),
                     };
                     let catalog = CatalogActor {
-                        cache: Default::default(),
+                        cache: Arc::new(crate::catalog::cache::ProjectionCache::with_aliases(
+                            aliases.clone(),
+                        )),
+                        aliases,
+
                         environment: environment.clone(),
                     }
                     .start();

@@ -57,18 +57,18 @@ impl SalesState {
         &self,
         gift: &CollectibleGift,
         currency: CurrencyId,
-    ) -> Result<GiftOrderQuery, BotError> {
+    ) -> Result<ResolvedGiftOrderQuery, BotError> {
         if !self.scope.supported(gift) || self.page() > MAX_PAGES {
             return Err(BotError::InvalidResponse);
         }
-        let mut filters = GiftFilters::new(gift.collection_id.clone(), currency);
+        let mut filters = ResolvedGiftFilters::new(gift.collection_id.clone(), currency);
         if matches!(self.scope, Scope::Pair | Scope::Model) {
             filters.models = gift.traits.model.clone().into_iter().collect();
         }
         if matches!(self.scope, Scope::Pair | Scope::Backdrop) {
             filters.backdrops = gift.traits.backdrop.clone().into_iter().collect();
         }
-        let mut query = GiftOrderQuery::new(filters);
+        let mut query = ResolvedGiftOrderQuery::new(filters);
         query.source = OrderSource::History;
         query.sort = Some(GiftSort::TimeDesc);
         query.limit = 5;
@@ -85,16 +85,16 @@ impl SalesState {
     }
 }
 #[derive(Default)]
-pub(super) struct Pages(tokio::sync::Mutex<VecDeque<(GiftOrderQuery, PageSlot)>>);
+pub(super) struct Pages(tokio::sync::Mutex<VecDeque<(ResolvedGiftOrderQuery, PageSlot)>>);
 type PageSlot = Arc<tokio::sync::OnceCell<Arc<market_actors::OrderResult>>>;
 impl Pages {
     pub async fn read<F, Fut>(
         &self,
-        query: GiftOrderQuery,
+        query: ResolvedGiftOrderQuery,
         load: F,
     ) -> Option<Arc<market_actors::OrderResult>>
     where
-        F: FnOnce(GiftOrderQuery) -> Fut,
+        F: FnOnce(ResolvedGiftOrderQuery) -> Fut,
         Fut: std::future::Future<Output = Option<market_actors::OrderResult>>,
     {
         let slot = {
@@ -120,12 +120,16 @@ impl Pages {
 }
 /// SalesState supplies only collection/currency, one model/backdrop and a fixed period.
 /// Keep captured previews and defensive rendering consistent with that live query.
-fn matches_sale(query: &GiftOrderQuery, order: &GiftOrder) -> bool {
+fn matches_sale(query: &ResolvedGiftOrderQuery, order: &GiftOrder) -> bool {
     let Some(time) = order.executed_at else {
         return false;
     };
     if order.kind != GiftOrderKind::Executed
-        || order.book.collection_id != query.filters.collection_id
+        || query
+            .filters
+            .collection_id
+            .as_ref()
+            .is_some_and(|id| &order.book.collection_id != id)
         || order.book.currency_id != query.filters.currency_id
         || query.period.as_ref().is_none_or(|period| {
             period.from.is_none_or(|from| time < from)

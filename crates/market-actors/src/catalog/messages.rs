@@ -11,7 +11,7 @@ pub(crate) struct GiftCatalog {
 #[rtype(result = "Result<super::CatalogSnapshot<market_gifts::GiftCollectionCatalog>,Status>")]
 pub(crate) struct GiftCollection {
     pub projection: OwnedSemaphorePermit,
-    pub id: market_gifts::CollectionId,
+    pub id: market_gifts_hub::input::CollectionRef,
     pub permit: market_replica::ReadPermit,
 }
 #[derive(Message)]
@@ -21,9 +21,16 @@ pub(crate) struct MediaDocument {
     pub permit: market_replica::ReadPermit,
 }
 #[derive(Message)]
-#[rtype(result = "Result<market_gifts::CatalogVersions,Status>")]
+#[rtype(result = "Result<market_gifts_hub::input::CatalogVersions,Status>")]
 pub(crate) struct Versions {
-    pub ids: Vec<market_gifts::CollectionId>,
+    pub ids: Vec<market_gifts_hub::input::CollectionRef>,
     pub permit: market_replica::ReadPermit,
     pub projection: OwnedSemaphorePermit,
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<market_gifts::ResolvedGiftFilters,Status>")]
+pub(crate) struct ResolveFilters {
+    pub filters: market_gifts_hub::input::GiftFilters,
+    pub permit: market_replica::ReadPermit,
 }

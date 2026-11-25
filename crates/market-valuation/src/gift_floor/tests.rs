@@ -680,7 +680,10 @@ async fn explicit_attributes_value_unlisted_and_unnumbered_gifts_without_identit
             period: None,
         };
         let report = handle.query(request.clone()).await.unwrap();
-        assert_eq!(report.target, ResolvedTarget::GiftAttributes(attributes));
+        assert_eq!(
+            serde_json::to_value(&report.target).unwrap(),
+            serde_json::to_value(ValuationTarget::GiftAttributes(attributes)).unwrap()
+        );
         let StrategyOutcome::Value(StrategyValuation::GiftFloor(output)) = &report.results[0]
         else {
             panic!("gift estimate")

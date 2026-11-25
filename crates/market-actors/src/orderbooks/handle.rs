@@ -1,19 +1,33 @@
 use super::{OrderbooksActor, messages::GetStatus};
 use crate::runtime::{QueryBudget, closed};
 use actix::Addr;
-use market_hub_protocol::wire as w;
 use market_replica::SyncStatus;
 use tonic::Status;
 #[derive(Clone)]
 pub(crate) struct OrderbooksHandle {
+    pub aliases: std::sync::Arc<crate::aliases::AliasCache>,
     pub address: Addr<OrderbooksActor>,
     pub budget: QueryBudget,
 }
 impl OrderbooksHandle {
+    pub fn revision(
+        &self,
+        reader: &market_replica::ReplicaReader,
+        request: &crate::query::OrderQuery,
+    ) -> Result<market_replica::ReadRevision, Status> {
+        match request {
+            crate::query::OrderQuery::Native(request) => reader.read_revision(request),
+            crate::query::OrderQuery::Aliased(query) => {
+                let reader = reader.snapshot()?;
+                reader.read_revision(&self.aliases.resolve(&reader, query)?)
+            }
+        }
+    }
+
     /// Foreground queries reject overload; persistent watches wait within shared admission.
     pub async fn query(
         &self,
-        request: w::ReadRequest,
+        request: crate::query::OrderQuery,
         read: market_replica::RangeRequest,
     ) -> Result<crate::OrderSnapshot, Status> {
         self.read_admitted(request, read, false, self.budget.try_query()?)
@@ -21,7 +35,7 @@ impl OrderbooksHandle {
     }
     pub async fn range_wait(
         &self,
-        request: w::ReadRequest,
+        request: crate::query::OrderQuery,
         read: market_replica::RangeRequest,
         complete: bool,
     ) -> Result<crate::OrderSnapshot, Status> {
@@ -30,7 +44,7 @@ impl OrderbooksHandle {
     }
     pub(crate) async fn read_admitted(
         &self,
-        request: w::ReadRequest,
+        request: crate::query::OrderQuery,
         read: market_replica::RangeRequest,
         complete: bool,
         permit: market_replica::ReadPermit,

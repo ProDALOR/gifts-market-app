@@ -24,7 +24,7 @@ pub(crate) async fn catalog(state: web::Data<MarketApi>, req: HttpRequest) -> Re
 #[utoipa::path(get,path="/collections/{id}",tag="Catalog",summary="Collection models, backdrops and patterns",description="Models, backdrops and patterns for one collection.",params(("id"=String,Path,description="Gift collection ID")),responses((status=200,body=GiftCollectionCatalog,headers(("ETag"=String,description="Quoted opaque content token; matches the collection entry in catalog.versions without the quotes"))),(status=304,description="Collection content is unchanged"),(status=400,body=ErrorResponse),(status=404,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub(crate) async fn collection(
     state: web::Data<MarketApi>,
-    id: web::Path<CollectionId>,
+    id: web::Path<market_actors::input::CollectionRef>,
     req: HttpRequest,
 ) -> Result<HttpResponse> {
     Ok(catalog_response(

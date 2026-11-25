@@ -28,12 +28,14 @@ pub(super) fn view() -> Arc<report::Report> {
         icons: Default::default(),
         catalog: Some(GiftCollectionCatalog {
             collection: GiftCollection {
+                aliases: Default::default(),
                 id: "collection".into(),
                 name: "Gift <unsafe> & friends".into(),
                 slug: Some(CollectionSlug::new("Gift").unwrap()),
                 preview: None,
             },
             models: Arc::new(vec![GiftModel {
+                aliases: Default::default(),
                 id: "m".into(),
                 name: "<b>Model</b>".into(),
                 media: None,
@@ -159,6 +161,7 @@ fn covers_use_the_selected_backdrop_and_resolved_model_and_symbol_documents() {
     let mut report = view();
     let report = Arc::get_mut(&mut report).unwrap();
     report.catalog.as_mut().unwrap().backdrops = Arc::new(vec![GiftBackdrop {
+        aliases: Default::default(),
         id: "b".into(),
         name: "Backdrop".into(),
         rarity: None,
@@ -574,7 +577,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         .unwrap();
     let live = commands
         .market
-        .query_orders(query.clone())
+        .query_orders(market_actors::input::query(query.clone()))
         .await
         .unwrap()
         .result;
@@ -1051,12 +1054,14 @@ fn attribute_table_keeps_native_quote_columns_names_and_missing_values_separate(
     let report = Arc::get_mut(&mut current).unwrap();
     let catalog = report.catalog.as_mut().unwrap();
     catalog.backdrops = Arc::new(vec![GiftBackdrop {
+        aliases: Default::default(),
         id: "b".into(),
         name: "Green <&>".into(),
         palette: None,
         rarity: None,
     }]);
     catalog.patterns = Arc::new(vec![GiftPattern {
+        aliases: Default::default(),
         id: "p".into(),
         name: "Sun & Moon".into(),
         media: None,

@@ -1,6 +1,9 @@
 //! Bounded, cached selection indexes over an immutable valued inventory.
 use crate::{PortfolioError, PortfolioQuery, PortfolioState, UserId};
-use market_gifts::{Amount, BackdropId, CollectionId, CurrencyId, GiftNumber, ModelId, PatternId};
+use market_gifts::{
+    Amount, BackdropId, BackdropRef, CollectionId, CollectionRef, CurrencyId, GiftNumber, ModelId,
+    ModelRef, PatternId, PatternRef,
+};
 use market_valuation::{InventoryValuation, InventoryValue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -38,34 +41,54 @@ impl From<PortfolioVersion> for String {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct PortfolioFilters {
+#[serde(bound(
+    deserialize = "C: Deserialize<'de>, M: Deserialize<'de>, B: Deserialize<'de>, P: Deserialize<'de>"
+))]
+pub struct PortfolioFilters<C = CollectionRef, M = ModelRef, B = BackdropRef, P = PatternRef> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schema", schema(required = false))]
-    pub collection_id: Option<CollectionId>,
+    pub collection_id: Option<C>,
     #[serde(default)]
-    #[cfg_attr(feature = "schema", schema(max_items = 256))]
-    pub models: Vec<ModelId>,
+    #[cfg_attr(feature = "schema", schema(max_items = 4096))]
+    pub models: Vec<M>,
     #[serde(default)]
-    #[cfg_attr(feature = "schema", schema(max_items = 256))]
-    pub backdrops: Vec<BackdropId>,
+    #[cfg_attr(feature = "schema", schema(max_items = 4096))]
+    pub backdrops: Vec<B>,
     #[serde(default)]
-    #[cfg_attr(feature = "schema", schema(max_items = 256))]
-    pub patterns: Vec<PatternId>,
+    #[cfg_attr(feature = "schema", schema(max_items = 4096))]
+    pub patterns: Vec<P>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schema", schema(required = false))]
     pub number: Option<GiftNumber>,
 }
-impl PortfolioFilters {
+pub type ResolvedPortfolioFilters = PortfolioFilters<CollectionId, ModelId, BackdropId, PatternId>;
+impl<C, M, B, P> Default for PortfolioFilters<C, M, B, P> {
+    fn default() -> Self {
+        Self {
+            collection_id: None,
+            models: vec![],
+            backdrops: vec![],
+            patterns: vec![],
+            number: None,
+        }
+    }
+}
+impl<C, M: Ord, B: Ord, P: Ord> PortfolioFilters<C, M, B, P> {
     fn validate(&self) -> Result<(), PortfolioError> {
+        if self.collection_id.is_none() && !self.models.is_empty() {
+            return Err(PortfolioError::InvalidData(
+                "model filters require a collection".into(),
+            ));
+        }
         if [self.models.len(), self.backdrops.len(), self.patterns.len()]
             .into_iter()
-            .any(|n| n > 256)
+            .any(|n| n > 4096)
         {
             return Err(PortfolioError::InvalidData(
-                "select at most 256 values per trait".into(),
+                "select at most 4096 resolved values per trait".into(),
             ));
         }
         Ok(())
@@ -80,6 +103,8 @@ impl PortfolioFilters {
         self.patterns.dedup();
         Ok(())
     }
+}
+impl ResolvedPortfolioFilters {
     fn matches(&self, item: &InventoryValue) -> bool {
         let gift = item.resolved.as_ref();
         let traits = gift.map(|gift| &gift.traits);
@@ -121,11 +146,14 @@ fn page_size() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct PortfolioReadQuery {
+#[serde(bound(
+    deserialize = "C: Deserialize<'de>, M: Deserialize<'de>, B: Deserialize<'de>, P: Deserialize<'de>"
+))]
+pub struct PortfolioReadQuery<C = CollectionRef, M = ModelRef, B = BackdropRef, P = PatternRef> {
     pub user_id: UserId,
     pub currency_id: CurrencyId,
     #[serde(default)]
-    pub filters: PortfolioFilters,
+    pub filters: PortfolioFilters<C, M, B, P>,
     #[serde(default)]
     pub sort: PortfolioSort,
     #[serde(default)]
@@ -137,7 +165,9 @@ pub struct PortfolioReadQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<PortfolioVersion>,
 }
-impl PortfolioReadQuery {
+pub type ResolvedPortfolioReadQuery =
+    PortfolioReadQuery<CollectionId, ModelId, BackdropId, PatternId>;
+impl<C, M: Ord, B: Ord, P: Ord> PortfolioReadQuery<C, M, B, P> {
     pub fn subject(&self) -> PortfolioQuery {
         PortfolioQuery {
             user_id: self.user_id,
@@ -240,7 +270,7 @@ struct Key {
     user: UserId,
     currency: CurrencyId,
     version: PortfolioVersion,
-    filters: PortfolioFilters,
+    filters: ResolvedPortfolioFilters,
     sort: PortfolioSort,
 }
 struct Index {
@@ -312,7 +342,7 @@ impl PortfolioReadCache {
     pub fn read(
         &self,
         state: &PortfolioState,
-        mut query: PortfolioReadQuery,
+        mut query: ResolvedPortfolioReadQuery,
         mut check: impl FnMut() -> Result<(), PortfolioError>,
     ) -> Result<PortfolioPage, PortfolioError> {
         query.validate()?;
@@ -476,7 +506,7 @@ mod tests {
             })),
         }
     }
-    fn query() -> PortfolioReadQuery {
+    fn query() -> ResolvedPortfolioReadQuery {
         PortfolioReadQuery {
             user_id: UserId::new(7).unwrap(),
             currency_id: "GRAM".into(),
@@ -508,6 +538,7 @@ mod tests {
             "adjacent pages share their filtered/sorted index"
         );
         let mut filtered = query();
+        filtered.filters.collection_id = Some("gift".into());
         filtered.filters.models = vec!["m".into()];
         filtered.filters.backdrops = vec!["b".into()];
         let page = cache.read(&state, filtered, || Ok(())).unwrap();

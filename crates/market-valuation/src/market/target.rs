@@ -1,8 +1,11 @@
 use crate::{
     ValuationError,
-    source::{CatalogTrait, ValuationSnapshot},
+    source::{GiftTraitKind, ValuationSnapshot},
 };
 use market_gifts::*;
+use market_gifts_hub::input::{
+    BackdropRef, CollectionRef, GiftCriteriaInput, GiftLookupInput, GiftTraitsInput, ModelRef,
+};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -17,9 +20,9 @@ pub enum ValuationTargetKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct GiftAttributes {
-    pub collection_id: CollectionId,
-    pub traits: GiftTraits,
+pub struct GiftAttributes<C = CollectionId, T = GiftTraits> {
+    pub collection_id: C,
+    pub traits: T,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<GiftNumber>,
 }
@@ -29,41 +32,43 @@ pub struct GiftAttributes {
 pub enum ValuationTarget {
     Catalog(CatalogSelection),
     Selection {
-        collection_id: CollectionId,
-        criteria: GiftCriteria,
+        collection_id: CollectionRef,
+        criteria: GiftCriteriaInput,
     },
     Gift {
-        gift: GiftLookup,
+        gift: GiftLookupInput,
     },
-    GiftAttributes(GiftAttributes),
+    GiftAttributes(GiftAttributesInput),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct CatalogSelection {
+pub struct CatalogSelection<C = CollectionRef, M = ModelRef, B = BackdropRef> {
     /// One to eight distinct collections in this currency.
     #[cfg_attr(feature = "schema", schema(min_items = 1, max_items = 8))]
-    pub collection_ids: Vec<CollectionId>,
+    pub collection_ids: Vec<C>,
     /// Include all known models/backdrops and an optional pair for one collection.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<CatalogDetails>,
+    pub details: Option<CatalogDetails<C, M, B>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct CatalogDetails {
-    pub collection_id: CollectionId,
+pub struct CatalogDetails<C = CollectionRef, M = ModelRef, B = BackdropRef> {
+    pub collection_id: C,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pair: Option<PairSelection>,
+    pub pair: Option<PairSelection<M, B>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct PairSelection {
-    pub model_id: ModelId,
-    pub backdrop_id: BackdropId,
+pub struct PairSelection<M = ModelRef, B = BackdropRef> {
+    pub model_id: M,
+    pub backdrop_id: B,
 }
-impl CatalogSelection {
+pub type ResolvedCatalogSelection = CatalogSelection<CollectionId, ModelId, BackdropId>;
+pub type GiftAttributesInput = GiftAttributes<CollectionRef, GiftTraitsInput>;
+impl<C: Ord, M, B> CatalogSelection<C, M, B> {
     pub fn validate(&self) -> Result<(), ValuationError> {
         if self.collection_ids.is_empty()
             || self.collection_ids.len() > 8
@@ -93,7 +98,7 @@ impl CatalogSelection {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ResolvedTarget {
-    Catalog(CatalogSelection),
+    Catalog(ResolvedCatalogSelection),
     Selection {
         collection_id: CollectionId,
         criteria: GiftCriteria,
@@ -155,33 +160,42 @@ impl ValuationTarget {
         &self,
         snapshot: &ValuationSnapshot,
     ) -> Result<ResolvedTarget, ValuationError> {
-        Ok(match self {
-            Self::Catalog(selection) => {
+        let target = snapshot.resolve_target(self)?;
+        match &target {
+            ResolvedTarget::Catalog(selection) => {
+                selection.validate()?;
                 for collection in &selection.collection_ids {
                     snapshot.require_collection(collection)?;
                 }
-                ResolvedTarget::Catalog(selection.clone())
             }
-            Self::Gift { gift: lookup } => ResolvedTarget::Gift {
-                gift: snapshot.gift(lookup)?,
-                slug: match lookup {
-                    GiftLookup::Slug(slug) => Some(slug.clone()),
-                    _ => None,
-                },
-            },
-            Self::GiftAttributes(attributes) => {
+            ResolvedTarget::Selection {
+                collection_id,
+                criteria,
+            } => {
+                snapshot.require_collection(collection_id)?;
+                for id in &criteria.models {
+                    snapshot.require_trait(collection_id, GiftTraitKind::Model, id)?;
+                }
+                for id in &criteria.backdrops {
+                    snapshot.require_trait(collection_id, GiftTraitKind::Backdrop, id)?;
+                }
+                for id in &criteria.patterns {
+                    snapshot.require_trait(collection_id, GiftTraitKind::Pattern, id)?;
+                }
+            }
+            ResolvedTarget::GiftAttributes(attributes) => {
                 snapshot.require_collection(&attributes.collection_id)?;
                 for (kind, id) in [
                     (
-                        CatalogTrait::Model,
+                        GiftTraitKind::Model,
                         attributes.traits.model.as_ref().map(ModelId::as_str),
                     ),
                     (
-                        CatalogTrait::Backdrop,
+                        GiftTraitKind::Backdrop,
                         attributes.traits.backdrop.as_ref().map(BackdropId::as_str),
                     ),
                     (
-                        CatalogTrait::Pattern,
+                        GiftTraitKind::Pattern,
                         attributes.traits.pattern.as_ref().map(PatternId::as_str),
                     ),
                 ] {
@@ -189,28 +203,10 @@ impl ValuationTarget {
                         snapshot.require_trait(&attributes.collection_id, kind, id)?;
                     }
                 }
-                ResolvedTarget::GiftAttributes(attributes.clone())
             }
-            Self::Selection {
-                collection_id,
-                criteria,
-            } => {
-                snapshot.require_collection(collection_id)?;
-                for id in &criteria.models {
-                    snapshot.require_trait(collection_id, CatalogTrait::Model, id)?;
-                }
-                for id in &criteria.backdrops {
-                    snapshot.require_trait(collection_id, CatalogTrait::Backdrop, id)?;
-                }
-                for id in &criteria.patterns {
-                    snapshot.require_trait(collection_id, CatalogTrait::Pattern, id)?;
-                }
-                ResolvedTarget::Selection {
-                    collection_id: collection_id.clone(),
-                    criteria: criteria.clone(),
-                }
-            }
-        })
+            ResolvedTarget::Gift { .. } => {}
+        }
+        Ok(target)
     }
 }
 impl ResolvedTarget {
@@ -284,8 +280,8 @@ impl ResolvedTarget {
         currency: CurrencyId,
         source: OrderSource,
         period: Option<Period>,
-    ) -> GiftOrderQuery {
-        let mut filters = GiftFilters::new(
+    ) -> ResolvedGiftOrderQuery {
+        let mut filters = ResolvedGiftFilters::new(
             self.collection().expect("single selection").clone(),
             currency,
         );
@@ -335,7 +331,7 @@ mod tests {
         };
         assert_eq!(
             criteria.models,
-            vec![ModelId::from("a"), ModelId::from("b")]
+            vec![ModelRef::from("a"), ModelRef::from("b")]
         );
         assert_eq!(criteria.patterns.len(), 1);
         for kind in [
@@ -351,6 +347,24 @@ mod tests {
                 )
                 .is_err()
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod typed_targets {
+    use super::*;
+    #[test]
+    fn input_targets_keep_the_existing_json_but_resolved_targets_cannot_contain_aliases() {
+        for input in [
+            serde_json::json!({"kind":"selection","collection_id":"@tg.slug:One","criteria":{"models":["@name:Model"],"backdrops":[],"patterns":[]}}),
+            serde_json::json!({"kind":"gift_attributes","collection_id":"@tg.slug:One","traits":{"model":"@tg:123","backdrop":"@name:Black","pattern":"@tg:42"}}),
+            serde_json::json!({"kind":"catalog","collection_ids":["@tg.slug:One"],"details":{"collection_id":"@tg.slug:One","pair":{"model_id":"@name:Model","backdrop_id":"@tg:42"}}}),
+            serde_json::json!({"kind":"gift","gift":{"collection_id":"@tg.slug:One","number":7}}),
+        ] {
+            let target: ValuationTarget = serde_json::from_value(input.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&target).unwrap(), input);
+            assert!(serde_json::from_value::<ResolvedTarget>(input).is_err());
         }
     }
 }

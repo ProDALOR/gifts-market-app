@@ -3,13 +3,13 @@ use crate::{
     MarketDataService,
     tests::{fixture, order},
 };
-use market_gifts::{GiftFilters, GiftOrderQuery};
+use market_gifts_hub::input::{GiftFilters, GiftOrderQuery};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 fn query(collection: &str) -> GiftOrderQuery {
     GiftOrderQuery::new(GiftFilters::new(
-        market_gifts::CollectionId::new(collection).unwrap(),
+        market_gifts_hub::input::CollectionRef::new(collection).unwrap(),
         "GRAM".into(),
     ))
 }
@@ -213,7 +213,9 @@ async fn equivalent_catalog_watches_share_a_feed_and_keep_independent_leases() {
         .unwrap()
         .test_parts();
     assert!(first.same_channel(&second));
-    async fn catalog(updates: &mut watch::Receiver<DataUpdate>) -> market_gifts::CatalogVersions {
+    async fn catalog(
+        updates: &mut watch::Receiver<DataUpdate>,
+    ) -> market_gifts_hub::input::CatalogVersions {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let DataUpdate::Catalog(value) = updates.borrow_and_update().clone() {
@@ -264,7 +266,7 @@ fn seed(writer: &market_replica::ReplicaWriter, params: GiftOrderQuery) -> types
     let batch = writer
         .reader()
         .query_range_checked(
-            request.clone(),
+            request.pin_request(),
             read,
             false,
             crate::query::validate_order_collection,

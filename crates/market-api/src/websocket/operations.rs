@@ -18,8 +18,8 @@ pub(super) enum Operation {
     Portfolio(market_portfolio::PortfolioQuery),
     Valuation(Box<market_valuation::ValuationQuery>),
     Request(ApiRequest),
-    Orders(Box<market_gifts::GiftOrderQuery>),
-    Catalog(Vec<market_gifts::CollectionId>),
+    Orders(Box<market_actors::input::GiftOrderQuery>),
+    Catalog(Vec<market_actors::input::CollectionRef>),
 }
 #[derive(Debug)]
 pub(super) enum End {

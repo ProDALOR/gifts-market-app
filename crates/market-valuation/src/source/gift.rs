@@ -47,11 +47,11 @@ impl ValuationSnapshot {
             .clone()
             .try_into()
             .map_err(|_| Status::unavailable("Invalid gift collection ID"))?;
-        let choice = |kind: &str, id: i64| -> Result<String> {
+        let choice = |kind: GiftTraitKind, id: i64| -> Result<String> {
             let ids = rules.trait_option_ids(kind);
             let options = market_replica::catalog_read::trait_options(
                 &self.reader,
-                kind,
+                market_gifts_hub::trait_attribute(kind),
                 ids.as_deref(),
                 &self.cancelled,
             )?;
@@ -70,14 +70,14 @@ impl ValuationSnapshot {
         };
         let traits = GiftTraits {
             model: Some(
-                choice(market_gifts_hub::MODEL, facts.model.get())?
+                choice(GiftTraitKind::Model, facts.model.get())?
                     .try_into()
                     .map_err(|_| Status::unavailable("Invalid model ID"))?,
             ),
             backdrop: facts
                 .backdrop
                 .map(|id| {
-                    choice(market_gifts_hub::BACKDROP, i64::from(id)).and_then(|id| {
+                    choice(GiftTraitKind::Backdrop, i64::from(id)).and_then(|id| {
                         id.try_into()
                             .map_err(|_| Status::unavailable("Invalid backdrop ID"))
                     })
@@ -86,7 +86,7 @@ impl ValuationSnapshot {
             pattern: facts
                 .pattern
                 .map(|id| {
-                    choice(market_gifts_hub::PATTERN, id.get()).and_then(|id| {
+                    choice(GiftTraitKind::Pattern, id.get()).and_then(|id| {
                         id.try_into()
                             .map_err(|_| Status::unavailable("Invalid pattern ID"))
                     })
@@ -174,7 +174,7 @@ impl ValuationSnapshot {
             let w::entity::Entity::Currency(currency) = currency else {
                 continue;
             };
-            let mut filters = GiftFilters::new(
+            let mut filters = ResolvedGiftFilters::new(
                 CollectionId::new(item.id.clone())
                     .map_err(|e| Status::unavailable(e.to_string()))?,
                 CurrencyId::new(currency.id).map_err(|e| Status::unavailable(e.to_string()))?,
@@ -183,7 +183,7 @@ impl ValuationSnapshot {
                 min: Some(number),
                 max: Some(number),
             });
-            let mut query = GiftOrderQuery::new(filters);
+            let mut query = ResolvedGiftOrderQuery::new(filters);
             query.sort = Some(GiftSort::NumberAsc);
             query.limit = 200;
             for source in [OrderSource::Asks, OrderSource::History] {

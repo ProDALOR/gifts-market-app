@@ -1,3 +1,4 @@
+import { aliasFilters, resolveFilterSelectors } from "../catalog/aliases";
 import {
   useCallback,
   useEffect,
@@ -269,6 +270,10 @@ function PortfolioView({
   );
   const catalog = useCatalog(0, filters.collection, demanded),
     availability = useMarketStatus(!!user);
+  const pickerFilters = useMemo(
+    () => resolveFilterSelectors(filters.traits, catalog.options),
+    [filters.traits, catalog.options],
+  );
   const self = portfolioUser(telegram.identity?.user.id);
   const chooseUser = (id: number, replace = false) => {
     setSelected(undefined);
@@ -334,11 +339,26 @@ function PortfolioView({
   );
   const changeTrait = useCallback(
     (id: TraitKey, value?: string[]) =>
-      setFilters((old) => ({ ...old, traits: { ...old.traits, [id]: value } })),
-    [setFilters],
+      setFilters((old) => ({
+        ...old,
+        traits: {
+          ...old.traits,
+          [id]: value
+            ? aliasFilters({ [id]: value }, catalog.options)[id]
+            : undefined,
+        },
+      })),
+    [setFilters, catalog.options],
   );
   const choose = (collection: string) => {
-    setFilters((old) => ({ ...old, collection, traits: {} }));
+    setFilters((old) => ({
+      ...old,
+      collection,
+      traits: {
+        backdrops: aliasFilters(old.traits, catalog.options).backdrops,
+        patterns: aliasFilters(old.traits, catalog.options).patterns,
+      },
+    }));
     setOpen(undefined);
   };
   const state = portfolio.state,
@@ -390,7 +410,7 @@ function PortfolioView({
             </div>
             <AppNavigation page="portfolio" />
             <button
-              className="portfolio-any"
+              className="collection-all"
               aria-pressed={!filters.collection}
               onClick={() => choose("")}
             >
@@ -401,13 +421,16 @@ function PortfolioView({
               selected={filters.collection}
               select={choose}
             />
-            {filters.collection && (
+            {
               <>
                 <TraitPickers
                   key={filters.collection}
                   collection={catalog.item}
                   options={catalog.options}
-                  filters={filters.traits}
+                  filters={resolveFilterSelectors(
+                    filters.traits,
+                    catalog.options,
+                  )}
                   change={changeTrait}
                   open={open}
                   setOpen={setOpen}
@@ -417,14 +440,17 @@ function PortfolioView({
                 <TraitPreview
                   collection={catalog.item}
                   options={catalog.options}
-                  filters={filters.traits}
+                  filters={resolveFilterSelectors(
+                    filters.traits,
+                    catalog.options,
+                  )}
                   reset={() => {
                     setFilters((old) => ({ ...old, traits: {} }));
                     setOpen(undefined);
                   }}
                 />
               </>
-            )}
+            }
             <div className="portfolio-filters">
               <label>
                 Gift #

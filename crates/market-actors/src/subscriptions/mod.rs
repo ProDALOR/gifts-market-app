@@ -9,7 +9,7 @@ use crate::{
 };
 use actix::prelude::*;
 use messages::{SubscribeCatalog, WatchOrders};
-use prost::Message as _;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Weak},
@@ -77,8 +77,8 @@ impl Handler<WatchOrders> for MarketSubscriptionsActor {
             } = &initial
                 && result.data.len() <= message.read.limit as usize
                 && self
-                    .reader
-                    .read_revision(&message.request)
+                    .orders
+                    .revision(&self.reader, &message.request)
                     .is_ok_and(|current| current == *version)
             {
                 let watch = DataWatch::new(feed, initial);
@@ -216,18 +216,13 @@ impl MarketSubscriptionsActor {
 }
 
 fn range_key(
-    request: &market_hub_protocol::wire::ReadRequest,
+    request: &crate::query::OrderQuery,
     range: &market_replica::KeyRange,
     options: market_replica::ReadOptions,
 ) -> QueryKey {
     QueryKey::Range {
-        options: options.normalized_for(request),
-        selection: request
-            .selection
-            .as_ref()
-            .map(|selection| selection.encode_to_vec())
-            .unwrap_or_default(),
-        sort: request.sort,
+        options,
+        selection: request.selection_key(),
         range: Box::new(range.clone()),
     }
 }

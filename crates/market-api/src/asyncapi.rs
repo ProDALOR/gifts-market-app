@@ -19,7 +19,7 @@ pub fn document() -> serde_json::Result<Value> {
         }
         let schema = source
             .get(&name)
-            .expect("generated reference resolves")
+            .unwrap_or_else(|| panic!("generated schema reference {name} resolves"))
             .clone();
         references(&schema, &mut pending);
         schemas.insert(name, schema);

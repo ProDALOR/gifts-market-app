@@ -17,7 +17,7 @@ async fn dependency_checks_use_revisions_then_a_bounded_worker_and_memoize_succe
         .reader
         .snapshot()
         .unwrap()
-        .dependencies([], &CurrencyId::from("GRAM"), &[CatalogTrait::Model], &[])
+        .dependencies([], &CurrencyId::from("GRAM"), &[GiftTraitKind::Model], &[])
         .unwrap();
     let held = data.reader.executor.budget().wait().await.unwrap();
     assert!(
@@ -182,7 +182,7 @@ async fn cancelling_a_worker_stops_its_scan_at_the_next_page_and_releases_capaci
 
 #[tokio::test]
 async fn valuation_and_data_actor_queries_share_one_admission_budget() {
-    use market_gifts::{GiftFilters, GiftOrderQuery};
+    use market_gifts_hub::input::{GiftFilters, GiftOrderQuery};
     let (_dir, writer) = fixture();
     let data = MarketDataService::start(writer.reader(), 1, 1)
         .await

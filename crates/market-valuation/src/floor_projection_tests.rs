@@ -281,7 +281,7 @@ fn batch_scope_is_explicit_and_bounded() {
     scope(&mut query).details = None;
     assert!(query.validate().is_ok());
     scope(&mut query).collection_ids = (0..9)
-        .map(|n| CollectionId::new(format!("gift{n}")).unwrap())
+        .map(|n| market_gifts_hub::input::CollectionRef::new(format!("gift{n}")).unwrap())
         .collect();
     assert!(query.validate().is_err());
 }
