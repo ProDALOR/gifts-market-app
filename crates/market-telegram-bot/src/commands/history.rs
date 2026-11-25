@@ -5,6 +5,7 @@ use market_gifts::*;
 use std::{collections::VecDeque, sync::Arc};
 
 pub(super) const MAX_PAGES: usize = 10;
+pub(super) const PAGE_SIZE: u32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Scope {
@@ -69,7 +70,7 @@ impl SalesState {
         let mut query = ResolvedGiftOrderQuery::new(filters);
         query.source = OrderSource::History;
         query.sort = Some(GiftSort::TimeDesc);
-        query.limit = 5;
+        query.limit = PAGE_SIZE;
         query.period = Some(Period {
             from: Some(
                 self.until

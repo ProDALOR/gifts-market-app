@@ -490,6 +490,10 @@ fn parse_name(name: &str) -> Option<MediaKey> {
     match extension {
         "thumb" => Some(MediaKey::thumbnail(id)),
         "tgs" => Some(MediaKey::animation(id)),
+        _ if extension.starts_with("gallery-") => {
+            let (version, hash) = derivative_extension(extension, "gallery-", ".png")?;
+            (version == crate::asset::GALLERY_VERSION).then(|| MediaKey::gallery(id, hash))
+        }
         _ if extension.starts_with("cover-") => {
             let (version, hash) = derivative_extension(extension, "cover-", ".png")?;
             (version == crate::asset::COVER_VERSION).then(|| MediaKey::cover(id, hash))

@@ -11,14 +11,32 @@ use std::{
     },
     time::{Duration, Instant},
 };
-#[derive(Default)]
-pub(super) struct Views {
-    entries: Mutex<VecDeque<(u64, Instant, View)>>,
+pub(super) type Views = ViewCache<View>;
+pub(super) struct ViewCache<T> {
+    entries: Mutex<VecDeque<(u64, Instant, T)>>,
     next: AtomicU64,
     random: RandomState,
+    prefix: &'static str,
+    limit: usize,
 }
-impl Views {
-    pub fn insert(&self, view: View) -> Vec<u8> {
+impl<T> Default for ViewCache<T> {
+    fn default() -> Self {
+        Self::new("v", 256)
+    }
+}
+impl<T> ViewCache<T> {
+    pub fn new(prefix: &'static str, limit: usize) -> Self {
+        Self {
+            entries: Default::default(),
+            next: Default::default(),
+            random: Default::default(),
+            prefix,
+            limit,
+        }
+    }
+}
+impl<T: Clone> ViewCache<T> {
+    pub fn insert(&self, view: T) -> Vec<u8> {
         let id = self
             .random
             .hash_one(self.next.fetch_add(1, Ordering::Relaxed));
@@ -27,13 +45,13 @@ impl Views {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         entries.retain(|(_, at, _)| at.elapsed() < Duration::from_secs(1800));
-        while entries.len() >= 256 {
+        while entries.len() >= self.limit {
             entries.pop_front();
         }
         entries.push_back((id, Instant::now(), view));
-        format!("v:{id:016x}").into_bytes()
+        format!("{}:{id:016x}", self.prefix).into_bytes()
     }
-    pub fn get(&self, id: u64) -> Option<View> {
+    pub fn get(&self, id: u64) -> Option<T> {
         let mut entries = self
             .entries
             .lock()
@@ -98,15 +116,17 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
                     message_id: 0,
                 });
             }
-            let token = text.strip_prefix("v:")?;
-            if token.len() != 16 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return None;
+            if let Some(token) = text.strip_prefix("m:") {
+                let id = callback_id(token)?;
+                return Some(CommandRequest {
+                    command: Command::MarketView(id),
+                    user_id: *user_id,
+                    message_id: 0,
+                });
             }
-            (
-                Command::View(u64::from_str_radix(token, 16).ok()?),
-                *user_id,
-                0,
-            )
+            let token = text.strip_prefix("v:")?;
+
+            (Command::View(callback_id(token)?), *user_id, 0)
         }
     };
     (user_id > 0).then_some(CommandRequest {
@@ -114,6 +134,12 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
         user_id,
         message_id,
     })
+}
+
+fn callback_id(token: &str) -> Option<u64> {
+    (token.len() == 16 && token.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| u64::from_str_radix(token, 16).ok())
+        .flatten()
 }
 
 #[cfg(test)]

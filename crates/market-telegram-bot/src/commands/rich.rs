@@ -4,7 +4,11 @@ use market_gifts::Amount;
 pub(super) const COLUMNS: usize = 3;
 
 pub(super) fn amount(value: &Amount) -> String {
-    let value = value.decimal().round_dp(2).normalize().to_string();
+    let value = value
+        .decimal()
+        .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
+        .normalize()
+        .to_string();
     let (integer, fractional) = value.split_once('.').unwrap_or((&value, ""));
     let mut result = String::with_capacity(value.len() + integer.len() / 3);
     for (i, digit) in integer.chars().enumerate() {
@@ -46,18 +50,45 @@ pub(super) fn price(image: &str, amount: &str, currency: &str, url: Option<&str>
     }
 }
 
-pub(super) fn grid(cells: &[String]) -> String {
+pub(super) fn grid(cells: &[String], columns: usize) -> String {
+    assert!((1..=3).contains(&columns));
     let mut html = String::from("<table striped compact>");
-    for row in cells.chunks(COLUMNS) {
+    for row in cells.chunks(columns) {
         html.push_str("<tr>");
         for cell in row {
             html.push_str(&format!("<td>{cell}</td>"));
         }
-        for _ in row.len()..COLUMNS {
+        for _ in row.len()..columns {
             html.push_str("<td></td>");
         }
         html.push_str("</tr>");
     }
     html.push_str("</table>");
     html
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn prices_match_the_shared_gui_fixture() {
+        let cases: Vec<(String, String)> =
+            serde_json::from_str(include_str!("../../../../fixtures/price-format.json")).unwrap();
+        for (input, expected) in cases {
+            assert_eq!(amount(&Amount::new(input).unwrap()), expected);
+        }
+    }
+    #[test]
+    fn grid_layouts_fill_exactly_two_or_three_columns() {
+        for columns in [2, 3] {
+            for count in [1, 5, 6, 12, 30] {
+                let html = grid(&vec!["gift".into(); count], columns);
+                assert_eq!(html.matches("<tr>").count(), count.div_ceil(columns));
+                assert_eq!(
+                    html.matches("<td>").count(),
+                    count.div_ceil(columns) * columns
+                );
+            }
+        }
+    }
 }

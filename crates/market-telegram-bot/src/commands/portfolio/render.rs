@@ -94,10 +94,11 @@ pub(super) fn render(
     }
     let mut reply = Reply::default();
     let count = state.valuation.as_ref().map_or(0, |v| v.items.len());
-    let pages = count.div_ceil(PAGE_SIZE).max(1);
+    let size = request.page_size();
+    let pages = count.div_ceil(size).max(1);
     let page = request.page.min(pages - 1);
-    let start = page * PAGE_SIZE;
-    let end = (start + PAGE_SIZE).min(count);
+    let start = page * size;
+    let end = (start + size).min(count);
     let items = if count > 0 {
         match reads.read(
             state,
@@ -107,7 +108,7 @@ pub(super) fn render(
                 filters: Default::default(),
                 sort: request.sort,
                 offset: start,
-                limit: PAGE_SIZE,
+                limit: size,
                 version: state.version.clone(),
             },
             || {
@@ -145,6 +146,21 @@ pub(super) fn render(
         }
         if count > 0 {
             html.push_str(&sort_controls(request));
+            html.push_str("<tg-button-row>");
+            for (layout, label) in [(GridMode::Linked, "Linked"), (GridMode::Gallery, "Gallery")] {
+                let target = PortfolioRequest {
+                    layout,
+                    page: 0,
+                    ..request.clone()
+                };
+                let data = target.data(0, PortfolioAction::Navigate, request.sort);
+                html.push_str(&rich::button(
+                    label,
+                    (layout != request.layout).then_some(data.as_str()),
+                    layout == request.layout,
+                ));
+            }
+            html.push_str("</tg-button-row>");
         }
         let mut cells = Vec::with_capacity(items.len());
         for item in &items {
@@ -164,7 +180,7 @@ pub(super) fn render(
             ));
         }
         if count > 0 {
-            html.push_str(&rich::grid(&cells));
+            html.push_str(&rich::grid(&cells, rich::COLUMNS));
             footer.push(format!("{}–{end} of {count}", start + 1));
         } else {
             footer.push("0 gifts".into());

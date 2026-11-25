@@ -53,13 +53,13 @@ fn callback(html: &str, label: &str) -> u64 {
     let end = html.find(&format!(">{label}</tg-button>")).unwrap();
     let start = html[..end].rfind("<tg-button ").unwrap();
     let token = html[start..end]
-        .split("data=\"v:")
+        .split("data=\"")
         .nth(1)
         .unwrap()
         .split('"')
         .next()
         .unwrap();
-    u64::from_str_radix(token, 16).unwrap()
+    u64::from_str_radix(token.split_once(':').unwrap().1, 16).unwrap()
 }
 #[test]
 fn entry_points_share_value_requests_without_trusting_payload_identities() {
@@ -175,7 +175,9 @@ fn covers_use_the_selected_backdrop_and_resolved_model_and_symbol_documents() {
         TelegramDocumentId::new(11).unwrap(),
         Some(TelegramDocumentId::new(22).unwrap()),
     );
-    let cover = report.render().artwork.unwrap();
+    let market_media::Artwork::Gift(cover) = report.render().artwork.unwrap() else {
+        panic!("gift cover")
+    };
     assert_eq!(cover.model.get(), 11);
     assert_eq!(cover.pattern.unwrap().get(), 22);
     assert_eq!(
@@ -242,7 +244,7 @@ fn report_icons_keep_custom_emoji_fallbacks_and_one_artwork_reference() {
     assert!(html.contains("<tg-emoji emoji-id=\"123\">🧸</tg-emoji> &lt;b&gt;Model&lt;/b&gt;"));
     assert!(reply.text.contains("🧸 <b>Model</b>"));
     assert!(!reply.text.contains("tg-emoji"));
-    assert_eq!(reply.artwork, report.artwork);
+    assert_eq!(reply.artwork, report.artwork.map(Into::into));
     assert!(
         !html.contains("<img"),
         "only the transport adds the single large artwork"
@@ -313,7 +315,7 @@ fn similar_sales_are_bounded_executions_with_explicit_matching_and_fixed_period(
     };
     let query = request.query(gift, "GRAM".into()).unwrap();
     assert_eq!(query.source, OrderSource::History);
-    assert_eq!(query.limit, 5);
+    assert_eq!(query.limit, history::PAGE_SIZE);
     assert_eq!(query.sort, Some(GiftSort::TimeDesc));
     assert_eq!(query.filters.models, vec![ModelId::from("m")]);
     assert_eq!(query.filters.backdrops, vec![BackdropId::from("b")]);
@@ -481,6 +483,30 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         "https://example.com/sale?gift=123&venue=v".into(),
     );
     rows.push(entity(w::entity::Entity::Order(exact_sale)));
+    for n in 201..=214 {
+        let mut ask = rows
+            .iter()
+            .find_map(|change| match change.change.as_ref()? {
+                w::change::Change::Upsert(entity) => match entity.entity.as_ref()? {
+                    w::entity::Entity::Order(order) if order.id == "o0" => Some(order.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap();
+        ask.id = format!("extra-{n}");
+        ask.item_id = Some(format!("gift-{n}"));
+        ask.price = (n - 180).to_string();
+        ask.attributes.insert(
+            "tg.number".into(),
+            w::AttributePredicate {
+                predicate: Some(w::attribute_predicate::Predicate::Eq(w::AttributeValue {
+                    value: Some(w::attribute_value::Value::Integer(n)),
+                })),
+            },
+        );
+        rows.push(entity(w::entity::Entity::Order(ask)));
+    }
     let mut snapshot = writer.begin_snapshot().unwrap();
     snapshot.append(&rows).unwrap();
     writer
@@ -520,6 +546,35 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     assert!(market_html.contains(&crate::ReportIcons::default().html(crate::ReportIcon::Stars)));
     assert!(market.text.contains("#123 · 1 500 XTR"));
     assert!(!market.buttons.is_empty());
+    let market_page = commands
+        .browse(browse::parse("/market collection=@slug:Gift").unwrap())
+        .await;
+    assert_eq!(
+        market_page
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .matches("https://t.me/nft/")
+            .count(),
+        12
+    );
+    let market_forward_id = callback(market_page.rich_html.as_ref().unwrap(), "→");
+    let (market_next, duplicate) = tokio::join!(
+        commands.market_view(market_forward_id),
+        commands.market_view(market_forward_id)
+    );
+    assert_eq!(market_next, duplicate);
+    assert!(market_next.text.contains("#212"));
+    assert!(!market_next.text.contains("#211"));
+    let market_back = commands
+        .market_view(callback(market_next.rich_html.as_ref().unwrap(), "←"))
+        .await;
+    assert!(market_back.text.contains("#201"));
+    let cached_market_next = callback(market_back.rich_html.as_ref().unwrap(), "→");
+    let pending_market = commands
+        .browse(browse::parse("/market collection=@slug:Gift").unwrap())
+        .await;
+    let pending_market_next = callback(pending_market.rich_html.as_ref().unwrap(), "→");
     let reply = commands
         .value(ValueRequest {
             gift: GiftSlug::new("Gift-123").unwrap(),
@@ -574,7 +629,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         1,
         "timezone appears once"
     );
-    assert!(sales_html.contains("<br><i>"));
+    assert!(sales_html.contains("<br>"));
     assert!(sales_html.contains("<table striped compact>"));
     assert!(sales_html.contains("<b>10</b> <tg-emoji"));
     assert!(!sales_html.contains("<th>"));
@@ -598,6 +653,60 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         .unwrap()
         .result;
     let mut captured = live.data.clone();
+    let mut gallery_rows = live.data[..1].to_vec();
+    let mut gift = gallery_rows[0].order.clone().into_data();
+    let GiftTarget::Gift { gift: target } = &mut gift.target else {
+        panic!("gift")
+    };
+    target.traits.pattern = Some("p".into());
+    gallery_rows[0].order = GiftOrder::try_from(gift).unwrap();
+    let mut bulk = gallery_rows[0].clone();
+    let mut draft = bulk.order.into_data();
+    draft.kind = GiftOrderKind::Bid;
+    draft.executed_at = None;
+    draft.quantity = 5;
+    draft.book.currency_id = "XTR".into();
+    draft.target = GiftTarget::Criteria {
+        criteria: GiftCriteria {
+            models: vec!["m".into(), "other".into()],
+            ..Default::default()
+        },
+    };
+    bulk.order = GiftOrder::try_from(draft).unwrap();
+    gallery_rows.push(bulk);
+    let mut catalog = source_view.report.catalog.clone().unwrap();
+    catalog.backdrops = Arc::new(vec![GiftBackdrop {
+        aliases: Default::default(),
+        id: "b".into(),
+        name: "Blue".into(),
+        rarity: None,
+        palette: Some(BackdropPalette {
+            center: "#123456".to_owned().try_into().unwrap(),
+            edge: "#654321".to_owned().try_into().unwrap(),
+            pattern: "#112233".to_owned().try_into().unwrap(),
+        }),
+    }]);
+    let market_media::Artwork::Gallery(gallery) = gallery::order_cells(
+        &gallery_rows,
+        &[("m".into(), TelegramDocumentId::new(11).unwrap())].into(),
+        &[(catalog.collection.id.clone(), catalog)].into(),
+        &[("p".into(), market_media::DocumentId::new(22).unwrap())].into(),
+        2,
+    ) else {
+        panic!("gallery")
+    };
+    assert_eq!(gallery.columns, 2);
+    assert_eq!(gallery.cells.len(), 2);
+    let cover = gallery.cells[0].cover.unwrap();
+    assert_eq!(cover.model.get(), 11);
+    assert_eq!(cover.pattern.unwrap().get(), 22);
+    assert_eq!(cover.palette.unwrap().center, 0x123456);
+    assert_eq!(
+        gallery.cells[1].cover, None,
+        "ambiguous bids cannot invent artwork"
+    );
+    assert_eq!(gallery.cells[1].identity, "× 5");
+    assert!(gallery.cells[1].price.ends_with(" XTR"));
     captured.reverse();
     for time in [
         query
@@ -620,7 +729,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     captured.push(live.data[0].clone());
     let preview =
         history::captured_page(&source_view.report, &source_view.state.sales, captured).unwrap();
-    assert_eq!(preview.data.len(), 5);
+    assert_eq!(preview.data.len(), history::PAGE_SIZE as usize);
     assert!(
         preview
             .data
@@ -685,6 +794,27 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     let stop = tokio_util::sync::CancellationToken::new();
     stop.cancel();
     data.task.run(stop).await.unwrap();
+    assert!(
+        commands
+            .market_view(cached_market_next)
+            .await
+            .text
+            .contains("#212"),
+        "visited market pages survive service shutdown"
+    );
+    let expired = commands.market_view(pending_market_next).await;
+    assert_eq!(expired.kind, market_telegram::ReplyKind::Notice);
+    assert!(expired.text.contains("Refresh"));
+    assert_eq!(
+        commands.market_view(callback(market_html, "↻")).await.kind,
+        market_telegram::ReplyKind::Notice,
+        "a failed refresh must preserve the displayed market page",
+    );
+    assert_eq!(
+        commands.market_view(u64::MAX).await.kind,
+        market_telegram::ReplyKind::Notice
+    );
+
     // Previously visited pages and quote columns still work after their services stop.
     let cached_back = commands
         .view(callback(refreshed.rich_html.as_ref().unwrap(), "←"))
@@ -914,9 +1044,45 @@ async fn send_live_rich_preview_to_authorized_recipient() {
         }
         let mut current = views::View::initial(report).unwrap();
         current.state.tab = views::Tab::Sales;
+        let gallery = std::env::var("MARKET_TEST_GALLERY").is_ok_and(|v| v == "1");
+        if gallery {
+            current.state.mode = GridMode::Gallery;
+        }
         let actions = interactions::Views::default();
         let result = history::captured_page(&current.report, &current.state.sales, rows).unwrap();
-        views::render(&actions, &current, Some(&result), None).bounded()
+        let mut reply = views::render(&actions, &current, Some(&result), None);
+        if gallery {
+            let catalog = current.report.catalog.as_ref().unwrap();
+            let catalogs = [(catalog.collection.id.clone(), catalog.clone())].into();
+            let documents = current
+                .report
+                .gift()
+                .and_then(|g| g.traits.model.clone())
+                .zip(current.report.artwork)
+                .map(|(id, cover)| (id, TelegramDocumentId::new(cover.model.get()).unwrap()))
+                .into_iter()
+                .collect();
+            let mut patterns = std::collections::BTreeMap::new();
+            if let (Some(cover), Some(id)) = (
+                current.report.artwork,
+                current
+                    .report
+                    .gift()
+                    .and_then(|g| g.traits.pattern.as_ref()),
+            ) {
+                if let Some(document) = cover.pattern {
+                    patterns.insert(id.clone(), document);
+                }
+            }
+            reply.artwork = Some(gallery::order_cells(
+                &result.data,
+                &documents,
+                &catalogs,
+                &patterns,
+                2,
+            ));
+        }
+        reply.bounded()
     } else {
         let current = views::View::initial(report).unwrap();
         views::render(&interactions::Views::default(), &current, None, None).bounded()
@@ -930,11 +1096,11 @@ async fn send_live_rich_preview_to_authorized_recipient() {
                 "summary": reply.summary,
                 "rich_html": reply.rich_html,
                 "emoji_documents": reply.emoji_documents,
-                "artwork": reply.artwork.map(|cover| serde_json::json!({
+                "artwork": reply.artwork.as_ref().and_then(|art| if let market_media::Artwork::Gift(cover) = art { Some(serde_json::json!({
                     "model": cover.model.get(),
                     "pattern": cover.pattern.map(market_media::DocumentId::get),
                     "palette": cover.palette.map(|palette| [palette.center, palette.edge, palette.pattern]),
-                })),
+                })) } else { None }),
             }))
             .unwrap(),
         )
@@ -945,20 +1111,29 @@ async fn send_live_rich_preview_to_authorized_recipient() {
     let reply = static_preview(reply);
     if let Ok(path) = std::env::var("MARKET_TEST_COVER_OUTPUT") {
         let started = std::time::Instant::now();
-        let asset = cache
-            .cover(reply.artwork.expect("explicit artwork"))
+        let artwork = reply.artwork.as_ref().expect("explicit artwork");
+        let render = || async {
+            match artwork {
+                market_media::Artwork::Gift(cover) => cache.cover(*cover).await,
+                market_media::Artwork::Gallery(gallery) => cache.gallery(gallery.clone()).await,
+            }
+        };
+        let asset = render()
             .await
             .expect("high-resolution cover must succeed before this preview is sent");
         std::fs::write(path, asset.bytes()).unwrap();
-        let cached = cache.cover(reply.artwork.unwrap()).await.unwrap();
+        let cached = render().await.unwrap();
         assert_eq!(cached.etag(), asset.etag());
+        let width = u32::from_be_bytes(asset.bytes()[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(asset.bytes()[20..24].try_into().unwrap());
         eprintln!(
-            "Prepared {}x{} cover: {} bytes, {} ms, {} generation(s)",
-            market_media::COVER_WIDTH,
-            market_media::COVER_HEIGHT,
+            "Prepared {}x{} artwork: {} bytes, {} ms, {} cover / {} gallery generation(s)",
+            width,
+            height,
             asset.bytes().len(),
             started.elapsed().as_millis(),
-            cache.stats().cover_generations
+            cache.stats().cover_generations,
+            cache.stats().gallery_generations,
         );
     }
     let event = Event::Message(Message {

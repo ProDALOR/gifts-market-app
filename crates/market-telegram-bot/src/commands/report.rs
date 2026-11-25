@@ -149,7 +149,7 @@ impl Report {
             title: Some(title),
             summary: Some(summaries.join(" · ")),
             rich_html: Some(html),
-            artwork: self.artwork,
+            artwork: self.artwork.map(Into::into),
             ..Default::default()
         };
         reply

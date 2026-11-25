@@ -22,7 +22,7 @@ pub struct GiftCover {
     pub palette: Option<CoverPalette>,
 }
 impl GiftCover {
-    fn normalized(mut self) -> Self {
+    pub(crate) fn normalized(mut self) -> Self {
         if self.palette.is_none() {
             self.pattern = None;
         }
@@ -84,10 +84,12 @@ impl MediaCache {
         self.derive(key, move |cache, job| async move {
             let svg = cache
                 .blocking(move || {
-                    compose(
+                    compose_sized(
                         &model,
                         pattern.as_ref().map(|(_, asset)| asset),
                         cover.palette,
+                        COVER_WIDTH,
+                        COVER_HEIGHT,
                     )
                 })
                 .await?;
@@ -97,7 +99,7 @@ impl MediaCache {
         })
         .await
     }
-    async fn cover_source(&self, document: DocumentId) -> Result<[u8; 32], MediaError> {
+    pub(crate) async fn cover_source(&self, document: DocumentId) -> Result<[u8; 32], MediaError> {
         if let Some(key) = self.preview_key(document) {
             return Ok(key.source().expect("preview source"));
         }
@@ -132,40 +134,46 @@ fn cover_key(
     }
     MediaKey::cover(cover.model, hash.finalize().into())
 }
-fn scoped(asset: &MediaAsset, prefix: &str) -> Result<String, MediaError> {
+pub(crate) fn scoped(asset: &MediaAsset, prefix: &str) -> Result<String, MediaError> {
     let svg = std::str::from_utf8(asset.bytes()).map_err(|_| MediaError::InvalidMedia)?;
-    Ok(svg
-        .replace("id=\"", &format!("id=\"{prefix}-"))
-        .replace("id='", &format!("id='{prefix}-"))
-        .replace("url(#", &format!("url(#{prefix}-")))
+    Ok(scoped_svg(svg, prefix))
 }
-fn compose(
+pub(crate) fn scoped_svg(svg: &str, prefix: &str) -> String {
+    svg.replace("id=\"", &format!("id=\"{prefix}-"))
+        .replace("id='", &format!("id='{prefix}-"))
+        .replace("url(#", &format!("url(#{prefix}-"))
+        .replace("href=\"#", &format!("href=\"#{prefix}-"))
+}
+pub(crate) fn compose_sized(
     model: &MediaAsset,
     pattern: Option<&MediaAsset>,
     palette: Option<CoverPalette>,
+    width: u32,
+    height: u32,
 ) -> Result<String, MediaError> {
     let p = palette.unwrap_or(CoverPalette {
         center: 0x41404c,
         edge: 0x24232c,
         pattern: 0x888692,
     });
-    let view_box = view_box();
+    let view_height = VIEW_WIDTH * height as f64 / width as f64;
+    let view_box = format!("0 0 {VIEW_WIDTH} {view_height}");
     let center_x = VIEW_WIDTH / 2.0;
-    let gradient_y = VIEW_HEIGHT * 0.42;
-    let gradient_radius = VIEW_WIDTH.max(VIEW_HEIGHT) * 0.72;
+    let gradient_y = view_height * 0.42;
+    let gradient_radius = VIEW_WIDTH.max(view_height) * 0.72;
     let mut svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{COVER_WIDTH}" height="{COVER_HEIGHT}" viewBox="{view_box}"><defs><radialGradient id="cover-bg" gradientUnits="userSpaceOnUse" cx="{center_x}" cy="{gradient_y}" r="{gradient_radius}"><stop offset="0" stop-color="#{:06x}"/><stop offset="1" stop-color="#{:06x}"/></radialGradient>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="{view_box}"><defs><radialGradient id="cover-bg" gradientUnits="userSpaceOnUse" cx="{center_x}" cy="{gradient_y}" r="{gradient_radius}"><stop offset="0" stop-color="#{:06x}"/><stop offset="1" stop-color="#{:06x}"/></radialGradient>"##,
         p.center, p.edge
     );
     if let Some(pattern) = pattern {
         svg.push_str(&format!(r#"<mask id="cover-pattern" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">{}</mask>"#, scoped(pattern,"pattern")?));
     }
     svg.push_str(&format!(
-        r##"</defs><rect width="{VIEW_WIDTH}" height="{VIEW_HEIGHT}" fill="url(#cover-bg)"/>"##
+        r##"</defs><rect width="{VIEW_WIDTH}" height="{view_height}" fill="url(#cover-bg)"/>"##
     ));
     if pattern.is_some() {
         // Same cover-fit rule as GUI giftPatternTiles: crop vertically, never stretch symbols.
-        let top = (VIEW_HEIGHT - 280.0) / 2.0;
+        let top = (view_height - 280.0) / 2.0;
         svg.push_str(&format!(r#"<g transform="translate(0 {top})">"#));
         let positions: Vec<[f64; 4]> =
             serde_json::from_str(include_str!("../assets/gift-pattern.json"))
@@ -176,9 +184,9 @@ fn compose(
         svg.push_str("</g>");
     }
     // GUI's decorated artwork occupies 76% of the shorter side, centered in both axes.
-    let model_side = VIEW_WIDTH.min(VIEW_HEIGHT) * 0.76;
+    let model_side = VIEW_WIDTH.min(view_height) * 0.76;
     let model_x = (VIEW_WIDTH - model_side) / 2.0;
-    let model_y = (VIEW_HEIGHT - model_side) / 2.0;
+    let model_y = (view_height - model_side) / 2.0;
     let model_scale = model_side / 512.0;
     svg.push_str(&format!(
         r#"<g transform="translate({model_x} {model_y}) scale({model_scale})">{}</g></svg>"#,
@@ -189,6 +197,14 @@ fn compose(
         return Err(MediaError::InvalidMedia);
     }
     Ok(svg)
+}
+#[cfg(test)]
+fn compose(
+    model: &MediaAsset,
+    pattern: Option<&MediaAsset>,
+    palette: Option<CoverPalette>,
+) -> Result<String, MediaError> {
+    compose_sized(model, pattern, palette, COVER_WIDTH, COVER_HEIGHT)
 }
 /// Used by the disposable renderer process; SVGs cannot load external resources or fonts.
 pub fn render_cover_png(svg: &[u8]) -> Result<Vec<u8>, MediaError> {

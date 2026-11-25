@@ -112,85 +112,9 @@ fn market_button(
         url: selection.website_url(origin)?,
     })
 }
-impl MarketCommands {
-    pub(super) async fn browse(&self, selection: MarketSelection) -> Reply {
-        let button = match market_button(&selection, self.public_url.as_ref()) {
-            Ok(payload) => payload,
-            Err(error) => return render::error_reply(error),
-        };
-        let mut query = selection.order_query();
-        query.limit = 5;
-        let report = match self.market.query_orders(query).await {
-            Ok(v) => v,
-            Err(e) => return render::error_reply(e),
-        };
-        let catalog = match self.market.catalog_snapshot().await {
-            Ok(v) => v.data,
-            Err(e) => return render::error_reply(e),
-        };
-        let heading = match selection.source {
-            OrderSource::Asks => "Best asks",
-            OrderSource::Bids => "Best bids",
-            OrderSource::History => "Recent sales",
-        };
-        let collection = report
-            .result
-            .data
-            .first()
-            .filter(|first| {
-                report
-                    .result
-                    .data
-                    .iter()
-                    .all(|row| row.order.book.collection_id == first.order.book.collection_id)
-            })
-            .and_then(|row| {
-                catalog
-                    .collections
-                    .iter()
-                    .find(|collection| collection.id == row.order.book.collection_id)
-            });
-        let title = collection.map_or_else(
-            || heading.to_owned(),
-            |collection| format!("{heading} · {}", collection.name),
-        );
-        let mut reply = Reply {
-            text: title.clone(),
-            title: Some(title.clone()),
-            rich_html: Some(format!("<h3>{}</h3>", report::escape(&title))),
-            buttons: vec![vec![button]],
-            ..Default::default()
-        };
-        if report.result.data.is_empty() {
-            reply.text.push_str("\nNo matching orders.");
-            reply
-                .rich_html
-                .as_mut()
-                .unwrap()
-                .push_str("<p>No matching orders.</p>");
-        } else {
-            let documents = self
-                .order_documents(&report.result.data, &Default::default())
-                .await;
-            orders::render(
-                &mut reply,
-                report.result.data.iter().map(|row| &row.order),
-                &self.icons,
-                &catalog.collections,
-                &documents,
-                None,
-            );
-            if selection.source == OrderSource::History {
-                reply
-                    .rich_html
-                    .as_mut()
-                    .unwrap()
-                    .push_str("<footer>UTC · Observed sales</footer>");
-            }
-        }
-        reply
-    }
-}
+mod pager;
+pub(super) use pager::View;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -28,6 +28,7 @@ WORKDIR /app
 COPY --from=binaries /out/market-app /usr/local/bin/market-app
 COPY --from=binaries /out/market-media-render /usr/local/bin/market-media-render
 COPY licenses/velato/ /usr/share/licenses/velato/
+COPY licenses/NotoSans-OFL.txt /usr/share/licenses/noto-sans/OFL.txt
 COPY --from=web-builder /web/dist /app/web/dist
 ENV MARKET_DATA_DIR=/data \
     MARKET_BOT_DATA_DIR=/bot-data \

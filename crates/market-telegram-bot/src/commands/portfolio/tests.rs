@@ -67,6 +67,7 @@ fn grids_fill_three_columns_and_clamp_pagination_without_losing_gifts() {
                 page: requested,
                 sort: PortfolioSort::PositionAsc,
                 mode: PortfolioMode::Private,
+                layout: GridMode::Linked,
             };
             let reply = render(&state, &request, &icons).bounded();
             let html = reply.rich_html.unwrap();
@@ -119,6 +120,43 @@ fn compact_reports_keep_owner_access_currency_and_one_count() {
     let unknown = render(&state, &callback("p:123:GRAM:v:0").unwrap(), &icons);
     assert!(unknown.rich_html.unwrap().contains("<h2>0 USD</h2>"));
     assert!(unknown.text.contains("0 gifts"));
+}
+
+#[test]
+fn gallery_preserves_sort_currency_and_sharing_with_twelve_gifts_per_page() {
+    let request = request::parse_args(
+        "123 stars sort=price_desc view=gallery",
+        456,
+        PortfolioMode::Inline,
+    )
+    .unwrap();
+    assert_eq!(request.layout, GridMode::Gallery);
+    assert_eq!(request.page_size(), 12);
+    let token = request.data(1, PortfolioAction::Navigate, request.sort);
+    assert!(token.len() <= 64);
+    let next = callback(&token).unwrap();
+    assert_eq!(next.layout, GridMode::Gallery);
+    assert_eq!(next.page, 1);
+    assert_eq!(next.currency_id, BotCurrency::Stars);
+    assert_eq!(next.sort, request.sort);
+    assert_eq!(
+        request::inline(&request.inline_query(), 456).unwrap(),
+        request
+    );
+    assert_eq!(callback("p:123:GRAM:v:0").unwrap().layout, GridMode::Linked);
+    assert!(callback("p:123:GRAM:v:0:pa:unknown").is_none());
+    assert!(request::parse_args("view=gallery view=linked", 123, PortfolioMode::Private).is_none());
+
+    let mut page = next;
+    page.currency_id = BotCurrency::Gram;
+    page.sort = PortfolioSort::PositionAsc;
+    let reply = render(&sample(31), &page, &crate::ReportIcons::default());
+    let html = reply.rich_html.unwrap();
+    assert_eq!(html.matches("https://t.me/nft/").count(), 12);
+    assert!(html.contains("ResistanceDog-13"));
+    assert!(html.contains("ResistanceDog-24"));
+    assert!(!html.contains("ResistanceDog-25"));
+    assert!(html.contains("13–24 of 31"));
 }
 #[test]
 fn warning_details_survive_compaction_and_errors_are_not_duplicated() {
@@ -223,6 +261,7 @@ async fn send_live_portfolio_grid_preview() {
             .map(|value| parse_sort(&value).unwrap())
             .unwrap_or(PortfolioSort::PositionAsc),
         mode: PortfolioMode::Private,
+        layout: GridMode::Linked,
     };
     let reply = render(&state, &request, &crate::ReportIcons::default()).bounded();
     if let Ok(path) = std::env::var("MARKET_TEST_REPLY_OUTPUT") {

@@ -5,12 +5,38 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) type ModelDocuments = BTreeMap<ModelId, TelegramDocumentId>;
 
-fn model(order: &GiftOrder) -> Option<&ModelId> {
+pub(super) fn traits(
+    order: &GiftOrder,
+) -> (Option<&ModelId>, Option<&BackdropId>, Option<&PatternId>) {
     match &order.target {
-        GiftTarget::Gift { gift } => gift.traits.model.as_ref(),
-        GiftTarget::Criteria { criteria } if criteria.models.len() == 1 => criteria.models.first(),
-        _ => None,
+        GiftTarget::Gift { gift } => (
+            gift.traits.model.as_ref(),
+            gift.traits.backdrop.as_ref(),
+            gift.traits.pattern.as_ref(),
+        ),
+        GiftTarget::Criteria { criteria } => (
+            if criteria.models.len() == 1 {
+                criteria.models.first()
+            } else {
+                None
+            },
+            if criteria.backdrops.len() == 1 {
+                criteria.backdrops.first()
+            } else {
+                None
+            },
+            if criteria.patterns.len() == 1 {
+                criteria.patterns.first()
+            } else {
+                None
+            },
+        ),
+        _ => (None, None, None),
     }
+}
+
+fn model(order: &GiftOrder) -> Option<&ModelId> {
+    traits(order).0
 }
 pub(super) fn number(order: &GiftOrder) -> Option<GiftNumber> {
     match &order.target {
@@ -142,13 +168,10 @@ pub(super) fn render<'a>(
         let when = order
             .executed_at
             .map(|time| time.strftime("%d %b %H:%M").to_string());
-        let date_html = when
-            .as_ref()
-            .map(|when| format!(" · {when}"))
-            .unwrap_or_default();
-        cell.push_str(&format!(
-            "<br><i>{label_html}{date_html} · {venue_html}</i>"
-        ));
+        cell.push_str(&format!("<br>{label_html} · {venue_html}"));
+        if let Some(when) = &when {
+            cell.push_str(&format!("<br>{when}"));
+        }
         cells.push(cell);
         reply.text.push_str(&format!(
             "\n{}{label} · {price} {}{} · {venue}{}",
@@ -167,6 +190,9 @@ pub(super) fn render<'a>(
         reply
             .rich_html
             .get_or_insert_default()
-            .push_str(&rich::grid(&cells));
+            .push_str(&rich::grid(
+                &cells,
+                if current.is_some() { 2 } else { rich::COLUMNS },
+            ));
     }
 }

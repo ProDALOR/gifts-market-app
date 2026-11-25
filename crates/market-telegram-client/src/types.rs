@@ -34,7 +34,7 @@ pub struct Reply {
     pub rich_html: Option<String>,
     /// Inline emoji placeholders resolved from Telegram metadata before sending.
     pub emoji_documents: Vec<market_gifts::TelegramDocumentId>,
-    pub artwork: Option<market_media::GiftCover>,
+    pub artwork: Option<market_media::Artwork>,
     pub buttons: Vec<Vec<ReplyButton>>,
 }
 

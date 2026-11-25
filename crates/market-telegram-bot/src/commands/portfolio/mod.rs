@@ -94,11 +94,51 @@ impl MarketCommands {
             self.portfolio_reads.clone(),
             request.clone(),
         );
+        let retained = state.clone();
+        let spec = request.clone();
         let stop = tokio_util::sync::CancellationToken::new();
         let _cancel = stop.clone().drop_guard();
-        tokio::task::spawn_blocking(move || render(&state, &request, &icons, &reads, &stop))
-            .await
-            .unwrap_or_else(|_| Reply::text("Portfolio could not be displayed. Please try again."))
+        let mut reply =
+            tokio::task::spawn_blocking(move || render(&state, &request, &icons, &reads, &stop))
+                .await
+                .unwrap_or_else(|_| {
+                    Reply::text("Portfolio could not be displayed. Please try again.")
+                });
+        if spec.layout == GridMode::Gallery
+            && let Some(report) = &retained.valuation
+        {
+            let count = report.items.len();
+            if count > 0 {
+                let query = ResolvedPortfolioReadQuery {
+                    user_id: spec.user_id,
+                    currency_id: spec.currency_id.id(),
+                    filters: Default::default(),
+                    sort: spec.sort,
+                    offset: spec.page.min(count.div_ceil(spec.page_size()).max(1) - 1)
+                        * spec.page_size(),
+                    limit: spec.page_size(),
+                    version: retained.version.clone(),
+                };
+                let reads = self.portfolio_reads.clone();
+                let stop = tokio_util::sync::CancellationToken::new();
+                let _cancel = stop.clone().drop_guard();
+                if let Ok(Ok(page)) = tokio::task::spawn_blocking(move || {
+                    reads.read(&retained, query, || {
+                        if stop.is_cancelled() {
+                            Err(market_portfolio::PortfolioError::Stopped)
+                        } else {
+                            Ok(())
+                        }
+                    })
+                })
+                .await
+                {
+                    reply.artwork =
+                        Some(self.portfolio_gallery(&page.items, spec.currency_id).await);
+                }
+            }
+        }
+        reply
     }
 }
 

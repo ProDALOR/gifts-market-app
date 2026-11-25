@@ -20,6 +20,7 @@ pub struct PortfolioRequest {
     pub page: usize,
     pub sort: PortfolioSort,
     pub mode: PortfolioMode,
+    pub layout: GridMode,
 }
 pub(super) const SORTS: [(PortfolioSort, &str, &str); 6] = [
     (PortfolioSort::PositionAsc, "position_asc", "pa"),
@@ -42,7 +43,7 @@ impl PortfolioRequest {
             .find(|(candidate, _, _)| *candidate == sort)
             .unwrap()
             .2;
-        format!(
+        let data = format!(
             "p:{}:{}:{}:{page}:{code}",
             self.user_id.get(),
             self.currency_id,
@@ -51,7 +52,12 @@ impl PortfolioRequest {
             } else {
                 "v"
             }
-        )
+        );
+        if self.layout == GridMode::Gallery {
+            format!("{data}:g")
+        } else {
+            data
+        }
     }
     pub(super) fn inline_query(&self) -> String {
         let name = SORTS
@@ -59,11 +65,23 @@ impl PortfolioRequest {
             .find(|(candidate, _, _)| *candidate == self.sort)
             .unwrap()
             .1;
-        format!(
+        let query = format!(
             "portfolio {} {} sort={name}",
             self.user_id.get(),
             self.currency_id
-        )
+        );
+        if self.layout == GridMode::Gallery {
+            format!("{query} view=gallery")
+        } else {
+            query
+        }
+    }
+    pub(super) fn page_size(&self) -> usize {
+        if self.layout == GridMode::Gallery {
+            market_media::MAX_GALLERY_CELLS
+        } else {
+            PAGE_SIZE
+        }
     }
     pub(super) fn check_command(&self) -> String {
         format!("/portfolio {} {}", self.user_id.get(), self.currency_id)
@@ -84,10 +102,17 @@ pub(in crate::commands) fn parse_args(
         page: 0,
         sort: PortfolioSort::PositionAsc,
         mode,
+        layout: GridMode::Linked,
     };
-    let (mut user, mut currency, mut sort) = (false, false, false);
+    let (mut user, mut currency, mut sort, mut layout) = (false, false, false, false);
     for word in text.split_whitespace() {
-        if let Some(value) = word.strip_prefix("sort=") {
+        if let Some(value) = word.strip_prefix("view=") {
+            if layout {
+                return None;
+            }
+            request.layout = GridMode::parse(value)?;
+            layout = true;
+        } else if let Some(value) = word.strip_prefix("sort=") {
             if sort {
                 return None;
             }
@@ -133,6 +158,11 @@ pub(in crate::commands) fn callback(text: &str) -> Option<PortfolioRequest> {
         .next()
         .map(parse_sort)
         .unwrap_or(Some(PortfolioSort::PositionAsc))?;
+    let layout = match p.next() {
+        None => GridMode::Linked,
+        Some("g") => GridMode::Gallery,
+        _ => return None,
+    };
     if page > 999 {
         return None;
     }
@@ -150,5 +180,6 @@ pub(in crate::commands) fn callback(text: &str) -> Option<PortfolioRequest> {
         page,
         sort,
         mode: PortfolioMode::Private,
+        layout,
     })
 }

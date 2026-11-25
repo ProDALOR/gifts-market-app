@@ -4,7 +4,11 @@ mod cache;
 mod icons;
 pub use icons::{IconDefinition, UiIcon};
 mod cover;
+mod gallery;
 pub use cover::{COVER_HEIGHT, COVER_WIDTH, CoverPalette, GiftCover, render_cover_png};
+pub use gallery::{
+    Artwork, GalleryCell, GiftGallery, MAX_GALLERY_CELLS, MAX_GALLERY_SVG_BYTES, render_gallery_png,
+};
 mod disk;
 mod limits;
 mod preview;

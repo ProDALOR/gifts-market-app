@@ -5,7 +5,7 @@ import type { Order, CatalogOption } from "../src/market.ts";
 test("amount formatting preserves precision beyond JavaScript numeric range", () => {
   assert.equal(
     amount("10000000000000000.000000001"),
-    "10,000,000,000,000,000.000000001",
+    "10\u00a0000\u00a0000\u00a0000\u00a0000\u00a0000.000000001",
   );
   assert.equal(amount("0.500000001"), "0.500000001");
 });

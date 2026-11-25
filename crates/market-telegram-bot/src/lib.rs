@@ -4,7 +4,7 @@ mod icons;
 pub use icons::{ReportIcon, ReportIcons};
 mod service;
 pub use commands::{
-    BotCurrency, Command, CommandKind, CommandRequest, MarketCommands, PortfolioAction,
+    BotCurrency, Command, CommandKind, CommandRequest, GridMode, MarketCommands, PortfolioAction,
     PortfolioMode, PortfolioRequest, ValueRequest,
 };
 pub use service::{BotService, configure};

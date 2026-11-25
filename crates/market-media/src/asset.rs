@@ -6,8 +6,9 @@ pub const MAX_THUMBNAIL_BYTES: usize = 256 * 1024;
 pub const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 pub const MAX_COVER_BYTES: usize = 2 * 1024 * 1024;
 pub const COVER_VERSION: &str = "3";
+pub const GALLERY_VERSION: &str = "1";
 pub const PREVIEW_VERSION: &str = "5";
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DocumentId(i64);
 impl DocumentId {
     pub fn new(id: i64) -> Option<Self> {
@@ -23,6 +24,7 @@ pub enum MediaKind {
     Animation,
     Preview,
     Cover,
+    Gallery,
 }
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct MediaKey {
@@ -31,6 +33,13 @@ pub struct MediaKey {
     source: Option<[u8; 32]>,
 }
 impl MediaKey {
+    pub(crate) fn gallery(document: DocumentId, source: [u8; 32]) -> Self {
+        Self {
+            document,
+            kind: MediaKind::Gallery,
+            source: Some(source),
+        }
+    }
     pub fn thumbnail(document: DocumentId) -> Self {
         Self {
             document,
@@ -73,7 +82,7 @@ impl MediaKey {
             MediaKind::Thumbnail => MAX_THUMBNAIL_BYTES,
             MediaKind::Animation => MAX_ANIMATION_BYTES,
             MediaKind::Preview => MAX_PREVIEW_BYTES,
-            MediaKind::Cover => MAX_COVER_BYTES,
+            MediaKind::Cover | MediaKind::Gallery => MAX_COVER_BYTES,
         }
     }
     pub(crate) fn extension(self) -> String {
@@ -88,6 +97,15 @@ impl MediaKey {
                     .map(|byte| format!("{byte:02x}"))
                     .collect();
                 format!("cover-{COVER_VERSION}-{hex}.png")
+            }
+            MediaKind::Gallery => {
+                let hex = self
+                    .source
+                    .expect("gallery content identity")
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                format!("gallery-{GALLERY_VERSION}-{hex}.png")
             }
             MediaKind::Preview => {
                 let hash = self
@@ -167,6 +185,10 @@ impl MediaAsset {
             MediaKind::Cover => {
                 crate::cover::validate_png(&bytes)?;
                 Ok(Self::new(MediaKind::Cover, bytes, "image/png"))
+            }
+            MediaKind::Gallery => {
+                crate::gallery::validate_png(&bytes)?;
+                Ok(Self::new(MediaKind::Gallery, bytes, "image/png"))
             }
         }
     }

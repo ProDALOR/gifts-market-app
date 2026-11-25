@@ -18,6 +18,7 @@ pub(super) enum Tab {
 pub(super) struct ViewState {
     pub tab: Tab,
     pub sales: SalesState,
+    pub mode: GridMode,
 }
 impl ViewState {
     fn use_report(&mut self, previous: &Report, next: &Report) {
@@ -52,6 +53,7 @@ pub(super) enum Action {
     Previous,
     Refresh,
     Retry,
+    Mode(GridMode),
 }
 #[derive(Clone)]
 pub(super) struct View {
@@ -83,6 +85,7 @@ impl View {
             state: ViewState {
                 tab: Tab::Floors,
                 sales: SalesState::initial(&report)?,
+                mode: GridMode::Linked,
             },
             pages: Arc::new(Pages::default()),
             documents: Arc::new(documents),
@@ -171,6 +174,7 @@ impl MarketCommands {
                 }
                 Err(error) => notice = Some(report_error(&error)),
             },
+            Action::Mode(mode) => view.state.mode = *mode,
             Action::Retry => {}
             _ => return Reply::text("Request a fresh valuation to browse this report."),
         }
@@ -202,7 +206,17 @@ impl MarketCommands {
                 }
             }
         }
-        render(&self.views, &view, page.as_deref(), notice.as_deref())
+        let mut reply = render(&self.views, &view, page.as_deref(), notice.as_deref());
+        if view.state.tab == Tab::Sales
+            && view.state.mode == GridMode::Gallery
+            && let Some(page) = &page
+        {
+            reply.artwork = Some(
+                self.order_gallery(&page.data, &view.documents, view.report.catalog.as_ref(), 2)
+                    .await,
+            );
+        }
+        reply
     }
 }
 pub(super) fn render(
@@ -222,6 +236,16 @@ pub(super) fn render(
         reply.text.push_str(&format!("\n\n{notice}"));
     }
     if view.state.tab == Tab::Sales {
+        html.push_str("<tg-button-row>");
+        for (mode, label) in [(GridMode::Linked, "Linked"), (GridMode::Gallery, "Gallery")] {
+            html.push_str(&views.button(
+                view,
+                (mode != view.state.mode).then_some(Action::Mode(mode)),
+                label,
+                mode == view.state.mode,
+            ));
+        }
+        html.push_str("</tg-button-row>");
         let gift = view.report.gift().expect("resolved report gift");
         let scopes = Scope::ALL
             .into_iter()
@@ -326,8 +350,8 @@ mod tests {
         let html = reply.rich_html.unwrap();
         assert_eq!(
             html.matches("<tg-button-row>").count(),
-            1,
-            "only tabs remain"
+            2,
+            "only tabs and layout choices remain"
         );
         assert!(!html.contains(">Collection</tg-button>"));
         assert!(!html.contains(">1</tg-button>"));

@@ -111,7 +111,7 @@ pub(crate) async fn get(
                 MediaKind::Thumbnail => media.cache.get(MediaKey::thumbnail(document)).await,
                 MediaKind::Animation => media.cache.get(MediaKey::animation(document)).await,
                 MediaKind::Preview => media.cache.preview(document).await,
-                MediaKind::Cover => Err(MediaError::NotFound),
+                MediaKind::Cover | MediaKind::Gallery => Err(MediaError::NotFound),
             }
         }
     };

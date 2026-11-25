@@ -155,7 +155,8 @@ fn captured_reply(path: &str) -> Reply {
                         edge: rgb[1].as_u64().unwrap().try_into().unwrap(),
                         pattern: rgb[2].as_u64().unwrap().try_into().unwrap(),
                     }),
-            }),
+            })
+            .map(Into::into),
         ..Default::default()
     }
     .bounded()

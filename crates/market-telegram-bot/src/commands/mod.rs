@@ -6,8 +6,11 @@ mod history;
 pub use currency::BotCurrency;
 mod portfolio;
 pub use portfolio::{PortfolioAction, PortfolioMode, PortfolioRequest};
+mod gallery;
 mod interactions;
+mod layout;
 mod orders;
+pub use layout::GridMode;
 mod parse;
 mod render;
 mod report;
@@ -27,6 +30,7 @@ pub enum Command {
     Gift(ValueRequest),
     GiftHelp,
     View(u64),
+    MarketView(u64),
     Portfolio(PortfolioRequest),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +52,7 @@ pub struct MarketCommands {
     market: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
     views: interactions::Views,
+    markets: interactions::ViewCache<browse::View>,
     icons: std::sync::Arc<crate::ReportIcons>,
 }
 impl MarketCommands {
@@ -59,6 +64,7 @@ impl MarketCommands {
             portfolio: None,
             portfolio_reads: Default::default(),
             views: Default::default(),
+            markets: interactions::ViewCache::new("m", 64),
             icons: Default::default(),
         }
     }
@@ -121,6 +127,7 @@ impl MessageHandler for MarketCommands {
             Command::Browse(filters) => Ok(self.browse(filters).await),
             Command::Gift(query) => Ok(self.value(query).await),
             Command::View(id) => Ok(self.view(id).await),
+            Command::MarketView(id) => Ok(self.market_view(id).await),
             command => {
                 LaunchCommands
                     .handle(CommandRequest { command, ..request })

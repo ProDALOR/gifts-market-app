@@ -162,7 +162,7 @@ async fn animation_and_thumbnail_have_separate_cache_entries_and_survive_offline
                 Ok(match key.kind() {
                     MediaKind::Thumbnail => image(),
                     MediaKind::Animation => animation(),
-                    MediaKind::Preview | MediaKind::Cover => {
+                    MediaKind::Preview | MediaKind::Cover | MediaKind::Gallery => {
                         unreachable!("Previews are generated locally")
                     }
                 })

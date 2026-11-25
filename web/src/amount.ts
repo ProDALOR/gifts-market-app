@@ -40,7 +40,7 @@ export function formatDecimal(
 export function amount(value: string) {
   const [whole, fraction] = value.split(".");
   return (
-    whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") +
+    whole.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0") +
     (fraction ? "." + fraction : "")
   );
 }

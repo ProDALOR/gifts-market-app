@@ -31,18 +31,35 @@ impl Photos {
 impl MtProtoActions {
     async fn photo(
         &self,
-        cover: market_media::GiftCover,
+        artwork: &market_media::Artwork,
     ) -> Result<tl::enums::InputPhoto, BotError> {
         let cache = self.artwork.as_ref().ok_or(BotError::Transport)?;
-        let asset = match cache.cover(cover).await {
-            Ok(asset) => asset,
-            Err(error) => {
-                tracing::warn!(
-                    model_document_id = cover.model.get(),
-                    ?error,
-                    "Gift cover unavailable; checking thumbnail fallback"
-                );
-                fallback_asset(cache, cover.model, error).await?
+        let asset = match artwork {
+            market_media::Artwork::Gift(cover) => match cache.cover(*cover).await {
+                Ok(asset) => asset,
+                Err(error) => {
+                    tracing::warn!(
+                        document_id = cover.model.get(),
+                        ?error,
+                        "Gift cover unavailable; checking thumbnail fallback"
+                    );
+                    fallback_asset(cache, cover.model, error).await?
+                }
+            },
+            market_media::Artwork::Gallery(gallery) => {
+                cache.gallery(gallery.clone()).await.map_err(|error| {
+                    tracing::warn!(
+                        ?error,
+                        cells = gallery.cells.len(),
+                        "Gift gallery unavailable; retaining linked grid"
+                    );
+                    match error {
+                        market_media::MediaError::RetryAfter(seconds) => {
+                            BotError::RetryAfter(seconds)
+                        }
+                        _ => BotError::Transport,
+                    }
+                })?
             }
         };
         // Cache by image content, so backdrop/symbol changes cannot reuse the wrong photo.
@@ -53,7 +70,7 @@ impl MtProtoActions {
         {
             return Ok(photo.clone());
         }
-        let id = cover.model.get();
+        let id = artwork.document().map_or(0, market_media::DocumentId::get);
         // Telegram photo uploads reject WebP even though thumbnail delivery accepts it.
         let asset = if asset.content_type() == "image/webp" {
             tokio::task::spawn_blocking(move || photo_asset(asset))
@@ -162,7 +179,7 @@ impl MtProtoActions {
         if fallback.is_none() {
             return None;
         }
-        let Some(id) = reply.artwork.filter(|_| {
+        let Some(artwork) = reply.artwork.as_ref().filter(|_| {
             self.artwork.is_some()
                 && reply
                     .rich_html
@@ -171,7 +188,7 @@ impl MtProtoActions {
         }) else {
             return fallback;
         };
-        match tokio::time::timeout(Duration::from_secs(6), self.photo(id)).await {
+        match tokio::time::timeout(Duration::from_secs(6), self.photo(artwork)).await {
             Ok(Ok(photo)) => {
                 let Some(tl::enums::InputRichMessage::Html(html)) = &fallback else {
                     return fallback;
@@ -180,17 +197,17 @@ impl MtProtoActions {
             }
             Ok(Err(error)) => {
                 tracing::warn!(
-                    document_id = id.model.get(),
+                    document_id = artwork.document().map_or(0, market_media::DocumentId::get),
                     ?error,
-                    "Bot artwork preparation failed; sending valuation without image"
+                    "Bot artwork preparation failed; sending report without image"
                 );
                 fallback
             }
             Err(_) => {
                 tracing::warn!(
-                    document_id = id.model.get(),
+                    document_id = artwork.document().map_or(0, market_media::DocumentId::get),
                     timeout_seconds = 6,
-                    "Bot artwork preparation timed out; sending valuation without image"
+                    "Bot artwork preparation timed out; sending report without image"
                 );
                 fallback
             }
@@ -417,7 +434,7 @@ mod live_tests {
             pattern: None,
             palette: None,
         };
-        let result = actions.photo(cover).await;
+        let result = actions.photo(&cover.into()).await;
         eprintln!(
             "Artwork preparation: {} ms, result {:?}",
             started.elapsed().as_millis(),

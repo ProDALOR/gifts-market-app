@@ -32,6 +32,7 @@ pub(crate) struct Counters {
     pub skipped: AtomicU64,
     pub renders: AtomicU64,
     pub covers: AtomicU64,
+    pub galleries: AtomicU64,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct MediaStats {
@@ -41,6 +42,7 @@ pub struct MediaStats {
     pub skipped_downloads: u64,
     pub preview_generations: u64,
     pub cover_generations: u64,
+    pub gallery_generations: u64,
     pub memory_bytes: usize,
     pub queued: usize,
 }
@@ -199,7 +201,7 @@ impl MediaCache {
                 // changes select a new key; only originals need periodic revalidation.
                 expires: (!matches!(
                     key.kind(),
-                    crate::MediaKind::Preview | crate::MediaKind::Cover
+                    crate::MediaKind::Preview | crate::MediaKind::Cover | crate::MediaKind::Gallery
                 ))
                 .then(|| Instant::now() + self.0.limits.memory_ttl),
             },
@@ -258,7 +260,7 @@ impl MediaCache {
     pub async fn get(&self, key: MediaKey) -> MediaResult {
         if matches!(
             key.kind(),
-            crate::MediaKind::Preview | crate::MediaKind::Cover
+            crate::MediaKind::Preview | crate::MediaKind::Cover | crate::MediaKind::Gallery
         ) {
             return Err(MediaError::InvalidMedia);
         }
@@ -293,7 +295,10 @@ impl MediaCache {
         if self.0.closed.load(Ordering::Acquire) {
             return Err(MediaError::Unavailable);
         }
-        if !matches!(key.kind(), MediaKind::Preview | MediaKind::Cover) {
+        if !matches!(
+            key.kind(),
+            MediaKind::Preview | MediaKind::Cover | MediaKind::Gallery
+        ) {
             return Err(MediaError::InvalidMedia);
         }
         if let Some(asset) = self.resident(key) {
@@ -325,6 +330,7 @@ impl MediaCache {
                     match key.kind() {
                         MediaKind::Preview => cache.0.counters.renders.fetch_add(1, Ordering::Relaxed),
                         MediaKind::Cover => cache.0.counters.covers.fetch_add(1, Ordering::Relaxed),
+                        MediaKind::Gallery => cache.0.counters.galleries.fetch_add(1, Ordering::Relaxed),
                         _ => unreachable!(),
                     };
                     let asset = build(cache.clone(), job.clone()).await?;
@@ -437,6 +443,7 @@ impl MediaCache {
             skipped_downloads: self.0.counters.skipped.load(Ordering::Relaxed),
             preview_generations: self.0.counters.renders.load(Ordering::Relaxed),
             cover_generations: self.0.counters.covers.load(Ordering::Relaxed),
+            gallery_generations: self.0.counters.galleries.load(Ordering::Relaxed),
             memory_bytes: self
                 .0
                 .memory
