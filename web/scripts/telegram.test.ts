@@ -1,3 +1,4 @@
+import { selectionFromParams } from "../src/market-selection.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -22,13 +23,19 @@ test("Telegram links restore market selection without credentials", () => {
   });
   const payload = encodeView(params)!;
   assert.ok(payload.length <= 512);
-  assert.deepEqual([...decodeView(payload)!], [...cleanSelection(params)]);
+  assert.deepEqual(
+    selectionFromParams(decodeView(payload)!),
+    selectionFromParams(cleanSelection(params)),
+  );
   assert.ok(!decodeView(payload)!.has("token"));
   const selected = launchSelection(
     { initData: new URLSearchParams({ start_param: payload }).toString() },
     "?currency=XTR",
   );
-  assert.equal(selected.get("collection"), params.get("collection"));
+  assert.equal(
+    selectionFromParams(selected).filters.collection_id,
+    params.get("collection"),
+  );
   assert.equal(selected.get("currency"), "XTR");
   assert.equal(selected.get("bid_match"), "all");
   const link = telegramLink(
@@ -50,11 +57,10 @@ test("Malformed or excessive launch parameters cannot create arbitrary routes", 
     encodeView(new URLSearchParams({ filters: "x".repeat(1000) })),
     null,
   );
-  assert.equal(
+  assert.throws(() =>
     cleanSelection(
       new URLSearchParams("collection=one&collection=two&secret=hidden"),
-    ).has("collection"),
-    false,
+    ),
   );
 });
 
@@ -72,6 +78,6 @@ test("gift preview deep links preserve only public gift selection", () => {
     "",
   );
   assert.equal(result.get("gift"), "Gift-123");
-  assert.equal(result.get("collection"), "c");
+  assert.equal(selectionFromParams(result).filters.collection_id, "c");
   assert.equal(result.has("token"), false);
 });

@@ -192,6 +192,8 @@ async fn credential_free_process_starts_api_without_telegram_storage() {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_market-app"));
         command
             .env_clear()
+            // Never discover a developer's accounts.json in the workspace.
+            .current_dir(directory.path())
             .args([
                 "--bind",
                 &address.to_string(),
@@ -216,7 +218,8 @@ async fn credential_free_process_starts_api_without_telegram_storage() {
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let response = tokio::time::timeout(Duration::from_secs(5), async {
+        // Include cold debug executable loading; this checks readiness, not startup speed.
+        let response = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 assert!(
                     child.try_wait().unwrap().is_none(),

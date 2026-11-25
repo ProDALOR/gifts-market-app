@@ -41,70 +41,18 @@ import {
   useSharedCurrency,
 } from "./app/navigation";
 import { useSession } from "./app/session";
-type Choice = {
-  collection: string;
-  currency: string;
-  venue: string;
-  mode: "ask" | "bid" | "executed";
-  bid_match: BidMatch;
-  sort: Exclude<Sort, "identity">;
-  min: string;
-  max: string;
-  from: string;
-  until: string;
-  filters: TraitFilters;
-};
-const defaultSort = {
-  ask: "price_asc",
-  bid: "price_desc",
-  executed: "time_desc",
-} as const;
+import {
+  choiceSelection,
+  selectionChoice,
+  selectionFromParams,
+  selectionParams,
+  selectionAt,
+  selectionHref,
+  type MarketChoice as Choice,
+  defaultSort,
+} from "./market-selection";
 function saved(): Choice {
-  const p = new URLSearchParams(location.search);
-  const mode =
-    p.get("mode") === "bid"
-      ? "bid"
-      : p.get("mode") === "executed"
-        ? "executed"
-        : "ask";
-  let filters: TraitFilters = {};
-  try {
-    const parsed = JSON.parse(p.get("filters") || "{}");
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-      for (const key of ["models", "backdrops", "patterns"] as const) {
-        if (
-          Array.isArray(parsed[key]) &&
-          parsed[key].every(
-            (id: unknown) =>
-              typeof id === "string" && id.length > 0 && id.length <= 256,
-          )
-        )
-          filters[key] = [...new Set<string>(parsed[key])];
-      }
-  } catch {}
-  return {
-    collection: p.get("collection") || "",
-    currency: p.get("currency") || "",
-    venue: p.get("venue") || "",
-    mode,
-    bid_match: p.get("bid_match") === "any" ? "any" : "all",
-    sort:
-      (
-        [
-          "price_asc",
-          "price_desc",
-          "time_asc",
-          "time_desc",
-          "number_asc",
-          "number_desc",
-        ] as const
-      ).find((sort) => sort === p.get("sort")) || defaultSort[mode],
-    filters,
-    min: p.get("min") || "",
-    max: p.get("max") || "",
-    from: p.get("from") || "",
-    until: p.get("until") || "",
-  };
+  return selectionChoice(selectionFromParams(selectionAt(location)));
 }
 export function MarketPage({ context }: { context: TelegramContext }) {
   const controls = useRef<HTMLElement>(null);
@@ -126,7 +74,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     : undefined;
   const [accountOpen, setAccountOpen] = useState(false);
   const [giftSlug, setGiftSlug] = useState(() => {
-    const value = new URLSearchParams(location.search).get("gift");
+    const value = selectionAt(location).get("gift");
     return normalizeSlug(value) ? value! : undefined;
   });
   const [slugSubject, setSlugSubject] = useState<ValuationSubject>();
@@ -134,8 +82,13 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     setGiftSlug(undefined);
     setSlugSubject(undefined);
     const url = new URL(location.href);
-    url.searchParams.delete("gift");
-    history.replaceState(history.state, "", url);
+    const params = selectionAt(url);
+    params.delete("gift");
+    history.replaceState(
+      history.state,
+      "",
+      selectionHref(url.pathname, params),
+    );
     navigation?.rememberLocation();
   };
   const [storedChoice, setChoice] = useState(() => saved()),
@@ -198,28 +151,23 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     });
   }, [directory, choice.collection, currency, item]);
   useEffect(() => {
-    const p = new URLSearchParams();
-    for (const [key, value] of Object.entries(choice)) {
-      if (key === "filters") {
-        if (Object.keys(value as object).length)
-          p.set(
-            key,
-            JSON.stringify(aliasFilters(value as TraitFilters, options)),
-          );
-      } else if (key === "bid_match") {
-        if (choice.mode === "bid") p.set(key, String(value));
-      } else if (value)
-        p.set(
-          key,
-          key === "collection"
-            ? (preferredSelector(item) ?? String(value))
-            : String(value),
-        );
-    }
-    if (giftSlug) p.set("gift", giftSlug);
-    history.replaceState(history.state, "", `${location.pathname}?${p}`);
+    const p = selectionParams(
+      choiceSelection(
+        {
+          ...choice,
+          collection: preferredSelector(item) ?? choice.collection,
+          filters: aliasFilters(choice.filters, options),
+        },
+        giftSlug,
+      ),
+    );
+    history.replaceState(
+      history.state,
+      "",
+      selectionHref(location.pathname, p),
+    );
     navigation?.rememberLocation();
-  }, [JSON.stringify(choice), item, options]);
+  }, [JSON.stringify(choice), item, options, giftSlug]);
   useEffect(() => setSelected(undefined), [JSON.stringify(choice)]);
   const base = {
     filters: {
@@ -231,7 +179,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
       models: filterAliases.models || [],
       backdrops: filterAliases.backdrops || [],
       patterns: filterAliases.patterns || [],
-      number: null,
+      number: choice.number ?? null,
       price:
         choice.min || choice.max
           ? { min: choice.min || null, max: choice.max || null }
@@ -399,7 +347,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                 context={context}
                 open={accountOpen}
                 setOpen={setAccountOpen}
-                selection={new URLSearchParams(location.search)}
+                selection={selectionAt(location)}
               />
             </header>
             <CollectionRail
@@ -498,17 +446,30 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                 </div>
               )}
             </div>
-            {(choice.min || choice.max || choice.from || choice.until) && (
+            {(choice.min ||
+              choice.max ||
+              choice.from ||
+              choice.until ||
+              choice.number) && (
               <div className="selection-note">
                 <span>
                   {choice.min || choice.max
                     ? `Price ${choice.min || "0"}–${choice.max || "∞"} ${choice.currency}`
-                    : "Selected history period"}
+                    : choice.number
+                      ? "Selected gift numbers"
+                      : "Selected history period"}
                 </span>
                 <button
                   aria-label="Clear linked filters"
                   onClick={() =>
-                    set({ ...choice, min: "", max: "", from: "", until: "" })
+                    set({
+                      ...choice,
+                      min: "",
+                      max: "",
+                      from: "",
+                      until: "",
+                      number: null,
+                    })
                   }
                 >
                   Clear ×

@@ -1,0 +1,37 @@
+[
+  {
+    "name": "all",
+    "query": "",
+    "line": ""
+  },
+  {
+    "name": "all-groups",
+    "query": "f=c%3D%40slug%3AResistanceDog%7Cm%3D%40name%3ADogfather%7Cb%3D%40name%3ABlack%7Cs%3D%40name%3ACrown&currency=XTR&mode=bid&bid_match=any&sort=price_desc&min=1.25&max=1000&from=2026-01-01T00%3A00%3A00Z&until=2026-02-01T00%3A00%3A00Z&gift=ResistanceDog-14029",
+    "line": "c=@slug:ResistanceDog|m=@name:Dogfather|b=@name:Black|s=@name:Crown"
+  },
+  {
+    "name": "escaping",
+    "query": "f=c%3D%40slug%3AGift%7Cm%3D%40name%3ADark%2520Knight%2C%40name%3AVanilla%252C%2520Jam%7Cb%3D%40name%3ABlack%257CWhite%7Cs%3D%40name%3A%25E2%2598%2580%25EF%25B8%258F%7Cn%3D10..200",
+    "line": "c=@slug:Gift|m=@name:Dark%20Knight,@name:Vanilla%2C%20Jam|b=@name:Black%7CWhite|s=@name:%E2%98%80%EF%B8%8F|n=10..200"
+  },
+  {
+    "name": "legacy",
+    "query": "collection=%40tg.slug%3AGift&currency=GRAM&filters=%7B%22models%22%3A%5B%22%40name%3AA%7CB%22%2C%22native%2C%2B%25%22%2C%22%40name%3ALiteral+%252C%22%5D%2C%22backdrops%22%3A%5B%22%40tg%3A42%22%5D%2C%22patterns%22%3A%5B%22%40partner%3Av2%3A123%22%5D%7D",
+    "line": "c=@tg.slug:Gift|m=@name:A%7CB,native%2C%2B%25,@name:Literal%20%252C|b=@tg:42|s=@partner:v2:123"
+  },
+  {
+    "name": "readable-wins",
+    "query": "f=b%3D%40name%3ABlack&collection=%40broken&filters=invalid",
+    "line": "b=@name:Black"
+  },
+  {
+    "name": "explicit-all",
+    "query": "f=&collection=old&filters=%7B%22models%22%3A%5B%22old%22%5D%7D",
+    "line": ""
+  },
+  {
+    "name": "number",
+    "query": "f=n%3D42&mode=executed&sort=time_desc",
+    "line": "n=42"
+  }
+]

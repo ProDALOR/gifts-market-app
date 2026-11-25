@@ -30,7 +30,7 @@ use utoipa::OpenApi;
         // Register default generic payloads explicitly: utoipa follows a generic parameter's
         // children but does not register that parameter's own default schema.
         market_actors::input::CollectionRef, market_actors::input::ModelRef, market_actors::input::BackdropRef, market_actors::input::PatternRef,
-        GiftFilters, GiftCriteria, GiftTraits, market_actors::input::GiftLookupInput,
+        market_links::MarketSelection, GiftFilters, GiftCriteria, GiftTraits, market_actors::input::GiftLookupInput,
         market_valuation::GiftAttributesInput, market_valuation::CatalogSelection,
         market_valuation::CatalogDetails, market_valuation::PairSelection,
         market_portfolio::PortfolioFilters,

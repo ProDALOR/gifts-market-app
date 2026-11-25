@@ -1,5 +1,5 @@
 //! Typed command requests, services and reply rendering.
-use market_actors::input::GiftFilters;
+use market_links::MarketSelection;
 mod browse;
 mod history;
 mod portfolio;
@@ -18,7 +18,7 @@ pub(crate) use parse::parse;
 pub enum Command {
     Start,
     Market,
-    Browse(GiftFilters),
+    Browse(MarketSelection),
     Help,
     Status,
     Gift(ValueRequest),
@@ -39,6 +39,7 @@ pub struct CommandRequest {
     pub message_id: i32,
 }
 pub struct MarketCommands {
+    public_url: Option<url::Url>,
     portfolio: Option<market_portfolio::PortfolioHandle>,
     market: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
@@ -48,12 +49,17 @@ pub struct MarketCommands {
 impl MarketCommands {
     pub fn new(market: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
         Self {
+            public_url: None,
             market,
             valuation,
             portfolio: None,
             views: Default::default(),
             icons: Default::default(),
         }
+    }
+    pub fn with_public_url(mut self, url: Option<url::Url>) -> Self {
+        self.public_url = url;
+        self
     }
     pub fn with_portfolio(mut self, portfolio: market_portfolio::PortfolioHandle) -> Self {
         self.portfolio = Some(portfolio);

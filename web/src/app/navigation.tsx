@@ -1,3 +1,4 @@
+import { selectionAt, selectionHref } from "../market-selection";
 import "./navigation.css";
 import {
   createContext,
@@ -85,7 +86,7 @@ export function NavigationProvider({
   });
   const [locationVersion, setLocationVersion] = useState(0);
   const rememberLocation = useCallback(() => {
-    const next = location.pathname + location.search;
+    const next = location.pathname + location.search + location.hash;
     if (urls.current[current.current.page] !== next) {
       urls.current[current.current.page] = next;
       setLocationVersion((v) => v + 1);
@@ -102,7 +103,8 @@ export function NavigationProvider({
   }, []);
   const go = useCallback(
     (page: Page, user?: number, replace = false) => {
-      urls.current[current.current.page] = location.pathname + location.search;
+      urls.current[current.current.page] =
+        location.pathname + location.search + location.hash;
       rememberScroll();
       const url = new URL(
         user != null ? `/portfolio/${user}` : urls.current[page],
@@ -128,7 +130,7 @@ export function NavigationProvider({
         history,
         { ...history.state, giftsMarket: next },
         "",
-        url.pathname + url.search,
+        selectionHref(url.pathname, selectionAt(url)),
       );
       current.current = next;
       setRoute(next);
@@ -148,7 +150,7 @@ export function NavigationProvider({
             ? saved.index
             : 0,
       };
-      const nextCurrency = new URLSearchParams(location.search).get("currency");
+      const nextCurrency = selectionAt(location).get("currency");
       if (nextCurrency) setCurrency(nextCurrency);
       current.current = next;
       setRoute(next);
@@ -207,7 +209,7 @@ export function NavigationProvider({
       url.searchParams.set("currency", currency);
       // Modified clicks/new tabs need an explicit destination without history state.
       if (page === "market") url.searchParams.set("page", "market");
-      return url.pathname + url.search;
+      return selectionHref(url.pathname, selectionAt(url));
     },
     [currency, route, locationVersion],
   );

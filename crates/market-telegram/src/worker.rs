@@ -60,6 +60,9 @@ impl TelegramWorker {
             artwork: None,
         })
     }
+    pub fn public_url(&self) -> Option<&Url> {
+        self.url.as_ref()
+    }
     pub fn inventory(&self) -> InventoryClient {
         self.inventory.clone()
     }

@@ -847,7 +847,7 @@ try {
   await page.getByLabel("Filter collections").fill("pepe");
   assert.equal(await page.locator(".collection-tile").count(), 1);
   await page.getByLabel("Filter collections").press("Enter");
-  await page.waitForURL(/collection=pepe/);
+  await page.waitForURL(/f=c%3Dpepe/);
   await cards(80);
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
@@ -944,7 +944,9 @@ try {
   await page.keyboard.press("Escape");
   await page.reload();
   await cards(25);
-  assert.ok(page.url().includes("filters="));
+  assert.ok(
+    new URL(page.url()).searchParams.get("f")?.includes("m=@name:Barbie"),
+  );
   await button("Reset traits").click();
   await cards(80);
   await scrollMore(125);
@@ -1796,10 +1798,8 @@ try {
     .getByRole("group", { name: "Backdrop options", exact: true })
     .getByRole("button", { name: "Raspberry", exact: true })
     .click();
-  await page.waitForFunction(() =>
-    JSON.parse(
-      new URL(location.href).searchParams.get("filters") || "{}",
-    ).backdrops?.includes("@name:Raspberry"),
+  await page.waitForFunction(
+    () => new URL(location.href).searchParams.get("f") === "b=@name:Raspberry",
   );
   assert.equal(
     optionRequests,

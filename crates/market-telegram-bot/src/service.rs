@@ -13,9 +13,10 @@ impl BotService {
         data: MarketDataHandle,
         valuation: market_valuation::ValuationHandle,
     ) -> Self {
+        let public_url = worker.public_url().cloned();
         Self {
             worker,
-            commands: MarketCommands::new(data, valuation),
+            commands: MarketCommands::new(data, valuation).with_public_url(public_url),
         }
     }
     pub fn with_portfolio(mut self, portfolio: market_portfolio::PortfolioHandle) -> Self {

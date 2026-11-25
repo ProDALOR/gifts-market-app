@@ -1,3 +1,4 @@
+import { selectionFromParams, selectionParams } from "./market-selection.ts";
 import type { components } from "./gen/api";
 // Mini App schemas are absent from API-only builds; keep the dormant adapter type-safe.
 type OptionalSchema<
@@ -67,6 +68,7 @@ export type TelegramContext = { app?: WebApp; initData: string };
 const marker = "market.telegram.context";
 const sdk = "https://telegram.org/js/telegram-web-app.js";
 const keys = [
+  "f",
   "gift",
   "collection",
   "currency",
@@ -158,20 +160,28 @@ export function applyTheme(app: WebApp) {
 }
 export function cleanSelection(params: URLSearchParams): URLSearchParams {
   const clean = new URLSearchParams();
-  for (const key of keys)
-    if (params.has(key) && params.getAll(key).length === 1)
-      clean.set(key, params.get(key)!);
+  for (const key of keys) {
+    if (params.getAll(key).length > 1)
+      throw new Error("Repeated selection parameter");
+    if (params.has(key)) clean.set(key, params.get(key)!);
+  }
   return clean;
 }
 export function encodeView(params: URLSearchParams): string | null {
-  const bytes = new TextEncoder().encode(cleanSelection(params).toString());
-  const encoded =
-    "v_" +
-    btoa(String.fromCharCode(...bytes))
-      .replaceAll("+", "-")
-      .replaceAll("/", "_")
-      .replace(/=+$/, "");
-  return encoded.length <= 512 ? encoded : null;
+  try {
+    const bytes = new TextEncoder().encode(
+      selectionParams(selectionFromParams(cleanSelection(params))).toString(),
+    );
+    const encoded =
+      "v_" +
+      btoa(String.fromCharCode(...bytes))
+        .replaceAll("+", "-")
+        .replaceAll("/", "_")
+        .replace(/=+$/, "");
+    return encoded.length <= 512 ? encoded : null;
+  } catch {
+    return null;
+  }
 }
 export function decodeView(value: string): URLSearchParams | null {
   if (!/^v_[a-zA-Z0-9_-]+$/.test(value) || value.length > 512) return null;
@@ -198,9 +208,17 @@ export function launchSelection(
     new URLSearchParams(context.initData).get("start_param") ||
     "";
   const decoded = decodeView(launch);
-  if (decoded)
+  if (decoded) {
+    const ownAttributes = ["f", "collection", "filters"].some((key) =>
+      direct.has(key),
+    );
     for (const [key, value] of decoded)
-      if (!direct.has(key)) direct.set(key, value);
+      if (
+        !direct.has(key) &&
+        !(ownAttributes && ["f", "collection", "filters"].includes(key))
+      )
+        direct.set(key, value);
+  }
   return direct;
 }
 export function telegramLink(
@@ -209,7 +227,13 @@ export function telegramLink(
 ): string | null {
   if (!config?.bot_username || !config.public_url) return null;
   const payload = encodeView(selection);
-  return `https://t.me/${config.bot_username}?startapp=${payload || ""}`;
+  if (payload) return `https://t.me/${config.bot_username}?startapp=${payload}`;
+  const url = new URL(config.public_url),
+    params = selectionParams(selectionFromParams(cleanSelection(selection)));
+  if (!params.has("f")) params.set("f", "");
+  url.search = "";
+  url.hash = params.toString();
+  return url.toString();
 }
 export async function launchFingerprint(
   context: TelegramContext,

@@ -1,9 +1,43 @@
 //! Small market search command; all catalog interpretation remains in the data layer.
 use super::*;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use market_actors::input::{GiftFilters, GiftOrderQuery};
+use market_actors::input::GiftFilters;
 use market_gifts::*;
-pub(super) fn parse(text: &str) -> Option<GiftFilters> {
+use market_links::MarketSelection;
+pub(super) fn parse(text: &str) -> Option<MarketSelection> {
+    let args = text.split_once(char::is_whitespace)?.1.trim();
+    if args.starts_with("f=") {
+        let mut params = url::form_urlencoded::Serializer::new(String::new());
+        for part in args.split_whitespace() {
+            let (key, value) = part.split_once('=')?;
+            if ![
+                "f",
+                "currency",
+                "venue",
+                "mode",
+                "bid_match",
+                "sort",
+                "min",
+                "max",
+                "from",
+                "until",
+            ]
+            .contains(&key)
+            {
+                return None;
+            }
+            params.append_pair(key, value);
+        }
+        return MarketSelection::from_query(&params.finish()).ok();
+    }
+    if ["c=", "m=", "b=", "s=", "n="]
+        .iter()
+        .any(|prefix| args.starts_with(prefix))
+    {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("f", args)
+            .finish();
+        return MarketSelection::from_query(&query).ok();
+    }
     let mut filters = GiftFilters::new("unused".into(), "GRAM".into());
     filters.collection_id = None;
     let mut seen = std::collections::BTreeSet::new();
@@ -44,11 +78,33 @@ pub(super) fn parse(text: &str) -> Option<GiftFilters> {
     if filters.collection_id.is_none() && !filters.models.is_empty() {
         return None;
     }
-    Some(filters)
+    Some(MarketSelection::new(filters))
+}
+fn market_button(
+    selection: &MarketSelection,
+    public_url: Option<&url::Url>,
+) -> Result<market_telegram::ReplyButton, market_links::LinkError> {
+    if let Some(payload) = selection.launch_payload()? {
+        return Ok(market_telegram::ReplyButton::Preview {
+            text: "Open market".into(),
+            payload,
+        });
+    }
+    let origin = public_url.ok_or(market_links::LinkError::Invalid(
+        "A public app URL is required to open this selection",
+    ))?;
+    Ok(market_telegram::ReplyButton::Url {
+        text: "Open market".into(),
+        url: selection.website_url(origin)?,
+    })
 }
 impl MarketCommands {
-    pub(super) async fn browse(&self, filters: GiftFilters) -> Reply {
-        let mut query = GiftOrderQuery::new(filters.clone());
+    pub(super) async fn browse(&self, selection: MarketSelection) -> Reply {
+        let button = match market_button(&selection, self.public_url.as_ref()) {
+            Ok(payload) => payload,
+            Err(error) => return render::error_reply(error),
+        };
+        let mut query = selection.order_query();
         query.limit = 5;
         let report = match self.market.query_orders(query).await {
             Ok(v) => v,
@@ -58,7 +114,11 @@ impl MarketCommands {
             Ok(v) => v.data,
             Err(e) => return render::error_reply(e),
         };
-        let mut text = String::from("Best asks");
+        let mut text = String::from(match selection.source {
+            OrderSource::Asks => "Best asks",
+            OrderSource::Bids => "Best bids",
+            OrderSource::History => "Recent sales",
+        });
         for row in &report.result.data {
             let order = &row.order;
             let collection = catalog
@@ -82,24 +142,9 @@ impl MarketCommands {
             ));
         }
         if report.result.data.is_empty() {
-            text.push_str("\nNo matching asks.");
+            text.push_str("\nNo matching orders.");
         }
-        let mut params = url::form_urlencoded::Serializer::new(String::new());
-        if let Some(collection) = &filters.collection_id {
-            params.append_pair("collection", &collection.to_string());
-        }
-        params.append_pair("currency", filters.currency_id.as_str());
-        let traits = serde_json::json!({"models":filters.models,"backdrops":filters.backdrops,"patterns":filters.patterns});
-        params.append_pair("filters", &traits.to_string());
-        let payload = format!("v_{}", URL_SAFE_NO_PAD.encode(params.finish()));
-        let buttons = if payload.len() <= 512 {
-            vec![vec![market_telegram::ReplyButton::Preview {
-                text: "Open market".into(),
-                payload,
-            }]]
-        } else {
-            vec![]
-        };
+        let buttons = vec![vec![button]];
         Reply {
             text,
             buttons,
@@ -111,10 +156,50 @@ impl MarketCommands {
 mod tests {
     use super::*;
     #[test]
+    fn readable_market_commands_preserve_alternatives_and_controls() {
+        let selection = parse("/market f=c=@slug:Gift|m=@name:A,@name:B|b=@name:Black%7CWhite|s=@name:Crown|n=10..99 currency=XTR mode=bid bid_match=any sort=price_desc min=1.20").unwrap();
+        assert_eq!(selection.filters.models.len(), 2);
+        assert_eq!(
+            selection.filters.backdrops[0].to_string(),
+            "@name:Black|White"
+        );
+        assert_eq!(selection.filters.currency_id.as_str(), "XTR");
+        assert_eq!(selection.source, OrderSource::Bids);
+        assert_eq!(selection.bid_match, BidMatch::Any);
+        assert_eq!(selection.sort, Some(GiftSort::PriceDesc));
+        assert!(parse("/market c=@slug:Gift|m=@name:A,@name:B").is_some());
+        assert!(parse("/market f=c=Gift|m=A f=c=Other").is_none());
+        assert!(parse("/market c=Gift|m=A,").is_none());
+    }
+    #[test]
+    fn buttons_keep_large_selections_without_storage_or_default_view_fallback() {
+        let mut selection = parse("/market collection=Gift").unwrap();
+        assert!(matches!(
+            market_button(&selection, None).unwrap(),
+            market_telegram::ReplyButton::Preview { .. }
+        ));
+        selection.filters.models = (0..300)
+            .map(|i| format!("@name:Model {i}").try_into().unwrap())
+            .collect();
+        let origin = url::Url::parse("https://market.example/").unwrap();
+        let market_telegram::ReplyButton::Url { url, .. } =
+            market_button(&selection, Some(&origin)).unwrap()
+        else {
+            panic!("large selections require a complete URL")
+        };
+        assert!(url.query().is_none());
+        assert_eq!(
+            MarketSelection::from_query(url.fragment().unwrap()).unwrap(),
+            selection
+        );
+        assert!(market_button(&selection, None).is_err());
+    }
+    #[test]
     fn market_search_uses_scoped_model_and_explicit_alias_selectors() {
-        let filters =
+        let selection =
             parse("/market collection=ResistanceDog model=Dogfather backdrop=Black symbol=Crown")
                 .unwrap();
+        let filters = selection.filters;
         assert_eq!(
             filters.collection_id.unwrap().to_string(),
             "@slug:ResistanceDog"
@@ -124,6 +209,7 @@ mod tests {
         assert!(
             parse("/market backdrop=@tg:42")
                 .unwrap()
+                .filters
                 .collection_id
                 .is_none()
         );
@@ -132,6 +218,7 @@ mod tests {
         assert_eq!(
             parse("/market collection=One model=Dark%20Knight")
                 .unwrap()
+                .filters
                 .models[0]
                 .to_string(),
             "@name:Dark Knight"

@@ -1,0 +1,20 @@
+[package]
+name = "market-links"
+version.workspace = true
+edition.workspace = true
+
+[features]
+schema = ["dep:utoipa", "market-gifts/schema", "market-gifts-hub/schema"]
+
+[dependencies]
+market-gifts.workspace = true
+market-gifts-hub.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+base64.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[lints]
+workspace = true

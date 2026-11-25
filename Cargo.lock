@@ -2085,6 +2085,7 @@ dependencies = [
  "market-hub-client",
  "market-hub-protocol",
  "market-invocations",
+ "market-links",
  "market-media",
  "market-miniapp",
  "market-portfolio",
@@ -2194,6 +2195,20 @@ version = "0.1.0"
 dependencies = [
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "market-links"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "market-gifts",
+ "market-gifts-hub",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "url",
+ "utoipa",
 ]
 
 [[package]]
@@ -2310,6 +2325,7 @@ dependencies = [
  "market-gifts",
  "market-hub-protocol",
  "market-invocations",
+ "market-links",
  "market-media",
  "market-portfolio",
  "market-replica",

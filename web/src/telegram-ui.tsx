@@ -183,7 +183,7 @@ export function TelegramAccount({
   if (!context.initData)
     return link ? (
       <a className="telegram-link" href={link} target="_blank" rel="noreferrer">
-        Telegram ↗
+        {new URL(link).hostname === "t.me" ? "Telegram ↗" : "Open market ↗"}
       </a>
     ) : null;
   if (!telegram.config?.auth_enabled) return null;

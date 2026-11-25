@@ -1,3 +1,4 @@
+import { selectionAt, selectionHref } from "../market-selection.ts";
 import { cleanSelection, launchSelection } from "../telegram.ts";
 import type { TelegramContext } from "../telegram.ts";
 export type Page = "market" | "portfolio";
@@ -24,14 +25,17 @@ export function initialLocation(
       ? (state as { giftsMarket?: Route }).giftsMarket
       : undefined;
   let route = pathRoute(url.pathname);
+  const direct = selectionAt(url);
   const explicitMarket =
-    url.searchParams.get("page") === "market" ||
-    url.searchParams.has("collection") ||
-    url.searchParams.has("gift");
+    direct.get("page") === "market" ||
+    direct.has("f") ||
+    direct.has("filters") ||
+    direct.has("collection") ||
+    direct.has("gift");
   if (!remembered && !explicitMarket && route.page === "market") {
     const launch =
       context.app?.initDataUnsafe?.start_param ||
-      url.searchParams.get("tgWebAppStartParam") ||
+      direct.get("tgWebAppStartParam") ||
       new URLSearchParams(context.initData).get("start_param");
     const match = launch && /^portfolio_(\d+)$/.exec(launch);
     if (match && portfolioUser(match[1]))
@@ -41,12 +45,11 @@ export function initialLocation(
     route.page === "market"
       ? cleanSelection(
           remembered || explicitMarket
-            ? url.searchParams
-            : launchSelection(context, url.search),
+            ? direct
+            : launchSelection(context, direct.toString()),
         )
       : new URLSearchParams();
-  const currency =
-    url.searchParams.get("currency") || params.get("currency") || "GRAM";
+  const currency = direct.get("currency") || params.get("currency") || "GRAM";
   if (route.page === "portfolio") params.set("currency", currency);
   const path =
     route.page === "portfolio"
@@ -60,7 +63,7 @@ export function initialLocation(
           ? remembered!.index
           : 0,
     },
-    href: path + (params.size ? `?${params}` : ""),
+    href: selectionHref(path, params),
     currency,
   };
 }
