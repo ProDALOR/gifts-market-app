@@ -10,7 +10,7 @@ const cacheDir = await mkdtemp(join(tmpdir(), "slug-preview-"));
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/src/style.css"></head><body><div id="fixture"></div><script type="module">
 import React,{useState} from 'react';import{createRoot}from'react-dom/client';
 import{SlugDetails}from'/src/orderbook/slug-details.tsx';import{FloorsProvider}from'/src/valuation/floors.tsx';
-const options=new Map([['m',{id:'m',kind:'model',name:'Model',media:null}],['b',{id:'b',kind:'backdrop',name:'Backdrop',palette:{center:'#70a0bb',edge:'#527e9c',pattern:'#345678'}}]]);const names=new Map([['c','Gift']]);
+const options=new Map([['m',{id:'m',kind:'model',name:'ExtraordinarilyLongModelNameWithoutBreaks',rarity:{kind:'percentage',permille:5},media:null}],['b',{id:'b',kind:'backdrop',name:'Backdrop',rarity:{kind:'percentage',permille:20},palette:{center:'#70a0bb',edge:'#527e9c',pattern:'#345678'}}]]);const names=new Map([['c','Gift']]);
 function App(){const[slug,setSlug]=useState('Gift-1'),[subject,onGift]=useState();window.choose=setSlug;return React.createElement(FloorsProvider,{currency:'GRAM',collection:'c',collections:['c'],order:subject},slug&&React.createElement(SlugDetails,{slug,collection:'c',currency:'GRAM',options,names,onGift,close:()=>setSlug('')}));}
 createRoot(document.getElementById('fixture')).render(React.createElement(App));</script></body></html>`;
 const server = await createServer({
@@ -174,6 +174,7 @@ try {
   assert.equal(await page.getByText("#1", { exact: true }).count(), 0);
   assert.equal(queries.length, 2, "one valuation request per selected slug");
   for (const viewport of [
+    { width: 320, height: 844 },
     { width: 390, height: 844 },
     { width: 1440, height: 900 },
   ]) {
@@ -192,8 +193,45 @@ try {
       "unlisted gifts never fabricate an asking price",
     );
     assert.equal(await page.locator(".valuation-primary-result").count(), 1);
+    assert.equal(
+      await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth),
+      true,
+      "Details fit the viewport",
+    );
+    assert.equal(
+      await page
+        .locator(".attribute-name")
+        .evaluateAll((nodes) =>
+          nodes.every((el) => el.scrollWidth <= el.clientWidth + 1),
+        ),
+      true,
+      "Long attribute names stay out of price columns",
+    );
+    assert.equal(
+      await page
+        .locator('[data-attribute="model"] .attribute-rarity')
+        .textContent(),
+      "Rarity: 0.5%",
+    );
+    assert.equal(
+      await page
+        .locator('[data-attribute="backdrop"] .attribute-rarity')
+        .textContent(),
+      "Rarity: 2%",
+    );
+    assert.equal(
+      await page
+        .locator('[data-attribute="collection"] .attribute-rarity')
+        .count(),
+      0,
+    );
     await page.screenshot({ path: `/tmp/slug-preview-${viewport.width}.png` });
   }
+  assert.equal(
+    queries.length,
+    2,
+    "Resizing previews does not requery valuations",
+  );
   await page
     .getByRole("button", { name: "How is this calculated?", exact: true })
     .click();

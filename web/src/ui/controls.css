@@ -430,10 +430,24 @@ body:has(.detail[open]) {
   line-height: 1.25;
 }
 .attribute-label {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 5px;
   font-size: 10px;
+}
+.attribute-rarity {
+  color: var(--rarity-color, var(--muted));
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 .attribute-name {
   color: var(--ink);
+  min-width: 0;
+  font-size: 11px;
+  line-height: 14px;
+  overflow-wrap: anywhere;
 }
 .attribute-floor-missing {
   color: var(--muted);
@@ -445,12 +459,6 @@ body:has(.detail[open]) {
 }
 .telegram[data-telegram-theme="light"] .attribute-pattern .gift-model-image {
   filter: brightness(0) invert(0.3);
-}
-
-.attribute-name {
-  min-width: 0;
-  font-size: 11px;
-  line-height: 14px;
 }
 
 .modal-close {

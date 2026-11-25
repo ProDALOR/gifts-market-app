@@ -21,6 +21,7 @@ import { useCatalog } from "../catalog/use-catalog";
 import { CollectionRail } from "../collections/collection-picker";
 import { TraitPickers } from "../collections/trait-pickers";
 import { TraitPreview } from "../previews/trait-preview";
+import { GiftPlaceholder } from "../previews/gift-placeholder";
 import { FloorsProvider } from "../valuation/floors";
 import { CurrencyPicker, SortPicker } from "../ui/pickers";
 import { Quote } from "../ui/market-controls";
@@ -363,6 +364,7 @@ function PortfolioView({
   };
   const state = portfolio.state,
     report = state?.valuation;
+  const giftCount = report?.count.toLocaleString();
   const busy =
     !!state &&
     ["queued", "loading_inventory", "valuing"].includes(state.progress.stage);
@@ -411,10 +413,31 @@ function PortfolioView({
             <AppNavigation page="portfolio" />
             <button
               className="collection-all"
+              aria-label="All gifts"
+              aria-describedby={report ? "portfolio-all-count" : undefined}
               aria-pressed={!filters.collection}
+              title="Show all portfolio collections"
               onClick={() => choose("")}
             >
-              All gifts <span>{report?.count || ""}</span>
+              <GiftPlaceholder active={false} loading={false} />
+              <span className="collection-all-label">All gifts</span>
+              {report && (
+                <span
+                  className="collection-all-count"
+                  aria-hidden="true"
+                  title={`${giftCount} gifts in this portfolio`}
+                >
+                  {giftCount}
+                </span>
+              )}
+              <span className="collection-all-check" aria-hidden="true">
+                ✓
+              </span>
+              {report && (
+                <span className="sr" id="portfolio-all-count">
+                  {giftCount} gifts in this portfolio
+                </span>
+              )}
             </button>
             <CollectionRail
               collections={collections}

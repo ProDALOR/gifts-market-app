@@ -72,6 +72,7 @@ export function bannerPatternTiles(
   width: number,
   height: number,
   symbols: number,
+  symbolScale = 1,
 ) {
   if (width <= 0 || height <= 0 || symbols <= 0) return [];
   const columns = Math.max(1, Math.ceil(width / 38));
@@ -80,9 +81,9 @@ export function bannerPatternTiles(
     const row = Math.floor(index / columns),
       column = index % columns;
     return {
-      x: (column + 0.5 + (row % 2 ? 0.15 : 0)) * 38 - 7,
-      y: (row + 0.5) * 28 - 7,
-      size: 14,
+      x: (column + 0.5 + (row % 2 ? 0.15 : 0)) * 38 - 7 * symbolScale,
+      y: (row + 0.5) * 28 - 7 * symbolScale,
+      size: 14 * symbolScale,
       symbol: index % symbols,
     };
   });
@@ -92,7 +93,8 @@ export function bannerPatternTiles(
 // 100 × 100 symbol before its per-instance scale. Preserve individual alpha.
 // Source: https://t.me/nft/ResistanceDog-14029 (2026-11-19).
 
-const CARD_SYMBOL_SIZE = 1.35;
+export const CARD_SYMBOL_SCALE = 1.3;
+const CARD_SYMBOL_SIZE = 1.35 * CARD_SYMBOL_SCALE;
 const CARD_PATTERN_RADIUS = 1.12;
 
 /** Card symbols follow width; a little extra radial spacing keeps the model clear. */

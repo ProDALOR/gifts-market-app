@@ -6,6 +6,7 @@ import { OptionArt } from "../previews/option-art";
 import { useCollectionFloors, FloorBadge } from "../valuation/floors";
 import { traitFloor } from "../valuation/floors-controller";
 import { UnrestrictedTrait } from "../previews/unrestricted-trait";
+import { RarityLabel } from "../ui/rarity-label";
 
 /** Complete accepted alternatives for bid details. */
 export function BidConditions({
@@ -43,7 +44,10 @@ export function BidConditions({
                     key={id}
                   >
                     {option && <OptionArt option={option} />}
-                    <span className="condition-name">{name}</span>
+                    <span className="condition-name">
+                      <span>{name}</span>
+                      <RarityLabel rarity={option?.rarity} />
+                    </span>
                     <FloorBadge
                       compact
                       rounded

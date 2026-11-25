@@ -1,5 +1,4 @@
 import {
-  allCollections,
   aliasFilters,
   preferredSelector,
   resolveFilterSelectors,
@@ -95,25 +94,24 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     [reloadKey, setReloadKey] = useState(0),
     [selected, setSelected] = useState<Order>(),
     [openTrait, setOpenTrait] = useState<TraitKey>();
-  const [previewIds, setPreviewIds] = useState<string[]>([]);
   const choice = { ...storedChoice, currency };
   const {
     types,
     directory,
     options,
-    previewOptions,
     names,
-    item,
+    item: catalogItem,
     catalogLoading,
     startupError,
     optionsLoading,
     optionsError,
     retryOptions,
     retryCatalog,
-  } = useCatalog(
-    reloadKey,
-    choice.collection,
-    choice.collection ? [] : previewIds,
+  } = useCatalog(reloadKey, choice.collection);
+  const item = catalogItem?.id ? catalogItem : undefined;
+  const availableTypes = useMemo(
+    () => types.filter((t) => directory.some((b) => b.collection_id === t.id)),
+    [types, directory],
   );
   const filterAliases = useMemo(
     () => aliasFilters(choice.filters, options),
@@ -126,9 +124,20 @@ export function MarketPage({ context }: { context: TelegramContext }) {
   useBackgroundPlaybackSuspension(accountOpen);
   useEffect(() => {
     if (!directory[0]) return;
-    const collection = item?.id ?? choice.collection;
+    // Market reads stay scoped, including startup and old cross-collection links.
+    const collection =
+      item?.id ||
+      choice.collection ||
+      availableTypes.find((type) =>
+        directory.some(
+          (book) =>
+            book.collection_id === type.id && book.currency_id === currency,
+        ),
+      )?.id ||
+      availableTypes[0]?.id;
+    if (!collection) return;
     const available = directory.filter(
-      (book) => !collection || book.collection_id === collection,
+      (book) => book.collection_id === collection,
     );
     const selectedCurrency = available.some(
       (book) => book.currency_id === currency,
@@ -149,7 +158,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
         ? old
         : { ...old, collection, venue };
     });
-  }, [directory, choice.collection, currency, item]);
+  }, [directory, availableTypes, choice.collection, currency, item]);
   useEffect(() => {
     const p = selectionParams(
       choiceSelection(
@@ -187,22 +196,23 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     },
     sort: choice.sort,
   };
-  const query: FeedQuery | null = !choice.currency
-    ? null
-    : {
-        ...base,
-        bid_match: choice.mode === "bid" ? choice.bid_match : undefined,
-        source:
-          choice.mode === "executed"
-            ? "history"
-            : choice.mode === "bid"
-              ? "bids"
-              : "asks",
-        period:
-          choice.mode === "executed" && (choice.from || choice.until)
-            ? { from: choice.from || null, until: choice.until || null }
-            : undefined,
-      };
+  const query: FeedQuery | null =
+    !choice.collection || !choice.currency
+      ? null
+      : {
+          ...base,
+          bid_match: choice.mode === "bid" ? choice.bid_match : undefined,
+          source:
+            choice.mode === "executed"
+              ? "history"
+              : choice.mode === "bid"
+                ? "bids"
+                : "asks",
+          period:
+            choice.mode === "executed" && (choice.from || choice.until)
+              ? { from: choice.from || null, until: choice.until || null }
+              : undefined,
+        };
 
   const {
     orders,
@@ -240,7 +250,8 @@ export function MarketPage({ context }: { context: TelegramContext }) {
   };
   const selectedType = useCallback(
     (id: string) => {
-      const available = directory.filter((b) => !id || b.collection_id === id);
+      if (!id) return;
+      const available = directory.filter((b) => b.collection_id === id);
       set({
         ...choice,
         collection: id,
@@ -260,10 +271,6 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     },
     [directory, choice, options],
   );
-  const availableTypes = useMemo(
-    () => types.filter((t) => directory.some((b) => b.collection_id === t.id)),
-    [types, directory],
-  );
   const floorCollections = useMemo(
     () => availableTypes.map((row) => row.id),
     [availableTypes],
@@ -271,9 +278,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
   const currencies = [
     ...new Set(
       directory
-        .filter(
-          (b) => !choice.collection || b.collection_id === choice.collection,
-        )
+        .filter((b) => b.collection_id === choice.collection)
         .map((b) => b.currency_id),
     ),
   ].sort();
@@ -282,7 +287,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
       directory
         .filter(
           (b) =>
-            (!choice.collection || b.collection_id === choice.collection) &&
+            b.collection_id === choice.collection &&
             b.currency_id === choice.currency,
         )
         .map((b) => b.venue_id),
@@ -351,7 +356,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
               />
             </header>
             <CollectionRail
-              collections={[allCollections, ...availableTypes]}
+              collections={availableTypes}
               selected={choice.collection}
               select={selectedType}
             />
@@ -567,29 +572,15 @@ export function MarketPage({ context }: { context: TelegramContext }) {
               <GiftGrid
                 orders={displayOrders}
                 busy={status === "Loading" || status === "Connecting"}
-                visible={(start, end, anchor) => {
-                  setVisibleRange(start, end, anchor);
-                  if (!choice.collection) {
-                    const ids = [
-                      ...new Set(
-                        displayOrders
-                          .slice(start, end)
-                          .map((o) => o.book.collection_id),
-                      ),
-                    ].slice(0, 32);
-                    setPreviewIds((old) =>
-                      JSON.stringify(old) === JSON.stringify(ids) ? old : ids,
-                    );
-                  }
-                }}
+                visible={setVisibleRange}
                 card={(order) => ({
-                  options: choice.collection ? options : previewOptions,
+                  options,
                   collectionPreview:
                     types.find((c) => c.id === order.book.collection_id)
                       ?.preview ?? undefined,
                   activity: activity.get(orderKey(order)),
                   collectionName:
-                    (choice.collection ? item?.name : undefined) ||
+                    item?.name ||
                     names.get(order.book.collection_id) ||
                     order.book.collection_id,
                   venueName:
@@ -650,7 +641,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
             slug={giftSlug}
             collection={choice.collection}
             currency={choice.currency}
-            options={choice.collection ? options : previewOptions}
+            options={options}
             names={names}
             preview={selectedCollection?.preview ?? undefined}
             onGift={setSlugSubject}
@@ -663,7 +654,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
             collectionPreview={selectedCollection?.preview ?? undefined}
             selected={selected}
             share={shareValuation}
-            options={choice.collection ? options : previewOptions}
+            options={options}
             names={names}
             collectionName={selectedCollection?.name || ""}
             collectionSlug={selectedCollection?.slug}

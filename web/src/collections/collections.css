@@ -404,28 +404,28 @@
   background: var(--tint);
   font-weight: 650;
 }
-.trait-group[data-craft="legendary"] {
+[data-craft="legendary"] {
   --rarity-color: #f6c86f;
 }
-.trait-group[data-craft="epic"] {
+[data-craft="epic"] {
   --rarity-color: #baa1f5;
 }
-.trait-group[data-craft="rare"] {
+[data-craft="rare"] {
   --rarity-color: #7bbdf1;
 }
-.trait-group[data-craft="uncommon"] {
+[data-craft="uncommon"] {
   --rarity-color: #85ce9f;
 }
-.telegram[data-telegram-theme="light"] .trait-group[data-craft="legendary"] {
+.telegram[data-telegram-theme="light"] [data-craft="legendary"] {
   --rarity-color: #956000;
 }
-.telegram[data-telegram-theme="light"] .trait-group[data-craft="epic"] {
+.telegram[data-telegram-theme="light"] [data-craft="epic"] {
   --rarity-color: #7150b4;
 }
-.telegram[data-telegram-theme="light"] .trait-group[data-craft="rare"] {
+.telegram[data-telegram-theme="light"] [data-craft="rare"] {
   --rarity-color: #216b9f;
 }
-.telegram[data-telegram-theme="light"] .trait-group[data-craft="uncommon"] {
+.telegram[data-telegram-theme="light"] [data-craft="uncommon"] {
   --rarity-color: #277948;
 }
 .trait-group[data-craft] :is(.trait-group-toggle, .trait-option) {
@@ -470,19 +470,53 @@
 .collection-all {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   width: 100%;
-  padding: 9px 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
   border-radius: 9px;
+  background: var(--surface);
   margin-bottom: 8px;
+  text-align: left;
 }
-.collection-all span {
+.collection-all > svg {
+  position: static;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  color: var(--accent);
+  --gift-placeholder-opacity: 0.85;
+}
+.collection-all-label {
+  flex: 1;
+  font-weight: 650;
+}
+.collection-all-count {
+  flex: none;
   color: var(--muted);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--raised);
+}
+.collection-all-check {
+  flex: none;
+  width: 14px;
+  opacity: 0;
 }
 .collection-all[aria-pressed="true"] {
+  border-color: var(--accent-line);
   background: var(--tint);
   color: var(--accent);
+}
+.collection-all[aria-pressed="true"] .collection-all-check {
+  opacity: 1;
+}
+.collection-all:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .trait-group.shared {

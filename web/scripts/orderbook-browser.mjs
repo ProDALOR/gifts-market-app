@@ -89,6 +89,10 @@ const venues = ["Telegram", "Portals", "MRKT"].map((name) => ({
 }));
 let historyExtras = [];
 function result(query, executed = query.source === "history") {
+  assert.ok(
+    query.filters.collection_id,
+    "Market never requests all collections",
+  );
   const filters = {
     ...query.filters,
     ...Object.fromEntries(
@@ -1786,27 +1790,32 @@ try {
   }
   await button("Bids").click();
   assert.equal(new URL(page.url()).searchParams.get("sort"), "time_asc");
-  // Global pickers reuse the directory projection rather than downloading every collection.
-  await button("Asks").click();
-  await page.locator('.collection-tile[data-collection-id=""]').click();
-  await page.getByRole("heading", { name: "All gifts", exact: true }).waitFor();
-  await cards(80);
-  assert.equal(await button("Model").isDisabled(), true);
-  const globalOptions = optionRequests;
-  await button("Backdrop").click();
-  await page
-    .getByRole("group", { name: "Backdrop options", exact: true })
-    .getByRole("button", { name: "Raspberry", exact: true })
-    .click();
-  await page.waitForFunction(
-    () => new URL(location.href).searchParams.get("f") === "b=@name:Raspberry",
-  );
-  assert.equal(
-    optionRequests,
-    globalOptions,
-    "global pickers do not load other collection models",
-  );
-  await page.getByRole("button", { name: "Reset traits", exact: true }).click();
+  // Startup and old All gifts links choose one collection before opening a feed.
+  for (const width of [390, 1200]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const search of [
+      "",
+      "?f=&mode=bid",
+      "?f=b%3D%40name%3ARaspberry&mode=executed",
+    ]) {
+      await page.goto(`${base}/${search}`);
+      await page
+        .getByRole("heading", { name: "Jelly Bunny", exact: true })
+        .waitFor();
+      await page.locator(".feed-status .status.live").waitFor();
+      assert.equal(
+        await page.locator('.collection-tile[data-collection-id=""]').count(),
+        0,
+      );
+      assert.equal(await button("Model").isDisabled(), false);
+      const params = new URL(page.url()).searchParams;
+      assert.ok(params.get("f")?.startsWith("c=bunny"));
+      if (search.includes("Raspberry")) {
+        assert.ok(params.get("f").includes("b=@name:Raspberry"));
+        assert.equal(params.get("mode"), "executed");
+      }
+    }
+  }
   assert.deepEqual(errors, []);
   console.log(
     "Orderbook browser passed: unlimited trait previews, infinite scroll, Time/Gift #/Price sorting, currencies, URL restore, modes, live history/backfills with scroll anchors, accessible details and automatic Mini App catalog updates.",

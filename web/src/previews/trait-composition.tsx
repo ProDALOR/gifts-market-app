@@ -3,7 +3,12 @@ import type { CSSProperties, ReactNode } from "react";
 import { GiftArtwork } from "./gift-artwork";
 import { GiftBackdrop } from "./gift-backdrop";
 import { backdropPalette } from "./gift-appearance";
-import { balancedRows, balancedGrid, previewLayout } from "./preview-layout";
+import {
+  balancedRows,
+  balancedGrid,
+  previewLayout,
+  CARD_SYMBOL_SCALE,
+} from "./preview-layout";
 import {
   observePreviewSize,
   usePreviewVisibility,
@@ -111,6 +116,7 @@ export function TraitComposition({
             )}
             visible={visible && pageVisible}
             layout="banner"
+            symbolScale={compact ? CARD_SYMBOL_SCALE : 1}
             background={false}
           />
         </div>

@@ -4,6 +4,19 @@ use market_actors::input::GiftFilters;
 use market_gifts::*;
 use market_links::MarketSelection;
 pub(super) fn parse(text: &str) -> Option<MarketSelection> {
+    use market_actors::input::CatalogSelector;
+    fn public_reference<I>(reference: &CatalogSelector<I>) -> bool {
+        matches!(reference, CatalogSelector::Ref(_))
+    }
+    let selection = parse_selection(text)?;
+    let filters = &selection.filters;
+    (filters.collection_id.as_ref().is_none_or(public_reference)
+        && filters.models.iter().all(public_reference)
+        && filters.backdrops.iter().all(public_reference)
+        && filters.patterns.iter().all(public_reference))
+    .then_some(selection)
+}
+fn parse_selection(text: &str) -> Option<MarketSelection> {
     let args = text.split_once(char::is_whitespace)?.1.trim();
     if args.starts_with("f=") {
         let mut params = url::form_urlencoded::Serializer::new(String::new());
@@ -206,13 +219,17 @@ mod tests {
         );
         assert_eq!(filters.models[0].to_string(), "@name:Dogfather");
         assert!(parse("/market model=Dogfather").is_none());
-        assert!(
-            parse("/market backdrop=@tg:42")
-                .unwrap()
-                .filters
-                .collection_id
-                .is_none()
-        );
+        assert!(parse("/market backdrop=@name:Black").is_some());
+        for command in [
+            "/market backdrop=@tg:42",
+            "/market collection=@tg.slug:Gift",
+            "/market collection=Gift model=@tg:42",
+            "/market symbol=@partner:42",
+            "/market c=@slug:Gift|b=@tg:42",
+            "/market f=c=@slug:Gift|s=@tg:42 currency=GRAM",
+        ] {
+            assert!(parse(command).is_none(), "{command}");
+        }
         assert!(parse("/market collection=One collection=Two").is_none());
         assert!(parse("/market symbol=@broken").is_none());
         assert_eq!(

@@ -12,12 +12,14 @@ export function GiftBackdrop({
   visible,
   layout = "gift",
   background = true,
+  symbolScale = 1,
 }: {
   palette: BackdropPalette;
   patternUrls?: readonly string[];
   visible: boolean;
   layout?: "gift" | "card" | "banner";
   background?: boolean;
+  symbolScale?: number;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const { center, edge, pattern } = palette;
@@ -60,7 +62,12 @@ export function GiftBackdrop({
       if (!symbols.some(Boolean)) return;
       context.globalAlpha = 0.3;
       if (layout === "banner") {
-        for (const tile of bannerPatternTiles(width, height, symbols.length)) {
+        for (const tile of bannerPatternTiles(
+          width,
+          height,
+          symbols.length,
+          symbolScale,
+        )) {
           const symbol = symbols[tile.symbol];
           if (symbol)
             context.drawImage(symbol, tile.x, tile.y, tile.size, tile.size);
@@ -107,6 +114,6 @@ export function GiftBackdrop({
       unobserve();
       cancelAnimationFrame(frame);
     };
-  }, [center, edge, key, layout, background, visible]);
+  }, [center, edge, key, layout, background, symbolScale, visible]);
   return <canvas ref={canvas} className="gift-backdrop" aria-hidden="true" />;
 }

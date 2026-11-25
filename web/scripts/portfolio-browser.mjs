@@ -581,6 +581,24 @@ try {
             requestAnimationFrame(() => requestAnimationFrame(resolve)),
           ),
       );
+      assert.equal(
+        await page
+          .getByRole("button", { name: "All gifts", exact: true })
+          .evaluate((el) => {
+            const box = el.getBoundingClientRect(),
+              icon = el.querySelector("svg").getBoundingClientRect();
+            return (
+              box.height >= 44 &&
+              el.scrollWidth <= el.clientWidth &&
+              icon.left >= box.left &&
+              icon.right <= box.right &&
+              icon.top >= box.top &&
+              icon.bottom <= box.bottom
+            );
+          }),
+        true,
+        `All gifts stays usable at ${width}px`,
+      );
       const issues = await page
         .locator(".portfolio-card")
         .first()
@@ -939,7 +957,47 @@ try {
       .getByRole("button", { name: "Close details", exact: true })
       .click();
     // All gifts must use the same resolved artwork and model labels as market asks.
-    await page.getByRole("button", { name: /^All gifts/ }).click();
+    const allGifts = page.getByRole("button", {
+      name: "All gifts",
+      exact: true,
+    });
+    assert.equal(await allGifts.getAttribute("aria-pressed"), "false");
+    await allGifts.click();
+    assert.equal(await allGifts.getAttribute("aria-pressed"), "true");
+    assert.match(
+      await allGifts.evaluate(
+        (el) =>
+          document.getElementById(el.getAttribute("aria-describedby"))
+            .textContent,
+      ),
+      /gifts in this portfolio/,
+    );
+    assert.equal(
+      await allGifts.locator(".gift-loading-placeholder").count(),
+      1,
+    );
+    assert.equal(
+      await allGifts.evaluate(
+        (el) =>
+          el.scrollWidth <= el.clientWidth &&
+          el.getBoundingClientRect().height >= 44,
+      ),
+      true,
+    );
+    assert.equal(
+      await allGifts.evaluate((el) => {
+        const box = el.getBoundingClientRect(),
+          icon = el.querySelector("svg").getBoundingClientRect();
+        return (
+          icon.left >= box.left &&
+          icon.right <= box.right &&
+          icon.top >= box.top &&
+          icon.bottom <= box.bottom
+        );
+      }),
+      true,
+      "All gifts icon stays inside its button",
+    );
     report = state(7, 6000, 3);
     report.valuation.items[1] = {
       ...item(2),

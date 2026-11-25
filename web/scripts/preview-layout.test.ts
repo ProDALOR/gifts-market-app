@@ -50,7 +50,7 @@ test("card symbols keep width-based sizing and consistent radial clearance", () 
     );
     assert(
       Math.abs(
-        Math.max(...tall.map((tile) => tile.size)) / width - (30 / 420) * 1.35,
+        Math.max(...tall.map((tile) => tile.size)) / width - (30 / 420) * 1.755,
       ) < 1e-10,
     );
     const native = giftPatternTiles(width, 240);
@@ -136,6 +136,20 @@ test("taller pattern wallpaper repeats the one-row geometry without scaling or s
   assert.deepEqual(tall.slice(0, short.length), short);
   assert.ok(tall.length > short.length);
   assert.ok(tall.every((tile) => tile.size === 14));
+  const enlarged = bannerPatternTiles(358, 84, 12, 1.3);
+  enlarged.forEach((tile, index) => {
+    assert.equal(tile.size, short[index].size * 1.3);
+    assert.ok(
+      Math.abs(
+        tile.x + tile.size / 2 - short[index].x - short[index].size / 2,
+      ) < 1e-10,
+    );
+    assert.ok(
+      Math.abs(
+        tile.y + tile.size / 2 - short[index].y - short[index].size / 2,
+      ) < 1e-10,
+    );
+  });
   assert.equal(new Set(tall.map((tile) => tile.symbol)).size, 12);
   assert.deepEqual(bannerPatternTiles(0, 84, 12), []);
   assert.deepEqual(bannerPatternTiles(358, 84, 0), []);

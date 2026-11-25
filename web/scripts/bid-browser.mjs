@@ -65,9 +65,9 @@ const cacheDir = await mkdtemp(join(tmpdir(), "market-bids-"));
 const html = `<!doctype html><html><head><link rel="stylesheet" href="/src/style.css"></head><body><div id="fixture"></div><script type="module">
 import React,{useState}from'react';import{createRoot}from'react-dom/client';
 import{GiftGrid}from'/src/orderbook/gift-grid.tsx';import{OrderDetails}from'/src/orderbook/order-details.tsx';
-const models=Array.from({length:8},(_,i)=>({kind:'model',id:'model-'+i,name:i===0?'Artisan Brick':'Model '+i,media:{thumbnail_url:'/media/model-'+i+'/thumbnail',preview_url:'/media/model-'+i+'/preview',animation_url:'/media/model-'+i+'/animation'}}));
-const backdrops=Array.from({length:3},(_,i)=>({kind:'backdrop',id:'backdrop-'+i,name:['Sapphire','Lavender','Amber'][i],palette:{center:['#759fb4','#b789e4','#e2c585'][i],edge:'#364e73',pattern:'#283d60'}}));
-const patterns=Array.from({length:4},(_,i)=>({kind:'pattern',id:'pattern-'+i,name:'Star '+i,media:{thumbnail_url:'/media/pattern-'+i+'/thumbnail',animation_url:'/media/pattern-'+i+'/animation'}}));
+const models=Array.from({length:8},(_,i)=>({kind:'model',id:'model-'+i,rarity:i===0?{kind:'legendary'}:null,name:i===0?'Artisan Brick':'Model '+i,media:{thumbnail_url:'/media/model-'+i+'/thumbnail',preview_url:'/media/model-'+i+'/preview',animation_url:'/media/model-'+i+'/animation'}}));
+const backdrops=Array.from({length:3},(_,i)=>({kind:'backdrop',id:'backdrop-'+i,rarity:i===0?{kind:'percentage',permille:20}:null,name:['Sapphire','Lavender','Amber'][i],palette:{center:['#759fb4','#b789e4','#e2c585'][i],edge:'#364e73',pattern:'#283d60'}}));
+const patterns=Array.from({length:4},(_,i)=>({kind:'pattern',id:'pattern-'+i,rarity:i===0?{kind:'percentage',permille:10}:null,name:'Star '+i,media:{thumbnail_url:'/media/pattern-'+i+'/thumbnail',animation_url:'/media/pattern-'+i+'/animation'}}));
 const options=new Map([...models,...backdrops,...patterns].map(o=>[o.id,o]));
 const names=new Map([...options.values()].map(o=>[o.id,o.name]));names.set('gift','Liberty Figure');names.set('venue','MRKT');
 const base={id:'bid',book:{collection_id:'gift',venue_id:'venue',currency_id:'GRAM'},kind:'bid',price:'12.34',quantity:8,observed_at:'2026-11-20T00:00:00Z',market_url:'https://example.com/bid',target:{kind:'criteria',models:models.map(o=>o.id),backdrops:backdrops.map(o=>o.id),patterns:patterns.map(o=>o.id),number:{min:1,max:1000}}};
@@ -563,6 +563,24 @@ try {
         .length === 8,
   );
   assert.equal(await details.locator(".condition-chip").count(), 15);
+  assert.equal(
+    await details
+      .locator('[data-condition="model"] .attribute-rarity')
+      .textContent(),
+    "Rarity: Legendary",
+  );
+  assert.equal(
+    await details
+      .locator('[data-condition="backdrop"] .attribute-rarity')
+      .textContent(),
+    "Rarity: 2%",
+  );
+  assert.equal(
+    await details
+      .locator('[data-condition="pattern"] .attribute-rarity')
+      .textContent(),
+    "Rarity: 1%",
+  );
   assert.equal(await details.locator(".condition-overflow").count(), 0);
   assert.equal(await details.locator(".detail-art").count(), 1);
   await details.getByText("/ gift", { exact: true }).waitFor();

@@ -13,6 +13,7 @@ import type { ValuationSubject } from "../order-target";
 import { criteriaPresentation, giftPresentation } from "../order-target";
 import type { OrderValuationState } from "../valuation/use-order-valuation";
 import { BidValue } from "./bid-value";
+import { RarityLabel } from "../ui/rarity-label";
 
 export function OrderAttributes({
   order,
@@ -131,7 +132,10 @@ export function OrderAttributes({
                       </span>
                     )}
                     <span className="attribute-copy">
-                      <span className="attribute-label">{label}</span>
+                      <span className="attribute-label">
+                        {label}
+                        <RarityLabel rarity={visual?.rarity} />
+                      </span>
                       {value && (
                         <strong className="attribute-name">{value}</strong>
                       )}

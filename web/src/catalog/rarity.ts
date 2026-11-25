@@ -1,8 +1,9 @@
 import type { components } from "../gen/api";
+export type GiftRarity = components["schemas"]["GiftRarity"];
 type Choice = {
   id: string;
   name: string;
-  rarity?: components["schemas"]["GiftRarity"] | null;
+  rarity?: GiftRarity | null;
 };
 
 const tiers = {
@@ -45,6 +46,12 @@ function rarityGroup(rarity: Choice["rarity"]) {
     label: "Unknown",
     craft: undefined,
   };
+}
+
+/** Reuse picker formatting without displaying an unknown rarity as a value. */
+export function rarityLabel(rarity: Choice["rarity"]) {
+  const group = rarityGroup(rarity);
+  return group.key === "unknown" ? undefined : group.label;
 }
 
 /** Keep exact percentages and craft tiers distinct; unknown rarity comes last. */

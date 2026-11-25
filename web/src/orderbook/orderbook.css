@@ -981,6 +981,8 @@
   font-size: 12px;
 }
 .condition-name {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   overflow-wrap: anywhere;
 }
