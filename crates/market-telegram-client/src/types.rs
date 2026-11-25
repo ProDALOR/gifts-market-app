@@ -26,6 +26,7 @@ pub enum ReplyButton {
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reply {
+    pub kind: ReplyKind,
     /// Lightweight fallback, also used in inline search result descriptions.
     pub text: String,
     pub title: Option<String>,
@@ -37,7 +38,21 @@ pub struct Reply {
     pub buttons: Vec<Vec<ReplyButton>>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReplyKind {
+    #[default]
+    Message,
+    /// A callback notification that leaves the existing message intact.
+    Notice,
+}
+
 impl Reply {
+    pub fn notice(text: impl Into<String>) -> Self {
+        Self {
+            kind: ReplyKind::Notice,
+            ..Self::text(text)
+        }
+    }
     pub fn custom_emoji(&mut self, document: market_gifts::TelegramDocumentId) -> String {
         if !self.emoji_documents.contains(&document) {
             self.emoji_documents.push(document);
@@ -54,6 +69,13 @@ impl Reply {
         }
     }
     pub fn bounded(mut self) -> Self {
+        if self.kind == ReplyKind::Notice {
+            self.text = self.text.chars().take(200).collect();
+            self.rich_html = None;
+            self.artwork = None;
+            self.emoji_documents.clear();
+            self.buttons.clear();
+        }
         self.emoji_documents.truncate(64);
         if let Some(title) = &mut self.title {
             *title = title.chars().take(100).collect();
@@ -112,6 +134,24 @@ impl Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn callback_notices_are_bounded_and_cannot_retain_message_content() {
+        let reply = Reply {
+            rich_html: Some("<h1>Old content</h1>".into()),
+            emoji_documents: vec![market_gifts::TelegramDocumentId::new(1).unwrap()],
+            buttons: vec![vec![ReplyButton::Callback {
+                text: "Refresh".into(),
+                data: b"x".to_vec(),
+            }]],
+            ..Reply::notice("x".repeat(250))
+        }
+        .bounded();
+        assert_eq!(reply.kind, ReplyKind::Notice);
+        assert_eq!(reply.text.len(), 200);
+        assert!(reply.rich_html.is_none());
+        assert!(reply.emoji_documents.is_empty());
+        assert!(reply.buttons.is_empty());
+    }
     #[test]
     fn invalid_buttons_and_oversized_rich_markup_fall_back_without_truncating_html() {
         let reply = Reply {

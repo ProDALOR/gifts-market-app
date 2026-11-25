@@ -159,7 +159,15 @@ async fn process<A: TelegramActions, H: MessageHandler>(
     url: Option<&LaunchButton>,
     limits: Limits,
 ) -> Result<(), BotError> {
-    actions.answer_callback(&event, request.is_some()).await?;
+    let callback = matches!(event, Event::Callback { .. });
+    if request.is_none() {
+        actions
+            .answer_callback(
+                &event,
+                Some("This button has expired. Open a fresh report."),
+            )
+            .await?;
+    }
     let started = tokio::time::Instant::now();
     // Inline queries arrive while typing; only evaluate the latest completed input.
     if matches!(event, Event::Inline { .. }) {
@@ -202,9 +210,18 @@ async fn process<A: TelegramActions, H: MessageHandler>(
     let mut open = true;
     let mut editable = true;
     let mut ticks = tokio::time::interval(Duration::from_secs(3));
+    // Quick callbacks can return a useful notice in their first acknowledgement.
+    // Slow refreshes still dismiss the spinner promptly, before progress edits.
+    let acknowledge = tokio::time::sleep(Duration::from_secs(1));
+    tokio::pin!(acknowledge);
+    let mut acknowledged = !callback;
     let completed = loop {
         tokio::select! {biased;
             result=&mut result=>break result,
+            _=&mut acknowledge,if !acknowledged=>{
+                actions.answer_callback(&event, None).await?;
+                acknowledged=true;
+            }
             change=updates.changed(),if open=>{if change.is_err(){open=false;}else{pending=Some(updates.borrow_and_update().clone());}},
             _=ticks.tick(),if editable && pending.is_some()=>{
                 let reply=pending.take().unwrap().bounded();
@@ -230,6 +247,12 @@ async fn process<A: TelegramActions, H: MessageHandler>(
         },
     }
     .bounded();
+    if callback && reply.kind == crate::ReplyKind::Notice {
+        return actions.answer_callback(&event, Some(&reply.text)).await;
+    }
+    if !acknowledged {
+        actions.answer_callback(&event, None).await?;
+    }
     let mut backoff = 1;
     loop {
         let result = tokio::time::timeout(

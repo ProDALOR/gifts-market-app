@@ -361,7 +361,7 @@ async fn existing_sessions_accept_patched_inline_answers() {
         let peer = user.client.resolve_username(&identity.username).await.map_err(crate::mtproto::client::rpc)?
             .ok_or(BotError::InvalidResponse)?;
         let input: tl::enums::InputUser = peer.to_ref().await.map_err(|_| BotError::Session)?.ok_or(BotError::InvalidResponse)?.into();
-        let portfolio = std::env::var("MARKET_TEST_PORTFOLIO_REPLY").ok().map(|path| captured_reply(&path));
+        let custom = std::env::var("MARKET_TEST_INLINE_REPLY").ok().map(|path| captured_reply(&path));
         let floors = std::env::var("MARKET_TEST_FLOORS_REPLY").ok().map(|path| captured_reply(&path)).unwrap_or_default();
         if std::env::var("MARKET_TEST_GUEST_MODE").is_ok_and(|v| v == "1") {
             anyhow::ensure!(identity.guest_enabled, "Guest Mode is disabled");
@@ -376,7 +376,7 @@ async fn existing_sessions_accept_patched_inline_answers() {
         }
         let sales = std::env::var("MARKET_TEST_SALES_REPLY").ok().map(|path| captured_reply(&path)).unwrap_or_default();
         let plain = Reply::text("Inline transport live probe");
-        let cases = if let Some(portfolio) = &portfolio { vec![("portfolio", Some(portfolio))] }
+        let cases = if let Some(reply) = &custom { vec![("report", Some(reply))] }
             else { vec![("plain", Some(&plain)), ("floors", Some(&floors)), ("sales", Some(&sales)), ("empty", None)] };
         for (label, reply) in cases {
             let prepared = actions.prepare_rich(reply).await;

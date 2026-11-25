@@ -1,8 +1,6 @@
 //! On-demand comparable sales with fixed coverage and bounded, coalesced page reuse.
-use super::{
-    report::{Report, amount, escape},
-    *,
-};
+use super::orders;
+use super::{report::Report, *};
 use market_gifts::*;
 use std::{collections::VecDeque, sync::Arc};
 
@@ -158,36 +156,6 @@ fn matches_sale(query: &ResolvedGiftOrderQuery, order: &GiftOrder) -> bool {
             .first()
             .is_none_or(|wanted| backdrop == Some(wanted))
 }
-fn gift_number(order: &GiftOrder) -> Option<GiftNumber> {
-    match &order.target {
-        GiftTarget::Gift { gift } => gift.number,
-        GiftTarget::Criteria { criteria } if order.quantity == 1 => criteria
-            .number
-            .as_ref()
-            .and_then(|range| range.min.filter(|number| Some(*number) == range.max)),
-        _ => None,
-    }
-}
-fn venue_label(id: &str) -> String {
-    match id.to_ascii_lowercase().as_str() {
-        "mrkt" => "MRKT".into(),
-        "tonnel" => "Tonnel".into(),
-        "portals" => "Portals".into(),
-        "getgems" => "Getgems".into(),
-        "fragment" => "Fragment".into(),
-        "telegram" => "Telegram".into(),
-        _ => {
-            let mut label = id.chars().take(24).collect::<String>();
-            if id.chars().count() > 24 {
-                label.push('…');
-            }
-            label
-        }
-    }
-}
-fn short_date(time: jiff::Timestamp) -> String {
-    time.strftime("%d %b %H:%M").to_string()
-}
 #[cfg(test)]
 pub(super) fn captured_page(
     report: &Report,
@@ -209,68 +177,12 @@ pub(super) fn captured_page(
         },
     })
 }
-fn render_sale(report: &Report, order: &GiftOrder, html: &mut String, text: &mut String) -> bool {
-    let time = order.executed_at.expect("checked execution time");
-    let number = gift_number(order);
-    let exact = number == Some(report.query.gift.number());
-    let label = number
-        .map(|number| format!("#{number}"))
-        .unwrap_or_else(|| "Gift".into());
-    let linked = number
-        .map(|number| {
-            format!(
-                "<a href=\"https://t.me/nft/{}-{number}\">{}</a>",
-                report.query.gift.collection(),
-                escape(&label)
-            )
-        })
-        .unwrap_or_else(|| escape(&label));
-    let price = amount(&order.price);
-    let when = short_date(time);
-    let (gift_html, price_html) = if exact {
-        (
-            format!(
-                "{} <b>{linked}</b>",
-                report.icons.html(crate::ReportIcon::CurrentGift)
-            ),
-            format!("<b>{price}</b>"),
-        )
-    } else {
-        (linked, price.clone())
-    };
-    let venue = venue_label(order.book.venue_id.as_str());
-    let market = order.market_url.as_deref().and_then(market_link);
-    let venue_html = market
-        .as_ref()
-        .map(|url| {
-            format!(
-                "<a href=\"{}\">{} {}</a>",
-                escape(url),
-                escape(&venue),
-                report.icons.html(crate::ReportIcon::MarketLink)
-            )
-        })
-        .unwrap_or_else(|| escape(&venue));
-    html.push_str(&format!("<tr><td>{gift_html}</td><td align=\"right\">{price_html}</td><td>{}</td><td>{venue_html}</td></tr>",when));
-    text.push_str(&format!(
-        "{}{label} · {price} {} · {} · {venue}{}\n",
-        if exact {
-            format!("{} ", report.icons.text(crate::ReportIcon::CurrentGift))
-        } else {
-            String::new()
-        },
-        order.book.currency_id,
-        when,
-        market.map(|url| format!(" · {url}")).unwrap_or_default()
-    ));
-    exact
-}
 pub(super) fn render(
     report: &Report,
     state: &SalesState,
     result: &market_actors::OrderResult,
-    html: &mut String,
-    text: &mut String,
+    reply: &mut Reply,
+    documents: &orders::ModelDocuments,
 ) {
     let Some(query) = report
         .gift()
@@ -287,8 +199,12 @@ pub(super) fn render(
         from.strftime(if same_year { "%d %b" } else { "%d %b %Y" }),
         until.strftime("%d %b %Y")
     );
-    html.push_str("<p>30 days · UTC</p>");
-    text.push_str(&format!(
+    reply
+        .rich_html
+        .as_mut()
+        .unwrap()
+        .push_str("<p>30 days · UTC</p>");
+    reply.text.push_str(&format!(
         "\n\nRecent sales · {} · page {}\n{coverage}\n",
         state.scope.label(),
         state.page()
@@ -300,14 +216,30 @@ pub(super) fn render(
         .take(query.limit as usize)
         .peekable();
     if rows.peek().is_none() {
-        html.push_str("<p>No observed executions in this period.</p>");
-        text.push_str("No observed executions in this period.\n");
+        reply
+            .rich_html
+            .as_mut()
+            .unwrap()
+            .push_str("<p>No observed executions in this period.</p>");
+        reply
+            .text
+            .push_str("No observed executions in this period.\n");
     } else {
-        html.push_str(&format!("<table compact><tr><th>Gift</th><th align=\"right\">Price {}</th><th>Date</th><th>Market</th></tr>",report.icons.currency_html(report.query.currency_id.as_str())));
-        for row in rows {
-            render_sale(report, &row.order, html, text);
-        }
-        html.push_str("</table>");
+        let collections = report
+            .catalog
+            .as_ref()
+            .map(|catalog| std::slice::from_ref(&catalog.collection))
+            .unwrap_or_default();
+        orders::render(
+            reply,
+            rows.map(|row| &row.order),
+            &report.icons,
+            collections,
+            documents,
+            report
+                .gift()
+                .map(|gift| (&gift.collection_id, &report.query.gift)),
+        );
     }
 }
 
@@ -433,29 +365,47 @@ mod tests {
             &GiftOrder::try_from(draft).unwrap()
         ));
     }
+    fn grid(report: &Report, rows: &[GiftOrder]) -> Reply {
+        let mut reply = Reply::default();
+        let collections = report
+            .catalog
+            .as_ref()
+            .map(|c| std::slice::from_ref(&c.collection))
+            .unwrap_or_default();
+        let documents = [("m".into(), TelegramDocumentId::new(54321).unwrap())].into();
+        orders::render(
+            &mut reply,
+            rows,
+            &report.icons,
+            collections,
+            &documents,
+            report
+                .gift()
+                .map(|gift| (&gift.collection_id, &report.query.gift)),
+        );
+        reply
+    }
     #[test]
-    fn sales_rows_link_exact_gifts_and_safe_venues_with_compact_native_amounts() {
+    fn sales_grid_links_models_prices_and_safe_venues_and_marks_the_current_gift() {
         let report = super::super::tests::view();
         let time = "2026-11-23T12:34:56Z".parse().unwrap();
-        let mut html = String::new();
-        let mut text = String::new();
-        assert!(render_sale(&report, &sale(time), &mut html, &mut text));
+        let reply = grid(&report, &[sale(time)]);
+        let html = reply.rich_html.unwrap();
+        assert!(html.contains("<table striped compact>"));
+        assert!(html.contains("https://t.me/nft/Gift-123\"><tg-emoji emoji-id=\"54321\""));
+        assert!(html.contains("<b>1 234.56</b>"));
+        assert!(html.contains(&report.icons.html(crate::ReportIcon::Gram)));
         assert!(html.contains(&format!(
-            "{} <b><a href=\"https://t.me/nft/Gift-123\">#123</a></b>",
+            "{} <b>#123</b>",
             report.icons.html(crate::ReportIcon::CurrentGift)
         )));
-        assert!(html.contains("<td align=\"right\"><b>1234.56</b></td>"));
         assert!(html.contains("23 Nov 12:34"));
-        assert!(
-            !html.contains("UTC"),
-            "UTC belongs to the table's period caption"
+        assert!(html.contains("https://example.com/sale?gift=123&amp;venue=tonnel\">Tonnel</a>"));
+        assert!(reply.text.contains("1 234.56 GRAM"));
+        assert_eq!(
+            reply.emoji_documents,
+            vec![TelegramDocumentId::new(54321).unwrap()]
         );
-        assert!(html.contains("https://example.com/sale?gift=123&amp;venue=tonnel"));
-        assert!(html.contains(&format!(
-            "Tonnel {}</a>",
-            report.icons.html(crate::ReportIcon::MarketLink)
-        )));
-        assert!(text.contains("1234.56 GRAM"));
         for url in [
             "javascript:alert(1)",
             "https://user:private@example.com/sale",
@@ -468,22 +418,13 @@ mod tests {
                 panic!()
             };
             gift.number = Some(GiftNumber::new(124).unwrap());
-            let mut html = String::new();
-            let mut text = String::new();
-            assert!(!render_sale(
-                &report,
-                &GiftOrder::try_from(draft).unwrap(),
-                &mut html,
-                &mut text
-            ));
-            assert!(!html.contains("Tonnel ↗"));
-            assert!(!html.contains("<b>"));
+            let reply = grid(&report, &[GiftOrder::try_from(draft).unwrap()]);
+            let html = reply.rich_html.unwrap();
             assert!(html.contains("https://t.me/nft/Gift-124"));
-            assert!(!text.contains("private"));
+            assert!(!html.contains("<b>#124</b>"));
+            assert!(!html.contains("javascript:"));
+            assert!(!reply.text.contains("private"));
         }
-        assert_eq!(venue_label("MRKT"), "MRKT");
-        assert_eq!(venue_label("PORTALS"), "Portals");
-        assert!(venue_label(&"a".repeat(40)).ends_with('…'));
     }
     #[test]
     fn sales_period_caption_keeps_year_boundaries_and_bulk_criteria_do_not_claim_one_gift() {
@@ -494,9 +435,19 @@ mod tests {
             until,
             starts: vec![],
         };
-        let mut html = String::new();
-        let mut text = String::new();
-        render(&report, &state, &empty_page(), &mut html, &mut text);
+        let mut reply = Reply {
+            rich_html: Some(String::new()),
+            ..Default::default()
+        };
+        render(
+            &report,
+            &state,
+            &empty_page(),
+            &mut reply,
+            &Default::default(),
+        );
+        let html = reply.rich_html.unwrap();
+        let text = reply.text;
         assert!(text.contains("08 Dec 2026 – 07 Jan 2027 · UTC"));
         assert!(html.contains("30 days · UTC"));
         assert!(html.contains("No observed executions"));
@@ -512,11 +463,38 @@ mod tests {
             },
         };
         let bulk = GiftOrder::try_from(draft).unwrap();
-        assert_eq!(gift_number(&bulk), None);
-        let mut html = String::new();
-        let mut text = String::new();
-        assert!(!render_sale(&report, &bulk, &mut html, &mut text));
-        assert!(!html.contains("t.me/nft"));
+        assert_eq!(orders::number(&bulk), None);
+        let reply = grid(&report, &[bulk]);
+        assert!(!reply.rich_html.unwrap().contains("t.me/nft"));
+    }
+    #[test]
+    fn bid_grids_keep_bulk_conditions_ambiguous_models_and_native_currency_honest() {
+        let report = super::super::tests::view();
+        let mut draft = sale("2026-11-23T12:34:56Z".parse().unwrap()).into_data();
+        draft.kind = GiftOrderKind::Bid;
+        draft.executed_at = None;
+        draft.quantity = 5;
+        draft.book.currency_id = "XTR".into();
+        draft.target = GiftTarget::Criteria {
+            criteria: GiftCriteria {
+                models: vec!["m".into(), "other".into()],
+                number: Some(GiftNumberRange {
+                    min: Some(GiftNumber::new(123).unwrap()),
+                    max: Some(GiftNumber::new(123).unwrap()),
+                }),
+                ..Default::default()
+            },
+        };
+        let reply = grid(&report, &[GiftOrder::try_from(draft).unwrap()]);
+        let html = reply.rich_html.unwrap();
+        assert!(html.contains("<table striped compact>"));
+        assert!(html.contains("&lt;unsafe&gt; &amp; friends × 5"));
+        assert!(html.contains(&report.icons.html(crate::ReportIcon::Stars)));
+        assert!(!html.contains("https://t.me/nft/"));
+        assert!(!html.contains("<b>#123</b>"));
+        assert!(reply.emoji_documents.is_empty(), "no single model is known");
+        assert!(reply.text.contains("1 234.56 XTR"));
+        assert!(!reply.text.contains("23 Nov"));
     }
     #[tokio::test]
     async fn visited_pages_coalesce_and_queries_isolate_traits_scope_currency_period_and_boundary()

@@ -1,0 +1,63 @@
+//! Small, escaped rich-message primitives shared by report renderers.
+use crate::icons::escape;
+use market_gifts::Amount;
+pub(super) const COLUMNS: usize = 3;
+
+pub(super) fn amount(value: &Amount) -> String {
+    let value = value.decimal().round_dp(2).normalize().to_string();
+    let (integer, fractional) = value.split_once('.').unwrap_or((&value, ""));
+    let mut result = String::with_capacity(value.len() + integer.len() / 3);
+    for (i, digit) in integer.chars().enumerate() {
+        if i > 0 && (integer.len() - i).is_multiple_of(3) {
+            result.push(' ');
+        }
+        result.push(digit);
+    }
+    if !fractional.is_empty() {
+        result.push('.');
+        result.push_str(fractional);
+    }
+    result
+}
+
+pub(super) fn button(label: &str, data: Option<&str>, selected: bool) -> String {
+    let style = if selected { " style=\"primary\"" } else { "" };
+    match data {
+        Some(data) => {
+            debug_assert!(!data.is_empty() && data.len() <= 64);
+            format!(
+                "<tg-button type=\"callback_data\" data=\"{}\"{style}>{}</tg-button>",
+                escape(data),
+                escape(label)
+            )
+        }
+        None => format!(
+            "<tg-button type=\"disabled\"{style}>{}</tg-button>",
+            escape(label)
+        ),
+    }
+}
+
+pub(super) fn price(image: &str, amount: &str, currency: &str, url: Option<&str>) -> String {
+    let content = format!("{image} <b>{}</b> {currency}", escape(amount));
+    match url {
+        Some(url) => format!("<a href=\"{}\">{content}</a>", escape(url)),
+        None => content,
+    }
+}
+
+pub(super) fn grid(cells: &[String]) -> String {
+    let mut html = String::from("<table striped compact>");
+    for row in cells.chunks(COLUMNS) {
+        html.push_str("<tr>");
+        for cell in row {
+            html.push_str(&format!("<td>{cell}</td>"));
+        }
+        for _ in row.len()..COLUMNS {
+            html.push_str("<td></td>");
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</table>");
+    html
+}

@@ -192,8 +192,8 @@ fn price_formatting_is_consistent_in_rich_plain_and_inline_summaries() {
     use market_valuation::*;
     for (input, expected) in [
         ("11.40", "11.4"),
-        ("1000.000", "1000"),
-        ("1234.5678", "1234.57"),
+        ("1000.000", "1 000"),
+        ("1234.5678", "1 234.57"),
         ("0.004", "0"),
     ] {
         let mut report = view();
@@ -508,6 +508,18 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             )
             .unwrap(),
     );
+    let market = commands
+        .browse(browse::parse("/market collection=@slug:Gift currency=stars").unwrap())
+        .await;
+    let market_html = market.rich_html.as_ref().unwrap();
+    assert!(market_html.contains("<h3>Best asks · Gift</h3>"));
+    assert!(market_html.contains("<table striped compact>"));
+    assert_eq!(market_html.matches("<td>").count(), 3);
+    assert!(market_html.contains("https://t.me/nft/Gift-123"));
+    assert!(market_html.contains("<b>1 500</b>"));
+    assert!(market_html.contains(&crate::ReportIcons::default().html(crate::ReportIcon::Stars)));
+    assert!(market.text.contains("#123 · 1 500 XTR"));
+    assert!(!market.buttons.is_empty());
     let reply = commands
         .value(ValueRequest {
             gift: GiftSlug::new("Gift-123").unwrap(),
@@ -519,7 +531,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     assert!(html.contains("<table compact>"));
     assert!(html.contains("<th align=\"right\">"));
     assert!(html.contains(&format!(
-        "<tr><td>{} Collection</td><td align=\"right\">10</td><td align=\"right\">1500</td></tr>",
+        "<tr><td>{} Collection</td><td align=\"right\">10</td><td align=\"right\">1 500</td></tr>",
         crate::ReportIcons::default().html(crate::ReportIcon::Collection)
     )));
     assert!(html.contains("Stars</th>"));
@@ -562,14 +574,14 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         1,
         "timezone appears once"
     );
-    assert!(sales_html.contains("<th>Date</th>"));
-    assert!(sales_html.contains("<th>Market</th>"));
-    assert!(sales_html.contains("<th align=\"right\">Price <tg-emoji"));
-    assert!(sales_html.contains("</tg-emoji> GRAM</th>"));
+    assert!(sales_html.contains("<br><i>"));
+    assert!(sales_html.contains("<table striped compact>"));
+    assert!(sales_html.contains("<b>10</b> <tg-emoji"));
+    assert!(!sales_html.contains("<th>"));
     assert!(sales_html.contains("30 days · UTC"));
     assert!(!sales_html.contains("This gift"));
     assert!(!sales_html.contains("history may be incomplete"));
-    assert!(sales_html.contains("<b><a href=\"https://t.me/nft/Gift-123\">#123</a></b>"));
+    assert!(sales_html.contains("<b>#123</b>"));
     assert!(sales_html.contains("https://example.com/sale?gift=123&amp;venue=v"));
     // Real typed ordering keys stay opaque to preview rendering. Captures are filtered,
     // sorted and bounded using the same period and selected traits as live reads.
@@ -909,9 +921,6 @@ async fn send_live_rich_preview_to_authorized_recipient() {
         let current = views::View::initial(report).unwrap();
         views::render(&interactions::Views::default(), &current, None, None).bounded()
     };
-    // This one-shot sender does not run a callback worker or retain action state.
-    // Keep native layouts visible without sending buttons that would immediately expire.
-    let reply = static_preview(reply);
     if let Ok(path) = std::env::var("MARKET_TEST_REPLY_OUTPUT") {
         std::fs::write(
             path,
@@ -920,6 +929,7 @@ async fn send_live_rich_preview_to_authorized_recipient() {
                 "title": reply.title,
                 "summary": reply.summary,
                 "rich_html": reply.rich_html,
+                "emoji_documents": reply.emoji_documents,
                 "artwork": reply.artwork.map(|cover| serde_json::json!({
                     "model": cover.model.get(),
                     "pattern": cover.pattern.map(market_media::DocumentId::get),
@@ -930,6 +940,9 @@ async fn send_live_rich_preview_to_authorized_recipient() {
         )
         .unwrap();
     }
+    // Captures retain production callbacks for inline protocol tests. One-shot
+    // messages disable them because no worker retains these temporary views.
+    let reply = static_preview(reply);
     if let Ok(path) = std::env::var("MARKET_TEST_COVER_OUTPUT") {
         let started = std::time::Instant::now();
         let asset = cache
@@ -1104,17 +1117,17 @@ fn attribute_table_keeps_native_quote_columns_names_and_missing_values_separate(
     assert!(!header.contains("&lt;b&gt;Model&lt;/b&gt;"));
     assert!(!header.contains("Green"));
     assert!(!header.contains("Sun &amp; Moon"));
-    assert!(html.contains(&format!("<td>{} &lt;b&gt;Model&lt;/b&gt;</td><td align=\"right\">10.35</td><td align=\"right\">1500</td>", report.icons.html(crate::ReportIcon::Model))));
+    assert!(html.contains(&format!("<td>{} &lt;b&gt;Model&lt;/b&gt;</td><td align=\"right\">10.35</td><td align=\"right\">1 500</td>", report.icons.html(crate::ReportIcon::Model))));
     assert!(html.contains("Green &lt;&amp;&gt;"));
     assert!(html.contains("Sun &amp; Moon"));
     assert!(html.contains("Stars</th>"));
-    assert!(reply.text.contains("10.35 GRAM · 1500 Stars"));
+    assert!(reply.text.contains("10.35 GRAM · 1 500 Stars"));
     assert!(!html.contains(">GRAM</tg-button>"));
     assert!(!html.contains(">Stars</tg-button>"));
     report.floors.gram = None;
     let html = report.render().rich_html.unwrap();
     assert!(
-        html.contains("<td align=\"right\">—</td><td align=\"right\">1500</td>"),
+        html.contains("<td align=\"right\">—</td><td align=\"right\">1 500</td>"),
         "a missing native quote is not converted or copied"
     );
     report.floors.stars = None;

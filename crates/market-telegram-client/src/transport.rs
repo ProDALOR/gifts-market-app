@@ -45,7 +45,7 @@ pub trait TelegramActions: Clone + Send + Sync {
     fn answer_callback(
         &self,
         _: &crate::interactions::Event,
-        _: bool,
+        _: Option<&str>,
     ) -> impl Future<Output = Result<(), BotError>> + Send {
         async { Ok(()) }
     }

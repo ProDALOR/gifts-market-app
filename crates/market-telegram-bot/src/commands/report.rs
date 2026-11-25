@@ -20,9 +20,7 @@ pub(super) struct Report {
     pub artwork: Option<market_media::GiftCover>,
     pub icons: Arc<ReportIcons>,
 }
-pub(super) fn amount(value: &Amount) -> String {
-    value.decimal().round_dp(2).normalize().to_string()
-}
+pub(super) use super::rich::amount;
 fn formatted_amount(value: &str) -> String {
     Amount::new(value)
         .map(|value| amount(&value))

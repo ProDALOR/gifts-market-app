@@ -1,6 +1,6 @@
 use super::ValueRequest;
 use super::{Command, CommandRequest};
-use market_gifts::{CurrencyId, GiftSlug};
+use market_gifts::GiftSlug;
 use market_telegram::IncomingMessage;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
@@ -19,21 +19,29 @@ impl CommandKind {
         Self::Portfolio,
     ];
     pub const fn name(self) -> &'static str {
-        match self {
-            Self::Portfolio => "portfolio",
-            Self::Start => "start",
-            Self::Market => "market",
-            Self::Help => "help",
-            Self::Status => "status",
-        }
+        self.details().0
     }
     pub const fn description(self) -> &'static str {
+        self.details().1
+    }
+    pub(super) const fn usage(self) -> &'static str {
+        self.details().2
+    }
+    const fn details(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Self::Portfolio => "Visible gift portfolio",
-            Self::Start => "Open gift markets",
-            Self::Market => "Browse markets",
-            Self::Help => "How to use the app",
-            Self::Status => "Check market data status",
+            Self::Portfolio => (
+                "portfolio",
+                "Visible gift portfolio",
+                "/portfolio [user_id] [GRAM|XTR] [sort=price_desc]",
+            ),
+            Self::Start => ("start", "Open gift markets", "/start"),
+            Self::Market => (
+                "market",
+                "Browse markets",
+                "/market [collection=ResistanceDog model=Dogfather backdrop=Black symbol=Crown]",
+            ),
+            Self::Help => ("help", "How to use the app", "/help"),
+            Self::Status => ("status", "Check market data status", "/status"),
         }
     }
 }
@@ -84,7 +92,7 @@ pub(crate) fn parse<S: AsRef<str>>(
             if text.split_whitespace().count() > 1 {
                 Command::Browse(super::browse::parse(text)?)
             } else {
-                Command::Market
+                Command::Start
             }
         }
         CommandKind::Help => Command::Help,
@@ -144,10 +152,8 @@ pub(super) fn gift(text: &str, references: &[String]) -> Option<ValueRequest> {
     for word in text.split_whitespace() {
         let word =
             word.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '?' | '!' | '(' | ')'));
-        let next = match word.to_ascii_uppercase().as_str() {
-            "GRAM" | "TON" => "GRAM",
-            "XTR" => "XTR",
-            _ => continue,
+        let Some(next) = super::BotCurrency::parse(word) else {
+            continue;
         };
         if currency.is_some_and(|currency| currency != next) {
             return None;
@@ -156,6 +162,6 @@ pub(super) fn gift(text: &str, references: &[String]) -> Option<ValueRequest> {
     }
     Some(ValueRequest {
         gift: slug.clone(),
-        currency_id: CurrencyId::from(currency.unwrap_or("GRAM")),
+        currency_id: currency.unwrap_or_default().id(),
     })
 }

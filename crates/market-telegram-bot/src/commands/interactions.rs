@@ -90,7 +90,7 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
             if let Some(mut query) = super::portfolio::callback(text) {
                 if matches!(target, CallbackTarget::Inline(_)) {
                     query.mode = PortfolioMode::Inline;
-                    query.refresh = false;
+                    query.action = PortfolioAction::Navigate;
                 }
                 return Some(CommandRequest {
                     command: Command::Portfolio(query),
@@ -138,7 +138,7 @@ mod tests {
                 panic!("portfolio query")
             };
             assert_eq!(portfolio.mode, PortfolioMode::Inline);
-            assert!(!portfolio.refresh);
+            assert_eq!(portfolio.action, PortfolioAction::Open);
             assert_eq!(request.user_id, 7);
         }
         let event = Event::Inline {
@@ -172,12 +172,17 @@ mod tests {
             panic!("portfolio callback")
         };
         assert_eq!(
-            (shared.user_id, shared.mode, shared.sort, shared.refresh),
+            (
+                shared.user_id.get(),
+                shared.mode,
+                shared.sort,
+                shared.action
+            ),
             (
                 123,
                 PortfolioMode::Inline,
                 market_portfolio::PortfolioSort::ValueDesc,
-                false
+                PortfolioAction::Navigate
             )
         );
     }

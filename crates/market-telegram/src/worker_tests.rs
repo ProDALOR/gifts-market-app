@@ -19,6 +19,7 @@ struct FakeActions {
     replies: Arc<Mutex<VecDeque<Result<(), BotError>>>>,
     events: Arc<Mutex<Vec<String>>>,
     sent_text: Arc<Mutex<Vec<String>>>,
+    notices: Arc<Mutex<Vec<Option<String>>>>,
     changed: Arc<tokio::sync::Notify>,
     reads: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -49,6 +50,7 @@ impl Fake {
                 replies: Arc::new(Mutex::new(replies.into())),
                 events: Arc::default(),
                 sent_text: Arc::default(),
+                notices: Arc::default(),
                 changed: Arc::default(),
                 reads: Arc::default(),
             },
@@ -75,8 +77,13 @@ impl TelegramActions for FakeActions {
         self.events.lock().unwrap().push("configure".into());
         Ok(())
     }
-    async fn answer_callback(&self, event: &crate::Event, _: bool) -> Result<(), BotError> {
+    async fn answer_callback(
+        &self,
+        event: &crate::Event,
+        notice: Option<&str>,
+    ) -> Result<(), BotError> {
         if let crate::Event::Callback { id, .. } = event {
+            self.notices.lock().unwrap().push(notice.map(str::to_owned));
             self.events
                 .lock()
                 .unwrap()
@@ -804,8 +811,8 @@ async fn newer_inline_queries_cancel_old_work_and_empty_queries_are_answered_and
     let _ = task.await;
 }
 
-#[tokio::test]
-async fn callback_spinner_is_acknowledged_before_a_slow_history_handler() {
+#[tokio::test(start_paused = true)]
+async fn callback_spinner_is_acknowledged_while_a_slow_history_handler_runs() {
     use crate::{CallbackTarget, Event, InlineMessageId};
     use tokio_util::sync::CancellationToken;
     struct Slow {
@@ -848,13 +855,18 @@ async fn callback_spinner_is_acknowledged_before_a_slow_history_handler() {
     tokio::time::timeout(std::time::Duration::from_secs(2), started.cancelled())
         .await
         .unwrap();
-    assert!(
-        actions
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !actions
             .events
             .lock()
             .unwrap()
             .contains(&"callbackack:1".into())
-    );
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert!(actions.sent_text.lock().unwrap().is_empty());
     release.cancel();
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -864,6 +876,59 @@ async fn callback_spinner_is_acknowledged_before_a_slow_history_handler() {
     })
     .await
     .unwrap();
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn callback_notices_acknowledge_once_and_preserve_the_existing_report() {
+    use crate::{CallbackTarget, Event, InlineMessageId};
+    struct Notice;
+    impl MessageHandler for Notice {
+        type Request = ();
+        fn parse(&self, _: crate::IncomingMessage<'_>, _: &[String]) -> Option<()> {
+            None
+        }
+        fn parse_event(&self, _: &Event, _: &[String]) -> Option<()> {
+            Some(())
+        }
+        async fn handle(&self, _: ()) -> Result<Reply, BotError> {
+            Ok(Reply::notice("Check privately: /portfolio 123 XTR"))
+        }
+    }
+    let mut fake = Fake::new(vec![None], vec![]);
+    fake.deliveries[0].event = Some(Event::Callback {
+        id: 1,
+        user_id: 7,
+        data: b"p:123:XTR:v:0".to_vec(),
+        target: CallbackTarget::Inline(InlineMessageId::Standard {
+            dc_id: 2,
+            id: 42,
+            access_hash: 123,
+        }),
+    });
+    let actions = fake.shared.clone();
+    let task = tokio::spawn(async move { worker().serve(&mut fake, true, &Notice).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let wake = actions.changed.notified();
+            if actions.events.lock().unwrap().contains(&"ack:1".into()) {
+                break;
+            }
+            wake.await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        *actions.notices.lock().unwrap(),
+        vec![Some("Check privately: /portfolio 123 XTR".into())]
+    );
+    assert!(
+        actions.sent_text.lock().unwrap().is_empty(),
+        "a notice must never replace a message"
+    );
+    assert!(!actions.events.lock().unwrap().contains(&"send:1".into()));
     task.abort();
     let _ = task.await;
 }

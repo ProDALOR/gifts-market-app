@@ -11,10 +11,17 @@ pub(crate) fn launch_reply(command: &super::Command) -> Option<Reply> {
     let usage =
         "Send a gift link or slug, for example PlushPepe-123. Add TON or XTR to choose currency.";
     Some(Reply::text(match command {
-        Command::Start | Command::Market => format!("{usage}\nOpen the market to browse gifts."),
-        Command::Help => format!(
-            "{usage}\nYou can also use this bot’s username in another chat.\n/status — market status\n/market — browse gifts; add collection=ResistanceDog, model=Dogfather, backdrop=Black or symbol=Crown (space-separated)\n/portfolio [user_id] [GRAM|XTR] [sort=price_desc] — gift portfolio\nSort by position, price or gift number using the buttons. Inline: type this bot’s username, then portfolio. Check gifts privately first; inline uses cached data.\nSales show observed executions; history may be incomplete."
-        ),
+        Command::Start => format!("{usage}\nOpen the market to browse gifts."),
+        Command::Help => {
+            let commands = super::CommandKind::ALL
+                .into_iter()
+                .map(|command| format!("{} — {}", command.usage(), command.description()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "{usage}\n{commands}\nSort portfolios by position, price or gift number using the buttons.\nInline: type this bot’s username, then a gift slug or portfolio. Check gifts privately first; inline uses cached data.\nSales show observed executions; history may be incomplete."
+            )
+        }
         Command::GiftHelp => usage.to_owned(),
         _ => return None,
     }))

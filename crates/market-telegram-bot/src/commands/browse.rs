@@ -1,6 +1,6 @@
 //! Small market search command; all catalog interpretation remains in the data layer.
+use super::orders;
 use super::*;
-use market_actors::input::GiftFilters;
 use market_gifts::*;
 use market_links::MarketSelection;
 pub(super) fn parse(text: &str) -> Option<MarketSelection> {
@@ -8,7 +8,9 @@ pub(super) fn parse(text: &str) -> Option<MarketSelection> {
     fn public_reference<I>(reference: &CatalogSelector<I>) -> bool {
         matches!(reference, CatalogSelector::Ref(_))
     }
-    let selection = parse_selection(text)?;
+    let mut selection = parse_selection(text)?;
+    selection.filters.currency_id =
+        BotCurrency::parse(selection.filters.currency_id.as_str())?.id();
     let filters = &selection.filters;
     (filters.collection_id.as_ref().is_none_or(public_reference)
         && filters.models.iter().all(public_reference)
@@ -18,10 +20,17 @@ pub(super) fn parse(text: &str) -> Option<MarketSelection> {
 }
 fn parse_selection(text: &str) -> Option<MarketSelection> {
     let args = text.split_once(char::is_whitespace)?.1.trim();
-    if args.starts_with("f=") {
+    let short = ["c=", "m=", "b=", "s=", "n="]
+        .iter()
+        .any(|prefix| args.starts_with(prefix));
+    if args.starts_with("f=") || short {
         let mut params = url::form_urlencoded::Serializer::new(String::new());
-        for part in args.split_whitespace() {
-            let (key, value) = part.split_once('=')?;
+        for (i, part) in args.split_whitespace().enumerate() {
+            let (key, value) = if i == 0 && short {
+                ("f", part)
+            } else {
+                part.split_once('=')?
+            };
             if ![
                 "f",
                 "currency",
@@ -42,57 +51,49 @@ fn parse_selection(text: &str) -> Option<MarketSelection> {
         }
         return MarketSelection::from_query(&params.finish()).ok();
     }
-    if ["c=", "m=", "b=", "s=", "n="]
-        .iter()
-        .any(|prefix| args.starts_with(prefix))
-    {
-        let query = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("f", args)
-            .finish();
-        return MarketSelection::from_query(&query).ok();
-    }
-    let mut filters = GiftFilters::new("unused".into(), "GRAM".into());
-    filters.collection_id = None;
+    // Translate named arguments into the shared readable-link codec. Existing
+    // command and URL spellings retain the same alias semantics.
+    let mut groups = Vec::new();
+    let mut params = url::form_urlencoded::Serializer::new(String::new());
     let mut seen = std::collections::BTreeSet::new();
-    for part in text.split_whitespace().skip(1) {
-        let (key, value) = part.split_once('=')?;
+    for part in args.split_whitespace() {
+        let (key, raw) = part.split_once('=')?;
         if !seen.insert(key) {
             return None;
         }
-        let value = url::form_urlencoded::parse(format!("v={value}").as_bytes())
+        let value = url::form_urlencoded::parse(format!("v={raw}").as_bytes())
             .next()?
             .1
             .into_owned();
         if value.is_empty() {
             return None;
         }
-        let selector = |namespace: &str| {
-            if value.starts_with('@') {
-                Some(value.clone())
-            } else {
-                GiftAlias::new(namespace, value.clone())
-                    .ok()
-                    .map(|a| a.selector())
+        let (group, namespace) = match key {
+            "collection" if value == "all" => continue,
+            "collection" => ("c", "slug"),
+            "model" => ("m", "name"),
+            "backdrop" => ("b", "name"),
+            "symbol" => ("s", "name"),
+            "currency" => {
+                params.append_pair("currency", BotCurrency::parse(&value)?.as_str());
+                continue;
             }
-        };
-        match key {
-            "collection" => {
-                if value != "all" {
-                    filters.collection_id = Some(selector("slug")?.try_into().ok()?);
-                }
-            }
-            "model" => filters.models.push(selector("name")?.try_into().ok()?),
-            "backdrop" => filters.backdrops.push(selector("name")?.try_into().ok()?),
-            "symbol" => filters.patterns.push(selector("name")?.try_into().ok()?),
-            "currency" => filters.currency_id = value.try_into().ok()?,
             _ => return None,
-        }
+        };
+        let reference = if value.starts_with('@') {
+            value
+        } else {
+            GiftAlias::new(namespace, value).ok()?.selector()
+        };
+        let escaped = url::form_urlencoded::byte_serialize(reference.as_bytes())
+            .collect::<String>()
+            .replace('+', "%20");
+        groups.push(format!("{group}={escaped}"));
     }
-    if filters.collection_id.is_none() && !filters.models.is_empty() {
-        return None;
-    }
-    Some(MarketSelection::new(filters))
+    params.append_pair("f", &groups.join("|"));
+    MarketSelection::from_query(&params.finish()).ok()
 }
+
 fn market_button(
     selection: &MarketSelection,
     public_url: Option<&url::Url>,
@@ -127,47 +128,104 @@ impl MarketCommands {
             Ok(v) => v.data,
             Err(e) => return render::error_reply(e),
         };
-        let mut text = String::from(match selection.source {
+        let heading = match selection.source {
             OrderSource::Asks => "Best asks",
             OrderSource::Bids => "Best bids",
             OrderSource::History => "Recent sales",
-        });
-        for row in &report.result.data {
-            let order = &row.order;
-            let collection = catalog
-                .collections
-                .iter()
-                .find(|c| c.id == order.book.collection_id);
-            let name = collection
-                .map(|c| c.name.as_str())
-                .unwrap_or(order.book.collection_id.as_str());
-            let number = match &order.target {
-                GiftTarget::Gift { gift } => gift
-                    .number
-                    .map(|n| format!(" #{}", n.get()))
-                    .unwrap_or_default(),
-                _ => String::new(),
-            };
-            text.push_str(&format!(
-                "\n{name}{number} · {} {}",
-                super::report::amount(&order.price),
-                order.book.currency_id
-            ));
-        }
-        if report.result.data.is_empty() {
-            text.push_str("\nNo matching orders.");
-        }
-        let buttons = vec![vec![button]];
-        Reply {
-            text,
-            buttons,
+        };
+        let collection = report
+            .result
+            .data
+            .first()
+            .filter(|first| {
+                report
+                    .result
+                    .data
+                    .iter()
+                    .all(|row| row.order.book.collection_id == first.order.book.collection_id)
+            })
+            .and_then(|row| {
+                catalog
+                    .collections
+                    .iter()
+                    .find(|collection| collection.id == row.order.book.collection_id)
+            });
+        let title = collection.map_or_else(
+            || heading.to_owned(),
+            |collection| format!("{heading} · {}", collection.name),
+        );
+        let mut reply = Reply {
+            text: title.clone(),
+            title: Some(title.clone()),
+            rich_html: Some(format!("<h3>{}</h3>", report::escape(&title))),
+            buttons: vec![vec![button]],
             ..Default::default()
+        };
+        if report.result.data.is_empty() {
+            reply.text.push_str("\nNo matching orders.");
+            reply
+                .rich_html
+                .as_mut()
+                .unwrap()
+                .push_str("<p>No matching orders.</p>");
+        } else {
+            let documents = self
+                .order_documents(&report.result.data, &Default::default())
+                .await;
+            orders::render(
+                &mut reply,
+                report.result.data.iter().map(|row| &row.order),
+                &self.icons,
+                &catalog.collections,
+                &documents,
+                None,
+            );
+            if selection.source == OrderSource::History {
+                reply
+                    .rich_html
+                    .as_mut()
+                    .unwrap()
+                    .push_str("<footer>UTC · Observed sales</footer>");
+            }
         }
+        reply
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_named_arguments_and_readable_links_share_validation_and_currency_normalization() {
+        let named = parse("/market collection=Gift model=Dark%20Knight backdrop=Black%7CWhite symbol=Sun%2BMoon currency=stars").unwrap();
+        let readable = parse("/market f=c=@slug:Gift|m=@name:Dark%20Knight|b=@name:Black%7CWhite|s=@name:Sun%2BMoon currency=xtr").unwrap();
+        assert_eq!(named, readable);
+        assert_eq!(parse("/market c=@slug:Gift|m=@name:Dark%20Knight|b=@name:Black%7CWhite|s=@name:Sun%2BMoon currency=STARS").unwrap(), named);
+        for spelling in ["GRAM", "gram", "TON", "Ton"] {
+            assert_eq!(
+                parse(&format!("/market f=c=@slug:Gift currency={spelling}"))
+                    .unwrap()
+                    .filters
+                    .currency_id
+                    .as_str(),
+                "GRAM"
+            );
+        }
+        for command in [
+            "/market collection=Gift currency=USD",
+            "/market f=c=@slug:Gift currency=GRAM:bad",
+            "/market currency=sort=price_desc",
+            "/market collection=Gift model=Dark%20Knight symbol=@tg:42",
+        ] {
+            assert!(parse(command).is_none(), "{command}");
+        }
+        let url = named
+            .website_url(&url::Url::parse("https://market.example/").unwrap())
+            .unwrap();
+        assert_eq!(
+            MarketSelection::from_query(url.fragment().or(url.query()).unwrap()).unwrap(),
+            named
+        );
+    }
     #[test]
     fn readable_market_commands_preserve_alternatives_and_controls() {
         let selection = parse("/market f=c=@slug:Gift|m=@name:A,@name:B|b=@name:Black%7CWhite|s=@name:Crown|n=10..99 currency=XTR mode=bid bid_match=any sort=price_desc min=1.20").unwrap();

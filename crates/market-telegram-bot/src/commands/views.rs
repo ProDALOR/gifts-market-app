@@ -58,18 +58,34 @@ pub(super) struct View {
     pub report: Arc<Report>,
     pub state: ViewState,
     pages: Arc<Pages>,
+    documents: Arc<orders::ModelDocuments>,
     action: Action,
     // Concurrent/repeated delivery of the same button never repeats a successful action.
     reply: Arc<OnceCell<Reply>>,
 }
+fn model_documents(report: &Report) -> orders::ModelDocuments {
+    report
+        .gift()
+        .and_then(|gift| gift.traits.model.clone())
+        .zip(report.artwork)
+        .and_then(|(id, cover)| {
+            market_gifts::TelegramDocumentId::new(cover.model.get())
+                .ok()
+                .map(|document| (id, document))
+        })
+        .into_iter()
+        .collect()
+}
 impl View {
     pub fn initial(report: Arc<Report>) -> Option<Self> {
+        let documents = model_documents(&report);
         Some(Self {
             state: ViewState {
                 tab: Tab::Floors,
                 sales: SalesState::initial(&report)?,
             },
             pages: Arc::new(Pages::default()),
+            documents: Arc::new(documents),
             report,
             action: Action::Retry,
             reply: Default::default(),
@@ -89,17 +105,9 @@ impl Views {
             Some(action) => {
                 let token = self.insert(view.target(action));
                 let token = std::str::from_utf8(&token).expect("ASCII callback token");
-                format!(
-                    "<tg-button type=\"callback_data\" style=\"link\" data=\"{}\">{}</tg-button>",
-                    escape(token),
-                    escape(label)
-                )
+                rich::button(label, Some(token), selected)
             }
-            None => format!(
-                "<tg-button type=\"disabled\"{}>{}</tg-button>",
-                if selected { " style=\"primary\"" } else { "" },
-                escape(label)
-            ),
+            None => rich::button(label, None, selected),
         }
     }
     fn choices(&self, view: &View) -> String {
@@ -126,7 +134,7 @@ impl MarketCommands {
     }
     pub(super) async fn view(&self, id: u64) -> Reply {
         let Some(view) = self.views.get(id) else {
-            return Reply::text(
+            return Reply::notice(
                 "This report has expired. Send the gift link again for a fresh valuation.",
             );
         };
@@ -158,6 +166,7 @@ impl MarketCommands {
             Action::Refresh => match self.load_report(view.report.query.clone()).await {
                 Ok(report) => {
                     view.state.use_report(&view.report, &report);
+                    view.documents = Arc::new(model_documents(&report));
                     view.report = report;
                 }
                 Err(error) => notice = Some(report_error(&error)),
@@ -186,6 +195,12 @@ impl MarketCommands {
                     .map(|read| read.result)
                 })
                 .await;
+            if let Some(page) = &page {
+                let missing = self.order_documents(&page.data, &view.documents).await;
+                if !missing.is_empty() {
+                    Arc::make_mut(&mut view.documents).extend(missing);
+                }
+            }
         }
         render(&self.views, &view, page.as_deref(), notice.as_deref())
     }
@@ -228,9 +243,13 @@ pub(super) fn render(
             }
         }
         match page {
-            Some(page) => {
-                history::render(&view.report, &view.state.sales, page, html, &mut reply.text)
-            }
+            Some(page) => history::render(
+                &view.report,
+                &view.state.sales,
+                page,
+                &mut reply,
+                &view.documents,
+            ),
             None => {
                 let notice = "Sales are temporarily unavailable.";
                 html.push_str(&format!("<p>{notice}</p>"));
@@ -238,6 +257,7 @@ pub(super) fn render(
                 html.push_str(&views.button(view, Some(Action::Retry), "Retry sales", false));
             }
         }
+        let html = reply.rich_html.as_mut().expect("gift report HTML");
         let next = page
             .and_then(|page| page.range.end.as_ref())
             .filter(|_| view.state.sales.page() < history::MAX_PAGES)
@@ -258,6 +278,32 @@ pub(super) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refreshed_reports_seed_model_documents_from_the_new_artwork() {
+        let mut report = super::super::tests::view();
+        Arc::get_mut(&mut report).unwrap().artwork = Some(market_media::GiftCover {
+            model: market_media::DocumentId::new(10).unwrap(),
+            pattern: None,
+            palette: None,
+        });
+        let view = View::initial(report.clone()).unwrap();
+        assert_eq!(view.documents["m"].get(), 10);
+        let mut refreshed = Arc::new(Report {
+            query: report.query.clone(),
+            value: report.value.clone(),
+            catalog: report.catalog.clone(),
+            floors: super::super::report::FloorQuotes::default(),
+            icons: report.icons.clone(),
+            artwork: Some(market_media::GiftCover {
+                model: market_media::DocumentId::new(20).unwrap(),
+                pattern: None,
+                palette: None,
+            }),
+        });
+        assert_eq!(model_documents(&refreshed)["m"].get(), 20);
+        Arc::get_mut(&mut refreshed).unwrap().artwork = None;
+        assert!(model_documents(&refreshed).is_empty());
+    }
     #[test]
     fn sales_hide_unusable_controls_but_keep_navigation_and_recovery_when_needed() {
         let mut report = super::super::tests::view();
@@ -296,7 +342,7 @@ mod tests {
             .push("00".to_owned().try_into().unwrap());
         let missing = render(&views, &view, None, Some("Updates unavailable"));
         let html = missing.rich_html.unwrap();
-        assert!(html.contains("type=\"callback_data\" style=\"link\" data=\"v:"));
+        assert!(html.contains("type=\"callback_data\" data=\"v:"));
         assert!(
             html.contains(">←</tg-button>"),
             "can return to a cached page"

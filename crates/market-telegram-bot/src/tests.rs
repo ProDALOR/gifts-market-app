@@ -139,7 +139,7 @@ fn portfolio_commands_are_bound_to_the_authenticated_sender_or_an_explicit_numer
             panic!("{text}")
         };
         assert_eq!(
-            (request.user_id, request.currency_id.as_str()),
+            (request.user_id.get(), request.currency_id.as_str()),
             (user, currency)
         );
     }

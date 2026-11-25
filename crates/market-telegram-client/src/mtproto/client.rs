@@ -260,7 +260,7 @@ impl TelegramActions for MtProtoActions {
         }
         Ok(())
     }
-    async fn answer_callback(&self, event: &Event, handled: bool) -> Result<(), BotError> {
+    async fn answer_callback(&self, event: &Event, notice: Option<&str>) -> Result<(), BotError> {
         let Event::Callback { id, .. } = event else {
             return Ok(());
         };
@@ -271,8 +271,7 @@ impl TelegramActions for MtProtoActions {
                 tl::functions::messages::SetBotCallbackAnswer {
                     alert: false,
                     query_id: *id,
-                    message: (!handled)
-                        .then(|| "This button has expired. Request a fresh valuation.".into()),
+                    message: notice.map(|text| text.chars().take(200).collect()),
                     url: None,
                     cache_time: 0,
                 },

@@ -96,7 +96,7 @@ pub(super) fn inline_result(
                 .text
                 .lines()
                 .next()
-                .unwrap_or("Gift valuation")
+                .unwrap_or("Market report")
                 .chars()
                 .take(100)
                 .collect()
@@ -242,6 +242,12 @@ impl MtProtoActions {
         reply: Option<&Reply>,
         launch: Option<&LaunchButton>,
     ) -> Result<(), BotError> {
+        if matches!(event, Event::Callback { .. })
+            && let Some(reply) = reply.filter(|r| r.kind == crate::ReplyKind::Notice)
+        {
+            use crate::transport::TelegramActions;
+            return self.answer_callback(event, Some(&reply.text)).await;
+        }
         let username = self
             .profile
             .get()
@@ -373,7 +379,7 @@ where
 {
     match send(has_rich).await {
         Err(error) if has_rich && rejected_rich_inline(&error) => {
-            tracing::warn!("Inline rich result rejected; answering with plain valuation");
+            tracing::warn!("Inline rich result rejected; answering with plain report");
             send(false).await.map(|_| ()).map_err(CallError::bot)
         }
         result => result.map(|_| ()).map_err(CallError::bot),

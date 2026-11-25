@@ -1,13 +1,17 @@
 //! Typed command requests, services and reply rendering.
 use market_links::MarketSelection;
 mod browse;
+mod currency;
 mod history;
+pub use currency::BotCurrency;
 mod portfolio;
-pub use portfolio::{PortfolioMode, PortfolioRequest};
+pub use portfolio::{PortfolioAction, PortfolioMode, PortfolioRequest};
 mod interactions;
+mod orders;
 mod parse;
 mod render;
 mod report;
+mod rich;
 mod views;
 use market_actors::MarketDataHandle;
 use market_telegram::{BotError, IncomingMessage, MenuCommand, MessageHandler, Reply};
@@ -17,7 +21,6 @@ pub(crate) use parse::parse;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Start,
-    Market,
     Browse(MarketSelection),
     Help,
     Status,

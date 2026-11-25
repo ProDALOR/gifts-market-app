@@ -8,7 +8,7 @@ pub use market_telegram_client::interactions::{CallbackTarget, Event, InlineMess
 pub use market_telegram_client::transport;
 pub use market_telegram_client::{
     BotConfig, BotCredentials, BotError, BotUser, IncomingMessage, InventoryClient, LaunchButton,
-    MenuCommand, Reply, ReplyButton,
+    MenuCommand, Reply, ReplyButton, ReplyKind,
 };
 pub use worker::{BotInspection, TelegramWorker, inspect};
 #[cfg(test)]
