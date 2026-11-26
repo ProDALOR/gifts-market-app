@@ -1,4 +1,5 @@
 import { selectionAt, selectionHref } from "../market-selection.ts";
+import { decodePortfolioLaunch } from "../portfolio/links.ts";
 import { cleanSelection, launchSelection } from "../telegram.ts";
 import type { TelegramContext } from "../telegram.ts";
 export type Page = "market" | "portfolio";
@@ -25,6 +26,7 @@ export function initialLocation(
       ? (state as { giftsMarket?: Route }).giftsMarket
       : undefined;
   let route = pathRoute(url.pathname);
+  let portfolioLaunch: URLSearchParams | null = null;
   const direct = selectionAt(url);
   const explicitMarket =
     direct.get("page") === "market" ||
@@ -37,9 +39,10 @@ export function initialLocation(
       context.app?.initDataUnsafe?.start_param ||
       direct.get("tgWebAppStartParam") ||
       new URLSearchParams(context.initData).get("start_param");
+    portfolioLaunch = launch ? decodePortfolioLaunch(launch) : null;
     const match = launch && /^portfolio_(\d+)$/.exec(launch);
-    if (match && portfolioUser(match[1]))
-      route = { page: "portfolio", user: portfolioUser(match[1]) };
+    const user = portfolioUser(portfolioLaunch?.get("user") || match?.[1]);
+    if (user) route = { page: "portfolio", user };
   }
   const params =
     route.page === "market"
@@ -48,7 +51,12 @@ export function initialLocation(
             ? direct
             : launchSelection(context, direct.toString()),
         )
-      : new URLSearchParams();
+      : new URLSearchParams(portfolioLaunch || direct);
+  if (route.page === "portfolio") {
+    const allowed = new Set(["currency", "f", "collection", "filters", "sort"]);
+    for (const key of [...params.keys()])
+      if (!allowed.has(key)) params.delete(key);
+  }
   const currency = direct.get("currency") || params.get("currency") || "GRAM";
   if (route.page === "portfolio") params.set("currency", currency);
   const path =

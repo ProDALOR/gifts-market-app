@@ -22,7 +22,7 @@ const artwork = await readFile(
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module">
 import React from 'react';import{createRoot}from'react-dom/client';import{AppShell}from'/src/app/shell.tsx';import{MarketPage}from'/src/market-page.tsx';import'/src/style.css';
 window.shares=[];window.inlineShares=[];window.canPrepare=true;window.fixtureInstance=Math.random();window.nativeBack={visible:false,handlers:new Set()};window.tapNativeBack=()=>[...window.nativeBack.handlers].forEach(f=>f());
-const context={initData:'fixture',app:{isVersionAtLeast(){return window.canPrepare},shareMessage(id,callback){window.shares.push(id);window.shareCallback=callback},switchInlineQuery(query){window.inlineShares.push(query)},initData:'fixture',initDataUnsafe:{start_param:'portfolio_7'},themeParams:{},colorScheme:'dark',onEvent(){},offEvent(){},BackButton:{show(){window.nativeBack.visible=true},hide(){window.nativeBack.visible=false},onClick(f){window.nativeBack.handlers.add(f)},offClick(f){window.nativeBack.handlers.delete(f)}}}};
+const context={initData:'fixture',app:{isVersionAtLeast(){return window.canPrepare},shareMessage(id,callback){window.shares.push(id);window.shareCallback=callback},switchInlineQuery(query){window.inlineShares.push(query)},initData:'fixture',initDataUnsafe:{start_param:new URLSearchParams(location.search).get('tgWebAppStartParam')||'portfolio_7'},themeParams:{},colorScheme:'dark',onEvent(){},offEvent(){},BackButton:{show(){window.nativeBack.visible=true},hide(){window.nativeBack.visible=false},onClick(f){window.nativeBack.handlers.add(f)},offClick(f){window.nativeBack.handlers.delete(f)}}}};
 createRoot(document.getElementById('root')).render(React.createElement(AppShell,{context,market:React.createElement(MarketPage,{context})}));</script></body></html>`;
 
 const server = await createServer({
@@ -649,6 +649,40 @@ try {
       path: join(output, `navigation-${viewport.width}.png`),
       fullPage: false,
     });
+    await page.evaluate(() => sessionStorage.clear());
+    const returnParams = new URLSearchParams({
+      user: "7",
+      currency: "XTR",
+      f: "c=gift|m=model|b=back|n=1",
+      sort: "number_desc",
+    });
+    const payload =
+      "p_" + Buffer.from(returnParams.toString()).toString("base64url");
+    await page.goto(
+      server.resolvedUrls.local[0] +
+        "__navigation?tgWebAppStartParam=" +
+        payload,
+    );
+    await page.locator(".portfolio-card").first().waitFor();
+    assert.equal(await page.locator(".portfolio-card").count(), 1);
+    assert.equal(
+      await page.getByRole("spinbutton", { name: "Gift #" }).inputValue(),
+      "1",
+    );
+    assert.match(await page.locator(".portfolio-sort").innerText(), /Gift #/);
+    assert.match(
+      await page
+        .getByRole("combobox", { name: "Currency", exact: true })
+        .getAttribute("title"),
+      /Stars/,
+    );
+    assert.equal(new URL(page.url()).pathname, "/portfolio/7");
+    const returned = new URL(page.url()).searchParams;
+    assert.equal(returned.get("sort"), "number_desc");
+    assert.match(returned.get("f"), /m=model/);
+    await page.getByRole("spinbutton", { name: "Gift #" }).fill("0");
+    await page.getByRole("spinbutton", { name: "Gift #" }).fill("1");
+    await page.locator(".portfolio-card").first().waitFor();
     assert.deepEqual(errors, []);
     await page.close();
   }

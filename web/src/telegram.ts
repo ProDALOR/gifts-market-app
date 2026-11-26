@@ -1,3 +1,8 @@
+import {
+  encodePortfolioLaunch,
+  portfolioFiltersFromParams,
+  portfolioParams,
+} from "./portfolio/links.ts";
 import { selectionFromParams, selectionParams } from "./market-selection.ts";
 import type { components } from "./gen/api";
 // Mini App schemas are absent from API-only builds; keep the dormant adapter type-safe.
@@ -253,9 +258,35 @@ export function telegramLink(
   config: TelegramConfig | undefined,
   selection: URLSearchParams,
 ): string | null {
-  if (!config?.bot_username || !config.public_url) return null;
+  if (!config?.bot_username) return null;
+  if (selection.get("page") === "portfolio") {
+    const payload = encodePortfolioLaunch(selection);
+    if (payload)
+      return `https://t.me/${config.bot_username}?startapp=${payload}`;
+    if (!config.public_url) return null;
+    try {
+      const user = selection.get("user");
+      if (
+        !user ||
+        !/^[1-9][0-9]*$/.test(user) ||
+        !Number.isSafeInteger(Number(user))
+      )
+        return null;
+      const url = new URL(config.public_url);
+      url.pathname = `${url.pathname.replace(/\/$/, "")}/portfolio/${user}`;
+      url.search = "";
+      url.hash = portfolioParams(
+        portfolioFiltersFromParams(selection),
+        selection.get("currency") || "GRAM",
+      ).toString();
+      return url.toString();
+    } catch {
+      return null;
+    }
+  }
   const payload = encodeView(selection);
   if (payload) return `https://t.me/${config.bot_username}?startapp=${payload}`;
+  if (!config.public_url) return null;
   const url = new URL(config.public_url),
     params = selectionParams(selectionFromParams(cleanSelection(selection)));
   if (!params.has("f")) params.set("f", "");

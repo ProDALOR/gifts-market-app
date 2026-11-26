@@ -1,3 +1,5 @@
+import { portfolioFiltersFromParams, portfolioParams } from "./links";
+import { selectionAt, selectionHref } from "../market-selection";
 import { aliasFilters, resolveFilterSelectors } from "../catalog/aliases";
 import {
   useCallback,
@@ -230,7 +232,13 @@ function PortfolioView({
     [currency, setCurrency] = useSharedCurrency();
   const [filters, setFilters] = usePageState<PortfolioFilters>(
     `portfolio.filters.${user ?? "empty"}`,
-    () => initialFilters,
+    () => {
+      try {
+        return portfolioFiltersFromParams(selectionAt(location));
+      } catch {
+        return initialFilters;
+      }
+    },
   );
   const [accountOpen, setAccountOpen] = useState(false);
   useBackgroundPlaybackSuspension(accountOpen);
@@ -310,11 +318,20 @@ function PortfolioView({
     if (user) {
       const url = new URL(location.href);
       url.pathname = `/portfolio/${user}`;
-      url.searchParams.set("currency", currency);
-      history.replaceState(history.state, "", url);
+      let params: URLSearchParams;
+      try {
+        params = portfolioParams(filters, currency);
+      } catch {
+        return;
+      } // Partial/invalid number input stays editable without publishing a broken link.
+      history.replaceState(
+        history.state,
+        "",
+        selectionHref(url.pathname, params),
+      );
       navigation?.rememberLocation();
     }
-  }, [user, currency]);
+  }, [user, currency, filters]);
   useNavigationBack(!!open, () => setOpen(undefined));
   const filtered = items;
   const visible = useCallback(

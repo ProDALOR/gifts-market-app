@@ -1,5 +1,6 @@
 //! Typed command requests, services and reply rendering.
 use market_links::MarketSelection;
+mod app_links;
 mod browse;
 mod currency;
 mod history;

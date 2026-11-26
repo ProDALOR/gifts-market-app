@@ -42,17 +42,17 @@ pub(super) fn markup(
                     ReplyButton::SwitchInline { text, query } => {
                         inline_enabled.then(|| Button::switch_elsewhere(text, query))
                     }
-                    ReplyButton::Preview { text, payload } => launch.map(|launch| {
+                    ReplyButton::Preview { text, payload } => {
                         let url = if let Some(name) = username {
                             format!("https://t.me/{name}?startapp={payload}")
                         } else {
-                            let mut url = launch.url.clone();
+                            let mut url = launch?.url.clone();
                             url.query_pairs_mut()
                                 .append_pair("tgWebAppStartParam", payload);
                             url.to_string()
                         };
-                        Button::url(text, url)
-                    }),
+                        Some(Button::url(text, url))
+                    }
                 })
                 .collect()
         })
@@ -412,6 +412,52 @@ fn sent_id(updates: tl::enums::Updates, random: i64) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn app_links_survive_private_inline_and_prepared_encoding_without_a_public_url() {
+        use tl::Serializable;
+        let reply = Reply {
+            buttons: vec![vec![ReplyButton::Preview {
+                text: "Open portfolio".into(),
+                payload: "p_cG9ydGZvbGlv".into(),
+            }]],
+            ..Reply::text("Portfolio")
+        };
+        let native = markup(&reply, Some("gift_bot"), None, true)
+            .unwrap()
+            .to_bytes();
+        assert!(
+            native
+                .windows(b"https://t.me/gift_bot?startapp=p_cG9ydGZvbGlv".len())
+                .any(|part| part == b"https://t.me/gift_bot?startapp=p_cG9ydGZvbGlv")
+        );
+        for rich in [
+            None,
+            super::rich(&Reply {
+                rich_html: Some("<p>Portfolio</p>".into()),
+                ..reply.clone()
+            }),
+        ] {
+            let bytes = inline_result(&reply, Some("gift_bot"), None, rich, true).to_bytes();
+            assert!(
+                bytes
+                    .windows(b"https://t.me/gift_bot?startapp=".len())
+                    .any(|part| part == b"https://t.me/gift_bot?startapp=")
+            );
+        }
+        let launch = LaunchButton {
+            text: "App".into(),
+            url: url::Url::parse("https://app.example/").unwrap(),
+        };
+        let website = markup(&reply, None, Some(&launch), true)
+            .unwrap()
+            .to_bytes();
+        assert!(
+            website
+                .windows(b"https://app.example/?tgWebAppStartParam=p_cG9ydGZvbGlv".len())
+                .any(|part| part == b"https://app.example/?tgWebAppStartParam=p_cG9ydGZvbGlv")
+        );
+        assert!(markup(&reply, None, None, true).is_none());
+    }
     #[test]
     fn progress_edits_only_use_the_identity_of_the_sent_request() {
         let update = |random| {

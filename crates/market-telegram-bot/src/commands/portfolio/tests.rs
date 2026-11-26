@@ -608,7 +608,7 @@ fn reports_expose_partial_inventory_and_plain_text_fallback() {
             .buttons
             .iter()
             .flatten()
-            .any(|b| matches!(b,ReplyButton::Preview{payload,..} if payload=="portfolio_123"))
+            .any(|b| matches!(b,ReplyButton::Preview{payload,..} if payload.starts_with("p_")))
     );
 }
 

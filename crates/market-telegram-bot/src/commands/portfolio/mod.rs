@@ -40,6 +40,9 @@ impl MarketCommands {
             mode: PortfolioMode::Inline,
             layout: GridMode::Linked,
         };
+        let app_link =
+            super::app_links::portfolio_button(&request, &query.filters, self.public_url.as_ref())
+                .map_err(|e| ShareError::Invalid(e.to_string()))?;
         let (reads, icons) = (self.portfolio_reads.clone(), self.icons.clone());
         let stop = tokio_util::sync::CancellationToken::new();
         let _cancel = stop.clone().drop_guard();
@@ -62,14 +65,22 @@ impl MarketCommands {
                     "No gifts at this position; reload the portfolio page".into(),
                 ));
             }
-            Ok(render::render_page(
+            let mut reply = render::render_page(
                 &state,
                 &request,
                 &icons,
                 &reads,
                 &stop,
                 Some((page, offset)),
-            ))
+            );
+            for row in &mut reply.buttons {
+                for button in row {
+                    if matches!(button, ReplyButton::Preview { .. }) {
+                        *button = app_link.clone();
+                    }
+                }
+            }
+            Ok(reply)
         })
         .await
         .map_err(|_| ShareError::Unavailable("Portfolio could not be displayed".into()))?

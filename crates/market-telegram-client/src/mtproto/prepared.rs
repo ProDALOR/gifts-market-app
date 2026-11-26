@@ -20,7 +20,9 @@ impl MtProtoActions {
         let rich = self.prepare_rich(Some(&reply)).await;
         let result = inline_result(
             &reply,
-            Some(&profile.username),
+            profile
+                .has_main_web_app
+                .then_some(profile.username.as_str()),
             launch,
             rich,
             profile.inline_enabled,

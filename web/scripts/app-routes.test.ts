@@ -111,3 +111,64 @@ test("portfolio routes and identities reject invalid or lossy identifiers", () =
     123,
   );
 });
+
+test("portfolio message links restore owner currency filters and sorting while explicit routes still win", async () => {
+  const {
+    encodePortfolioLaunch,
+    decodePortfolioLaunch,
+    portfolioFiltersFromParams,
+  } = await import("../src/portfolio/links.ts");
+  const params = new URLSearchParams({
+    user: "123",
+    currency: "XTR",
+    f: "c=gift|m=model|b=black|s=sun|n=42",
+    sort: "position_desc",
+  });
+  const payload = encodePortfolioLaunch(params)!;
+  assert.ok(payload.startsWith("p_"));
+  assert.ok(payload.length <= 512);
+  const first = initialLocation(
+    context(payload),
+    new URL("https://market.test/"),
+    null,
+  );
+  assert.deepEqual(first.route, { page: "portfolio", user: 123, index: 0 });
+  assert.equal(first.currency, "XTR");
+  const decoded = new URL(first.href, "https://market.test").searchParams;
+  const filters = portfolioFiltersFromParams(decoded);
+  assert.equal(filters.collection, "gift");
+  assert.deepEqual(filters.traits.models, ["model"]);
+  assert.deepEqual(filters.traits.backdrops, ["black"]);
+  assert.deepEqual(filters.traits.patterns, ["sun"]);
+  assert.equal(filters.number, "42");
+  assert.equal(filters.sort, "position_desc");
+  const website = initialLocation(
+    context(""),
+    new URL("https://market.test/portfolio/123#" + params),
+    null,
+  );
+  assert.equal(
+    portfolioFiltersFromParams(
+      new URL(website.href, "https://market.test").searchParams,
+    ).sort,
+    "position_desc",
+  );
+  assert.equal(
+    initialLocation(
+      context(payload),
+      new URL("https://market.test/?gift=Gift-7"),
+      null,
+    ).route.page,
+    "market",
+  );
+  assert.equal(
+    initialLocation(
+      context(payload),
+      new URL("https://market.test/portfolio/456?currency=GRAM"),
+      null,
+    ).route.user,
+    456,
+  );
+  assert.equal(decodePortfolioLaunch("p_" + "a".repeat(511)), null);
+  assert.equal(decodePortfolioLaunch("p_!!!!"), null);
+});

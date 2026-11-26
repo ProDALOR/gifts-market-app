@@ -253,10 +253,8 @@ pub(super) fn render_page(
             text: "Share".into(),
             query: request.inline_query(),
         },
-        ReplyButton::Preview {
-            text: "Open portfolio".into(),
-            payload: format!("portfolio_{}", request.user_id.get()),
-        },
+        super::super::app_links::portfolio_button(request, &Default::default(), None)
+            .expect("an unfiltered portfolio link fits a Mini App payload"),
     ]);
     reply.text = text;
     reply.rich_html = Some(html);
