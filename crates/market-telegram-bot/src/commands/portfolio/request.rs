@@ -10,6 +10,7 @@ pub enum PortfolioAction {
     #[default]
     Open,
     Navigate,
+    Preview,
     Refresh,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,10 +48,10 @@ impl PortfolioRequest {
             "p:{}:{}:{}:{page}:{code}",
             self.user_id.get(),
             self.currency_id,
-            if action == PortfolioAction::Refresh {
-                "r"
-            } else {
-                "v"
+            match action {
+                PortfolioAction::Refresh => "r",
+                PortfolioAction::Preview => "g",
+                _ => "v",
             }
         );
         if self.layout == GridMode::Gallery {
@@ -166,16 +167,16 @@ pub(in crate::commands) fn callback(text: &str) -> Option<PortfolioRequest> {
     if page > 999 {
         return None;
     }
-    if p.next().is_some() || !matches!(action, "r" | "v") {
+    if p.next().is_some() || !matches!(action, "r" | "v" | "g") {
         return None;
     }
     Some(PortfolioRequest {
         user_id,
         currency_id,
-        action: if action == "r" {
-            PortfolioAction::Refresh
-        } else {
-            PortfolioAction::Navigate
+        action: match action {
+            "r" => PortfolioAction::Refresh,
+            "g" => PortfolioAction::Preview,
+            _ => PortfolioAction::Navigate,
         },
         page,
         sort,

@@ -233,7 +233,8 @@ try {
       "hidden",
       "pending artwork stays hidden without blocking native lazy loading",
     );
-    const expected = width >= 960 ? 96 : 44;
+    const expected = (await model.boundingBox()).width;
+    assert(expected > 0, "pending artwork reserves its final model size");
     const before = await page
       .locator(".gift-loading-placeholder")
       .boundingBox();

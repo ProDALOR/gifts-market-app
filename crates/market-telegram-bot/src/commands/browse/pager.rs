@@ -115,7 +115,7 @@ impl MarketCommands {
     async fn navigate_market(&self, original: &View) -> Reply {
         if matches!(original.action, Action::Refresh) {
             return match self
-                .market_page((*original.selection).clone(), original.mode)
+                .market_page((*original.selection).clone(), GridMode::Linked)
                 .await
             {
                 Ok(view) => self.render_market(&view).await,
@@ -123,6 +123,9 @@ impl MarketCommands {
             };
         }
         let mut view = original.clone();
+        if !matches!(original.action, Action::Mode(GridMode::Gallery)) {
+            view.mode = GridMode::Linked;
+        }
         match original.action {
             Action::Mode(mode) => view.mode = mode,
             Action::Previous => view.page = view.page.saturating_sub(1),
@@ -210,7 +213,17 @@ impl MarketCommands {
         };
         let html = reply.rich_html.as_mut().unwrap();
         html.push_str("<tg-button-row>");
-        for (mode, label) in [(GridMode::Linked, "Linked"), (GridMode::Gallery, "Gallery")] {
+        for (mode, label) in [
+            (
+                GridMode::Linked,
+                if view.mode == GridMode::Gallery {
+                    "Browse"
+                } else {
+                    "Linked"
+                },
+            ),
+            (GridMode::Gallery, "Gallery"),
+        ] {
             html.push_str(&self.market_button(
                 view,
                 (mode != view.mode).then_some(Action::Mode(mode)),
@@ -242,22 +255,24 @@ impl MarketCommands {
         if view.query.source == OrderSource::History {
             html.push_str("<footer>UTC · Observed sales</footer>");
         }
-        html.push_str("<tg-button-row>");
-        html.push_str(&self.market_button(
-            view,
-            (view.page > 0).then_some(Action::Previous),
-            "←",
-            false,
-        ));
-        html.push_str(&rich::button(&(view.page + 1).to_string(), None, false));
-        html.push_str(&self.market_button(
-            view,
-            (result.range.end.is_some() && view.page + 1 < MAX_PAGES).then_some(Action::Next),
-            "→",
-            false,
-        ));
-        html.push_str(&self.market_button(view, Some(Action::Refresh), "↻", false));
-        html.push_str("</tg-button-row>");
+        if view.mode == GridMode::Linked {
+            html.push_str("<tg-button-row>");
+            html.push_str(&self.market_button(
+                view,
+                (view.page > 0).then_some(Action::Previous),
+                "←",
+                false,
+            ));
+            html.push_str(&rich::button(&(view.page + 1).to_string(), None, false));
+            html.push_str(&self.market_button(
+                view,
+                (result.range.end.is_some() && view.page + 1 < MAX_PAGES).then_some(Action::Next),
+                "→",
+                false,
+            ));
+            html.push_str(&self.market_button(view, Some(Action::Refresh), "↻", false));
+            html.push_str("</tg-button-row>");
+        }
         if let Ok(button) = super::market_button(&view.selection, self.public_url.as_ref()) {
             reply.buttons = vec![vec![button]];
         }

@@ -159,6 +159,7 @@ export const GiftCardView = memo(function GiftCardView({
           fallback={collectionName[0] || "◇"}
           fallbackMedia={media}
           className="card-preview"
+          preload
           patternLayout="card"
           playback={
             subject.kind === "bid" || activity?.state === "removed"
@@ -172,6 +173,7 @@ export const GiftCardView = memo(function GiftCardView({
         <GiftArtwork
           media={media}
           className="card-preview"
+          preload
           patternLayout="card"
           fallback="◇"
           playback="static"

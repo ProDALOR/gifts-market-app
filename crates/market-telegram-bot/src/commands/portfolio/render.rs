@@ -164,15 +164,37 @@ pub(super) fn render_page(
             text.push_str(&format!("\n{warning}"));
         }
         if count > 0 && selected.is_none() {
-            html.push_str(&sort_controls(request));
+            if request.layout == GridMode::Linked {
+                html.push_str(&sort_controls(request));
+            }
             html.push_str("<tg-button-row>");
-            for (layout, label) in [(GridMode::Linked, "Linked"), (GridMode::Gallery, "Gallery")] {
-                let target = PortfolioRequest {
+            for (layout, label) in [
+                (
+                    GridMode::Linked,
+                    if request.layout == GridMode::Gallery {
+                        "Browse"
+                    } else {
+                        "Linked"
+                    },
+                ),
+                (GridMode::Gallery, "Gallery"),
+            ] {
+                let mut target = PortfolioRequest {
                     layout,
-                    page: 0,
                     ..request.clone()
                 };
-                let data = target.data(0, PortfolioAction::Navigate, request.sort);
+                let offset = page * size;
+                target.page = if layout == GridMode::Gallery {
+                    offset.div_ceil(target.page_size())
+                } else {
+                    offset / target.page_size()
+                };
+                let action = if layout == GridMode::Gallery {
+                    PortfolioAction::Preview
+                } else {
+                    PortfolioAction::Navigate
+                };
+                let data = target.data(target.page, action, request.sort);
                 html.push_str(&rich::button(
                     label,
                     (layout != request.layout).then_some(data.as_str()),
@@ -234,7 +256,7 @@ pub(super) fn render_page(
         text: label.into(),
         data: request.data(page, action, request.sort).into_bytes(),
     };
-    if pages > 1 && selected.is_none() {
+    if request.layout == GridMode::Linked && pages > 1 && selected.is_none() {
         let navigation = |label: &str, target: Option<usize>| {
             let data =
                 target.map(|target| request.data(target, PortfolioAction::Navigate, request.sort));
@@ -245,7 +267,7 @@ pub(super) fn render_page(
             navigation("→", (page+1<pages).then_some(page+1))));
     }
     let mut row = vec![];
-    if request.mode == PortfolioMode::Private {
+    if request.layout == GridMode::Linked && request.mode == PortfolioMode::Private {
         row.push(button("Refresh gifts", 0, PortfolioAction::Refresh));
     }
     row.extend([

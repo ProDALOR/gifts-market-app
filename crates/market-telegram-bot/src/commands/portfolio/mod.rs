@@ -88,9 +88,19 @@ impl MarketCommands {
 
     pub(super) async fn portfolio_reply(
         &self,
-        request: PortfolioRequest,
+        mut request: PortfolioRequest,
         updates: Option<tokio::sync::watch::Sender<Reply>>,
     ) -> Reply {
+        // Legacy gallery paging/refresh callbacks move back to browsing without rendering a new PNG.
+        if request.layout == GridMode::Gallery
+            && matches!(
+                request.action,
+                PortfolioAction::Navigate | PortfolioAction::Refresh
+            )
+        {
+            request.page = request.page.saturating_mul(request.page_size()) / PAGE_SIZE;
+            request.layout = GridMode::Linked;
+        }
         let Some(service) = &self.portfolio else {
             return recovery(
                 &request,
@@ -101,7 +111,12 @@ impl MarketCommands {
             user_id: request.user_id,
             currency_id: request.currency_id.id(),
         };
-        if request.mode == PortfolioMode::Inline || request.action == PortfolioAction::Navigate {
+        if request.mode == PortfolioMode::Inline
+            || matches!(
+                request.action,
+                PortfolioAction::Navigate | PortfolioAction::Preview
+            )
+        {
             return match service.cached(query).await {
                 Ok(state)
                     if state.valuation.is_some()

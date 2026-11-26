@@ -849,6 +849,37 @@ async fn private_and_inline_navigation_use_cached_reports_during_a_running_refre
         sharing.portfolio(7, missing).await,
         Err(crate::ShareError::Unavailable(_))
     ));
+    let gallery_request = PortfolioRequest {
+        layout: GridMode::Gallery,
+        action: PortfolioAction::Preview,
+        ..request.clone()
+    };
+    let gallery = tokio::time::timeout(
+        Duration::from_secs(1),
+        commands.handle(CommandRequest {
+            command: Command::Portfolio(gallery_request.clone()),
+            user_id: 7,
+            message_id: 0,
+            inline: false,
+        }),
+    )
+    .await
+    .expect("preview reads only cached valuation")
+    .unwrap();
+    assert!(matches!(
+        gallery.artwork,
+        Some(market_media::Artwork::Gallery(_))
+    ));
+    let legacy = PortfolioRequest {
+        page: 1,
+        action: PortfolioAction::Navigate,
+        ..gallery_request
+    };
+    let browsed = commands.portfolio_reply(legacy, None).await;
+    assert!(
+        browsed.artwork.is_none(),
+        "legacy gallery pagination returns to linked browsing without image generation"
+    );
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
     assert_eq!(quotes.calls.load(Ordering::SeqCst), 2);
     service.task.shutdown().await.unwrap();
@@ -924,4 +955,59 @@ fn shared_pages_keep_filters_sorting_offsets_and_warnings_without_unfiltered_nav
         reads.read(&state, stale, || Ok(())),
         Err(market_portfolio::PortfolioError::RestartRead)
     ));
+}
+
+#[test]
+fn gallery_snapshots_have_no_sort_or_paging_and_browse_returns_to_the_same_linked_page() {
+    let state = sample(100);
+    let request = PortfolioRequest {
+        user_id: state.user_id,
+        currency_id: BotCurrency::Gram,
+        action: PortfolioAction::Preview,
+        page: 3,
+        sort: PortfolioSort::PositionAsc,
+        mode: PortfolioMode::Private,
+        layout: GridMode::Gallery,
+    };
+    let reply = render(&state, &request, &Default::default());
+    let html = reply.rich_html.unwrap();
+    assert!(html.contains(">Browse</tg-button>"));
+    assert!(reply.text.contains("37–48 of 100"));
+    assert_eq!(html.matches("https://t.me/nft/").count(), 12);
+    for label in ["→", "←", "Position ↑", "Price ↓", "Gift # ↑"] {
+        assert!(!html.contains(&format!(">{label}</tg-button>")));
+    }
+    assert!(
+        !reply
+            .buttons
+            .iter()
+            .flatten()
+            .any(|b| matches!(b, ReplyButton::Callback { .. }))
+    );
+    let end = html.find(">Browse</tg-button>").unwrap();
+    let button = &html[html[..end].rfind("<tg-button ").unwrap()..end];
+    let data = button
+        .split("data=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let target = callback(data).unwrap();
+    assert_eq!(target.layout, GridMode::Linked);
+    assert_eq!(target.page, 1);
+    let linked = render(&state, &target, &Default::default());
+    let html = linked.rich_html.unwrap();
+    let end = html.find(">Gallery</tg-button>").unwrap();
+    let button = &html[html[..end].rfind("<tg-button ").unwrap()..end];
+    let data = button
+        .split("data=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let preview = callback(data).unwrap();
+    assert_eq!(preview.action, PortfolioAction::Preview);
+    assert_eq!(preview.page, 3);
 }

@@ -82,6 +82,15 @@ impl<T: Clone> ViewCache<T> {
     }
 }
 pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<CommandRequest> {
+    let inline = matches!(
+        event,
+        Event::Inline { .. }
+            | Event::Guest { .. }
+            | Event::Callback {
+                target: CallbackTarget::Inline(_),
+                ..
+            }
+    );
     let (command, user_id, message_id) = match event {
         Event::Message(message) => {
             return super::parse::parse(market_telegram::transport::incoming(message), usernames);
@@ -127,12 +136,15 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
             if let Some(mut query) = super::portfolio::callback(text) {
                 if matches!(target, CallbackTarget::Inline(_)) {
                     query.mode = PortfolioMode::Inline;
-                    query.action = PortfolioAction::Navigate;
+                    if query.action != PortfolioAction::Preview {
+                        query.action = PortfolioAction::Navigate;
+                    }
                 }
                 return Some(CommandRequest {
                     command: Command::Portfolio(query),
                     user_id: *user_id,
                     message_id: 0,
+                    inline,
                 });
             }
             if let Some(token) = text.strip_prefix("m:") {
@@ -141,6 +153,7 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
                     command: Command::MarketView(id),
                     user_id: *user_id,
                     message_id: 0,
+                    inline,
                 });
             }
             let token = text.strip_prefix("v:")?;
@@ -152,10 +165,11 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
         command,
         user_id,
         message_id,
+        inline,
     })
 }
 
-fn callback_id(token: &str) -> Option<u64> {
+pub(super) fn callback_id(token: &str) -> Option<u64> {
     (token.len() == 16 && token.bytes().all(|b| b.is_ascii_hexdigit()))
         .then(|| u64::from_str_radix(token, 16).ok())
         .flatten()
@@ -230,6 +244,25 @@ mod tests {
                 PortfolioAction::Navigate
             )
         );
+    }
+    #[test]
+    fn inline_gallery_preview_callbacks_remain_explicit_cached_previews() {
+        let event = Event::Callback {
+            id: 1,
+            user_id: 7,
+            data: b"p:123:GRAM:g:3:pa:g".to_vec(),
+            target: CallbackTarget::Inline(market_telegram::InlineMessageId::Standard {
+                dc_id: 2,
+                id: 1,
+                access_hash: 0,
+            }),
+        };
+        let Command::Portfolio(query) = parse_event(&event, &[]).unwrap().command else {
+            panic!()
+        };
+        assert_eq!(query.action, PortfolioAction::Preview);
+        assert_eq!(query.layout, GridMode::Gallery);
+        assert_eq!(query.mode, PortfolioMode::Inline);
     }
     #[test]
     fn callbacks_expire_even_when_recently_accessed() {

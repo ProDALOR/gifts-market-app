@@ -148,6 +148,9 @@ impl MarketCommands {
     }
     async fn navigate(&self, original: &View) -> Reply {
         let mut view = original.clone();
+        if !matches!(original.action, Action::Mode(GridMode::Gallery)) {
+            view.state.mode = GridMode::Linked;
+        }
         let mut notice = None;
         match &original.action {
             Action::Tab(tab) => {
@@ -228,7 +231,11 @@ pub(super) fn render(
     let mut reply = view.report.render_panel(
         view.state.tab == Tab::Floors,
         &views.choices(view),
-        &views.button(view, Some(Action::Refresh), "↻", false),
+        &if view.state.mode == GridMode::Linked {
+            views.button(view, Some(Action::Refresh), "↻", false)
+        } else {
+            String::new()
+        },
     );
     let html = reply.rich_html.as_mut().expect("gift report HTML");
     if let Some(notice) = notice {
@@ -237,7 +244,17 @@ pub(super) fn render(
     }
     if view.state.tab == Tab::Sales {
         html.push_str("<tg-button-row>");
-        for (mode, label) in [(GridMode::Linked, "Linked"), (GridMode::Gallery, "Gallery")] {
+        for (mode, label) in [
+            (
+                GridMode::Linked,
+                if view.state.mode == GridMode::Gallery {
+                    "Browse"
+                } else {
+                    "Linked"
+                },
+            ),
+            (GridMode::Gallery, "Gallery"),
+        ] {
             html.push_str(&views.button(
                 view,
                 (mode != view.state.mode).then_some(Action::Mode(mode)),
@@ -251,7 +268,7 @@ pub(super) fn render(
             .into_iter()
             .filter(|scope| scope.supported(gift))
             .collect::<Vec<_>>();
-        if scopes.len() > 1 {
+        if view.state.mode == GridMode::Linked && scopes.len() > 1 {
             for row in scopes.chunks(2) {
                 html.push_str("<tg-button-row>");
                 for scope in row {
@@ -288,7 +305,7 @@ pub(super) fn render(
             .and_then(|key| key.encode().try_into().ok())
             .map(Action::Next);
         let previous = (!view.state.sales.starts.is_empty()).then_some(Action::Previous);
-        if previous.is_some() || next.is_some() {
+        if view.state.mode == GridMode::Linked && (previous.is_some() || next.is_some()) {
             html.push_str("<tg-button-row>");
             html.push_str(&views.button(view, previous, "←", false));
             html.push_str(&views.button(view, None, &view.state.sales.page().to_string(), false));

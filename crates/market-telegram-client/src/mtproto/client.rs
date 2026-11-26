@@ -139,6 +139,10 @@ impl MtProtoTransport {
     }
 }
 impl MtProtoActions {
+    /// Main-app profile flags are diagnostic hints, not a routing switch for app return links.
+    pub(super) fn app_username(&self) -> Option<&str> {
+        self.profile.get().map(|user| user.username.as_str())
+    }
     fn failure(&self, error: InvocationError) -> BotError {
         if self.exited.is_cancelled() {
             BotError::Runner
@@ -597,6 +601,59 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn app_buttons_use_the_authenticated_username_when_the_main_app_flag_is_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let jobs = TaskTracker::new();
+        let invocations = market_invocations::Runtime::start(Default::default()).unwrap();
+        let storage = SessionStore::open(directory.path(), 42, 12345, &jobs)
+            .await
+            .unwrap();
+        let transport =
+            MtProtoTransport::new(storage.session.clone(), credentials(), invocations.handle());
+        let actions = transport.actions();
+        assert!(actions.app_username().is_none());
+        actions
+            .profile
+            .set(BotUser {
+                id: 42,
+                username: "igifts".into(),
+                active_usernames: vec!["igifts".into()],
+                first_name: "igifts".into(),
+                has_main_web_app: false,
+                inline_enabled: true,
+                guest_enabled: false,
+            })
+            .ok()
+            .unwrap();
+        let payload = "v_Zj1jJTNEdGcuZ2lmdC41OTk5Mjc3NTYxMDYwNzg3MTY2JTdDYiUzRCU0MG5hbWUlM0FCbGFjayZjdXJyZW5jeT1HUkFNJm1vZGU9YXNrJnNvcnQ9cHJpY2VfYXNj";
+        let reply = Reply {
+            buttons: vec![vec![crate::ReplyButton::Preview {
+                text: "Open market".into(),
+                payload: payload.into(),
+            }]],
+            ..Reply::text("Market")
+        };
+        let launch = LaunchButton {
+            text: "App".into(),
+            url: url::Url::parse("https://igifts-app.com/").unwrap(),
+        };
+        let Some(tl::enums::ReplyMarkup::ReplyInlineMarkup(markup)) =
+            super::super::interactions::markup(&reply, actions.app_username(), Some(&launch), true)
+        else {
+            panic!("missing markup")
+        };
+        let tl::enums::KeyboardInlineButtonRow::Row(row) = &markup.rows[0];
+        let tl::enums::KeyboardInlineButton::Button(button) = &row.buttons[0];
+        let tl::enums::InlineButtonType::Url(url) = &button.r#type else {
+            panic!("missing URL")
+        };
+        assert_eq!(url.url, format!("https://t.me/igifts?startapp={payload}"));
+        transport.close().await.unwrap();
+        invocations.shutdown().await;
+        jobs.close();
+        jobs.wait().await;
+    }
     #[tokio::test]
     async fn sender_stops_without_opening_a_network_connection_and_reports_task_failure() {
         let directory = tempfile::tempdir().unwrap();

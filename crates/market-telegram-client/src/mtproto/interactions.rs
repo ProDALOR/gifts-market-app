@@ -216,11 +216,7 @@ impl MtProtoActions {
     ) -> Result<Option<Event>, BotError> {
         if let Event::Message(message) = event {
             let prepared = self.prepare_rich(Some(reply)).await;
-            let username = self
-                .profile
-                .get()
-                .filter(|u| u.has_main_web_app)
-                .map(|u| u.username.as_str());
+            let username = self.app_username();
             let buttons = markup(
                 reply,
                 username,
@@ -248,11 +244,7 @@ impl MtProtoActions {
             use crate::transport::TelegramActions;
             return self.answer_callback(event, Some(&reply.text)).await;
         }
-        let username = self
-            .profile
-            .get()
-            .filter(|user| user.has_main_web_app)
-            .map(|user| user.username.as_str());
+        let username = self.app_username();
         let inline_enabled = self.profile.get().is_some_and(|user| user.inline_enabled);
         let prepared = self.prepare_rich(reply).await;
         match event {

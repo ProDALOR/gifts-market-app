@@ -52,7 +52,7 @@ function StaticIcon({
           crossOrigin="anonymous"
           decoding="async"
           loading="lazy"
-          onLoad={source.loaded}
+          onLoad={(event) => source.loaded(event.currentTarget)}
           onError={source.failed}
         />
       ))}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { stillImages } from "./still-image-cache";
 import { hasImageFailure, recoverImage } from "./media-client";
 
 type Status = "loading" | "ready" | "failed";
@@ -7,18 +8,32 @@ type Status = "loading" | "ready" | "failed";
 function useImageSource(url: string | undefined, active: boolean) {
   const [state, setState] = useState<{ status: Status; attempt: number }>(
     () => ({
-      status: url && hasImageFailure(url) ? "failed" : "loading",
+      status:
+        url && stillImages.has(url)
+          ? "ready"
+          : url && hasImageFailure(url)
+            ? "failed"
+            : "loading",
       attempt: 0,
     }),
   );
   const loaded = useCallback(
-    () => setState((old) => ({ ...old, status: "ready" })),
-    [],
+    (image?: HTMLImageElement) => {
+      // The mounted overscan already retains prefetched images. Pin actually viewed
+      // artwork so speculative loads cannot evict the user's recent scroll history.
+      if (url && image && active) stillImages.remember(url, image);
+      setState((old) =>
+        old.status === "ready" ? old : { ...old, status: "ready" },
+      );
+    },
+    [url, active],
   );
-  const failed = useCallback(
-    () => setState((old) => ({ ...old, status: "failed" })),
-    [],
-  );
+  const failed = useCallback(() => {
+    if (url) stillImages.forget(url);
+    setState((old) =>
+      old.status === "failed" ? old : { ...old, status: "failed" },
+    );
+  }, [url]);
   useEffect(() => {
     if (!url || !active || state.status !== "failed") return;
     const stop = new AbortController();

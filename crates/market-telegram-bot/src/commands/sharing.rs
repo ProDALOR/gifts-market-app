@@ -31,7 +31,7 @@ pub struct SharedMessage {
     pub inline_query: String,
     pub expires_at: i64,
 }
-struct Entry {
+pub(super) struct Entry {
     user: u64,
     key: [u8; 32],
     created: Instant,
@@ -40,8 +40,13 @@ struct Entry {
     prepared: OnceCell<Option<PreparedMessage>>,
 }
 #[derive(Clone)]
-pub(super) struct SharedView {
-    entry: Arc<Entry>,
+pub(super) enum SharedView {
+    Prepared(Arc<Entry>),
+    /// An explicitly requested, already visible gallery. Public read-only snapshot; no recheck.
+    Snapshot {
+        reply: Arc<Reply>,
+        expires_at: i64,
+    },
 }
 #[derive(Clone)]
 pub struct Sharing {
@@ -72,23 +77,21 @@ impl Sharing {
         let key = digest;
         let (token, view) = self.commands.shares.find_or_insert(
             |view| {
-                view.entry.user == user
-                    && view.entry.key == key
-                    && view.entry.created.elapsed() < Duration::from_secs(60)
+                matches!(view, SharedView::Prepared(entry) if entry.user == user && entry.key == key && entry.created.elapsed() < Duration::from_secs(60))
             },
-            || SharedView {
-                entry: Arc::new(Entry {
+            || SharedView::Prepared(Arc::new(Entry {
                     user,
                     key,
                     created: Instant::now(),
                     expires_at: jiff::Timestamp::now().as_second() + 600,
                     reply: OnceCell::new(),
                     prepared: OnceCell::new(),
-                }),
-            },
+                })),
         );
         let inline_query = String::from_utf8(token).expect("ASCII share token");
-        let entry = view.entry;
+        let SharedView::Prepared(entry) = view else {
+            unreachable!("prepared share cache entry")
+        };
         let reply = entry
             .reply
             .get_or_try_init(|| async {
@@ -112,7 +115,10 @@ impl Sharing {
             .get_or_init(|| async {
                 match tokio::time::timeout(
                     Duration::from_secs(12),
-                    self.transport.prepare(user, reply.clone()),
+                    self.transport.prepare(
+                        user,
+                        self.commands.inline_controls.reply(user, reply.clone()),
+                    ),
                 )
                 .await
                 {
@@ -241,15 +247,59 @@ fn currency(id: &market_gifts::CurrencyId) -> Result<market_gifts::CurrencyId, S
         .map(BotCurrency::id)
         .ok_or_else(|| ShareError::Invalid("Unsupported report currency".into()))
 }
+fn snapshot_reply(reply: &Reply, token: &str) -> Reply {
+    let mut reply = reply.clone();
+    let mut found = false;
+    for button in reply.buttons.iter_mut().flatten() {
+        if let market_telegram::ReplyButton::SwitchInline { query, .. } = button {
+            *query = token.to_owned();
+            found = true;
+        }
+    }
+    if !found {
+        reply
+            .buttons
+            .push(vec![market_telegram::ReplyButton::SwitchInline {
+                text: "Share".into(),
+                query: token.into(),
+            }]);
+    }
+    reply
+}
 impl MarketCommands {
+    /// Reuse the report already rendered for this page. Inline sharing never resolves/revalues it.
+    pub(super) fn share_gallery(&self, reply: Reply) -> Reply {
+        if reply.kind != market_telegram::ReplyKind::Message
+            || !matches!(&reply.artwork, Some(market_media::Artwork::Gallery(_)))
+        {
+            return reply;
+        }
+        let reply = reply.bounded();
+        let now = jiff::Timestamp::now().as_second();
+        let (token, _) = self.shares.find_or_insert(
+            |view| matches!(view, SharedView::Snapshot { reply: cached, expires_at } if *expires_at > now && cached.as_ref() == &reply),
+            || SharedView::Snapshot { reply: Arc::new(reply.clone()), expires_at: now + 600 },
+        );
+        snapshot_reply(
+            &reply,
+            std::str::from_utf8(&token).expect("ASCII share token"),
+        )
+    }
     pub(super) async fn shared_reply(&self, user: u64, id: u64) -> Reply {
-        self.shares
-            .get(id)
-            .filter(|view| {
-                view.entry.user == user
-                    && view.entry.expires_at > jiff::Timestamp::now().as_second()
-            })
-            .and_then(|view| view.entry.reply.get().cloned())
-            .unwrap_or_else(|| Reply::text("This share expired. Open the app and share it again."))
+        let now = jiff::Timestamp::now().as_second();
+        let reply = match self.shares.get(id) {
+            Some(SharedView::Prepared(entry)) if entry.user == user && entry.expires_at > now => {
+                entry.reply.get().cloned()
+            }
+            Some(SharedView::Snapshot { reply, expires_at }) if expires_at > now => {
+                Some(snapshot_reply(&reply, &format!("s:{id:016x}")))
+            }
+            _ => None,
+        };
+        reply.unwrap_or_else(|| {
+            Reply::text(
+                "This share expired. Open the app or request a fresh report to share again.",
+            )
+        })
     }
 }

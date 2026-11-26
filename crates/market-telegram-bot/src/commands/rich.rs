@@ -2,6 +2,7 @@
 use crate::icons::escape;
 use market_gifts::Amount;
 pub(super) const COLUMNS: usize = 3;
+pub(super) const CALLBACK_PREFIX: &str = "<tg-button type=\"callback_data\" data=\"";
 
 pub(super) fn amount(value: &Amount) -> String {
     let value = value
@@ -30,7 +31,7 @@ pub(super) fn button(label: &str, data: Option<&str>, selected: bool) -> String 
         Some(data) => {
             debug_assert!(!data.is_empty() && data.len() <= 64);
             format!(
-                "<tg-button type=\"callback_data\" data=\"{}\"{style}>{}</tg-button>",
+                "{CALLBACK_PREFIX}{}\"{style}>{}</tg-button>",
                 escape(data),
                 escape(label)
             )

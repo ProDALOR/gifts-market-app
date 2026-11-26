@@ -596,7 +596,15 @@ try {
       0,
       "navigation and currency do not recheck Telegram",
     );
-    await page.locator(".orders .card-open").first().click();
+    // Virtual rows can start before the visible anchor. Share the clicked order,
+    // rather than assuming the first mounted card is the market's first order.
+    const sharedOrderId = await page
+      .locator(".orders .card-open")
+      .first()
+      .getAttribute("data-order-id");
+    await page
+      .locator(`.orders .card-open[data-order-id="${sharedOrderId}"]`)
+      .click();
     await page
       .getByRole("dialog", { name: "Order details", exact: true })
       .waitFor();
@@ -608,7 +616,7 @@ try {
     await page.getByRole("button", { name: "Share ↗", exact: true }).click();
     await page.waitForFunction(() => window.inlineShares.length === 1);
     assert.equal(shareTargets.at(-1).type, "gift");
-    assert.equal(shareTargets.at(-1).slug, "Gift-1");
+    assert.equal(shareTargets.at(-1).slug, `Gift-${sharedOrderId}`);
     assert.equal(
       await page.evaluate(() => window.inlineShares[0]),
       "s:0000000000000001",

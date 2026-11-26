@@ -59,6 +59,7 @@ pub(crate) fn parse<S: AsRef<str>>(
                 command: Command::Gift(query),
                 user_id: message.user_id.unwrap_or(0),
                 message_id: message.message_id,
+                inline: false,
             })
             .filter(|request| request.user_id > 0);
     }
@@ -102,6 +103,7 @@ pub(crate) fn parse<S: AsRef<str>>(
         command,
         user_id: message.user_id?,
         message_id: message.message_id,
+        inline: false,
     })
 }
 

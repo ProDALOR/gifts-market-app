@@ -608,6 +608,62 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         "valuation starts without a history read"
     );
     assert!(html.contains("type=\"disabled\" style=\"primary\">Floors</tg-button>"));
+    // Exercise the actual inline entry point and handler, rather than just the renderer.
+    let inline_request = commands
+        .parse_event(
+            &Event::Inline {
+                id: 100,
+                user_id: 7,
+                query: "Gift-123".into(),
+                offset: String::new(),
+            },
+            &[],
+        )
+        .unwrap();
+    assert!(inline_request.inline);
+    let inline_reply = commands.handle(inline_request).await.unwrap();
+    let protected_sales = callback(inline_reply.rich_html.as_ref().unwrap(), "Sales");
+    let inline_event = |user_id| Event::Callback {
+        id: 101,
+        user_id,
+        data: format!("i:{protected_sales:016x}").into_bytes(),
+        target: CallbackTarget::Inline(InlineMessageId::Standard {
+            dc_id: 2,
+            id: 3,
+            access_hash: 4,
+        }),
+    };
+    let denied = commands.parse_event(&inline_event(8), &[]).unwrap();
+    assert_eq!(denied.command, Command::CallbackDenied);
+    let (updates, mut progress) = tokio::sync::watch::channel(Reply::default());
+    let notice = commands
+        .handle_with_progress(denied, updates)
+        .await
+        .unwrap();
+    assert_eq!(notice.kind, market_telegram::ReplyKind::Notice);
+    assert!(notice.text.contains("Only the person"));
+    assert!(notice.rich_html.is_none() && notice.artwork.is_none() && notice.buttons.is_empty());
+    assert!(
+        progress.changed().await.is_err(),
+        "rejected callbacks never emit progress edits"
+    );
+    let allowed = commands.parse_event(&inline_event(7), &[]).unwrap();
+    let inline_sales = commands.handle(allowed).await.unwrap();
+    let inline_html = inline_sales.rich_html.as_ref().unwrap();
+    assert!(inline_html.contains("type=\"callback_data\" data=\"i:"));
+    assert!(!inline_html.contains("type=\"callback_data\" data=\"v:"));
+    assert!(
+        inline_sales.text.contains("#124"),
+        "creator can navigate the report"
+    );
+    assert!(
+        inline_reply
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .contains("type=\"disabled\" style=\"primary\">Floors"),
+        "the original cached reply stays unchanged"
+    );
     let sales_id = callback(html, "Sales");
     let (sales, duplicate) = tokio::join!(commands.view(sales_id), commands.view(sales_id));
     let sales_html = sales.rich_html.as_ref().unwrap();
@@ -790,6 +846,101 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             .contains(">2</tg-button>")
     );
     assert!(refreshed.text.contains("#129"));
+    // Gallery is an explicit snapshot, never another paginated image stream.
+    let market_gallery = commands
+        .handle(CommandRequest {
+            command: Command::MarketView(callback(
+                market_next.rich_html.as_ref().unwrap(),
+                "Gallery",
+            )),
+            user_id: 7,
+            message_id: 0,
+            inline: false,
+        })
+        .await
+        .unwrap();
+    let gallery_html = market_gallery.rich_html.as_ref().unwrap();
+    assert!(matches!(
+        market_gallery.artwork,
+        Some(market_media::Artwork::Gallery(_))
+    ));
+    assert!(gallery_html.contains(">Browse</tg-button>"));
+    for label in ["→", "←", "↻"] {
+        assert!(!gallery_html.contains(&format!(">{label}</tg-button>")));
+    }
+    let snapshot_query = market_gallery
+        .buttons
+        .iter()
+        .flatten()
+        .find_map(|b| match b {
+            ReplyButton::SwitchInline { query, .. } => Some(query.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let snapshot_id = u64::from_str_radix(snapshot_query.strip_prefix("s:").unwrap(), 16).unwrap();
+    let other_user = commands
+        .handle(CommandRequest {
+            command: Command::Shared(snapshot_id),
+            user_id: 999,
+            message_id: 0,
+            inline: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        other_user, market_gallery,
+        "sharing freezes the exact page and supports recipient resharing"
+    );
+    assert_eq!(
+        commands.share_gallery(
+            commands
+                .market_view(callback(market_next.rich_html.as_ref().unwrap(), "Gallery"))
+                .await
+        ),
+        market_gallery,
+        "duplicate preview actions reuse the snapshot and share token"
+    );
+    let browsed = commands.market_view(callback(gallery_html, "Browse")).await;
+    assert!(browsed.artwork.is_none());
+    assert!(browsed.text.contains("#212"));
+    let sales_gallery = commands
+        .handle(CommandRequest {
+            command: Command::View(callback(next_html, "Gallery")),
+            user_id: 7,
+            message_id: 0,
+            inline: false,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&sales_gallery.artwork, Some(market_media::Artwork::Gallery(g) ) if g.columns == 2)
+    );
+    for label in ["→", "←", "↻", "Collection", "Model"] {
+        assert!(
+            !sales_gallery
+                .rich_html
+                .as_ref()
+                .unwrap()
+                .contains(&format!(">{label}</tg-button>"))
+        );
+    }
+    let sales_browsed = commands
+        .view(callback(
+            sales_gallery.rich_html.as_ref().unwrap(),
+            "Browse",
+        ))
+        .await;
+    assert!(!matches!(
+        sales_browsed.artwork,
+        Some(market_media::Artwork::Gallery(_))
+    ));
+    assert!(
+        sales_browsed
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .contains(">2</tg-button>")
+    );
     task.shutdown().await.unwrap();
     let stop = tokio_util::sync::CancellationToken::new();
     stop.cancel();
@@ -914,6 +1065,31 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         .await
         .unwrap();
     assert_ne!(first.inline_query, recovered.inline_query);
+    assert_eq!(
+        commands
+            .handle(CommandRequest {
+                command: Command::Shared(snapshot_id),
+                user_id: 500,
+                message_id: 0,
+                inline: false,
+            })
+            .await
+            .unwrap(),
+        market_gallery,
+        "shared galleries survive shutdown without querying market/valuation/media actors"
+    );
+    let expired = commands.shares.insert(sharing::SharedView::Snapshot {
+        reply: Arc::new(market_gallery.clone()),
+        expires_at: jiff::Timestamp::now().as_second() - 1,
+    });
+    let expired_id = u64::from_str_radix(std::str::from_utf8(&expired[2..]).unwrap(), 16).unwrap();
+    assert!(
+        commands
+            .shared_reply(999, expired_id)
+            .await
+            .text
+            .contains("expired")
+    );
     reads.shutdown().await;
 }
 

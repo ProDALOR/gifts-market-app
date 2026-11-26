@@ -10,6 +10,7 @@ export function GiftBackdrop({
   palette,
   patternUrls,
   visible,
+  preload = false,
   layout = "gift",
   background = true,
   symbolScale = 1,
@@ -17,6 +18,7 @@ export function GiftBackdrop({
   palette: BackdropPalette;
   patternUrls?: readonly string[];
   visible: boolean;
+  preload?: boolean;
   layout?: "gift" | "card" | "banner";
   background?: boolean;
   symbolScale?: number;
@@ -30,12 +32,13 @@ export function GiftBackdrop({
     if (!target) return;
     if (!visible) {
       target.width = target.height = 1;
-      return;
+      if (!preload) return;
     }
     const stop = new AbortController();
     const symbols: (HTMLCanvasElement | undefined)[] = new Array(urls.length);
     let frame = 0;
     const draw = () => {
+      if (!visible) return; // Warm shared symbol resources without painting offscreen canvases.
       const width = target.clientWidth,
         height = target.clientHeight;
       if (!width || !height) return;
@@ -88,19 +91,21 @@ export function GiftBackdrop({
     };
     // Data completions and resize notifications share one paint per frame.
     const schedule = () => {
-      if (!frame)
+      if (visible && !frame)
         frame = requestAnimationFrame(() => {
           frame = 0;
           draw();
         });
     };
-    const unobserve = observePreviewSize(target, schedule);
+    const unobserve = visible
+      ? observePreviewSize(target, schedule)
+      : undefined;
     schedule();
     urls.forEach((url, index) => {
       // Shared resources bound HTTP/decode work; one slow symbol doesn't block others.
       void loadPattern(url, pattern, stop.signal).then(
         (symbol) => {
-          if (stop.signal.aborted) return;
+          if (stop.signal.aborted || !visible) return;
           symbols[index] = symbol;
           schedule();
         },
@@ -111,9 +116,9 @@ export function GiftBackdrop({
     });
     return () => {
       stop.abort();
-      unobserve();
+      unobserve?.();
       cancelAnimationFrame(frame);
     };
-  }, [center, edge, key, layout, background, symbolScale, visible]);
+  }, [center, edge, key, layout, background, symbolScale, visible, preload]);
   return <canvas ref={canvas} className="gift-backdrop" aria-hidden="true" />;
 }

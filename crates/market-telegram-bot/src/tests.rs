@@ -114,6 +114,7 @@ async fn command_menu_and_help_use_automatic_gift_detection() {
                 command,
                 user_id: 7,
                 message_id: 1,
+                inline: false,
             })
             .await
             .unwrap();

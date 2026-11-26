@@ -116,15 +116,21 @@ export function VirtualGiftGrid<T>({
     geometry.current = { columns, stride, gap: parseFloat(style.rowGap) };
     const top = element.getBoundingClientRect().top;
     const first = Math.max(0, Math.floor(-top / stride));
+    const viewportRows = Math.ceil(innerHeight / stride);
+    // Give cold SVGs/symbols time to load while keeping the mounted image set bounded.
+    const overscan = Math.max(
+      2,
+      Math.min(8, Math.floor((48 / columns - viewportRows) / 2)),
+    );
     const startRow = Math.min(
       Math.ceil(orders.length / columns),
-      Math.max(0, first - 3),
+      Math.max(0, first - overscan),
     );
     const endRow = Math.max(
       startRow,
       Math.min(
         Math.ceil(orders.length / columns),
-        Math.ceil((innerHeight - top) / stride) + 3,
+        Math.ceil((innerHeight - top) / stride) + overscan,
       ),
     );
     const next = rowsRange(

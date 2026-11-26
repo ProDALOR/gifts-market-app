@@ -1,4 +1,12 @@
-import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { GiftMedia } from "../market";
 import type { ReactNode } from "react";
 import type { BackdropPalette } from "./gift-appearance";
@@ -22,6 +30,8 @@ type ArtworkProps = {
   fallback: string;
   size?: "small" | "large";
   playback?: PlaybackPolicy;
+  /** Load stills and symbols ahead of visibility inside a bounded virtual grid. */
+  preload?: boolean;
   className?: string;
   placeholderKind?: "gift" | "symbol";
   children?: ReactNode;
@@ -50,6 +60,7 @@ function Artwork({
   fallback,
   size = "small",
   playback = "interaction",
+  preload = false,
   className = "",
   placeholderKind = "gift",
   children,
@@ -155,6 +166,7 @@ function Artwork({
           patternUrls={patternUrls}
           layout={patternLayout}
           visible={visible && pageVisible}
+          preload={preload && pageVisible}
         />
       )}
       {!artworkReady &&
@@ -168,18 +180,11 @@ function Artwork({
           <span className="gift-preview-fallback">{fallback}</span>
         ))}
       {image.sources.map((source) => (
-        <img
+        <ArtworkImage
           key={`${source.url}:${source.attempt}`}
-          src={source.url}
-          alt=""
-          style={{
-            visibility: source.status !== "ready" ? "hidden" : undefined,
-          }}
-          loading={playback === "detail" ? "eager" : "lazy"}
-          decoding="async"
-          className={`gift-model-image${source.status === "ready" ? " loaded" : ""}`}
-          onLoad={source.loaded}
-          onError={source.failed}
+          source={source}
+          eager={playback === "detail" || preload}
+          priority={visible ? "high" : "auto"}
         />
       ))}
       {requested && playback !== "static" && animationUrl && (
@@ -198,5 +203,37 @@ function Artwork({
       )}
       {children}
     </span>
+  );
+}
+
+function ArtworkImage({
+  source,
+  eager,
+  priority,
+}: {
+  source: ReturnType<typeof useArtworkImage>["sources"][number];
+  eager: boolean;
+  priority: "high" | "auto";
+}) {
+  const complete = useCallback(
+    (image: HTMLImageElement | null) => {
+      // Memory-cache completions can precede React's load listener. Reveal before the first paint.
+      if (image?.complete && image.naturalWidth) source.loaded(image);
+    },
+    [source.loaded],
+  );
+  return (
+    <img
+      ref={complete}
+      src={source.url}
+      alt=""
+      style={{ visibility: source.status !== "ready" ? "hidden" : undefined }}
+      loading={eager ? "eager" : "lazy"}
+      fetchPriority={priority}
+      decoding="async"
+      className={`gift-model-image${source.status === "ready" ? " loaded" : ""}`}
+      onLoad={(event) => source.loaded(event.currentTarget)}
+      onError={source.failed}
+    />
   );
 }

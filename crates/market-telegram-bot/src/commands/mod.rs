@@ -2,6 +2,7 @@
 use market_links::MarketSelection;
 mod app_links;
 mod browse;
+mod controls;
 mod currency;
 mod history;
 pub use currency::BotCurrency;
@@ -35,6 +36,8 @@ pub enum Command {
     View(u64),
     MarketView(u64),
     Shared(u64),
+    CallbackDenied,
+    CallbackExpired,
     Portfolio(PortfolioRequest),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +51,8 @@ pub struct CommandRequest {
     pub command: Command,
     pub user_id: u64,
     pub message_id: i32,
+    /// Inline/guest replies bind their controls to the authenticated requesting user.
+    pub inline: bool,
 }
 #[derive(Clone)]
 pub struct MarketCommands {
@@ -60,6 +65,7 @@ pub struct MarketCommands {
     views: std::sync::Arc<interactions::Views>,
     markets: std::sync::Arc<interactions::ViewCache<browse::View>>,
     icons: std::sync::Arc<crate::ReportIcons>,
+    inline_controls: std::sync::Arc<controls::InlineControls>,
 }
 impl MarketCommands {
     pub fn new(market: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
@@ -73,6 +79,7 @@ impl MarketCommands {
             views: Default::default(),
             markets: std::sync::Arc::new(interactions::ViewCache::new("m", 64)),
             icons: Default::default(),
+            inline_controls: Default::default(),
         }
     }
     pub fn with_public_url(mut self, url: Option<url::Url>) -> Self {
@@ -111,22 +118,38 @@ impl MessageHandler for MarketCommands {
         event: &market_telegram::Event,
         usernames: &[String],
     ) -> Option<CommandRequest> {
-        interactions::parse_event(event, usernames)
+        self.inline_controls.parse(event, usernames)
     }
     async fn handle_with_progress(
         &self,
         request: CommandRequest,
         updates: tokio::sync::watch::Sender<Reply>,
     ) -> Result<Reply, BotError> {
+        if request.inline {
+            return self.handle(request).await;
+        }
         if let Command::Portfolio(query) = request.command {
-            Ok(self.portfolio_reply(query, Some(updates)).await)
+            Ok(self.share_gallery(self.portfolio_reply(query, Some(updates)).await))
         } else {
             self.handle(request).await
         }
     }
     async fn handle(&self, request: CommandRequest) -> Result<Reply, BotError> {
-        match request.command {
-            Command::Shared(id) => Ok(self.shared_reply(request.user_id, id).await),
+        let reply = match request.command {
+            Command::Shared(id) => {
+                let reply = self.shared_reply(request.user_id, id).await;
+                return Ok(if request.inline {
+                    self.inline_controls.reply(request.user_id, reply)
+                } else {
+                    reply
+                });
+            }
+            Command::CallbackDenied => Ok(Reply::notice(
+                "Only the person who created this report can use its controls.",
+            )),
+            Command::CallbackExpired => Ok(Reply::notice(
+                "These controls have expired. Create a new inline report.",
+            )),
             Command::Status => Ok(match self.market.status().await {
                 Ok(status) => render::status_reply(status),
                 Err(error) => render::error_reply(
@@ -147,7 +170,13 @@ impl MessageHandler for MarketCommands {
                     .handle(CommandRequest { command, ..request })
                     .await
             }
-        }
+        }?;
+        let reply = self.share_gallery(reply);
+        Ok(if request.inline {
+            self.inline_controls.reply(request.user_id, reply)
+        } else {
+            reply
+        })
     }
 }
 pub(crate) struct LaunchCommands;

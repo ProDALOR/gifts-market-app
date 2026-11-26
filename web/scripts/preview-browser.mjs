@@ -18,7 +18,7 @@ import {GiftArtwork} from '/src/previews/gift-artwork.tsx';
 import { CollectionRail } from "/src/collections/collection-picker.tsx";
 import { TraitPreview } from "/src/previews/trait-preview.tsx";
 import { VenueIcon } from "/src/ui/icons.tsx";
-import { SortPicker } from "/src/ui/pickers.tsx";
+import { SortPicker, marketSortOptions } from "/src/ui/pickers.tsx";
 const order={target:{kind:'gift',id:'gift-1',number:1,traits:{model:'model',backdrop:'backdrop',pattern:'pattern'}}};
 const options=new Map([
  ['model',{kind:'model',id:'model',name:'Model',media:{thumbnail_url:'/media/models/model/thumbnail',preview_url:'/media/models/model/preview',animation_url:'/media/models/model/animation'}}],
@@ -79,7 +79,7 @@ function Desktop() {
   React.createElement('aside',{className:'market-sidebar','data-scroll-container':true},
    React.createElement(CollectionRail,{collections,selected,select:setSelected}),
    React.createElement('div',{style:{height:500}},'More controls'),
-   React.createElement('div',{className:'market-toolbar'},React.createElement('div',{className:'sort-control'},React.createElement(SortPicker,{value:sort,change:setSort}))),
+   React.createElement('div',{className:'market-toolbar'},React.createElement('div',{className:'sort-control'},React.createElement(SortPicker,{value:sort,change:setSort,options:marketSortOptions}))),
    React.createElement('div',{style:{height:400}},'Additional controls')),
   React.createElement('div',{className:'market-results',style:{height:2000}},'Listings')));
 }
@@ -1310,21 +1310,32 @@ try {
     tiles[1],
     "Native previews retain the same symbol geometry and opacity",
   );
-  const offset = await page
+  const [cardWidth, cardHeight] = await page
     .locator(".layout-test .gift-backdrop")
     .nth(2)
-    .evaluate(
-      (canvas) =>
-        30 * Math.max(canvas.clientWidth / 420, canvas.clientHeight / 280),
-    );
+    .evaluate((canvas) => [canvas.clientWidth, canvas.clientHeight]);
+  const offset = 30 * Math.max(cardWidth / 420, cardHeight / 280);
   tiles[2].forEach(([x, y, width, height, opacity], index) => {
     const native = tiles[0][index];
-    assert.deepEqual(
-      [x, width, height, opacity],
-      [native[0], native[2], native[3], native[4]],
+    assert.equal(width, height, "Card symbols remain square");
+    assert.equal(opacity, native[4], "Cards preserve per-symbol opacity");
+    assert.ok(width > native[2], "Card symbols are larger than detail symbols");
+    assert.ok(
+      Math.abs(
+        x +
+          width / 2 -
+          cardWidth / 2 -
+          (native[0] + native[2] / 2 - cardWidth / 2) * 1.12,
+      ) < 1e-8,
+      "Card symbols retain radial spacing around the model",
     );
     assert.ok(
-      Math.abs(y - native[1] - offset) < 1e-8,
+      Math.abs(
+        y +
+          height / 2 -
+          cardHeight / 2 -
+          (native[1] + native[3] / 2 + offset - cardHeight / 2) * 1.12,
+      ) < 1e-8,
       "Card symbols shift down around the model at the current rendering scale",
     );
   });
