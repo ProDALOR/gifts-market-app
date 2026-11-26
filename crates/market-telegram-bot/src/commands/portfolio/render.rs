@@ -64,6 +64,16 @@ pub(super) fn render(
     reads: &PortfolioReadCache,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Reply {
+    render_page(state, request, icons, reads, stop, None)
+}
+pub(super) fn render_page(
+    state: &PortfolioState,
+    request: &PortfolioRequest,
+    icons: &crate::ReportIcons,
+    reads: &PortfolioReadCache,
+    stop: &tokio_util::sync::CancellationToken,
+    mut selected: Option<(market_portfolio::PortfolioPage, usize)>,
+) -> Reply {
     use super::report::escape;
     let phase = match state.progress.stage {
         PortfolioStage::Idle => "Not checked yet".into(),
@@ -93,13 +103,18 @@ pub(super) fn render(
         html.push_str(&format!("<p>{}</p>", escape(&phase)));
     }
     let mut reply = Reply::default();
-    let count = state.valuation.as_ref().map_or(0, |v| v.items.len());
+    let count = selected.as_ref().map_or_else(
+        || state.valuation.as_ref().map_or(0, |v| v.items.len()),
+        |(p, _)| p.selection.count,
+    );
     let size = request.page_size();
     let pages = count.div_ceil(size).max(1);
     let page = request.page.min(pages - 1);
-    let start = page * size;
-    let end = (start + size).min(count);
-    let items = if count > 0 {
+    let start = selected.as_ref().map_or(page * size, |(_, offset)| *offset);
+    let end = (start + selected.as_ref().map_or(size, |(p, _)| p.items.len())).min(count);
+    let items = if let Some((selected, _)) = &mut selected {
+        std::mem::take(&mut selected.items)
+    } else if count > 0 {
         match reads.read(
             state,
             ResolvedPortfolioReadQuery {
@@ -127,8 +142,9 @@ pub(super) fn render(
     };
     let mut footer = Vec::new();
     if let Some(report) = &state.valuation {
-        let total = report
-            .total
+        let total = selected
+            .as_ref()
+            .map_or(&report.total, |(p, _)| &p.selection.total)
             .as_ref()
             .map(display_amount)
             .unwrap_or_else(|| "—".into());
@@ -139,12 +155,15 @@ pub(super) fn render(
             .map(|icon| icons.html(icon))
             .unwrap_or_else(|| escape(report.currency_id.as_str()));
         html.push_str(&format!("<h2>{total} {currency}</h2>"));
-        if report.unpriced > 0 {
-            let warning = format!("{} unpriced", report.unpriced);
+        let unpriced = selected
+            .as_ref()
+            .map_or(report.unpriced, |(p, _)| p.selection.unpriced);
+        if unpriced > 0 {
+            let warning = format!("{unpriced} unpriced");
             html.push_str(&format!("<p>{warning}</p>"));
             text.push_str(&format!("\n{warning}"));
         }
-        if count > 0 {
+        if count > 0 && selected.is_none() {
             html.push_str(&sort_controls(request));
             html.push_str("<tg-button-row>");
             for (layout, label) in [(GridMode::Linked, "Linked"), (GridMode::Gallery, "Gallery")] {
@@ -215,7 +234,7 @@ pub(super) fn render(
         text: label.into(),
         data: request.data(page, action, request.sort).into_bytes(),
     };
-    if pages > 1 {
+    if pages > 1 && selected.is_none() {
         let navigation = |label: &str, target: Option<usize>| {
             let data =
                 target.map(|target| request.data(target, PortfolioAction::Navigate, request.sort));

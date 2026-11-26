@@ -7,6 +7,7 @@ description = "Telegram command application over the market actor layer"
 rust_decimal.workspace = true
 market-links.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 market-portfolio.workspace = true
 market-valuation.workspace = true
 market-invocations.workspace = true

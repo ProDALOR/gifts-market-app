@@ -11,6 +11,7 @@ mod interactions;
 mod invocations;
 mod media;
 mod photos;
+mod prepared;
 mod requests;
 mod session_store;
 pub use connection::Connection;

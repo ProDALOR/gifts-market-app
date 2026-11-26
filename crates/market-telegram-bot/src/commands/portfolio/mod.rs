@@ -12,6 +12,69 @@ use render::render;
 pub use request::{PortfolioAction, PortfolioMode, PortfolioRequest};
 pub(super) use request::{callback, inline, parse_args};
 impl MarketCommands {
+    pub(super) async fn shared_portfolio(
+        &self,
+        query: ResolvedPortfolioReadQuery,
+    ) -> Result<Reply, super::sharing::ShareError> {
+        use super::sharing::ShareError;
+        let service = self
+            .portfolio
+            .as_ref()
+            .ok_or_else(|| ShareError::Unavailable("Portfolios are unavailable".into()))?;
+        let state = service
+            .cached(query.subject())
+            .await
+            .map_err(|e| ShareError::Unavailable(e.to_string()))?;
+        if state.valuation.is_none() {
+            return Err(ShareError::Unavailable(
+                "Check this portfolio before sharing it".into(),
+            ));
+        }
+        let request = PortfolioRequest {
+            user_id: query.user_id,
+            currency_id: BotCurrency::parse(query.currency_id.as_str())
+                .ok_or_else(|| ShareError::Invalid("Unsupported currency".into()))?,
+            sort: query.sort,
+            page: 0,
+            action: PortfolioAction::Navigate,
+            mode: PortfolioMode::Inline,
+            layout: GridMode::Linked,
+        };
+        let (reads, icons) = (self.portfolio_reads.clone(), self.icons.clone());
+        let stop = tokio_util::sync::CancellationToken::new();
+        let _cancel = stop.clone().drop_guard();
+        tokio::task::spawn_blocking(move || {
+            let offset = query.offset;
+            let page = reads
+                .read(&state, query, || {
+                    if stop.is_cancelled() {
+                        Err(market_portfolio::PortfolioError::Stopped)
+                    } else {
+                        Ok(())
+                    }
+                })
+                .map_err(|e| match e {
+                    market_portfolio::PortfolioError::RestartRead => ShareError::RestartRead,
+                    _ => ShareError::Unavailable(e.to_string()),
+                })?;
+            if offset > 0 && offset >= page.selection.count {
+                return Err(ShareError::Invalid(
+                    "No gifts at this position; reload the portfolio page".into(),
+                ));
+            }
+            Ok(render::render_page(
+                &state,
+                &request,
+                &icons,
+                &reads,
+                &stop,
+                Some((page, offset)),
+            ))
+        })
+        .await
+        .map_err(|_| ShareError::Unavailable("Portfolio could not be displayed".into()))?
+    }
+
     pub(super) async fn portfolio_reply(
         &self,
         request: PortfolioRequest,

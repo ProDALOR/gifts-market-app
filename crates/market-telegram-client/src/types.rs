@@ -1,4 +1,10 @@
 use url::Url;
+/// Telegram-owned message identifier, bound to one verified Mini App user.
+#[derive(Debug, Clone)]
+pub struct PreparedMessage {
+    pub id: String,
+    pub expires_at: i64,
+}
 #[derive(Debug, Clone, Copy)]
 pub struct IncomingMessage<'a> {
     pub private: bool,

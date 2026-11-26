@@ -70,6 +70,11 @@ impl ApiServer {
         self.miniapp = Some(miniapp);
         self
     }
+    #[cfg(feature = "miniapp")]
+    pub fn with_sharing(mut self, provider: crate::miniapp::ShareProvider) -> Self {
+        self.miniapp = self.miniapp.map(|api| api.with_sharing(provider));
+        self
+    }
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
     }

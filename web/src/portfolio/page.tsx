@@ -26,6 +26,7 @@ import { FloorsProvider } from "../valuation/floors";
 import { SortPicker } from "../ui/pickers";
 import { Quote } from "../ui/market-controls";
 import { RelativeAge } from "../ui/relative-age";
+import { ShareButton, ShareStatus, useSharing } from "../use-sharing";
 import { AppHeader } from "../app/header";
 import { useBackgroundPlaybackSuspension } from "../previews/use-playback";
 import { VirtualGiftGrid } from "../orderbook/virtual-gift-grid";
@@ -42,6 +43,7 @@ import { usePortfolioRows } from "./use-portfolio-rows";
 import { ScrollLoader } from "../orderbook/scroll-loader";
 import {
   progressText,
+  portfolioQuery,
   portfolioSort,
   portfolioSortOptions,
   portfolioRelations,
@@ -248,8 +250,20 @@ function PortfolioView({
     !!selectedId,
   );
   const filterKey = rows.queryKey;
+  const shareOffset = useRef(0);
+  const sharingScope = useMemo(
+    () => JSON.stringify([user, currency, filterKey, selectedId]),
+    [user, currency, filterKey, selectedId],
+  );
+  const sharing = useSharing(context, sharingScope);
+  const share = sharing.available
+    ? (slug: string, currency_id: string) => {
+        void sharing.share({ type: "gift", slug, currency_id });
+      }
+    : undefined;
   const previousFilter = useRef({ user, key: filterKey });
   useLayoutEffect(() => {
+    shareOffset.current = 0;
     if (
       previousFilter.current.user === user &&
       previousFilter.current.key !== filterKey
@@ -305,6 +319,7 @@ function PortfolioView({
   const filtered = items;
   const visible = useCallback(
     (start: number, end: number, anchor = start) => {
+      shareOffset.current = Math.floor(Math.max(start, anchor) / 30) * 30;
       const ids = [
         ...new Set(
           [
@@ -380,14 +395,6 @@ function PortfolioView({
       ? "position"
       : "value";
   const ascending = filters.sort.endsWith("_asc");
-  const share = context.app?.switchInlineQuery
-    ? (slug: string, unit: string) =>
-        context.app!.switchInlineQuery!(`${slug} ${unit}`, [
-          "users",
-          "groups",
-          "channels",
-        ])
-    : undefined;
   return (
     <FloorsProvider
       currency={currency}
@@ -551,6 +558,29 @@ function PortfolioView({
                     </div>
                   </div>
                   <div className="portfolio-check">
+                    {report && items.length > 0 && (
+                      <ShareButton
+                        sharing={sharing}
+                        label="Share portfolio page"
+                        click={() => {
+                          const query = portfolioQuery(user, currency, {
+                            ...filters,
+                            traits: pickerFilters,
+                          });
+                          if (query)
+                            void sharing.share({
+                              type: "portfolio",
+                              query: {
+                                ...query,
+                                offset: shareOffset.current,
+                                limit: 30,
+                                version: rows.version,
+                              },
+                            });
+                        }}
+                      />
+                    )}
+
                     {state?.inventory && (
                       <RelativeAge
                         at={state.inventory.checked_at}
@@ -566,6 +596,7 @@ function PortfolioView({
                     />
                   </div>
                 </div>
+                <ShareStatus sharing={sharing} />
                 {report && (
                   <div className="portfolio-meta">
                     <span>

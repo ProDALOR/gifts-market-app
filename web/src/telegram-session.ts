@@ -40,6 +40,8 @@ export class TelegramSessionController {
   private snapshot: TelegramSessionState = { status: "idle" };
   private listeners = new Set<() => void>();
   private running = false;
+  private token?: string;
+  private sessionRequests = new AbortController();
   private pending?: AbortController;
   private timer?: ReturnType<typeof setTimeout>;
   private failures = 0;
@@ -71,6 +73,8 @@ export class TelegramSessionController {
   }
   stop() {
     this.running = false;
+    this.sessionRequests.abort();
+    this.sessionRequests = new AbortController();
     this.cancel();
   }
   resume = () => {
@@ -96,6 +100,9 @@ export class TelegramSessionController {
     void this.read();
   };
   logout = () => {
+    this.token = undefined;
+    this.sessionRequests.abort();
+    this.sessionRequests = new AbortController();
     this.cancel();
     if (this.credential) {
       const { botId, launch } = this.credential;
@@ -107,6 +114,51 @@ export class TelegramSessionController {
       identity: undefined,
       error: undefined,
     });
+  };
+  /** Credentials stay inside the session controller, including when browser storage is blocked. */
+  authorized: SessionRequest = async <T>(
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> => {
+    if (
+      !this.running ||
+      this.snapshot.status !== "connected" ||
+      !this.token ||
+      !this.snapshot.identity ||
+      Date.parse(this.snapshot.identity.expires_at) <= Date.now()
+    ) {
+      if (this.snapshot.identity) this.expired();
+      throw new ApiFailure(
+        "unauthorized",
+        "Sign in to Telegram before sharing.",
+      );
+    }
+    const token = this.token;
+    const session = this.sessionRequests.signal;
+    const pending = new AbortController();
+    const abort = () => pending.abort();
+    session.addEventListener("abort", abort, { once: true });
+    signal?.addEventListener("abort", abort, { once: true });
+    if (session.aborted || signal?.aborted) abort();
+    try {
+      const result = await this.request<T>(path, body, pending.signal, token);
+      if (pending.signal.aborted)
+        throw new DOMException("Sharing cancelled", "AbortError");
+      return result;
+    } catch (error) {
+      if (
+        !pending.signal.aborted &&
+        this.token === token &&
+        error instanceof ApiFailure &&
+        error.code === "unauthorized"
+      )
+        this.expired();
+      throw error;
+    } finally {
+      session.removeEventListener("abort", abort);
+      signal?.removeEventListener("abort", abort);
+    }
   };
   private cancel() {
     clearTimeout(this.timer);
@@ -120,6 +172,9 @@ export class TelegramSessionController {
     for (const listener of this.listeners) listener();
   }
   private expired() {
+    this.token = undefined;
+    this.sessionRequests.abort();
+    this.sessionRequests = new AbortController();
     this.cancel();
     if (this.credential)
       saveSession(this.credential.botId, this.credential.launch, null);
@@ -186,6 +241,7 @@ export class TelegramSessionController {
       }
       const saved = cachedSession(config.bot_id, launch);
       let identity: Identity | undefined;
+      let token = saved?.token;
       if (saved) {
         try {
           identity = await this.request<Identity>(
@@ -209,6 +265,7 @@ export class TelegramSessionController {
           attempt.signal,
         );
         if (!current()) return;
+        token = session.token;
         saveSession(config.bot_id, launch, session.token);
         identity = { user: session.user, expires_at: session.expires_at };
       }
@@ -218,6 +275,7 @@ export class TelegramSessionController {
         this.expired();
         return;
       }
+      this.token = token;
       this.failures = 0;
       this.timer = setTimeout(() => this.expired(), remaining);
       this.publish({ status: "connected", identity, error: undefined });

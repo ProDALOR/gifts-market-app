@@ -160,6 +160,14 @@ impl Drop for MtProtoTransport {
     }
 }
 impl TelegramActions for MtProtoActions {
+    async fn prepare_message(
+        &self,
+        user_id: u64,
+        reply: &crate::Reply,
+        launch: Option<&crate::LaunchButton>,
+    ) -> Result<crate::PreparedMessage, BotError> {
+        self.save_prepared(user_id, reply, launch).await
+    }
     async fn media(
         &self,
         key: market_media::MediaKey,

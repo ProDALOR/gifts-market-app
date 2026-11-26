@@ -37,19 +37,36 @@ impl<T> ViewCache<T> {
 }
 impl<T: Clone> ViewCache<T> {
     pub fn insert(&self, view: T) -> Vec<u8> {
-        let id = self
-            .random
-            .hash_one(self.next.fetch_add(1, Ordering::Relaxed));
+        self.find_or_insert(|_| false, || view).0
+    }
+    /// Atomically coalesce a report destination without a second cache of tokens.
+    pub fn find_or_insert(
+        &self,
+        matches: impl Fn(&T) -> bool,
+        build: impl FnOnce() -> T,
+    ) -> (Vec<u8>, T) {
         let mut entries = self
             .entries
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         entries.retain(|(_, at, _)| at.elapsed() < Duration::from_secs(1800));
-        while entries.len() >= self.limit {
-            entries.pop_front();
-        }
-        entries.push_back((id, Instant::now(), view));
-        format!("{}:{id:016x}", self.prefix).into_bytes()
+        let entry = if let Some(index) = entries.iter().position(|(_, _, view)| matches(view)) {
+            entries.remove(index).expect("located view")
+        } else {
+            let id = self
+                .random
+                .hash_one(self.next.fetch_add(1, Ordering::Relaxed));
+            while entries.len() >= self.limit {
+                entries.pop_front();
+            }
+            (id, Instant::now(), build())
+        };
+        let result = (
+            format!("{}:{:016x}", self.prefix, entry.0).into_bytes(),
+            entry.2.clone(),
+        );
+        entries.push_back(entry);
+        result
     }
     pub fn get(&self, id: u64) -> Option<T> {
         let mut entries = self
@@ -78,7 +95,9 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
             if !offset.is_empty() {
                 return None;
             }
-            let command = if let Some(query) = super::portfolio::inline(query, *user_id) {
+            let command = if let Some(token) = query.strip_prefix("s:") {
+                Command::Shared(callback_id(token)?)
+            } else if let Some(query) = super::portfolio::inline(query, *user_id) {
                 Command::Portfolio(query)
             } else {
                 Command::Gift(super::parse::gift(query, &[])?)

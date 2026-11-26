@@ -315,3 +315,43 @@ test("foreground events after disposal cannot expire a replacement session", asy
   value.resume();
   assert.equal(cachedSession("42", launch)?.token, "replacement-session");
 });
+
+test("authorized operations reuse the verified token and logout cancels late sharing responses", async (t) => {
+  setup(t);
+  let release!: (value: unknown) => void;
+  let signal: AbortSignal | undefined;
+  let calls = 0;
+  const value = controller(t, async (path, body, cancel, token) => {
+    if (path === "/telegram") return config;
+    if (path === "/auth/telegram") return session();
+    calls++;
+    assert.equal(token, session().token);
+    signal = cancel;
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  });
+  value.start();
+  await when(value, "connected");
+  const sharing = value.authorized("/telegram/share", { type: "gift" });
+  value.logout();
+  assert.equal(signal?.aborted, true);
+  release({ id: "stale-prepared-message" });
+  await assert.rejects(sharing, { name: "AbortError" });
+  assert.equal(calls, 1);
+  await assert.rejects(value.authorized("/telegram/share", {}), /Sign in/);
+});
+
+test("an expired API session clears credentials and requests reopening without another sign-in", async (t) => {
+  setup(t);
+  const value = controller(t, async (path) => {
+    if (path === "/telegram") return config;
+    if (path === "/auth/telegram") return session();
+    throw new ApiFailure("unauthorized", "expired");
+  });
+  value.start();
+  await when(value, "connected");
+  await assert.rejects(value.authorized("/telegram/share", {}), /expired/);
+  assert.equal(value.current().status, "reopen");
+  assert.equal(cachedSession("42", await launchFingerprint(context)), null);
+});

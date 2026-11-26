@@ -28,6 +28,7 @@ import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
 import { SortPicker, marketSortOptions } from "./ui/pickers";
 import { ScrollLoader } from "./orderbook/scroll-loader";
+import { ShareButton, ShareStatus, useSharing } from "./use-sharing";
 import { AppHeader } from "./app/header";
 import { BrandMark } from "./brand/brand-mark";
 import { BackToTop } from "./ui/back-to-top";
@@ -61,14 +62,6 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     state: undefined as import("./order-feed").FeedState | undefined,
     bookmark: undefined as import("./order-feed").Bookmark | undefined,
   }));
-  const shareValuation = context.app?.switchInlineQuery
-    ? (slug: string, currency: string) =>
-        context.app!.switchInlineQuery!(`${slug} ${currency}`, [
-          "users",
-          "groups",
-          "channels",
-        ])
-    : undefined;
   const [accountOpen, setAccountOpen] = useState(false);
   const [giftSlug, setGiftSlug] = useState(() => {
     const value = selectionAt(location).get("gift");
@@ -93,6 +86,17 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     [selected, setSelected] = useState<Order>(),
     [openTrait, setOpenTrait] = useState<TraitKey>();
   const choice = { ...storedChoice, currency };
+  const sharingScope = useMemo(
+    () => JSON.stringify([storedChoice, currency, selected?.id, giftSlug]),
+    [storedChoice, currency, selected?.id, giftSlug],
+  );
+  const sharing = useSharing(context, sharingScope);
+  const shareValuation = sharing.available
+    ? (slug: string, currency_id: string) => {
+        void sharing.share({ type: "gift", slug, currency_id });
+      }
+    : undefined;
+
   const {
     types,
     directory,
@@ -467,6 +471,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                 </button>
               </div>
             )}
+            <ShareStatus sharing={sharing} />
             <div className="market-toolbar">
               <div className="venues" role="group" aria-label="Markets">
                 {["", ...venueIds].map((id) => {
@@ -552,6 +557,18 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                 </span>
                 <span aria-hidden="true">·</span>
                 <span>{orders.length.toLocaleString()} loaded</span>
+                {choice.collection && (
+                  <ShareButton
+                    sharing={sharing}
+                    label="Share market selection"
+                    click={() =>
+                      void sharing.share({
+                        type: "market",
+                        selection: choiceSelection(choice),
+                      })
+                    }
+                  />
+                )}
               </div>
             </header>
             <section className="orders" aria-label="Order book">

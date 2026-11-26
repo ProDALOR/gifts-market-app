@@ -143,9 +143,16 @@ async fn serve(args: Cli, stop: tokio_util::sync::CancellationToken) -> anyhow::
         };
         runtime.start_replication(hub)?;
         #[cfg(feature = "bot")]
-        if let Some(bot) = bot {
-            runtime.start_bot(bot)?;
-        }
+        let api = if let Some(bot) = bot {
+            let sharing = runtime.start_bot(bot)?;
+            #[cfg(feature = "miniapp")]
+            let api = api.with_sharing(market_app::api_config::sharing(sharing));
+            #[cfg(not(feature = "miniapp"))]
+            let _ = sharing;
+            api
+        } else {
+            api
+        };
         runtime.start_api(api)?;
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis(),

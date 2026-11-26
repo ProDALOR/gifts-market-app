@@ -184,3 +184,82 @@ async fn authenticated_identity_enables_sign_in_across_existing_http_workers() {
     .await;
     assert_eq!(response.status(), 200);
 }
+
+#[actix_web::test]
+async fn prepared_sharing_binds_only_the_signed_in_user_and_rejects_client_content() {
+    use market_api::miniapp::{ShareTarget, SharedMessage};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let key = SigningKey::from_bytes(&[17; 32]);
+    let auth = Auth::new(42, key.verifying_key().to_bytes(), [91; 32]).unwrap();
+    let session = auth
+        .sign_in(
+            &proof(&key, 42, jiff::Timestamp::now().as_second()),
+            jiff::Timestamp::now(),
+        )
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let state = MiniAppApi::new(Some(auth), None, None)
+        .unwrap()
+        .with_sharing(Arc::new(move |user, target| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                assert_eq!(user, 9007199254740991);
+                assert!(matches!(target, ShareTarget::Gift { .. }));
+                Ok(SharedMessage {
+                    id: Some("telegram-message".into()),
+                    expires_at: jiff::Timestamp::now().as_second() + 60,
+                    inline_query: "s:0000000000000001".into(),
+                })
+            })
+        }));
+    let app = test::init_service(
+        App::new()
+            .wrap(security_headers())
+            .app_data(web::Data::new(state))
+            .configure(configure),
+    )
+    .await;
+    let target = json!({"type":"gift","slug":"Gift-123","currency_id":"GRAM"});
+    let anonymous = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/telegram/share")
+            .set_json(&target)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(anonymous.status(), 401);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/telegram/share")
+            .insert_header(("Authorization", format!("Bearer {}", session.token)))
+            .set_json(&target)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let result: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(result["id"], "telegram-message");
+    for field in ["user_id", "html", "price"] {
+        let mut forged = target.clone();
+        forged[field] = json!("client supplied");
+        let rejected = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/telegram/share")
+                .insert_header(("Authorization", format!("Bearer {}", session.token)))
+                .set_json(forged)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(rejected.status(), 400);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}

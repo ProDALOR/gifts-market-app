@@ -1,7 +1,7 @@
 import { selectionFromParams, selectionParams } from "./market-selection.ts";
 import type { components } from "./gen/api";
 // Mini App schemas are absent from API-only builds; keep the dormant adapter type-safe.
-type OptionalSchema<
+export type OptionalSchema<
   Key extends string,
   Fallback,
 > = Key extends keyof components["schemas"]
@@ -60,6 +60,7 @@ export type WebApp = {
   setBackgroundColor?(color: string): void;
   setBottomBarColor?(color: string): void;
   openTelegramLink?(url: string): void;
+  shareMessage?(id: string, callback?: (sent: boolean) => void): void;
   switchInlineQuery?(query: string, chatTypes?: string[]): void;
   onEvent(event: string, callback: () => void): void;
   offEvent(event: string, callback: () => void): void;

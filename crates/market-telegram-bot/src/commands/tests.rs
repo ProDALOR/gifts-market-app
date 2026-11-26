@@ -874,6 +874,46 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             .unwrap()
             .contains("Retry sales")
     );
+    let commands = Arc::new(commands);
+    let sharing = crate::Sharing::new(commands.clone(), Default::default());
+    let builds = std::sync::atomic::AtomicUsize::new(0);
+    let build = || async {
+        builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        Ok(view().render())
+    };
+    let (first, duplicate) = tokio::join!(
+        sharing.prepare(7, "same-target".into(), build()),
+        sharing.prepare(7, "same-target".into(), build())
+    );
+    let first = first.unwrap();
+    assert_eq!(first.inline_query, duplicate.unwrap().inline_query);
+    assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        first.prepared.is_none(),
+        "offline native preparation keeps exact inline fallback"
+    );
+    let id = u64::from_str_radix(first.inline_query.strip_prefix("s:").unwrap(), 16).unwrap();
+    assert!(commands.shared_reply(7, id).await.rich_html.is_some());
+    assert!(commands.shared_reply(8, id).await.text.contains("expired"));
+    let different = sharing
+        .prepare(8, "same-target".into(), build())
+        .await
+        .unwrap();
+    assert_ne!(first.inline_query, different.inline_query);
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(1),
+            sharing.prepare(7, "cancelled".into(), std::future::pending())
+        )
+        .await
+        .is_err()
+    );
+    let recovered = sharing
+        .prepare(7, "cancelled".into(), build())
+        .await
+        .unwrap();
+    assert_ne!(first.inline_query, recovered.inline_query);
     reads.shutdown().await;
 }
 

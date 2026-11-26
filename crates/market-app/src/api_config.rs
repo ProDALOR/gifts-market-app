@@ -141,3 +141,36 @@ mod tests {
         assert!(!directory.path().join("bot").exists());
     }
 }
+
+/// Wiring only: API owns authentication; bot owns reports and native prepared messages.
+#[cfg(all(feature = "bot", feature = "miniapp"))]
+pub fn sharing(bot: market_telegram_bot::Sharing) -> market_api::miniapp::ShareProvider {
+    std::sync::Arc::new(move |user, target| {
+        let bot = bot.clone();
+        Box::pin(async move {
+            use market_api::{
+                error::{ApiError, ErrorCode},
+                miniapp::{ShareTarget, SharedMessage},
+            };
+            let shared = match target {
+                ShareTarget::Gift { slug, currency_id } => bot.gift(user, slug, currency_id).await,
+                ShareTarget::Portfolio { query } => bot.portfolio(user, query).await,
+                ShareTarget::Market { selection } => bot.market(user, selection).await,
+            }
+            .map_err(|e| ApiError {
+                code: match &e {
+                    market_telegram_bot::ShareError::Invalid(_) => ErrorCode::InvalidQuery,
+                    market_telegram_bot::ShareError::RestartRead => ErrorCode::RestartRead,
+                    market_telegram_bot::ShareError::Busy => ErrorCode::CapacityExceeded,
+                    _ => ErrorCode::Unavailable,
+                },
+                message: e.to_string(),
+            })?;
+            Ok(SharedMessage {
+                id: shared.prepared.map(|p| p.id),
+                expires_at: shared.expires_at,
+                inline_query: shared.inline_query,
+            })
+        })
+    })
+}

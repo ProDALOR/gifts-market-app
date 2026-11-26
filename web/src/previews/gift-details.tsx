@@ -237,7 +237,7 @@ export function GiftDetailsView({
                 className="detail-link detail-share"
                 onClick={() => share(telegramSlug, currency)}
               >
-                Share valuation ↗
+                Share ↗
               </button>
             )}
             {actions.map((action) => (

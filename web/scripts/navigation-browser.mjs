@@ -21,8 +21,8 @@ const artwork = await readFile(
 );
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module">
 import React from 'react';import{createRoot}from'react-dom/client';import{AppShell}from'/src/app/shell.tsx';import{MarketPage}from'/src/market-page.tsx';import'/src/style.css';
-window.fixtureInstance=Math.random();window.nativeBack={visible:false,handlers:new Set()};window.tapNativeBack=()=>[...window.nativeBack.handlers].forEach(f=>f());
-const context={initData:'fixture',app:{initData:'fixture',initDataUnsafe:{start_param:'portfolio_7'},themeParams:{},colorScheme:'dark',onEvent(){},offEvent(){},BackButton:{show(){window.nativeBack.visible=true},hide(){window.nativeBack.visible=false},onClick(f){window.nativeBack.handlers.add(f)},offClick(f){window.nativeBack.handlers.delete(f)}}}};
+window.shares=[];window.inlineShares=[];window.canPrepare=true;window.fixtureInstance=Math.random();window.nativeBack={visible:false,handlers:new Set()};window.tapNativeBack=()=>[...window.nativeBack.handlers].forEach(f=>f());
+const context={initData:'fixture',app:{isVersionAtLeast(){return window.canPrepare},shareMessage(id,callback){window.shares.push(id);window.shareCallback=callback},switchInlineQuery(query){window.inlineShares.push(query)},initData:'fixture',initDataUnsafe:{start_param:'portfolio_7'},themeParams:{},colorScheme:'dark',onEvent(){},offEvent(){},BackButton:{show(){window.nativeBack.visible=true},hide(){window.nativeBack.visible=false},onClick(f){window.nativeBack.handlers.add(f)},offClick(f){window.nativeBack.handlers.delete(f)}}}};
 createRoot(document.getElementById('root')).render(React.createElement(AppShell,{context,market:React.createElement(MarketPage,{context})}));</script></body></html>`;
 
 const server = await createServer({
@@ -141,6 +141,24 @@ try {
       if (r.status() >= 400) console.log("http", r.status(), r.url());
     });
     let authRequests = 0;
+    const shareTargets = [];
+    await page.route(
+      (url) => url.pathname === "/telegram/share",
+      (r) => {
+        assert.equal(
+          r.request().headers().authorization,
+          "Bearer navigation-session-fixture",
+        );
+        shareTargets.push(r.request().postDataJSON());
+        return r.fulfill({
+          json: {
+            id: "prepared-" + shareTargets.length,
+            expires_at: Math.floor(Date.now() / 1000) + 600,
+            inline_query: "s:0000000000000001",
+          },
+        });
+      },
+    );
     await page.route(
       (url) => url.pathname === "/telegram",
       (r) => {
@@ -459,10 +477,26 @@ try {
         Reflect.deleteProperty(visualViewport, "height"),
       );
     }
-    assert.equal(
-      (await page.locator(".portfolio-total").innerText()).trim(),
-      "2",
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".portfolio-total")?.textContent.trim() === "2",
     );
+    await page
+      .getByRole("button", { name: "Share portfolio page", exact: true })
+      .click();
+    await page.waitForFunction(() => window.shares.length === 1);
+    assert.equal(shareTargets[0].type, "portfolio");
+    assert.equal(shareTargets[0].query.user_id, 7);
+    assert.equal(shareTargets[0].query.limit, 30);
+    assert.ok(shareTargets[0].query.version);
+    assert.equal(
+      refreshCount,
+      0,
+      "sharing does not recheck Telegram inventory",
+    );
+    await page.evaluate(() => window.shareCallback(false));
+    assert.deepEqual(await page.evaluate(() => window.inlineShares), []);
+
     await page
       .locator(".app-navigation")
       .getByRole("link", { name: "Market", exact: true })
@@ -474,6 +508,15 @@ try {
       "tab navigation must not reload",
     );
     assert.equal(authRequests, 1, "one shared auth/config lifecycle");
+    await page
+      .getByRole("button", { name: "Share market selection", exact: true })
+      .click();
+    await page.waitForFunction(() => window.shares.length === 2);
+    assert.equal(shareTargets[1].type, "market");
+    assert.equal(shareTargets[1].selection.source, "asks");
+    assert.equal(shareTargets[1].selection.filters.collection_id, "gift");
+    await page.evaluate(() => window.shareCallback(true));
+
     assert(
       ![...active.values()].includes("portfolio.watch"),
       "inactive portfolio releases its lease",
@@ -559,6 +602,21 @@ try {
       .waitFor();
     assert.equal(await page.locator(".detail-venue").count(), 1);
     assert.equal(await page.locator(".listing-price").count(), 1);
+    await page.evaluate(() => {
+      window.canPrepare = false;
+    });
+    await page.getByRole("button", { name: "Share ↗", exact: true }).click();
+    await page.waitForFunction(() => window.inlineShares.length === 1);
+    assert.equal(shareTargets.at(-1).type, "gift");
+    assert.equal(shareTargets.at(-1).slug, "Gift-1");
+    assert.equal(
+      await page.evaluate(() => window.inlineShares[0]),
+      "s:0000000000000001",
+    );
+    await page.evaluate(() => {
+      window.canPrepare = true;
+    });
+
     await page.evaluate(() => window.tapNativeBack());
     await page.getByRole("dialog").waitFor({ state: "hidden" });
     await page

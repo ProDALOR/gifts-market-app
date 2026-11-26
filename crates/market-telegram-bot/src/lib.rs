@@ -10,3 +10,5 @@ pub use commands::{
 pub use service::{BotService, configure};
 #[cfg(test)]
 mod tests;
+
+pub use commands::sharing::{ShareError, SharedMessage, Sharing};

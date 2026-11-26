@@ -87,3 +87,41 @@
   position: relative;
   flex: none;
 }
+
+.share-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 2.5rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0.55rem;
+  border-radius: 0.8rem;
+  color: var(--text);
+}
+.share-button svg {
+  width: 100%;
+  height: 100%;
+}
+.share-button[aria-busy="true"] {
+  opacity: 0.55;
+}
+.share-error {
+  position: fixed;
+  z-index: 1500;
+  left: 50%;
+  bottom: calc(6rem + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  max-width: min(90vw, 32rem);
+  margin: 0;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--panel, #262229);
+  color: var(--text);
+}
+.feed-status .share-button {
+  width: 1.8rem;
+  height: 1.8rem;
+  flex-basis: 1.8rem;
+  padding: 0.3rem;
+}

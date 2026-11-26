@@ -13,6 +13,7 @@ use url::Url;
 type IdentityObserver = Box<dyn Fn(&BotUser) + Send + Sync>;
 
 pub struct TelegramWorker {
+    prepared: crate::PreparedMessages,
     inventory: InventoryClient,
     credentials: BotCredentials,
     url: Option<Url>,
@@ -47,6 +48,7 @@ pub async fn inspect(
 impl TelegramWorker {
     pub fn new(config: BotConfig) -> anyhow::Result<Self> {
         Ok(Self {
+            prepared: Default::default(),
             inventory: InventoryClient::new(&config.credentials),
             credentials: config.credentials,
             url: config
@@ -65,6 +67,9 @@ impl TelegramWorker {
     }
     pub fn inventory(&self) -> InventoryClient {
         self.inventory.clone()
+    }
+    pub fn prepared_messages(&self) -> crate::PreparedMessages {
+        self.prepared.clone()
     }
     /// Observe the authenticated profile after each login or session reconnect.
     /// Runs before command configuration; observers must be quick and nonblocking.
@@ -178,7 +183,10 @@ impl TelegramWorker {
         transport: &mut T,
         consume: bool,
         handler: &H,
-    ) -> Result<BotUser, BotError> {
+    ) -> Result<BotUser, BotError>
+    where
+        T::Actions: 'static,
+    {
         let actions = transport.actions();
         let mut backoff = 1;
         let user = loop {
@@ -204,6 +212,7 @@ impl TelegramWorker {
         if !consume {
             return Ok(user);
         }
+        let _prepared = self.prepared.bind(actions.clone(), launch.clone());
         tracing::info!(bot_id = user.id, bot_username = %user.username, inline_enabled=user.inline_enabled,guest_enabled=user.guest_enabled, "MTProto bot worker started");
         let commands = dispatcher::run(
             transport,

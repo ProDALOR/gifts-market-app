@@ -54,7 +54,12 @@ export function useTelegram(context: TelegramContext) {
       window.removeEventListener("online", resume);
     };
   }, [context, controller]);
-  return { ...state, retry: controller.retry, logout: controller.logout };
+  return {
+    ...state,
+    retry: controller.retry,
+    logout: controller.logout,
+    authorized: controller.authorized,
+  };
 }
 export function useTelegramBack(
   context: TelegramContext,

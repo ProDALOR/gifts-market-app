@@ -12,6 +12,8 @@ pub use mtproto::{
     UserLogin,
 };
 pub use transport::BotUser;
-pub use types::{IncomingMessage, LaunchButton, MenuCommand, Reply, ReplyButton, ReplyKind};
+pub use types::{
+    IncomingMessage, LaunchButton, MenuCommand, PreparedMessage, Reply, ReplyButton, ReplyKind,
+};
 #[cfg(test)]
 mod tests;

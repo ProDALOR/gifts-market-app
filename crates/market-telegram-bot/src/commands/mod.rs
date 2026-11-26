@@ -15,11 +15,13 @@ mod parse;
 mod render;
 mod report;
 mod rich;
+pub mod sharing;
 mod views;
 use market_actors::MarketDataHandle;
 use market_telegram::{BotError, IncomingMessage, MenuCommand, MessageHandler, Reply};
 pub use parse::CommandKind;
 pub(crate) use parse::parse;
+use std::future::Future;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -31,6 +33,7 @@ pub enum Command {
     GiftHelp,
     View(u64),
     MarketView(u64),
+    Shared(u64),
     Portfolio(PortfolioRequest),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,26 +48,29 @@ pub struct CommandRequest {
     pub user_id: u64,
     pub message_id: i32,
 }
+#[derive(Clone)]
 pub struct MarketCommands {
+    shares: std::sync::Arc<interactions::ViewCache<sharing::SharedView>>,
     public_url: Option<url::Url>,
     portfolio: Option<market_portfolio::PortfolioHandle>,
     portfolio_reads: std::sync::Arc<market_portfolio::PortfolioReadCache>,
     market: MarketDataHandle,
     valuation: market_valuation::ValuationHandle,
-    views: interactions::Views,
-    markets: interactions::ViewCache<browse::View>,
+    views: std::sync::Arc<interactions::Views>,
+    markets: std::sync::Arc<interactions::ViewCache<browse::View>>,
     icons: std::sync::Arc<crate::ReportIcons>,
 }
 impl MarketCommands {
     pub fn new(market: MarketDataHandle, valuation: market_valuation::ValuationHandle) -> Self {
         Self {
+            shares: std::sync::Arc::new(interactions::ViewCache::new("s", 128)),
             public_url: None,
             market,
             valuation,
             portfolio: None,
             portfolio_reads: Default::default(),
             views: Default::default(),
-            markets: interactions::ViewCache::new("m", 64),
+            markets: std::sync::Arc::new(interactions::ViewCache::new("m", 64)),
             icons: Default::default(),
         }
     }
@@ -73,13 +79,19 @@ impl MarketCommands {
         self
     }
     pub fn with_portfolio(mut self, portfolio: market_portfolio::PortfolioHandle) -> Self {
-        self.portfolio = Some(portfolio);
+        self.set_portfolio(portfolio);
         self
+    }
+    pub(crate) fn set_portfolio(&mut self, portfolio: market_portfolio::PortfolioHandle) {
+        self.portfolio = Some(portfolio);
     }
     /// Configure presentation once for private, inline, guest and callback reports.
     pub fn with_report_icons(mut self, icons: crate::ReportIcons) -> Self {
-        self.icons = std::sync::Arc::new(icons);
+        self.set_report_icons(icons);
         self
+    }
+    pub(crate) fn set_report_icons(&mut self, icons: crate::ReportIcons) {
+        self.icons = std::sync::Arc::new(icons);
     }
 }
 impl MessageHandler for MarketCommands {
@@ -113,6 +125,7 @@ impl MessageHandler for MarketCommands {
     }
     async fn handle(&self, request: CommandRequest) -> Result<Reply, BotError> {
         match request.command {
+            Command::Shared(id) => Ok(self.shared_reply(request.user_id, id).await),
             Command::Status => Ok(match self.market.status().await {
                 Ok(status) => render::status_reply(status),
                 Err(error) => render::error_reply(

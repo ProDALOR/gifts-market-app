@@ -807,6 +807,48 @@ async fn private_and_inline_navigation_use_cached_reports_during_a_running_refre
     let missing = inline("portfolio 456 XTR", 7).unwrap();
     let reply = commands.portfolio_reply(missing, None).await;
     assert!(reply.text.contains("/portfolio 456 XTR"));
+    let cached = service
+        .handle
+        .cached(PortfolioQuery {
+            user_id: request.user_id,
+            currency_id: "GRAM".into(),
+        })
+        .await
+        .unwrap();
+    let sharing = crate::Sharing::new(Arc::new(commands.clone()), Default::default());
+    let query = serde_json::from_value(serde_json::json!({
+        "user_id": request.user_id, "currency_id":"GRAM", "filters":{},
+        "sort":"position_asc", "offset":0, "limit":30, "version":cached.version,
+    }))
+    .unwrap();
+    let shared = tokio::time::timeout(Duration::from_secs(1), sharing.portfolio(7, query))
+        .await
+        .expect("preparing a share must not join or start the running valuation")
+        .unwrap();
+    assert!(shared.prepared.is_none());
+    let id = u64::from_str_radix(shared.inline_query.strip_prefix("s:").unwrap(), 16).unwrap();
+    assert!(
+        commands
+            .shared_reply(7, id)
+            .await
+            .text
+            .contains("Estimate 2 GRAM")
+    );
+    let stale = serde_json::from_value(serde_json::json!({
+        "user_id": request.user_id, "currency_id":"GRAM", "filters":{},
+        "version":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    }))
+    .unwrap();
+    assert!(matches!(
+        sharing.portfolio(7, stale).await,
+        Err(crate::ShareError::RestartRead)
+    ));
+    let missing =
+        serde_json::from_value(serde_json::json!({ "user_id":456, "currency_id":"GRAM" })).unwrap();
+    assert!(matches!(
+        sharing.portfolio(7, missing).await,
+        Err(crate::ShareError::Unavailable(_))
+    ));
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
     assert_eq!(quotes.calls.load(Ordering::SeqCst), 2);
     service.task.shutdown().await.unwrap();
@@ -824,4 +866,62 @@ async fn private_and_inline_navigation_use_cached_reports_during_a_running_refre
     stop.cancel();
     data.task.run(stop).await.unwrap();
     reads.shutdown().await;
+}
+
+#[test]
+fn shared_pages_keep_filters_sorting_offsets_and_warnings_without_unfiltered_navigation() {
+    let state = sample(61);
+    let reads = PortfolioReadCache::default();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let query = ResolvedPortfolioReadQuery {
+        user_id: state.user_id,
+        currency_id: "GRAM".into(),
+        filters: market_portfolio::ResolvedPortfolioFilters {
+            number: Some(37u32.try_into().unwrap()),
+            ..Default::default()
+        },
+        sort: PortfolioSort::PositionDesc,
+        offset: 0,
+        limit: 30,
+        version: state.version.clone(),
+    };
+    let page = reads.read(&state, query.clone(), || Ok(())).unwrap();
+    assert_eq!(page.selection.count, 1);
+    let request = PortfolioRequest {
+        user_id: state.user_id,
+        currency_id: BotCurrency::Gram,
+        action: PortfolioAction::Navigate,
+        page: 0,
+        sort: query.sort,
+        mode: PortfolioMode::Inline,
+        layout: GridMode::Linked,
+    };
+    let reply = super::render::render_page(
+        &state,
+        &request,
+        &Default::default(),
+        &reads,
+        &stop,
+        Some((page, 0)),
+    );
+    let html = reply.rich_html.unwrap();
+    assert_eq!(html.matches("https://t.me/nft/").count(), 1);
+    assert!(html.contains("ResistanceDog-37"));
+    assert!(html.contains("<h2>2 "));
+    assert!(html.contains("1–1 of 1"));
+    assert!(
+        !html.contains("p:123:"),
+        "filter-dropping sort/navigation callbacks must not be offered"
+    );
+    let mut stale = query;
+    stale.version = Some(
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            .to_owned()
+            .try_into()
+            .unwrap(),
+    );
+    assert!(matches!(
+        reads.read(&state, stale, || Ok(())),
+        Err(market_portfolio::PortfolioError::RestartRead)
+    ));
 }
