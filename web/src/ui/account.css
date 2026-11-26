@@ -1,27 +1,45 @@
-.account-bar:empty {
-  display: none;
-}
-.account-bar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 8px;
-}
-.account-button {
+.header-actions {
   display: flex;
   align-items: center;
-  gap: 7px;
-  max-width: 190px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  min-height: 30px;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+.account-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--accent);
+}
+.account-initial {
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1;
+}
+.account-button > svg {
+  width: 22px;
+  height: 22px;
 }
 .account-dot {
-  width: 5px;
-  height: 5px;
-  flex: none;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--paper);
   border-radius: 50%;
+  background: var(--muted);
+}
+.account-dot.connecting,
+.account-dot.retrying,
+.account-dot.reopen {
   background: #d0aa67;
 }
 .account-dot.verified {
@@ -31,8 +49,9 @@
   position: absolute;
   right: 0;
   top: calc(100% + 9px);
-  min-width: 230px;
-  max-width: 85vw;
+  width: min(280px, calc(100vw - 32px));
+  max-height: min(360px, 70dvh);
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -43,17 +62,21 @@
   box-shadow: 0 14px 36px #0004;
 }
 .account-menu span,
+.account-menu strong,
 .account-menu small,
 .account-menu p {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
-.account-menu button {
+.account-menu button,
+.account-menu .account-action {
   background: var(--plum);
   color: white;
   border-radius: 8px;
   min-height: 36px;
   margin-top: 6px;
+  padding: 8px 12px;
+  text-align: center;
 }
 
 .telegram-link {
@@ -62,5 +85,5 @@
 }
 .telegram-account {
   position: relative;
-  margin-left: auto;
+  flex: none;
 }

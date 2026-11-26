@@ -494,7 +494,7 @@ try {
       .waitFor();
     assert.equal(
       (await page.locator(".portfolio-total").innerText()).trim(),
-      "1,400",
+      "1\u00a0400",
       "visible unverified gifts contribute to the same total",
     );
     const unverified = page.locator(".portfolio-card").filter({
@@ -520,7 +520,7 @@ try {
     );
     assert.match(
       await page.locator(".portfolio-full-total").innerText(),
-      /1,400/,
+      /1\u00a0400/,
     );
     await page.getByLabel("Gift #", { exact: true }).fill("");
     await page.getByRole("button", { name: "Gift", exact: true }).click();

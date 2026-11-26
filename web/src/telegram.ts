@@ -55,6 +55,11 @@ export type WebApp = {
   };
   ready(): void;
   expand(): void;
+  isVersionAtLeast?(version: string): boolean;
+  setHeaderColor?(color: string): void;
+  setBackgroundColor?(color: string): void;
+  setBottomBarColor?(color: string): void;
+  openTelegramLink?(url: string): void;
   switchInlineQuery?(query: string, chatTypes?: string[]): void;
   onEvent(event: string, callback: () => void): void;
   offEvent(event: string, callback: () => void): void;
@@ -132,6 +137,7 @@ export async function initializeTelegram(): Promise<TelegramContext> {
   }
   return { app, initData: app?.initData || raw };
 }
+const nativeColors = new WeakMap<WebApp, string>();
 export function applyTheme(app: WebApp) {
   const root = document.documentElement;
   root.classList.add("telegram");
@@ -148,6 +154,7 @@ export function applyTheme(app: WebApp) {
     const color = app.themeParams[name];
     if (color && /^#[0-9a-f]{6}$/i.test(color))
       root.style.setProperty(property, color);
+    else root.style.removeProperty(property);
   }
   const inset = (side: keyof Insets) =>
     Math.max(0, app.safeAreaInset?.[side] || 0) +
@@ -157,6 +164,26 @@ export function applyTheme(app: WebApp) {
       `--tg-safe-${side}`,
       `${Math.min(inset(side), 200)}px`,
     );
+  const color = getComputedStyle(root).getPropertyValue("--paper").trim();
+  if (!/^#[0-9a-f]{6}$/i.test(color) || nativeColors.get(app) === color) return;
+  nativeColors.set(app, color);
+  const supports = (version: string) =>
+    !app.isVersionAtLeast || app.isVersionAtLeast(version);
+  // Older clients expose SDK methods that their native app does not implement.
+  // One unsupported color must not prevent safe-area updates or sign-in.
+  if (supports("6.1")) {
+    try {
+      app.setHeaderColor?.(supports("6.9") ? color : "bg_color");
+    } catch {}
+    try {
+      app.setBackgroundColor?.(color);
+    } catch {}
+  }
+  if (supports("7.10")) {
+    try {
+      app.setBottomBarColor?.(color);
+    } catch {}
+  }
 }
 export function cleanSelection(params: URLSearchParams): URLSearchParams {
   const clean = new URLSearchParams();
@@ -234,6 +261,17 @@ export function telegramLink(
   url.search = "";
   url.hash = params.toString();
   return url.toString();
+}
+/** Authentication recovery must launch Telegram, including for oversized selections. */
+export function telegramReopenLink(
+  config: TelegramConfig | undefined,
+  selection: URLSearchParams,
+): string | null {
+  if (!config?.bot_username) return null;
+  const link = telegramLink(config, selection);
+  return link && new URL(link).hostname === "t.me"
+    ? link
+    : `https://t.me/${config.bot_username}?startapp`;
 }
 export async function launchFingerprint(
   context: TelegramContext,

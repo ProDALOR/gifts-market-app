@@ -26,7 +26,8 @@
     "test:attribute-values": "node scripts/attribute-values-browser.mjs",
     "test:rarity": "node scripts/rarity-browser.mjs",
     "test:portfolio": "node scripts/portfolio-browser.mjs",
-    "test:navigation": "node scripts/navigation-browser.mjs"
+    "test:navigation": "node scripts/navigation-browser.mjs",
+    "test:telegram": "node scripts/telegram-browser.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

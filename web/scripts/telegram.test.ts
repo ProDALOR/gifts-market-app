@@ -7,6 +7,7 @@ import {
   launchSelection,
   cleanSelection,
   telegramLink,
+  telegramReopenLink,
 } from "../src/telegram.ts";
 test("Telegram links restore market selection without credentials", () => {
   const params = new URLSearchParams({
@@ -80,4 +81,31 @@ test("gift preview deep links preserve only public gift selection", () => {
   assert.equal(result.get("gift"), "Gift-123");
   assert.equal(selectionFromParams(result).filters.collection_id, "c");
   assert.equal(result.has("token"), false);
+});
+
+test("expired sign-in recovery always opens Telegram, even when selection links exceed its limit", () => {
+  const config = {
+    auth_enabled: true,
+    bot_username: "fixture_bot",
+    public_url: "https://markets.example",
+  };
+  const small = new URLSearchParams({ gift: "Gift-123", currency: "GRAM" });
+  assert.equal(telegramReopenLink(config, small), telegramLink(config, small));
+  const large = new URLSearchParams({
+    collection: "gift",
+    filters: JSON.stringify({
+      models: Array.from(
+        { length: 80 },
+        (_, i) => `model-${i}-${"x".repeat(30)}`,
+      ),
+    }),
+  });
+  assert.ok(
+    telegramLink(config, large)!.startsWith("https://markets.example/"),
+  );
+  assert.equal(
+    telegramReopenLink(config, large),
+    "https://t.me/fixture_bot?startapp",
+  );
+  assert.equal(telegramReopenLink(undefined, small), null);
 });

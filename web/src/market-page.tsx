@@ -26,12 +26,12 @@ import { OrderDetails } from "./orderbook/order-details";
 import { FloorsProvider, FloorsStatus } from "./valuation/floors";
 import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
-import { CurrencyPicker, SortPicker, marketSortOptions } from "./ui/pickers";
+import { SortPicker, marketSortOptions } from "./ui/pickers";
 import { ScrollLoader } from "./orderbook/scroll-loader";
+import { AppHeader } from "./app/header";
 import { BrandMark } from "./brand/brand-mark";
 import { BackToTop } from "./ui/back-to-top";
 import type { TelegramContext } from "./telegram";
-import { TelegramAccount } from "./telegram-ui";
 import {
   AppNavigation,
   useNavigation,
@@ -39,7 +39,6 @@ import {
   usePageSlot,
   useSharedCurrency,
 } from "./app/navigation";
-import { useSession } from "./app/session";
 import {
   choiceSelection,
   selectionChoice,
@@ -55,7 +54,6 @@ function saved(): Choice {
 }
 export function MarketPage({ context }: { context: TelegramContext }) {
   const controls = useRef<HTMLElement>(null);
-  const telegram = useSession();
   const navigation = useNavigation();
   const [currency, setCurrency] = useSharedCurrency();
   const retainedFeed = usePageSlot("market.feed", () => ({
@@ -238,10 +236,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
       ),
     [displayOrders],
   );
-  useNavigationBack(accountOpen || !!openTrait, () => {
-    if (accountOpen) setAccountOpen(false);
-    else if (openTrait) setOpenTrait(undefined);
-  });
+  useNavigationBack(!!openTrait, () => setOpenTrait(undefined));
   const set = (next: Choice) => {
     closeSlug();
     setCurrency(next.currency);
@@ -334,27 +329,18 @@ export function MarketPage({ context }: { context: TelegramContext }) {
             aria-label="Market controls"
             data-scroll-container
           >
-            <div className="sidebar-heading">
-              <BrandMark animated />
-              <CurrencyPicker
-                currencies={currencies}
-                value={choice.currency}
-                change={(currency) => {
-                  if (currency !== choice.currency)
-                    set({ ...choice, currency, venue: "", min: "", max: "" });
-                }}
-              />
-            </div>
+            <AppHeader
+              context={context}
+              currencies={currencies}
+              currency={choice.currency}
+              changeCurrency={(currency) => {
+                if (currency !== choice.currency)
+                  set({ ...choice, currency, venue: "", min: "", max: "" });
+              }}
+              accountOpen={accountOpen}
+              setAccountOpen={setAccountOpen}
+            />
             <AppNavigation page="market" />
-            <header className="account-bar">
-              <TelegramAccount
-                telegram={telegram}
-                context={context}
-                open={accountOpen}
-                setOpen={setAccountOpen}
-                selection={selectionAt(location)}
-              />
-            </header>
             <CollectionRail
               collections={availableTypes}
               selected={choice.collection}

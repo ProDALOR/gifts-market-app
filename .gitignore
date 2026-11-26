@@ -20,6 +20,9 @@ __pycache__/
 
 /bot-data/
 
+# One-off server deployment configuration stays local.
+/deploy/
+
 # MTProto sessions contain authentication keys, including in custom data directories.
 *.mtproto.sqlite*
 
@@ -37,3 +40,4 @@ __pycache__/
 web/test-artifacts/
 
 *.logs.txt
+docs/deployment.md

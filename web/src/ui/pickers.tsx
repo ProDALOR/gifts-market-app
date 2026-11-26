@@ -5,7 +5,7 @@ export function CurrencyPicker({
   value,
   change,
 }: {
-  currencies: string[];
+  currencies: readonly string[];
   value: string;
   change: (currency: string) => void;
 }) {

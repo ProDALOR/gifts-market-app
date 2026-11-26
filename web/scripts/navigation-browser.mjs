@@ -145,8 +145,30 @@ try {
       (url) => url.pathname === "/telegram",
       (r) => {
         authRequests++;
-        return r.fulfill({ json: { auth_enabled: false } });
+        return r.fulfill({
+          json: {
+            auth_enabled: true,
+            bot_id: "42",
+            bot_username: "fixture_bot",
+          },
+        });
       },
+    );
+    await page.route(
+      (url) => url.pathname === "/auth/telegram",
+      (r) =>
+        r.fulfill({
+          json: {
+            token: "navigation-session-fixture",
+            expires_at: new Date(Date.now() + 86400000).toISOString(),
+            user: {
+              id: "7",
+              first_name: "Fixture",
+              last_name: null,
+              username: null,
+            },
+          },
+        }),
     );
     await page.route(
       (url) => url.pathname.startsWith("/media/"),

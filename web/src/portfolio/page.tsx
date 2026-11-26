@@ -23,10 +23,11 @@ import { TraitPickers } from "../collections/trait-pickers";
 import { TraitPreview } from "../previews/trait-preview";
 import { GiftPlaceholder } from "../previews/gift-placeholder";
 import { FloorsProvider } from "../valuation/floors";
-import { CurrencyPicker, SortPicker } from "../ui/pickers";
+import { SortPicker } from "../ui/pickers";
 import { Quote } from "../ui/market-controls";
 import { RelativeAge } from "../ui/relative-age";
-import { BrandMark } from "../brand/brand-mark";
+import { AppHeader } from "../app/header";
+import { useBackgroundPlaybackSuspension } from "../previews/use-playback";
 import { VirtualGiftGrid } from "../orderbook/virtual-gift-grid";
 import { BackToTop } from "../ui/back-to-top";
 import type { TraitKey } from "../market";
@@ -229,6 +230,8 @@ function PortfolioView({
     `portfolio.filters.${user ?? "empty"}`,
     () => initialFilters,
   );
+  const [accountOpen, setAccountOpen] = useState(false);
+  useBackgroundPlaybackSuspension(accountOpen);
   const [open, setOpen] = useState<TraitKey>(),
     [selectedId, setSelected] = useState<string>(),
     [previewIds, setPreviewIds] = useState<string[]>([]),
@@ -402,14 +405,14 @@ function PortfolioView({
             ref={controls}
             data-scroll-container
           >
-            <div className="sidebar-heading">
-              <BrandMark animated />
-              <CurrencyPicker
-                currencies={["GRAM", "XTR"]}
-                value={currency}
-                change={setCurrency}
-              />
-            </div>
+            <AppHeader
+              context={context}
+              currencies={["GRAM", "XTR"]}
+              currency={currency}
+              changeCurrency={setCurrency}
+              accountOpen={accountOpen}
+              setAccountOpen={setAccountOpen}
+            />
             <AppNavigation page="portfolio" />
             <button
               className="collection-all"
@@ -695,7 +698,10 @@ function PortfolioView({
               )}
           </section>
         </main>
-        <BackToTop target={controls} blocked={!!selected || ownerOpen} />
+        <BackToTop
+          target={controls}
+          blocked={!!selected || ownerOpen || accountOpen}
+        />
         {selected?.resolved && (
           <PortfolioDetails
             item={selected}

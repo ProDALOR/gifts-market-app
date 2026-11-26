@@ -1,150 +1,60 @@
-import { useEffect, useRef, useState } from "react";
-import { ApiFailure, request } from "./market";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from "react";
+import { request } from "./market";
 import {
   applyTheme,
   miniappEnabled,
-  cachedSession,
-  launchFingerprint,
-  saveSession,
   telegramLink,
-  sessionPaused,
-  pauseSession,
+  telegramReopenLink,
 } from "./telegram";
-import type {
-  Identity,
-  Session,
-  TelegramConfig,
-  TelegramContext,
-} from "./telegram";
+import type { TelegramContext } from "./telegram";
+import { TelegramSessionController } from "./telegram-session";
+import { useNavigationBack } from "./app/navigation";
 export function useTelegram(context: TelegramContext) {
-  const [config, setConfig] = useState<TelegramConfig>();
-  const [identity, setIdentity] = useState<Identity>();
-  const [state, setState] = useState(""),
-    [error, setError] = useState("");
-  const [attempt, setAttempt] = useState(0);
-  const paused = useRef(false);
-  const credential = useRef<{ botId: string; launch: string } | undefined>(
-    undefined,
+  const controller = useMemo(
+    () =>
+      new TelegramSessionController(
+        context,
+        request,
+        () =>
+          document.visibilityState !== "hidden" && navigator.onLine !== false,
+      ),
+    [context],
   );
+  const state = useSyncExternalStore(controller.subscribe, controller.current);
   useEffect(() => {
     const app = context.app;
-    if (!app) return;
-    const update = () => applyTheme(app);
+    const update = () => {
+      if (app) applyTheme(app);
+    };
+    const resume = () => controller.resume();
     const events = [
       "themeChanged",
       "safeAreaChanged",
       "contentSafeAreaChanged",
       "viewportChanged",
     ];
-    for (const event of events) app.onEvent(event, update);
+    update();
+    for (const event of events) app?.onEvent(event, update);
+    app?.onEvent("activated", resume);
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("online", resume);
+    if (miniappEnabled) controller.start();
     return () => {
-      for (const event of events) app.offEvent(event, update);
+      controller.stop();
+      for (const event of events) app?.offEvent(event, update);
+      app?.offEvent("activated", resume);
+      document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("online", resume);
     };
-  }, [context]);
-  useEffect(() => {
-    if (!miniappEnabled) return;
-    const abort = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    void (async () => {
-      const config = await request<TelegramConfig>(
-        "/telegram",
-        undefined,
-        abort.signal,
-      );
-      if (abort.signal.aborted) return;
-      setConfig(config);
-      if (
-        !config.auth_enabled ||
-        !config.bot_id ||
-        !context.initData ||
-        paused.current
-      )
-        return;
-      setState("Signing in…");
-      setError("");
-      const launch = await launchFingerprint(context);
-      credential.current = { botId: config.bot_id, launch };
-      if (sessionPaused(config.bot_id, launch)) {
-        setState("Sign in");
-        return;
-      }
-      const saved = cachedSession(config.bot_id, launch);
-      let authenticated: Identity | undefined;
-      if (saved) {
-        try {
-          authenticated = await request<Identity>(
-            "/auth/me",
-            undefined,
-            abort.signal,
-            saved.token,
-          );
-        } catch (error) {
-          if (!(error instanceof ApiFailure) || error.code !== "unauthorized")
-            throw error;
-          saveSession(config.bot_id, launch, null);
-        }
-      }
-      if (!authenticated) {
-        const session = await request<Session>(
-          "/auth/telegram",
-          { init_data: context.initData },
-          abort.signal,
-        );
-        authenticated = session;
-        if (!abort.signal.aborted)
-          saveSession(config.bot_id, launch, session.token);
-      }
-      if (!abort.signal.aborted) {
-        setIdentity(authenticated);
-        setState("");
-        timer = setTimeout(
-          () => {
-            setIdentity(undefined);
-            setState("Sign in");
-            saveSession(config.bot_id!, launch, null);
-          },
-          Math.max(
-            0,
-            new Date(authenticated.expires_at).getTime() - Date.now(),
-          ),
-        );
-      }
-    })().catch((error) => {
-      if (!abort.signal.aborted) {
-        setState("Sign in");
-        setError(
-          error instanceof Error
-            ? error.message
-            : "Telegram sign-in is unavailable",
-        );
-      }
-    });
-    return () => {
-      abort.abort();
-      clearTimeout(timer);
-    };
-  }, [context, attempt]);
-  return {
-    config,
-    identity,
-    state,
-    error,
-    retry() {
-      paused.current = false;
-      if (credential.current) pauseSession(credential.current.botId, null);
-      setAttempt((value) => value + 1);
-    },
-    logout() {
-      paused.current = true;
-      if (credential.current) {
-        saveSession(credential.current.botId, credential.current.launch, null);
-        pauseSession(credential.current.botId, credential.current.launch);
-      }
-      setIdentity(undefined);
-      setState("Sign in");
-      setError("");
-    },
-  };
+  }, [context, controller]);
+  return { ...state, retry: controller.retry, logout: controller.logout };
 }
 export function useTelegramBack(
   context: TelegramContext,
@@ -179,29 +89,103 @@ export function TelegramAccount({
   setOpen: (value: boolean) => void;
   selection: URLSearchParams;
 }) {
-  const link = telegramLink(telegram.config, selection);
+  const host = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const id = useId();
+  const close = useCallback(() => {
+    setOpen(false);
+    trigger.current?.focus({ preventScroll: true });
+  }, [setOpen]);
+  useNavigationBack(open, close, 20);
+  useEffect(() => {
+    if (!open) return;
+    menu.current?.focus({ preventScroll: true });
+    const outside = (event: PointerEvent) => {
+      if (!host.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open, close, setOpen]);
+  const link = context.initData
+    ? null
+    : telegramLink(telegram.config, selection);
+  const reopenLink =
+    telegram.status === "reopen"
+      ? telegramReopenLink(telegram.config, selection)
+      : null;
   if (!context.initData)
     return link ? (
       <a className="telegram-link" href={link} target="_blank" rel="noreferrer">
         {new URL(link).hostname === "t.me" ? "Telegram ↗" : "Open market ↗"}
       </a>
     ) : null;
-  if (!telegram.config?.auth_enabled) return null;
   const user = telegram.identity?.user;
+  const pending = telegram.status === "connecting";
+  const label = user ? `Account: ${user.first_name}` : "Telegram sign-in";
+  const initial = user?.first_name
+    .match(/[\p{L}\p{N}]/u)?.[0]
+    .toLocaleUpperCase();
   return (
-    <div className="telegram-account">
+    <div
+      className="telegram-account"
+      ref={host}
+      onBlur={(event) => {
+        if (
+          event.relatedTarget &&
+          !event.currentTarget.contains(event.relatedTarget)
+        )
+          setOpen(false);
+      }}
+    >
       <button
+        ref={trigger}
         className="account-button"
         aria-expanded={open}
-        aria-label={user ? `Account: ${user.first_name}` : "Telegram sign-in"}
+        aria-controls={open ? id : undefined}
+        aria-haspopup="dialog"
+        aria-label={label}
+        aria-busy={pending}
+        title={user?.first_name || "Telegram account"}
         onClick={() => setOpen(!open)}
       >
-        <span className={`account-dot ${user ? "verified" : ""}`} />{" "}
-        {user?.first_name || telegram.state || "Sign in"}
+        {initial ? (
+          <span className="account-initial" aria-hidden="true">
+            {initial}
+          </span>
+        ) : (
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+          >
+            <circle cx="12" cy="8" r="4" />
+            <path d="M4 21v-2a8 8 0 0 1 16 0v2" />
+          </svg>
+        )}
+        <span
+          aria-hidden="true"
+          className={`account-dot ${user ? "verified" : telegram.status}`}
+        />
       </button>
       {open && (
         <div
           className="account-menu"
+          id={id}
+          ref={menu}
+          tabIndex={-1}
           role="dialog"
           aria-label="Telegram account"
         >
@@ -215,7 +199,7 @@ export function TelegramAccount({
               <button
                 onClick={() => {
                   telegram.logout();
-                  setOpen(false);
+                  close();
                 }}
               >
                 Sign out
@@ -223,16 +207,41 @@ export function TelegramAccount({
             </>
           ) : (
             <>
-              <strong>Telegram sign-in</strong>
-              <p>
-                {telegram.error || "Sign in to use your Telegram identity."}
+              <strong>
+                {telegram.status === "reopen"
+                  ? "Reopen in Telegram"
+                  : "Telegram sign-in"}
+              </strong>
+              <p role="status">
+                {pending
+                  ? "Signing in…"
+                  : telegram.error || "Sign in to use your Telegram identity."}
               </p>
-              <button
-                onClick={telegram.retry}
-                disabled={telegram.state === "Signing in…"}
-              >
-                Sign in
-              </button>
+              {telegram.status === "reopen" ? (
+                reopenLink && (
+                  <a
+                    className="account-action"
+                    href={reopenLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(event) => {
+                      if (context.app?.openTelegramLink) {
+                        event.preventDefault();
+                        context.app.openTelegramLink(reopenLink);
+                      }
+                    }}
+                  >
+                    Reopen in Telegram
+                  </a>
+                )
+              ) : (
+                <button onClick={telegram.retry} disabled={pending}>
+                  {telegram.status === "retrying" ||
+                  telegram.status === "unavailable"
+                    ? "Retry sign-in"
+                    : "Sign in"}
+                </button>
+              )}
             </>
           )}
         </div>
