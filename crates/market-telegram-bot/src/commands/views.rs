@@ -1,13 +1,12 @@
 //! Immutable view destinations over shared reports and bounded reusable sales pages.
 use super::{
     history::{self, Pages, SalesState, Scope},
-    interactions::Views,
     report::{Report, escape, report_error},
+    reports::{ReportAction, ReportCallback, Reports},
     *,
 };
 use market_gifts::OrderKey;
 use std::sync::Arc;
-use tokio::sync::OnceCell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Tab {
@@ -49,8 +48,7 @@ impl ViewState {
 pub(super) enum Action {
     Tab(Tab),
     Scope(Scope),
-    Next(OrderKey),
-    Previous,
+    Page(usize),
     Refresh,
     Retry,
     Mode(GridMode),
@@ -61,9 +59,7 @@ pub(super) struct View {
     pub state: ViewState,
     pages: Arc<Pages>,
     documents: Arc<orders::ModelDocuments>,
-    action: Action,
-    // Concurrent/repeated delivery of the same button never repeats a successful action.
-    reply: Arc<OnceCell<Reply>>,
+    next: Option<OrderKey>,
 }
 fn model_documents(report: &Report) -> orders::ModelDocuments {
     report
@@ -90,28 +86,49 @@ impl View {
             pages: Arc::new(Pages::default()),
             documents: Arc::new(documents),
             report,
-            action: Action::Retry,
-            reply: Default::default(),
+            next: None,
         })
     }
-    fn target(&self, action: Action) -> Self {
-        Self {
-            action,
-            reply: Default::default(),
-            ..self.clone()
+    fn destination(&self, action: Action) -> Destination {
+        let mut target = Destination {
+            tab: self.state.tab,
+            scope: self.state.sales.scope,
+            page: self.state.sales.page(),
+            mode: GridMode::Linked,
+            refresh: false,
+        };
+        match action {
+            Action::Tab(tab) => target.tab = tab,
+            Action::Scope(scope) => {
+                target.tab = Tab::Sales;
+                target.scope = scope;
+                target.page = 1;
+            }
+            Action::Page(page) => target.page = page,
+            Action::Refresh => target.refresh = true,
+            Action::Retry => {}
+            Action::Mode(mode) => target.mode = mode,
         }
+        target
     }
 }
-impl Views {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Destination {
+    pub tab: Tab,
+    pub scope: Scope,
+    pub page: usize,
+    pub mode: GridMode,
+    pub refresh: bool,
+}
+struct Buttons {
+    id: u64,
+}
+impl Buttons {
     fn button(&self, view: &View, action: Option<Action>, label: &str, selected: bool) -> String {
-        match action {
-            Some(action) => {
-                let token = self.insert(view.target(action));
-                let token = std::str::from_utf8(&token).expect("ASCII callback token");
-                rich::button(label, Some(token), selected)
-            }
-            None => rich::button(label, None, selected),
-        }
+        let data = action.map(|action| {
+            ReportCallback::new(self.id, ReportAction::Gift(view.destination(action))).to_string()
+        });
+        rich::button(label, data.as_deref(), selected)
     }
     fn choices(&self, view: &View) -> String {
         let mut html = String::from("<tg-button-row>");
@@ -131,55 +148,50 @@ impl Views {
 impl MarketCommands {
     pub(super) fn open_report(&self, report: Arc<Report>) -> Reply {
         match View::initial(report.clone()) {
-            Some(view) => render(&self.views, &view, None, None),
+            Some(view) => render(&self.reports, &view, None, None),
             None => report.render(),
         }
     }
-    pub(super) async fn view(&self, id: u64) -> Reply {
-        let Some(view) = self.views.get(id) else {
-            return Reply::notice(
-                "This report has expired. Send the gift link again for a fresh valuation.",
-            );
-        };
-        view.reply
-            .get_or_init(|| self.navigate(&view))
-            .await
-            .clone()
-    }
-    async fn navigate(&self, original: &View) -> Reply {
+    pub(super) async fn navigate_gift(&self, original: &View, target: Destination) -> Reply {
         let mut view = original.clone();
-        if !matches!(original.action, Action::Mode(GridMode::Gallery)) {
-            view.state.mode = GridMode::Linked;
-        }
         let mut notice = None;
-        match &original.action {
-            Action::Tab(tab) => {
-                view.state.tab = *tab;
+        if !view
+            .report
+            .gift()
+            .is_some_and(|gift| target.scope.supported(gift))
+        {
+            return Reply::notice("These gift conditions are unavailable. Request a fresh report.");
+        }
+        if target.scope != view.state.sales.scope {
+            if target.page != 1 {
+                return Reply::notice("Open the first page of these sales first.");
             }
-            Action::Scope(scope)
-                if view.report.gift().is_some_and(|gift| scope.supported(gift)) =>
-            {
-                view.state.tab = Tab::Sales;
-                view.state.sales.scope = *scope;
-                view.state.sales.starts.clear();
-            }
-            Action::Next(start) if view.state.sales.page() < history::MAX_PAGES => {
-                view.state.sales.starts.push(start.clone());
-            }
-            Action::Previous => {
-                view.state.sales.starts.pop();
-            }
-            Action::Refresh => match self.load_report(view.report.query.clone()).await {
+            view.state.sales.starts.clear();
+        } else if target.page <= view.state.sales.page() {
+            view.state
+                .sales
+                .starts
+                .truncate(target.page.saturating_sub(1));
+        } else if target.page == view.state.sales.page() + 1 {
+            let Some(next) = view.next.clone() else {
+                return Reply::notice("No more sales.");
+            };
+            view.state.sales.starts.push(next);
+        } else {
+            return Reply::notice("Open the previous sales page first.");
+        }
+        view.state.tab = target.tab;
+        view.state.sales.scope = target.scope;
+        view.state.mode = target.mode;
+        if target.refresh {
+            match self.load_report(view.report.query.clone()).await {
                 Ok(report) => {
                     view.state.use_report(&view.report, &report);
                     view.documents = Arc::new(model_documents(&report));
                     view.report = report;
                 }
                 Err(error) => notice = Some(report_error(&error)),
-            },
-            Action::Mode(mode) => view.state.mode = *mode,
-            Action::Retry => {}
-            _ => return Reply::text("Request a fresh valuation to browse this report."),
+            }
         }
         let mut page = None;
         if view.state.tab == Tab::Sales
@@ -209,7 +221,7 @@ impl MarketCommands {
                 }
             }
         }
-        let mut reply = render(&self.views, &view, page.as_deref(), notice.as_deref());
+        let mut reply = render(&self.reports, &view, page.as_deref(), notice.as_deref());
         if view.state.tab == Tab::Sales
             && view.state.mode == GridMode::Gallery
             && let Some(page) = &page
@@ -223,11 +235,19 @@ impl MarketCommands {
     }
 }
 pub(super) fn render(
-    views: &Views,
+    reports: &Reports,
     view: &View,
     page: Option<&market_actors::OrderResult>,
     notice: Option<&str>,
 ) -> Reply {
+    let mut cached = view.clone();
+    cached.next = page
+        .and_then(|p| p.range.end.as_ref())
+        .and_then(|key| key.encode().try_into().ok());
+    let has_next = cached.next.is_some();
+    let views = Buttons {
+        id: reports.gift(cached),
+    };
     let mut reply = view.report.render_panel(
         view.state.tab == Tab::Floors,
         &views.choices(view),
@@ -299,12 +319,10 @@ pub(super) fn render(
             }
         }
         let html = reply.rich_html.as_mut().expect("gift report HTML");
-        let next = page
-            .and_then(|page| page.range.end.as_ref())
-            .filter(|_| view.state.sales.page() < history::MAX_PAGES)
-            .and_then(|key| key.encode().try_into().ok())
-            .map(Action::Next);
-        let previous = (!view.state.sales.starts.is_empty()).then_some(Action::Previous);
+        let next = (has_next && view.state.sales.page() < history::MAX_PAGES)
+            .then_some(Action::Page(view.state.sales.page() + 1));
+        let previous = (!view.state.sales.starts.is_empty())
+            .then_some(Action::Page(view.state.sales.page().saturating_sub(1)));
         if view.state.mode == GridMode::Linked && (previous.is_some() || next.is_some()) {
             html.push_str("<tg-button-row>");
             html.push_str(&views.button(view, previous, "←", false));
@@ -362,7 +380,7 @@ mod tests {
                 end: None,
             },
         };
-        let views = Views::default();
+        let views = Reports::default();
         let reply = render(&views, &view, Some(&page), None);
         let html = reply.rich_html.unwrap();
         assert_eq!(
@@ -383,7 +401,7 @@ mod tests {
             .push("00".to_owned().try_into().unwrap());
         let missing = render(&views, &view, None, Some("Updates unavailable"));
         let html = missing.rich_html.unwrap();
-        assert!(html.contains("type=\"callback_data\" data=\"v:"));
+        assert!(html.contains("type=\"callback_data\" data=\"r:"));
         assert!(
             html.contains(">←</tg-button>"),
             "can return to a cached page"

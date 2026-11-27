@@ -10,8 +10,63 @@ mod render;
 mod request;
 use render::render;
 pub use request::{PortfolioAction, PortfolioMode, PortfolioRequest};
-pub(super) use request::{callback, inline, parse_args};
+pub(super) use request::{callback, inline, parse_args, parse_sort, sort_code};
 impl MarketCommands {
+    pub(super) async fn portfolio_target(&self, target: sharing::PortfolioTarget) -> Reply {
+        match self.load_portfolio_target(target).await {
+            Ok(reply) => reply,
+            Err(error) => Reply::text(error.to_string()),
+        }
+    }
+    pub(super) async fn load_portfolio_target(
+        &self,
+        mut target: sharing::PortfolioTarget,
+    ) -> Result<Reply, sharing::ShareError> {
+        use sharing::ShareError;
+        target
+            .validate()
+            .map_err(|e| ShareError::Invalid(e.to_string()))?;
+        target.currency_id = BotCurrency::parse(target.currency_id.as_str())
+            .ok_or_else(|| ShareError::Invalid("Unsupported currency".into()))?
+            .id();
+        let fallback = sharing::portfolio_fallback(&target, self.public_url.as_ref())?;
+        let input = market_actors::input::GiftFilters {
+            collection_id: target.filters.collection_id,
+            currency_id: target.currency_id.clone(),
+            models: target.filters.models,
+            backdrops: target.filters.backdrops,
+            patterns: target.filters.patterns,
+            venue_id: None,
+            price: None,
+            number: None,
+        };
+        let filters = if input.has_aliases() {
+            self.market
+                .resolve_filters(input)
+                .await
+                .map_err(|e| ShareError::Unavailable(e.to_string()))?
+        } else {
+            input
+                .into_resolved()
+                .map_err(|e| ShareError::Invalid(e.to_string()))?
+        };
+        let query = market_portfolio::ResolvedPortfolioTarget {
+            user_id: target.user_id,
+            currency_id: target.currency_id,
+            sort: target.sort,
+            filters: market_portfolio::ResolvedPortfolioFilters {
+                collection_id: filters.collection_id,
+                models: filters.models,
+                backdrops: filters.backdrops,
+                patterns: filters.patterns,
+                number: target.filters.number,
+            },
+        }
+        .into_query();
+        self.shared_portfolio(query)
+            .await
+            .map(|reply| sharing::with_share(reply, &fallback))
+    }
     pub(super) async fn shared_portfolio(
         &self,
         query: ResolvedPortfolioReadQuery,
@@ -56,10 +111,7 @@ impl MarketCommands {
                         Ok(())
                     }
                 })
-                .map_err(|e| match e {
-                    market_portfolio::PortfolioError::RestartRead => ShareError::RestartRead,
-                    _ => ShareError::Unavailable(e.to_string()),
-                })?;
+                .map_err(|e| ShareError::Unavailable(e.to_string()))?;
             if offset > 0 && offset >= page.selection.count {
                 return Err(ShareError::Invalid(
                     "No gifts at this position; reload the portfolio page".into(),

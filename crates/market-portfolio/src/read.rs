@@ -143,6 +143,38 @@ pub enum PortfolioSort {
 fn page_size() -> usize {
     100
 }
+/// A reusable portfolio selection, independent of page coverage and inventory versions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(bound(
+    deserialize = "C: Deserialize<'de>, M: Deserialize<'de>, B: Deserialize<'de>, P: Deserialize<'de>"
+))]
+pub struct PortfolioTarget<C = CollectionRef, M = ModelRef, B = BackdropRef, P = PatternRef> {
+    pub user_id: UserId,
+    pub currency_id: CurrencyId,
+    #[serde(default)]
+    pub filters: PortfolioFilters<C, M, B, P>,
+    #[serde(default)]
+    pub sort: PortfolioSort,
+}
+pub type ResolvedPortfolioTarget = PortfolioTarget<CollectionId, ModelId, BackdropId, PatternId>;
+impl<C, M: Ord, B: Ord, P: Ord> PortfolioTarget<C, M, B, P> {
+    pub fn validate(&self) -> Result<(), PortfolioError> {
+        self.filters.validate()
+    }
+    pub fn into_query(self) -> PortfolioReadQuery<C, M, B, P> {
+        PortfolioReadQuery {
+            user_id: self.user_id,
+            currency_id: self.currency_id,
+            filters: self.filters,
+            sort: self.sort,
+            offset: 0,
+            limit: 30,
+            version: None,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

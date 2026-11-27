@@ -20,6 +20,15 @@ pub(crate) struct Binding {
     live: Arc<Live>,
 }
 impl PreparedMessages {
+    /// A disconnected worker can still offer stateless share targets without building a report.
+    pub fn available(&self) -> bool {
+        self.0
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|live| !live.stopped.is_cancelled())
+    }
+
     pub(crate) fn bind<T: TelegramActions + 'static>(
         &self,
         actions: T,
@@ -114,6 +123,7 @@ mod tests {
     #[tokio::test]
     async fn reconnect_cancels_old_preparations_and_old_cleanup_cannot_clear_new_actions() {
         let messages = PreparedMessages::default();
+        assert!(!messages.available());
         assert_eq!(
             messages
                 .prepare(7, Reply::text("report"))
@@ -122,6 +132,7 @@ mod tests {
             BotError::Transport
         );
         let old = messages.bind(Actions(true), None);
+        assert!(messages.available());
         let pending = tokio::spawn({
             let messages = messages.clone();
             async move { messages.prepare(7, Reply::text("report")).await }
@@ -130,11 +141,13 @@ mod tests {
         let new = messages.bind(Actions(false), None);
         assert_eq!(pending.await.unwrap().unwrap_err(), BotError::Transport);
         drop(old);
+        assert!(messages.available());
         assert_eq!(
             messages.prepare(7, Reply::text("report")).await.unwrap().id,
             "new-generation"
         );
         drop(new);
+        assert!(!messages.available());
         assert_eq!(
             messages
                 .prepare(7, Reply::text("report"))

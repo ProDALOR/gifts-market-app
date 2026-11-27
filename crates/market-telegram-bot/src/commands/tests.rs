@@ -49,7 +49,7 @@ pub(super) fn view() -> Arc<report::Report> {
 pub(super) fn report_view() -> views::View {
     views::View::initial(view()).unwrap()
 }
-fn callback(html: &str, label: &str) -> u64 {
+fn callback(html: &str, label: &str) -> ReportCallback {
     let end = html.find(&format!(">{label}</tg-button>")).unwrap();
     let start = html[..end].rfind("<tg-button ").unwrap();
     let token = html[start..end]
@@ -59,7 +59,7 @@ fn callback(html: &str, label: &str) -> u64 {
         .split('"')
         .next()
         .unwrap();
-    u64::from_str_radix(token.split_once(':').unwrap().1, 16).unwrap()
+    token.parse().unwrap()
 }
 #[test]
 fn entry_points_share_value_requests_without_trusting_payload_identities() {
@@ -249,7 +249,7 @@ fn report_icons_keep_custom_emoji_fallbacks_and_one_artwork_reference() {
         !html.contains("<img"),
         "only the transport adds the single large artwork"
     );
-    let views = interactions::Views::default();
+    let views = cache::Cache::new("t", 256);
     let token = views.insert(views::View::initial(shared_report.clone()).unwrap());
     let id = u64::from_str_radix(std::str::from_utf8(&token[2..]).unwrap(), 16).unwrap();
     let restored = views.get(id).unwrap();
@@ -265,7 +265,7 @@ fn report_icons_keep_custom_emoji_fallbacks_and_one_artwork_reference() {
 }
 #[test]
 fn callback_cache_is_bounded_and_tokens_expire_without_sliding_their_deadline() {
-    let views = interactions::Views::default();
+    let views = cache::Cache::new("t", 256);
     let token = views.insert(report_view());
     assert!(token.len() <= 64);
     let event = Event::Callback {
@@ -278,9 +278,10 @@ fn callback_cache_is_bounded_and_tokens_expire_without_sliding_their_deadline() 
             access_hash: 1,
         }),
     };
-    let Command::View(id) = interactions::parse_event(&event, &[]).unwrap().command else {
+    let Event::Callback { data, .. } = event else {
         panic!()
     };
+    let id = interactions::callback_id(std::str::from_utf8(&data[2..]).unwrap()).unwrap();
     assert!(views.get(id).is_some());
     for _ in 0..256 {
         views.insert(report_view());
@@ -560,14 +561,27 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     );
     let market_forward_id = callback(market_page.rich_html.as_ref().unwrap(), "→");
     let (market_next, duplicate) = tokio::join!(
-        commands.market_view(market_forward_id),
-        commands.market_view(market_forward_id)
+        commands.report(market_forward_id),
+        commands.report(market_forward_id)
     );
     assert_eq!(market_next, duplicate);
+    let jump = ReportCallback::new(
+        market_forward_id.id,
+        reports::ReportAction::Market(browse::Destination {
+            page: 9,
+            mode: GridMode::Linked,
+            refresh: false,
+        }),
+    );
+    assert_eq!(
+        commands.report(jump).await.kind,
+        market_telegram::ReplyKind::Notice,
+        "forged jumps cannot trigger a scan through unloaded pages"
+    );
     assert!(market_next.text.contains("#212"));
     assert!(!market_next.text.contains("#211"));
     let market_back = commands
-        .market_view(callback(market_next.rich_html.as_ref().unwrap(), "←"))
+        .report(callback(market_next.rich_html.as_ref().unwrap(), "←"))
         .await;
     assert!(market_back.text.contains("#201"));
     let cached_market_next = callback(market_back.rich_html.as_ref().unwrap(), "→");
@@ -626,7 +640,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     let inline_event = |user_id| Event::Callback {
         id: 101,
         user_id,
-        data: format!("i:{protected_sales:016x}").into_bytes(),
+        data: protected_sales.to_string().into_bytes(),
         target: CallbackTarget::Inline(InlineMessageId::Standard {
             dc_id: 2,
             id: 3,
@@ -650,7 +664,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     let allowed = commands.parse_event(&inline_event(7), &[]).unwrap();
     let inline_sales = commands.handle(allowed).await.unwrap();
     let inline_html = inline_sales.rich_html.as_ref().unwrap();
-    assert!(inline_html.contains("type=\"callback_data\" data=\"i:"));
+    assert!(inline_html.contains("type=\"callback_data\" data=\"r:"));
     assert!(!inline_html.contains("type=\"callback_data\" data=\"v:"));
     assert!(
         inline_sales.text.contains("#124"),
@@ -665,8 +679,23 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         "the original cached reply stays unchanged"
     );
     let sales_id = callback(html, "Sales");
-    let (sales, duplicate) = tokio::join!(commands.view(sales_id), commands.view(sales_id));
+    let (sales, duplicate) = tokio::join!(commands.report(sales_id), commands.report(sales_id));
     let sales_html = sales.rich_html.as_ref().unwrap();
+    let jump = ReportCallback::new(
+        sales_id.id,
+        reports::ReportAction::Gift(views::Destination {
+            tab: views::Tab::Sales,
+            scope: history::Scope::Pair,
+            page: 10,
+            mode: GridMode::Linked,
+            refresh: false,
+        }),
+    );
+    assert_eq!(
+        commands.report(jump).await.kind,
+        market_telegram::ReplyKind::Notice,
+        "sales require a known page boundary rather than scanning to an arbitrary page"
+    );
     assert_eq!(
         sales.rich_html, duplicate.rich_html,
         "duplicate clicks reuse one rendered result"
@@ -696,7 +725,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     assert!(sales_html.contains("https://example.com/sale?gift=123&amp;venue=v"));
     // Real typed ordering keys stay opaque to preview rendering. Captures are filtered,
     // sorted and bounded using the same period and selected traits as live reads.
-    let source_view = commands.views.get(sales_id).unwrap();
+    let source_view = commands.reports.gift_view(sales_id).unwrap();
     let query = source_view
         .state
         .sales
@@ -801,25 +830,25 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     assert!(sales_html.contains("type=\"disabled\">←</tg-button>"));
     assert_eq!(sales.artwork, reply.artwork);
     let next_id = callback(sales_html, "→");
-    let next = commands.view(next_id).await;
+    let next = commands.report(next_id).await;
     assert!(next.text.contains("#129"));
     assert!(!next.text.contains("#124"));
     let next_html = next.rich_html.as_ref().unwrap();
     assert!(next_html.contains(">2</tg-button>"));
     assert!(next_html.contains("type=\"disabled\">→</tg-button>"));
     let previous_id = callback(next_html, "←");
-    let back = commands.view(previous_id).await;
+    let back = commands.report(previous_id).await;
     assert!(back.text.contains("#124"));
     assert_eq!(
-        commands.view(next_id).await.rich_html,
+        commands.report(next_id).await.rich_html,
         next.rich_html,
         "repeated Next does not advance twice"
     );
-    let overview = commands.view(callback(next_html, "Floors")).await;
+    let overview = commands.report(callback(next_html, "Floors")).await;
     let overview_html = overview.rich_html.as_ref().unwrap();
     assert!(overview_html.contains("<th align=\"left\">Attribute</th>"));
     assert!(!overview.text.contains("Recent sales"));
-    let returned = commands.view(callback(overview_html, "Sales")).await;
+    let returned = commands.report(callback(overview_html, "Sales")).await;
     assert!(
         returned
             .rich_html
@@ -828,7 +857,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             .contains(">2</tg-button>"),
         "tabs preserve the visited sales page"
     );
-    let scoped = commands.view(callback(next_html, "Collection")).await;
+    let scoped = commands.report(callback(next_html, "Collection")).await;
     assert!(
         scoped
             .rich_html
@@ -837,7 +866,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             .contains(">1</tg-button>")
     );
     assert!(scoped.text.contains("#124"));
-    let refreshed = commands.view(callback(next_html, "↻")).await;
+    let refreshed = commands.report(callback(next_html, "↻")).await;
     assert!(
         refreshed
             .rich_html
@@ -846,13 +875,13 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             .contains(">2</tg-button>")
     );
     assert!(refreshed.text.contains("#129"));
+    // Bind the trusted renderer fixtures just as the ordinary command entry point does.
+    commands.reports.reply(7, market_next.clone());
+    commands.reports.reply(7, next.clone());
     // Gallery is an explicit snapshot, never another paginated image stream.
     let market_gallery = commands
         .handle(CommandRequest {
-            command: Command::MarketView(callback(
-                market_next.rich_html.as_ref().unwrap(),
-                "Gallery",
-            )),
+            command: Command::Report(callback(market_next.rich_html.as_ref().unwrap(), "Gallery")),
             user_id: 7,
             message_id: 0,
             inline: false,
@@ -877,35 +906,41 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             _ => None,
         })
         .unwrap();
-    let snapshot_id = u64::from_str_radix(snapshot_query.strip_prefix("s:").unwrap(), 16).unwrap();
-    let other_user = commands
-        .handle(CommandRequest {
-            command: Command::Shared(snapshot_id),
-            user_id: 999,
-            message_id: 0,
-            inline: false,
-        })
-        .await
+    assert!(!snapshot_query.starts_with("s:"));
+    let shared_request = commands
+        .parse_event(
+            &Event::Inline {
+                id: 201,
+                user_id: 999,
+                query: snapshot_query.clone(),
+                offset: String::new(),
+            },
+            &[],
+        )
         .unwrap();
-    assert_eq!(
-        other_user, market_gallery,
-        "sharing freezes the exact page and supports recipient resharing"
+    assert!(matches!(shared_request.command, Command::Browse(_)));
+    let other_user = commands.handle(shared_request).await.unwrap();
+    assert!(
+        other_user.artwork.is_none(),
+        "resharing resolves the target into fast linked browsing"
+    );
+    assert!(
+        other_user.text.contains("#201"),
+        "the current target starts at its first page"
     );
     assert_eq!(
-        commands.share_gallery(
-            commands
-                .market_view(callback(market_next.rich_html.as_ref().unwrap(), "Gallery"))
-                .await
-        ),
+        commands
+            .report(callback(market_next.rich_html.as_ref().unwrap(), "Gallery"))
+            .await,
         market_gallery,
-        "duplicate preview actions reuse the snapshot and share token"
+        "repeated explicit previews still reuse rendering"
     );
-    let browsed = commands.market_view(callback(gallery_html, "Browse")).await;
+    let browsed = commands.report(callback(gallery_html, "Browse")).await;
     assert!(browsed.artwork.is_none());
     assert!(browsed.text.contains("#212"));
     let sales_gallery = commands
         .handle(CommandRequest {
-            command: Command::View(callback(next_html, "Gallery")),
+            command: Command::Report(callback(next_html, "Gallery")),
             user_id: 7,
             message_id: 0,
             inline: false,
@@ -925,7 +960,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         );
     }
     let sales_browsed = commands
-        .view(callback(
+        .report(callback(
             sales_gallery.rich_html.as_ref().unwrap(),
             "Browse",
         ))
@@ -947,32 +982,38 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     data.task.run(stop).await.unwrap();
     assert!(
         commands
-            .market_view(cached_market_next)
+            .report(cached_market_next)
             .await
             .text
             .contains("#212"),
         "visited market pages survive service shutdown"
     );
-    let expired = commands.market_view(pending_market_next).await;
+    let expired = commands.report(pending_market_next).await;
     assert_eq!(expired.kind, market_telegram::ReplyKind::Notice);
     assert!(expired.text.contains("Refresh"));
     assert_eq!(
-        commands.market_view(callback(market_html, "↻")).await.kind,
+        commands.report(callback(market_html, "↻")).await.kind,
         market_telegram::ReplyKind::Notice,
         "a failed refresh must preserve the displayed market page",
     );
     assert_eq!(
-        commands.market_view(u64::MAX).await.kind,
+        commands
+            .report(ReportCallback {
+                id: u64::MAX,
+                ..sales_id
+            })
+            .await
+            .kind,
         market_telegram::ReplyKind::Notice
     );
 
     // Previously visited pages and quote columns still work after their services stop.
     let cached_back = commands
-        .view(callback(refreshed.rich_html.as_ref().unwrap(), "←"))
+        .report(callback(refreshed.rich_html.as_ref().unwrap(), "←"))
         .await;
     assert!(cached_back.text.contains("#124"));
     let cached_valuation = commands
-        .view(callback(cached_back.rich_html.as_ref().unwrap(), "Floors"))
+        .report(callback(cached_back.rich_html.as_ref().unwrap(), "Floors"))
         .await;
     assert!(
         cached_valuation
@@ -982,7 +1023,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             .contains("<th align=\"left\">Attribute</th>")
     );
     let cached_sales = commands
-        .view(callback(
+        .report(callback(
             cached_valuation.rich_html.as_ref().unwrap(),
             "Sales",
         ))
@@ -996,7 +1037,7 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             .contains("Retry sales")
     );
     let failed_refresh = commands
-        .view(callback(refreshed.rich_html.as_ref().unwrap(), "↻"))
+        .report(callback(refreshed.rich_html.as_ref().unwrap(), "↻"))
         .await;
     let failed_html = failed_refresh.rich_html.as_ref().unwrap();
     assert!(!failed_html.contains("Retry valuation"));
@@ -1007,17 +1048,17 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         failed_refresh.text.contains("#129"),
         "refresh failure retains report and page"
     );
-    let retry_refresh = commands.view(callback(failed_html, "↻")).await;
+    let retry_refresh = commands.report(callback(failed_html, "↻")).await;
     assert!(retry_refresh.text.contains("unavailable"));
     assert!(retry_refresh.text.contains("#129"));
     let missing = commands
-        .view(callback(cached_back.rich_html.as_ref().unwrap(), "Model"))
+        .report(callback(cached_back.rich_html.as_ref().unwrap(), "Model"))
         .await;
     let missing_html = missing.rich_html.as_ref().unwrap();
     assert!(missing_html.contains("Retry sales"));
     assert!(missing_html.contains("<b>Estimate</b>"));
     assert!(missing_html.contains("type=\"disabled\" style=\"primary\">Sales</tg-button>"));
-    let retry_sales = commands.view(callback(missing_html, "Retry sales")).await;
+    let retry_sales = commands.report(callback(missing_html, "Retry sales")).await;
     assert!(
         retry_sales
             .rich_html
@@ -1027,68 +1068,35 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
     );
     let commands = Arc::new(commands);
     let sharing = crate::Sharing::new(commands.clone(), Default::default());
-    let builds = std::sync::atomic::AtomicUsize::new(0);
-    let build = || async {
-        builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        tokio::task::yield_now().await;
-        Ok(view().render())
-    };
-    let (first, duplicate) = tokio::join!(
-        sharing.prepare(7, "same-target".into(), build()),
-        sharing.prepare(7, "same-target".into(), build())
-    );
-    let first = first.unwrap();
-    assert_eq!(first.inline_query, duplicate.unwrap().inline_query);
-    assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert!(
-        first.prepared.is_none(),
-        "offline native preparation keeps exact inline fallback"
-    );
-    let id = u64::from_str_radix(first.inline_query.strip_prefix("s:").unwrap(), 16).unwrap();
-    assert!(commands.shared_reply(7, id).await.rich_html.is_some());
-    assert!(commands.shared_reply(8, id).await.text.contains("expired"));
-    let different = sharing
-        .prepare(8, "same-target".into(), build())
+    let first = sharing
+        .gift(7, GiftSlug::new("Gift-123").unwrap(), "GRAM".into())
         .await
         .unwrap();
-    assert_ne!(first.inline_query, different.inline_query);
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(1),
-            sharing.prepare(7, "cancelled".into(), std::future::pending())
-        )
-        .await
-        .is_err()
-    );
-    let recovered = sharing
-        .prepare(7, "cancelled".into(), build())
+    let other = sharing
+        .gift(8, GiftSlug::new("Gift-123").unwrap(), "GRAM".into())
         .await
         .unwrap();
-    assert_ne!(first.inline_query, recovered.inline_query);
+    assert!(first.prepared.is_none());
     assert_eq!(
-        commands
-            .handle(CommandRequest {
-                command: Command::Shared(snapshot_id),
-                user_id: 500,
-                message_id: 0,
-                inline: false,
-            })
-            .await
-            .unwrap(),
-        market_gallery,
-        "shared galleries survive shutdown without querying market/valuation/media actors"
+        first.fallback, other.fallback,
+        "targets remain usable by new senders without cache tokens"
     );
-    let expired = commands.shares.insert(sharing::SharedView::Snapshot {
-        reply: Arc::new(market_gallery.clone()),
-        expires_at: jiff::Timestamp::now().as_second() - 1,
-    });
-    let expired_id = u64::from_str_radix(std::str::from_utf8(&expired[2..]).unwrap(), 16).unwrap();
+    assert_eq!(
+        first.fallback,
+        crate::ShareFallback::Inline {
+            query: "Gift-123 GRAM".into()
+        }
+    );
+    let market = sharing
+        .market(500, browse::parse("/market collection=Gift").unwrap())
+        .await
+        .unwrap();
+    let crate::ShareFallback::Inline { query } = market.fallback else {
+        panic!()
+    };
     assert!(
-        commands
-            .shared_reply(999, expired_id)
-            .await
-            .text
-            .contains("expired")
+        sharing::parse_target(&query).is_some(),
+        "stateless targets survive service shutdown"
     );
     reads.shutdown().await;
 }
@@ -1264,7 +1272,7 @@ async fn send_live_rich_preview_to_authorized_recipient() {
         if gallery {
             current.state.mode = GridMode::Gallery;
         }
-        let actions = interactions::Views::default();
+        let actions = reports::Reports::default();
         let result = history::captured_page(&current.report, &current.state.sales, rows).unwrap();
         let mut reply = views::render(&actions, &current, Some(&result), None);
         if gallery {
@@ -1301,7 +1309,7 @@ async fn send_live_rich_preview_to_authorized_recipient() {
         reply.bounded()
     } else {
         let current = views::View::initial(report).unwrap();
-        views::render(&interactions::Views::default(), &current, None, None).bounded()
+        views::render(&reports::Reports::default(), &current, None, None).bounded()
     };
     if let Ok(path) = std::env::var("MARKET_TEST_REPLY_OUTPUT") {
         std::fs::write(
@@ -1428,7 +1436,7 @@ fn preview_runs_use_distinct_positive_delivery_identities() {
 #[test]
 fn one_shot_previews_preserve_tab_layout_without_expiring_callbacks() {
     let current = views::View::initial(view()).unwrap();
-    let initial = views::render(&interactions::Views::default(), &current, None, None);
+    let initial = views::render(&reports::Reports::default(), &current, None, None);
     let preview = static_preview(initial.clone());
     let html = preview.rich_html.unwrap();
     assert!(!html.contains("callback_data"));

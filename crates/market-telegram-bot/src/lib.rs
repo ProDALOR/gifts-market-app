@@ -5,10 +5,10 @@ pub use icons::{ReportIcon, ReportIcons};
 mod service;
 pub use commands::{
     BotCurrency, Command, CommandKind, CommandRequest, GridMode, MarketCommands, PortfolioAction,
-    PortfolioMode, PortfolioRequest, ValueRequest,
+    PortfolioMode, PortfolioRequest, ReportCallback, ValueRequest,
 };
 pub use service::{BotService, configure};
 #[cfg(test)]
 mod tests;
 
-pub use commands::sharing::{ShareError, SharedMessage, Sharing};
+pub use commands::sharing::{PortfolioTarget, ShareError, ShareFallback, SharedMessage, Sharing};

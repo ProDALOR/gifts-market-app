@@ -152,9 +152,17 @@ try {
         shareTargets.push(r.request().postDataJSON());
         return r.fulfill({
           json: {
-            id: "prepared-" + shareTargets.length,
-            expires_at: Math.floor(Date.now() / 1000) + 600,
-            inline_query: "s:0000000000000001",
+            prepared: {
+              id: "prepared-" + shareTargets.length,
+              expires_at: Math.floor(Date.now() / 1000) + 600,
+            },
+            fallback: {
+              type: "inline",
+              query:
+                shareTargets.at(-1).type === "gift"
+                  ? `${shareTargets.at(-1).slug} ${shareTargets.at(-1).currency_id}`
+                  : "portfolio 7 GRAM",
+            },
           },
         });
       },
@@ -482,13 +490,13 @@ try {
         document.querySelector(".portfolio-total")?.textContent.trim() === "2",
     );
     await page
-      .getByRole("button", { name: "Share portfolio page", exact: true })
+      .getByRole("button", { name: "Share portfolio", exact: true })
       .click();
     await page.waitForFunction(() => window.shares.length === 1);
     assert.equal(shareTargets[0].type, "portfolio");
-    assert.equal(shareTargets[0].query.user_id, 7);
-    assert.equal(shareTargets[0].query.limit, 30);
-    assert.ok(shareTargets[0].query.version);
+    assert.equal(shareTargets[0].target.user_id, 7);
+    assert.equal(shareTargets[0].target.version, undefined);
+    assert.equal(shareTargets[0].target.offset, undefined);
     assert.equal(
       refreshCount,
       0,
@@ -619,7 +627,7 @@ try {
     assert.equal(shareTargets.at(-1).slug, `Gift-${sharedOrderId}`);
     assert.equal(
       await page.evaluate(() => window.inlineShares[0]),
-      "s:0000000000000001",
+      `${shareTargets.at(-1).slug} ${shareTargets.at(-1).currency_id}`,
     );
     await page.evaluate(() => {
       window.canPrepare = true;

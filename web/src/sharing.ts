@@ -1,24 +1,44 @@
 import { ApiFailure } from "./api-error.ts";
 import type { WebApp, OptionalSchema } from "./telegram.ts";
+import { selectionParams, filterLine } from "./market-selection.ts";
 import type { MarketSelection } from "./market-selection.ts";
-import type { PortfolioReadQuery } from "./portfolio/pager.ts";
+
 import type { SessionRequest } from "./telegram-session.ts";
 export type ShareTarget = OptionalSchema<
   "ShareTarget",
   | { type: "gift"; slug: string; currency_id: string }
   | { type: "market"; selection: MarketSelection }
-  | { type: "portfolio"; query: PortfolioReadQuery }
+  | {
+      type: "portfolio";
+      target: {
+        user_id: number;
+        currency_id: string;
+        filters?: {
+          collection_id?: string;
+          models?: string[];
+          backdrops?: string[];
+          patterns?: string[];
+          number?: number;
+        };
+        sort?:
+          | "position_asc"
+          | "position_desc"
+          | "number_asc"
+          | "number_desc"
+          | "value_asc"
+          | "value_desc";
+      };
+    }
 >;
 export type SharedMessage = OptionalSchema<
   "SharedMessage",
   {
-    id?: string;
-    expires_at: number;
-    inline_query: string;
+    prepared?: { id: string; expires_at: number };
+    fallback: { type: "inline"; query: string } | { type: "link"; url: string };
   }
 >;
 export type SharingState = { busy: boolean; error: string };
-/** No client report cache: the authenticated backend coalesces and versions prepared reports. */
+/** Prepared IDs are optional; share targets carry no report-cache identity or expiry. */
 export class SharingController {
   private state: SharingState = { busy: false, error: "" };
   private listeners = new Set<() => void>();
@@ -26,6 +46,9 @@ export class SharingController {
   constructor(
     private app: WebApp | undefined,
     private request: SessionRequest,
+    private baseUrl: string | undefined = typeof location === "undefined"
+      ? undefined
+      : location.origin,
   ) {}
   current = () => this.state;
   subscribe = (listener: () => void) => {
@@ -45,10 +68,71 @@ export class SharingController {
     this.publish({ busy: false, error: "" });
   };
   private inline(query: string) {
-    if (!this.app?.switchInlineQuery) return false;
+    if (!this.app?.switchInlineQuery || !query || [...query].length > 256)
+      return false;
     try {
       this.app.switchInlineQuery(query, ["users", "groups", "channels"]);
       return true;
+    } catch {
+      return false;
+    }
+  }
+  private fallback(fallback: SharedMessage["fallback"]) {
+    if (fallback.type === "inline") return this.inline(fallback.query);
+    if (!this.app?.openTelegramLink) return false;
+    try {
+      const target = new URL(fallback.url);
+      if (
+        !["http:", "https:"].includes(target.protocol) ||
+        target.username ||
+        target.password
+      )
+        return false;
+      const url = new URL("https://t.me/share/url");
+      url.searchParams.set("url", target.href);
+      this.app.openTelegramLink(url.href);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  private localTarget(
+    target: ShareTarget,
+  ): SharedMessage["fallback"] | undefined {
+    if (target.type === "gift")
+      return { type: "inline", query: `${target.slug} ${target.currency_id}` };
+    if (!this.baseUrl) return;
+    const url = new URL(this.baseUrl);
+    if (target.type === "market")
+      url.hash = selectionParams(target.selection).toString();
+    else {
+      const p = target.target,
+        f = p.filters;
+      const selection: MarketSelection = {
+        filters: {
+          collection_id: f?.collection_id,
+          currency_id: p.currency_id,
+          venue_id: null,
+          models: f?.models ?? [],
+          backdrops: f?.backdrops ?? [],
+          patterns: f?.patterns ?? [],
+          number: f?.number == null ? null : { min: f.number, max: f.number },
+          price: null,
+        },
+      };
+      url.pathname = `${url.pathname.replace(/\/$/, "")}/portfolio/${p.user_id}`;
+      url.hash = new URLSearchParams({
+        currency: p.currency_id,
+        f: filterLine(selection),
+        sort: p.sort ?? "value_desc",
+      }).toString();
+    }
+    return { type: "link", url: url.href };
+  }
+  private localShare(target: ShareTarget) {
+    try {
+      const fallback = this.localTarget(target);
+      return fallback ? this.fallback(fallback) : false;
     } catch {
       return false;
     }
@@ -77,19 +161,17 @@ export class SharingController {
         pending.signal,
       );
       if (!current()) return;
+      const prepared = result.prepared;
       if (
-        !Number.isFinite(result.expires_at) ||
-        result.expires_at * 1000 <= Date.now() + 1000
-      )
-        throw new Error("This share expired. Please try again.");
-      if (
-        result.id &&
+        prepared?.id &&
+        Number.isFinite(prepared.expires_at) &&
+        prepared.expires_at * 1000 > Date.now() + 1000 &&
         this.app?.shareMessage &&
         this.app.isVersionAtLeast?.("8.0")
       ) {
         // A false callback includes user cancellation. Never open a second chooser after it.
         try {
-          this.app.shareMessage(result.id, () => {
+          this.app.shareMessage(prepared.id, () => {
             if (current()) {
               this.pending = undefined;
               this.publish({ busy: false, error: "" });
@@ -103,23 +185,21 @@ export class SharingController {
           // Synchronous unsupported-client failures can safely fall back to inline.
         }
       }
-      if (!this.inline(result.inline_query))
+      if (!this.fallback(result.fallback))
         throw new Error("Open or update Telegram to share messages.");
     } catch (error) {
-      // Preserve gift sharing with Mini App-only/older servers and public launches.
-      // Portfolio/market fallbacks need the exact cached token to retain their selection.
+      // Stateless selections remain shareable without prepared support or a signed-in API session.
       if (
         current() &&
-        target.type === "gift" &&
-        this.app?.switchInlineQuery &&
+        (this.app?.switchInlineQuery || this.app?.openTelegramLink) &&
         (error instanceof TypeError ||
           (error instanceof ApiFailure &&
             ["unavailable", "unauthorized", "not_found", "timed_out"].includes(
               error.code,
             ))) &&
-        this.inline(`${target.slug} ${target.currency_id}`)
+        this.localShare(target)
       ) {
-        // The classic gift query is the fallback for servers without prepared sharing.
+        // A readable target or application link replaces the unavailable native preparation.
       } else if (current())
         this.publish({
           busy: false,

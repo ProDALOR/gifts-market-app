@@ -11,9 +11,8 @@ const target: ShareTarget = {
   currency_id: "GRAM",
 };
 const report = (): SharedMessage => ({
-  id: "prepared",
-  expires_at: Math.floor(Date.now() / 1000) + 600,
-  inline_query: "s:0123456789abcdef",
+  prepared: { id: "prepared", expires_at: Math.floor(Date.now() / 1000) + 600 },
+  fallback: { type: "inline", query: "Gift-123 GRAM" },
 });
 function setup(
   options: { modern?: boolean; prepared?: boolean; throws?: boolean } = {},
@@ -34,7 +33,7 @@ function setup(
   } as unknown as WebApp;
   const request = (async () =>
     options.prepared === false
-      ? { ...report(), id: undefined }
+      ? { ...report(), prepared: undefined }
       : report()) as SessionRequest;
   const value = new SharingController(app, request);
   return {
@@ -57,7 +56,7 @@ test("prepared sharing uses native chooser; cancelling never opens inline fallba
   assert.deepEqual(inline, []);
   assert.equal(value.current().busy, false);
 });
-test("old clients, unavailable prepared IDs and synchronous SDK failures use exact inline fallback", async () => {
+test("old clients, unavailable prepared IDs and synchronous SDK failures use readable inline fallback", async () => {
   for (const option of [
     { modern: false },
     { prepared: false },
@@ -65,7 +64,7 @@ test("old clients, unavailable prepared IDs and synchronous SDK failures use exa
   ]) {
     const { value, inline } = setup(option);
     await value.share(target);
-    assert.deepEqual(inline, [report().inline_query]);
+    assert.deepEqual(inline, ["Gift-123 GRAM"]);
     assert.equal(value.current().busy, false);
   }
 });
@@ -84,13 +83,10 @@ test("all target types forward unchanged; late responses after switching pages c
   }) as SessionRequest);
   const portfolio = {
     type: "portfolio",
-    query: {
+    target: {
       user_id: 7,
       currency_id: "GRAM",
       sort: "position_desc",
-      offset: 30,
-      limit: 30,
-      version: "a".repeat(32),
       filters: {
         collection_id: "collection",
         models: ["model"],
@@ -109,21 +105,25 @@ test("all target types forward unchanged; late responses after switching pages c
   assert.deepEqual(inline, []);
   assert.deepEqual(value.current(), { busy: false, error: "" });
 });
-test("expired reports and preparation failures show an error without sending a different selection", async () => {
-  for (const request of [
-    async () => ({ ...report(), expires_at: 1 }),
-    async () => {
-      throw new Error("Portfolio changed; reload");
-    },
-  ]) {
-    const { app, inline, native } = setup();
-    const value = new SharingController(app, request as SessionRequest);
-    await value.share(target);
-    assert.ok(value.current().error);
-    assert.equal(value.current().busy, false);
-    assert.deepEqual(native, []);
-    assert.deepEqual(inline, []);
-  }
+test("expired native IDs use the timeless target fallback", async () => {
+  const { app, native, inline } = setup();
+  const value = new SharingController(app, (async () => ({
+    ...report(),
+    prepared: { id: "old", expires_at: 1 },
+  })) as SessionRequest);
+  await value.share(target);
+  assert.deepEqual(native, []);
+  assert.deepEqual(inline, ["Gift-123 GRAM"]);
+  assert.equal(value.current().error, "");
+});
+test("non-recoverable preparation failures show their error", async () => {
+  const { app, inline } = setup();
+  const value = new SharingController(app, (async () => {
+    throw Error("Invalid target");
+  }) as SessionRequest);
+  await value.share(target);
+  assert.equal(value.current().error, "Invalid target");
+  assert.deepEqual(inline, []);
 });
 test("the preparation deadline aborts work and ignores responses that arrive afterwards", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1800000000000 });
@@ -167,4 +167,64 @@ test("a broken inline SDK reports an error instead of rejecting an unobserved cl
   await value.share(target);
   assert.match(value.current().error, /update Telegram/);
   assert.equal(value.current().busy, false);
+});
+
+test("large target links use Telegram's share chooser without a snapshot token", async () => {
+  const { app, inline, native } = setup();
+  const opened: string[] = [];
+  app.openTelegramLink = (url) => opened.push(url);
+  const url =
+    "https://app.example/#f=c%3Dgift%7Cm%3Dmodel-1%2Cmodel-2&currency=GRAM";
+  const controller = new SharingController(app, (async () => ({
+    fallback: { type: "link", url },
+  })) as SessionRequest);
+  await controller.share(target);
+  assert.deepEqual(inline, []);
+  assert.deepEqual(native, []);
+  assert.equal(new URL(opened[0]).searchParams.get("url"), url);
+  assert.equal(controller.current().error, "");
+});
+test("portfolio targets preserve filters and sort when the prepared API is unavailable", async () => {
+  const { app } = setup();
+  const opened: string[] = [];
+  app.openTelegramLink = (url) => opened.push(url);
+  const controller = new SharingController(
+    app,
+    (async () => {
+      throw new ApiFailure("unauthorized", "Sign in");
+    }) as SessionRequest,
+    "https://app.example/",
+  );
+  await controller.share({
+    type: "portfolio",
+    target: {
+      user_id: 7,
+      currency_id: "XTR",
+      sort: "number_desc",
+      filters: {
+        collection_id: "gift",
+        models: ["model"],
+        backdrops: ["black"],
+        patterns: ["sun"],
+        number: 42,
+      },
+    },
+  });
+  const url = new URL(new URL(opened[0]).searchParams.get("url")!);
+  const params = new URLSearchParams(url.hash.slice(1));
+  assert.equal(url.pathname, "/portfolio/7");
+  assert.equal(params.get("sort"), "number_desc");
+  assert.equal(params.get("f"), "c=gift|m=model|b=black|s=sun|n=42");
+  assert.equal(params.has("version"), false);
+  assert.equal(params.has("offset"), false);
+  assert.equal(controller.current().error, "");
+});
+test("oversized inline targets are never truncated or sent", async () => {
+  const { app, inline } = setup();
+  const controller = new SharingController(app, (async () => ({
+    fallback: { type: "inline", query: "x".repeat(257) },
+  })) as SessionRequest);
+  await controller.share(target);
+  assert.deepEqual(inline, []);
+  assert.ok(controller.current().error);
 });

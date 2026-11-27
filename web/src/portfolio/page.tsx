@@ -258,7 +258,6 @@ function PortfolioView({
     !!selectedId,
   );
   const filterKey = rows.queryKey;
-  const shareOffset = useRef(0);
   const sharingScope = useMemo(
     () => JSON.stringify([user, currency, filterKey, selectedId]),
     [user, currency, filterKey, selectedId],
@@ -271,7 +270,6 @@ function PortfolioView({
     : undefined;
   const previousFilter = useRef({ user, key: filterKey });
   useLayoutEffect(() => {
-    shareOffset.current = 0;
     if (
       previousFilter.current.user === user &&
       previousFilter.current.key !== filterKey
@@ -336,7 +334,6 @@ function PortfolioView({
   const filtered = items;
   const visible = useCallback(
     (start: number, end: number, anchor = start) => {
-      shareOffset.current = Math.floor(Math.max(start, anchor) / 30) * 30;
       const ids = [
         ...new Set(
           [
@@ -578,7 +575,7 @@ function PortfolioView({
                     {report && items.length > 0 && (
                       <ShareButton
                         sharing={sharing}
-                        label="Share portfolio page"
+                        label="Share portfolio"
                         click={() => {
                           const query = portfolioQuery(user, currency, {
                             ...filters,
@@ -587,11 +584,11 @@ function PortfolioView({
                           if (query)
                             void sharing.share({
                               type: "portfolio",
-                              query: {
-                                ...query,
-                                offset: shareOffset.current,
-                                limit: 30,
-                                version: rows.version,
+                              target: {
+                                user_id: query.user_id,
+                                currency_id: query.currency_id,
+                                filters: query.filters,
+                                sort: query.sort,
                               },
                             });
                         }}

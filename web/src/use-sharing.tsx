@@ -14,7 +14,9 @@ export function useSharing(context: TelegramContext, scope: string) {
     [controller, scope, session.status, session.identity?.user.id],
   );
   const available = !!(
-    context.app?.shareMessage || context.app?.switchInlineQuery
+    context.app?.shareMessage ||
+    context.app?.switchInlineQuery ||
+    context.app?.openTelegramLink
   );
   return { ...state, available, share: controller.share };
 }

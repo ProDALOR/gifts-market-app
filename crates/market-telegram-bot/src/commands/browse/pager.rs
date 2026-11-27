@@ -1,14 +1,13 @@
 use super::*;
+use crate::commands::reports::{ReportAction, ReportCallback};
 use std::sync::Arc;
-use tokio::sync::OnceCell;
 const PAGE_SIZE: u32 = 12;
-const MAX_PAGES: usize = 10;
-#[derive(Clone)]
-enum Action {
-    Next,
-    Previous,
-    Refresh,
-    Mode(GridMode),
+pub(in crate::commands) const MAX_PAGES: usize = 10;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::commands) struct Destination {
+    pub page: usize,
+    pub mode: GridMode,
+    pub refresh: bool,
 }
 struct Snapshot {
     id: ReadSnapshotId,
@@ -34,8 +33,6 @@ pub(in crate::commands) struct View {
     catalog: Arc<GiftCatalog>,
     documents: Arc<orders::ModelDocuments>,
     mode: GridMode,
-    action: Action,
-    reply: Arc<OnceCell<Reply>>,
 }
 impl MarketCommands {
     pub(in crate::commands) async fn browse(&self, selection: MarketSelection) -> Reply {
@@ -97,23 +94,14 @@ impl MarketCommands {
             catalog,
             documents,
             mode,
-            action: Action::Refresh,
-            reply: Default::default(),
         })
     }
-    pub(in crate::commands) async fn market_view(&self, id: u64) -> Reply {
-        let Some(view) = self.markets.get(id) else {
-            return Reply::notice(
-                "This market view has expired. Send /market with the same filters again.",
-            );
-        };
-        view.reply
-            .get_or_init(|| self.navigate_market(&view))
-            .await
-            .clone()
-    }
-    async fn navigate_market(&self, original: &View) -> Reply {
-        if matches!(original.action, Action::Refresh) {
+    pub(in crate::commands) async fn navigate_market(
+        &self,
+        original: &View,
+        target: Destination,
+    ) -> Reply {
+        if target.refresh {
             return match self
                 .market_page((*original.selection).clone(), GridMode::Linked)
                 .await
@@ -122,75 +110,57 @@ impl MarketCommands {
                 Err(_) => Reply::notice("Market refresh unavailable. Please retry."),
             };
         }
+        if target.page >= MAX_PAGES || target.page > original.pages.len() {
+            return Reply::notice("Open the previous market page first.");
+        }
         let mut view = original.clone();
-        if !matches!(original.action, Action::Mode(GridMode::Gallery)) {
-            view.mode = GridMode::Linked;
-        }
-        match original.action {
-            Action::Mode(mode) => view.mode = mode,
-            Action::Previous => view.page = view.page.saturating_sub(1),
-            Action::Next => {
-                if view.page + 1 >= MAX_PAGES {
-                    return Reply::notice("Open the market app to browse further.");
+        if target.page == view.pages.len() {
+            let Some(key) = view
+                .pages
+                .last()
+                .and_then(|page| page.range.end.as_ref())
+                .and_then(|key| key.encode().try_into().ok())
+            else {
+                return Reply::notice("No more results.");
+            };
+            let mut query = view.query.clone();
+            query.range.start = Some(key);
+            match self
+                .market
+                .query_orders(market_actors::input::query(query))
+                .await
+            {
+                Ok(read) => view.pages.push(Arc::new(read.result)),
+                Err(_) => {
+                    return Reply::notice(
+                        "This market page has expired or is unavailable. Refresh the report to continue.",
+                    );
                 }
-                if view.page + 1 == view.pages.len() {
-                    let Some(key) = view.pages[view.page]
-                        .range
-                        .end
-                        .as_ref()
-                        .and_then(|key| key.encode().try_into().ok())
-                    else {
-                        return Reply::notice("No more results.");
-                    };
-                    let mut query = view.query.clone();
-                    query.range.start = Some(key);
-                    match self
-                        .market
-                        .query_orders(market_actors::input::query(query))
-                        .await
-                    {
-                        Ok(read) => view.pages.push(Arc::new(read.result)),
-                        Err(_) => {
-                            return Reply::notice(
-                                "This market page has expired or is unavailable. Refresh the report to continue.",
-                            );
-                        }
-                    }
-                    let missing = self
-                        .order_documents(&view.pages[view.page + 1].data, &view.documents)
-                        .await;
-                    if !missing.is_empty() {
-                        Arc::make_mut(&mut view.documents).extend(missing);
-                    }
-                }
-                view.page += 1;
             }
-            Action::Refresh => unreachable!(),
+            let missing = self
+                .order_documents(&view.pages[target.page].data, &view.documents)
+                .await;
+            if !missing.is_empty() {
+                Arc::make_mut(&mut view.documents).extend(missing);
+            }
         }
+        view.page = target.page;
+        view.mode = target.mode;
         self.render_market(&view).await
     }
     fn market_button(
         &self,
-        view: &View,
-        action: Option<Action>,
+        id: u64,
+        target: Option<Destination>,
         label: &str,
         selected: bool,
     ) -> String {
-        let data = action.map(|action| {
-            self.markets.insert(View {
-                action,
-                reply: Default::default(),
-                ..view.clone()
-            })
-        });
-        rich::button(
-            label,
-            data.as_ref()
-                .map(|data| std::str::from_utf8(data).expect("ASCII token")),
-            selected,
-        )
+        let data =
+            target.map(|target| ReportCallback::new(id, ReportAction::Market(target)).to_string());
+        rich::button(label, data.as_deref(), selected)
     }
     async fn render_market(&self, view: &View) -> Reply {
+        let id = self.reports.market(view.clone());
         let result = &view.pages[view.page];
         let heading = match view.query.source {
             OrderSource::Asks => "Best asks",
@@ -225,8 +195,12 @@ impl MarketCommands {
             (GridMode::Gallery, "Gallery"),
         ] {
             html.push_str(&self.market_button(
-                view,
-                (mode != view.mode).then_some(Action::Mode(mode)),
+                id,
+                (mode != view.mode).then_some(Destination {
+                    page: view.page,
+                    mode,
+                    refresh: false,
+                }),
                 label,
                 mode == view.mode,
             ));
@@ -258,24 +232,44 @@ impl MarketCommands {
         if view.mode == GridMode::Linked {
             html.push_str("<tg-button-row>");
             html.push_str(&self.market_button(
-                view,
-                (view.page > 0).then_some(Action::Previous),
+                id,
+                (view.page > 0).then_some(Destination {
+                    page: view.page.saturating_sub(1),
+                    mode: GridMode::Linked,
+                    refresh: false,
+                }),
                 "←",
                 false,
             ));
             html.push_str(&rich::button(&(view.page + 1).to_string(), None, false));
             html.push_str(&self.market_button(
-                view,
-                (result.range.end.is_some() && view.page + 1 < MAX_PAGES).then_some(Action::Next),
+                id,
+                (result.range.end.is_some() && view.page + 1 < MAX_PAGES).then_some(Destination {
+                    page: view.page + 1,
+                    mode: GridMode::Linked,
+                    refresh: false,
+                }),
                 "→",
                 false,
             ));
-            html.push_str(&self.market_button(view, Some(Action::Refresh), "↻", false));
+            html.push_str(&self.market_button(
+                id,
+                Some(Destination {
+                    page: view.page,
+                    mode: GridMode::Linked,
+                    refresh: true,
+                }),
+                "↻",
+                false,
+            ));
             html.push_str("</tg-button-row>");
         }
         if let Ok(button) = super::market_button(&view.selection, self.public_url.as_ref()) {
             reply.buttons = vec![vec![button]];
         }
-        reply
+        match sharing::market_fallback(&view.selection, self.public_url.as_ref()) {
+            Ok(target) => sharing::with_share(reply, &target),
+            Err(_) => reply,
+        }
     }
 }

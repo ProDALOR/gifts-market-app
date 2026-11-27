@@ -802,6 +802,37 @@ async fn private_and_inline_navigation_use_cached_reports_during_a_running_refre
         .await
         .expect("navigation must not wait for the running valuation");
         assert!(reply.text.contains("Estimate 2 GRAM"));
+        let bound = commands.reports.reply(7, reply.clone());
+        let data = bound
+            .rich_html
+            .as_ref()
+            .unwrap()
+            .split("data=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        let event = market_telegram::Event::Callback {
+            id: 1,
+            user_id: 7,
+            data,
+            target: market_telegram::CallbackTarget::Inline(
+                market_telegram::InlineMessageId::Standard {
+                    dc_id: 2,
+                    id: 1,
+                    access_hash: 0,
+                },
+            ),
+        };
+        let command = commands.parse_event(&event, &[]).unwrap();
+        let navigated = tokio::time::timeout(Duration::from_secs(1), commands.handle(command))
+            .await
+            .expect("typed callbacks do not join valuation refresh")
+            .unwrap();
+        assert!(navigated.text.contains("Estimate 2 GRAM"));
         assert!(reply.rich_html.unwrap().contains("ResistanceDog-1"));
     }
     let missing = inline("portfolio 456 XTR", 7).unwrap();
@@ -816,39 +847,44 @@ async fn private_and_inline_navigation_use_cached_reports_during_a_running_refre
         .await
         .unwrap();
     let sharing = crate::Sharing::new(Arc::new(commands.clone()), Default::default());
-    let query = serde_json::from_value(serde_json::json!({
-        "user_id": request.user_id, "currency_id":"GRAM", "filters":{},
-        "sort":"position_asc", "offset":0, "limit":30, "version":cached.version,
-    }))
-    .unwrap();
-    let shared = tokio::time::timeout(Duration::from_secs(1), sharing.portfolio(7, query))
+    let target = crate::PortfolioTarget {
+        user_id: request.user_id,
+        currency_id: "GRAM".into(),
+        filters: Default::default(),
+        sort: PortfolioSort::PositionAsc,
+    };
+    let shared = tokio::time::timeout(Duration::from_secs(1), sharing.portfolio(7, target.clone()))
         .await
-        .expect("preparing a share must not join or start the running valuation")
+        .expect("offline sharing never waits for valuation")
         .unwrap();
     assert!(shared.prepared.is_none());
-    let id = u64::from_str_radix(shared.inline_query.strip_prefix("s:").unwrap(), 16).unwrap();
-    assert!(
-        commands
-            .shared_reply(7, id)
-            .await
-            .text
-            .contains("Estimate 2 GRAM")
+    assert_eq!(
+        shared.fallback,
+        crate::ShareFallback::Inline {
+            query: "portfolio 123 GRAM sort=position_asc".into()
+        }
     );
-    let stale = serde_json::from_value(serde_json::json!({
-        "user_id": request.user_id, "currency_id":"GRAM", "filters":{},
-        "version":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-    }))
-    .unwrap();
-    assert!(matches!(
-        sharing.portfolio(7, stale).await,
-        Err(crate::ShareError::RestartRead)
-    ));
-    let missing =
-        serde_json::from_value(serde_json::json!({ "user_id":456, "currency_id":"GRAM" })).unwrap();
-    assert!(matches!(
-        sharing.portfolio(7, missing).await,
-        Err(crate::ShareError::Unavailable(_))
-    ));
+    assert!(
+        serde_json::from_value::<crate::PortfolioTarget>(
+            serde_json::json!({"user_id":123,"currency_id":"GRAM","version":cached.version})
+        )
+        .is_err(),
+        "share targets cannot retain snapshot versions"
+    );
+    let missing = sharing
+        .portfolio(
+            7,
+            crate::PortfolioTarget {
+                user_id: market_portfolio::UserId::new(456).unwrap(),
+                ..target
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(missing.fallback, crate::ShareFallback::Inline { .. }),
+        "a target is shareable before its inventory has been checked"
+    );
     let gallery_request = PortfolioRequest {
         layout: GridMode::Gallery,
         action: PortfolioAction::Preview,

@@ -31,11 +31,23 @@ pub(super) const SORTS: [(PortfolioSort, &str, &str); 6] = [
     (PortfolioSort::ValueAsc, "price_asc", "va"),
     (PortfolioSort::ValueDesc, "price_desc", "vd"),
 ];
-pub(super) fn parse_sort(value: &str) -> Option<PortfolioSort> {
+pub(in crate::commands) fn parse_sort(value: &str) -> Option<PortfolioSort> {
+    let value = match value {
+        "value_asc" => "price_asc",
+        "value_desc" => "price_desc",
+        other => other,
+    };
     SORTS
         .iter()
         .find(|(_, name, code)| *name == value || *code == value)
         .map(|(sort, _, _)| *sort)
+}
+pub(in crate::commands) fn sort_code(sort: PortfolioSort) -> &'static str {
+    SORTS
+        .iter()
+        .find(|(candidate, _, _)| *candidate == sort)
+        .expect("portfolio sort")
+        .2
 }
 impl PortfolioRequest {
     pub(super) fn data(&self, page: usize, action: PortfolioAction, sort: PortfolioSort) -> String {

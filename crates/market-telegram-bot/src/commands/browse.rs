@@ -114,6 +114,7 @@ fn market_button(
 }
 mod pager;
 pub(super) use pager::View;
+pub(super) use pager::{Destination, MAX_PAGES};
 
 #[cfg(test)]
 mod tests {

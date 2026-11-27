@@ -1,86 +1,6 @@
-//! Parse entry points into common commands; callback tokens retain only bounded public report state.
-use super::views::View;
+//! Parse message, inline and guest entry points into typed application requests.
 use super::*;
 use market_telegram::{CallbackTarget, Event};
-use std::{
-    collections::{VecDeque, hash_map::RandomState},
-    hash::BuildHasher,
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
-};
-pub(super) type Views = ViewCache<View>;
-pub(super) struct ViewCache<T> {
-    entries: Mutex<VecDeque<(u64, Instant, T)>>,
-    next: AtomicU64,
-    random: RandomState,
-    prefix: &'static str,
-    limit: usize,
-}
-impl<T> Default for ViewCache<T> {
-    fn default() -> Self {
-        Self::new("v", 256)
-    }
-}
-impl<T> ViewCache<T> {
-    pub fn new(prefix: &'static str, limit: usize) -> Self {
-        Self {
-            entries: Default::default(),
-            next: Default::default(),
-            random: Default::default(),
-            prefix,
-            limit,
-        }
-    }
-}
-impl<T: Clone> ViewCache<T> {
-    pub fn insert(&self, view: T) -> Vec<u8> {
-        self.find_or_insert(|_| false, || view).0
-    }
-    /// Atomically coalesce a report destination without a second cache of tokens.
-    pub fn find_or_insert(
-        &self,
-        matches: impl Fn(&T) -> bool,
-        build: impl FnOnce() -> T,
-    ) -> (Vec<u8>, T) {
-        let mut entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        entries.retain(|(_, at, _)| at.elapsed() < Duration::from_secs(1800));
-        let entry = if let Some(index) = entries.iter().position(|(_, _, view)| matches(view)) {
-            entries.remove(index).expect("located view")
-        } else {
-            let id = self
-                .random
-                .hash_one(self.next.fetch_add(1, Ordering::Relaxed));
-            while entries.len() >= self.limit {
-                entries.pop_front();
-            }
-            (id, Instant::now(), build())
-        };
-        let result = (
-            format!("{}:{:016x}", self.prefix, entry.0).into_bytes(),
-            entry.2.clone(),
-        );
-        entries.push_back(entry);
-        result
-    }
-    pub fn get(&self, id: u64) -> Option<T> {
-        let mut entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        entries.retain(|(_, at, _)| at.elapsed() < Duration::from_secs(1800));
-        let index = entries.iter().position(|(key, _, _)| *key == id)?;
-        let entry = entries.remove(index)?;
-        let view = entry.2.clone();
-        entries.push_back(entry);
-        Some(view)
-    }
-}
 pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<CommandRequest> {
     let inline = matches!(
         event,
@@ -104,8 +24,10 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
             if !offset.is_empty() {
                 return None;
             }
-            let command = if let Some(token) = query.strip_prefix("s:") {
-                Command::Shared(callback_id(token)?)
+            let command = if query.starts_with("s:") {
+                Command::Help
+            } else if let Some(command) = sharing::parse_target(query) {
+                command
             } else if let Some(query) = super::portfolio::inline(query, *user_id) {
                 Command::Portfolio(query)
             } else {
@@ -147,18 +69,7 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
                     inline,
                 });
             }
-            if let Some(token) = text.strip_prefix("m:") {
-                let id = callback_id(token)?;
-                return Some(CommandRequest {
-                    command: Command::MarketView(id),
-                    user_id: *user_id,
-                    message_id: 0,
-                    inline,
-                });
-            }
-            let token = text.strip_prefix("v:")?;
-
-            (Command::View(callback_id(token)?), *user_id, 0)
+            (Command::Report(text.parse().ok()?), *user_id, 0)
         }
     };
     (user_id > 0).then_some(CommandRequest {
@@ -265,15 +176,13 @@ mod tests {
         assert_eq!(query.mode, PortfolioMode::Inline);
     }
     #[test]
-    fn callbacks_expire_even_when_recently_accessed() {
-        let views = Views::default();
-        let token = views.insert(super::super::tests::report_view());
-        let id = u64::from_str_radix(std::str::from_utf8(&token[2..]).unwrap(), 16).unwrap();
-        let created = views.entries.lock().unwrap()[0].1;
-        assert!(views.get(id).is_some());
-        assert_eq!(views.entries.lock().unwrap()[0].1, created);
-        views.entries.lock().unwrap()[0].1 = Instant::now() - Duration::from_secs(1801);
-        assert!(views.get(id).is_none());
-        assert!(views.entries.lock().unwrap().is_empty());
+    fn retired_snapshot_queries_offer_help_without_resolving_a_cache_token() {
+        let event = Event::Inline {
+            id: 1,
+            user_id: 7,
+            query: "s:0123456789abcdef".into(),
+            offset: String::new(),
+        };
+        assert_eq!(parse_event(&event, &[]).unwrap().command, Command::Help);
     }
 }

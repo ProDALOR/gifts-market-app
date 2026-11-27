@@ -5,6 +5,7 @@ use market_miniapp::{
     app_url,
     auth::{Auth, Identity, Session},
 };
+use market_portfolio::PortfolioTarget;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 use tokio::sync::Semaphore;
@@ -95,26 +96,44 @@ pub enum ShareTarget {
         currency_id: market_gifts::CurrencyId,
     },
     Portfolio {
-        /// Version comes from portfolio status/watch, not an alias-filtered continuation.
-        query: crate::portfolio::PortfolioReadQuery,
+        target: PortfolioTarget<
+            market_actors::input::CollectionRef,
+            market_actors::input::ModelRef,
+            market_actors::input::BackdropRef,
+            market_actors::input::PatternRef,
+        >,
     },
     Market {
         selection: market_links::MarketSelection,
     },
 }
 #[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PreparedShare {
+    pub id: String,
+    /// Only this native prepared ID expires; the fallback target remains usable.
+    pub expires_at: i64,
+}
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ShareFallback {
+    Inline {
+        query: String,
+    },
+    Link {
+        #[schema(format = "uri")]
+        url: String,
+    },
+}
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SharedMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Unix seconds. The message must be used before this deadline.
-    pub expires_at: i64,
-    /// User-bound, short-lived fallback. Not a persistent public share link.
-    pub inline_query: String,
+    pub prepared: Option<PreparedShare>,
+    pub fallback: ShareFallback,
 }
 pub type ShareFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<SharedMessage>> + Send>>;
 pub type ShareProvider = Arc<dyn Fn(u64, ShareTarget) -> ShareFuture + Send + Sync>;
-#[utoipa::path(post,path="/telegram/share",tag="telegram",request_body=ShareTarget,responses((status=200,body=SharedMessage),(status=401,body=ErrorResponse),(status=400,body=ErrorResponse),(status=409,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
+#[utoipa::path(post,path="/telegram/share",tag="telegram",request_body=ShareTarget,responses((status=200,body=SharedMessage),(status=401,body=ErrorResponse),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
 pub async fn prepare_share(
     state: Option<web::Data<MiniAppApi>>,
     request: HttpRequest,

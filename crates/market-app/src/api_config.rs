@@ -150,26 +150,34 @@ pub fn sharing(bot: market_telegram_bot::Sharing) -> market_api::miniapp::ShareP
         Box::pin(async move {
             use market_api::{
                 error::{ApiError, ErrorCode},
-                miniapp::{ShareTarget, SharedMessage},
+                miniapp::{PreparedShare, ShareFallback, ShareTarget, SharedMessage},
             };
             let shared = match target {
                 ShareTarget::Gift { slug, currency_id } => bot.gift(user, slug, currency_id).await,
-                ShareTarget::Portfolio { query } => bot.portfolio(user, query).await,
+                ShareTarget::Portfolio { target } => bot.portfolio(user, target).await,
                 ShareTarget::Market { selection } => bot.market(user, selection).await,
             }
             .map_err(|e| ApiError {
                 code: match &e {
                     market_telegram_bot::ShareError::Invalid(_) => ErrorCode::InvalidQuery,
-                    market_telegram_bot::ShareError::RestartRead => ErrorCode::RestartRead,
                     market_telegram_bot::ShareError::Busy => ErrorCode::CapacityExceeded,
                     _ => ErrorCode::Unavailable,
                 },
                 message: e.to_string(),
             })?;
             Ok(SharedMessage {
-                id: shared.prepared.map(|p| p.id),
-                expires_at: shared.expires_at,
-                inline_query: shared.inline_query,
+                prepared: shared.prepared.map(|p| PreparedShare {
+                    id: p.id,
+                    expires_at: p.expires_at,
+                }),
+                fallback: match shared.fallback {
+                    market_telegram_bot::ShareFallback::Inline { query } => {
+                        ShareFallback::Inline { query }
+                    }
+                    market_telegram_bot::ShareFallback::Link { url } => ShareFallback::Link {
+                        url: url.to_string(),
+                    },
+                },
             })
         })
     })
