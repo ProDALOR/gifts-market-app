@@ -1,3 +1,4 @@
+import { applyAppearance } from "./app/appearance.ts";
 import {
   portfolioParams,
   portfolioFiltersFromParams,
@@ -69,6 +70,7 @@ export type WebApp = {
   setBackgroundColor?(color: string): void;
   setBottomBarColor?(color: string): void;
   openTelegramLink?(url: string): void;
+  openLink?(url: string): void;
   switchInlineQuery?(query: string, chatTypes?: string[]): void;
   onEvent(event: string, callback: () => void): void;
   offEvent(event: string, callback: () => void): void;
@@ -151,20 +153,6 @@ export function applyTheme(app: WebApp) {
   const root = document.documentElement;
   root.classList.add("telegram");
   root.dataset.telegramTheme = app.colorScheme;
-  const colors = {
-    bg_color: "--tg-bg",
-    secondary_bg_color: "--tg-surface",
-    text_color: "--tg-text",
-    hint_color: "--tg-hint",
-    button_color: "--tg-accent",
-    button_text_color: "--tg-accent-text",
-  };
-  for (const [name, property] of Object.entries(colors)) {
-    const color = app.themeParams[name];
-    if (color && /^#[0-9a-f]{6}$/i.test(color))
-      root.style.setProperty(property, color);
-    else root.style.removeProperty(property);
-  }
   const inset = (side: keyof Insets) =>
     Math.max(0, app.safeAreaInset?.[side] || 0) +
     Math.max(0, app.contentSafeAreaInset?.[side] || 0);
@@ -173,7 +161,7 @@ export function applyTheme(app: WebApp) {
       `--tg-safe-${side}`,
       `${Math.min(inset(side), 200)}px`,
     );
-  const color = getComputedStyle(root).getPropertyValue("--paper").trim();
+  const color = applyAppearance();
   if (!/^#[0-9a-f]{6}$/i.test(color) || nativeColors.get(app) === color) return;
   nativeColors.set(app, color);
   const supports = (version: string) =>

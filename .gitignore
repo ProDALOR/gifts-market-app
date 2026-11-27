@@ -41,3 +41,5 @@ web/test-artifacts/
 
 *.logs.txt
 docs/deployment.md
+
+.vite/

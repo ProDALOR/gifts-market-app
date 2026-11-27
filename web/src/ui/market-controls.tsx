@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { amount, compactAmount, listingAmount, roundedAmount } from "../amount";
 import { CurrencySymbol } from "./icons";
 import { usePreviewEnvironment } from "../previews/preview-environment";
@@ -6,10 +6,12 @@ export function Quote({
   price,
   currency,
   format = "exact",
+  wrap = false,
 }: {
   price: string;
   currency: string;
   format?: "exact" | "listing" | "compact" | "rounded";
+  wrap?: boolean;
 }) {
   const value = useRef<HTMLSpanElement>(null);
   const previous = useRef({ price, currency });
@@ -63,7 +65,19 @@ export function Quote({
           format !== "exact" ? `${amount(price)} ${currency}` : undefined
         }
       >
-        {display}
+        {wrap
+          ? display.split("\u00a0").map((group, index) => (
+              <Fragment key={index}>
+                {index > 0 && (
+                  <>
+                    {"\u00a0"}
+                    <wbr />
+                  </>
+                )}
+                {group}
+              </Fragment>
+            ))
+          : display}
       </span>
     </>
   );

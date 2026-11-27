@@ -19,6 +19,7 @@ function ValueResult({ value, compact }: { value: Value; compact: boolean }) {
       return (
         <strong className="valuation-value">
           <Quote
+            wrap={compact}
             price={trimDecimalZeros(value.amount)}
             currency={value.currency_id}
           />

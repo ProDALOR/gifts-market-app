@@ -1,4 +1,11 @@
 import type { TelegramContext } from "../telegram";
+import { useMemo } from "react";
+import { selectionTarget } from "../telegram";
+import { targetWebsiteUrl } from "../targets";
+import type { Target } from "../targets";
+import { SharedIcon } from "../ui/icons";
+import { ShareButton } from "../use-sharing";
+import type { useSharing } from "../use-sharing";
 import { TelegramAccount } from "../telegram-ui";
 import { BrandMark } from "../brand/brand-mark";
 import { CurrencyPicker } from "../ui/pickers";
@@ -6,21 +13,23 @@ import { selectionAt } from "../market-selection";
 import { pathRoute, portfolioUser } from "./routes";
 import { useSession } from "./session";
 
-/** Market and Portfolio share the same compact currency/profile row. */
+/** All pages share the same currency and account entry point. */
 export function AppHeader({
   context,
   currencies,
   currency,
   changeCurrency,
-  accountOpen,
-  setAccountOpen,
+  share,
 }: {
   context: TelegramContext;
   currencies: readonly string[];
   currency: string;
   changeCurrency: (currency: string) => void;
-  accountOpen: boolean;
-  setAccountOpen: (open: boolean) => void;
+  share?: {
+    controller: ReturnType<typeof useSharing>;
+    target: Target;
+    label: string;
+  };
 }) {
   const telegram = useSession();
   const selection = selectionAt(location);
@@ -31,6 +40,31 @@ export function AppHeader({
     selection.set("page", "portfolio");
     selection.set("user", user ? String(user) : "");
   }
+  const selectionKey = selection.toString();
+  const website = useMemo(() => {
+    try {
+      const base = telegram.config?.public_url || location.origin;
+      const link = targetWebsiteUrl(
+        share?.target ?? selectionTarget(selection),
+        base,
+      );
+      if (route.page !== "profile") return link;
+      const url = new URL(link);
+      url.pathname = `${new URL(base).pathname.replace(/\/$/, "")}/profile`;
+      url.hash = "";
+      url.search = new URLSearchParams({ currency }).toString();
+      return url.href;
+    } catch {
+      // The page may still be discovering its portfolio owner.
+      return undefined;
+    }
+  }, [
+    share?.target,
+    telegram.config?.public_url,
+    selectionKey,
+    route.page,
+    currency,
+  ]);
   return (
     <div className="sidebar-heading">
       <BrandMark animated />
@@ -43,9 +77,40 @@ export function AppHeader({
         <TelegramAccount
           telegram={telegram}
           context={context}
-          open={accountOpen}
-          setOpen={setAccountOpen}
           selection={selection}
+          appActions={
+            <>
+              {website && (
+                <a
+                  className="header-action"
+                  href={website}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Open website"
+                  title="Open website"
+                  onClick={(event) => {
+                    if (context.app?.openLink) {
+                      try {
+                        context.app.openLink(website);
+                        event.preventDefault();
+                      } catch {
+                        /* Older clients use the anchor fallback. */
+                      }
+                    }
+                  }}
+                >
+                  <SharedIcon name="market_link" />
+                </a>
+              )}
+              {share && (
+                <ShareButton
+                  sharing={share.controller}
+                  label={share.label}
+                  click={() => void share.controller.share(share.target)}
+                />
+              )}
+            </>
+          }
         />
       </div>
     </div>

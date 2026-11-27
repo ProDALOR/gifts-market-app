@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { Order, GiftMedia } from "../market";
 import type { CatalogOption } from "../orderbook";
 import { listingLink, modelName, serial } from "../orderbook";
@@ -6,15 +6,14 @@ import { GiftPreview } from "../previews/gift-preview";
 import { GiftArtwork } from "../previews/gift-artwork";
 import type { ValuationSubject } from "../order-target";
 import { Modal } from "../ui/modal";
-import { OrderValuationSummary } from "../orderbook/order-valuation";
-import { Quote } from "../ui/market-controls";
-import { VenueIcon } from "../ui/icons";
+import { GiftPricing } from "./gift-pricing";
+import { ShareIcon, VenueIcon } from "../ui/icons";
 import { OrderAttributes } from "../orderbook/order-attributes";
 import { BidPreview } from "../orderbook/bid-preview";
 import { useOrderValuation } from "../valuation/use-order-valuation";
 import { useBackgroundPlaybackSuspension } from "../previews/use-playback";
-import { ExecutionTime } from "../orderbook/execution-time";
 import { criteriaPresentation, giftPresentation } from "../order-target";
+import { backdropPalette, giftAppearance } from "./gift-appearance";
 export function GiftDetailsView({
   subject,
   order,
@@ -54,6 +53,15 @@ export function GiftDetailsView({
   const state = valuation;
   const selected = subject;
   const criteria = selected && criteriaPresentation(selected);
+  const palette =
+    selected && !criteria
+      ? giftAppearance(selected, options).palette
+      : criteria?.backdrops.length === 1
+        ? backdropPalette(options.get(criteria.backdrops[0]))
+        : undefined;
+  const backdropStyle = palette
+    ? ({ "--gift-backdrop-edge": palette.edge } as CSSProperties)
+    : undefined;
   const selectedSerial = selected ? serial(selected) : undefined,
     model =
       selected && giftPresentation(selected)
@@ -75,17 +83,20 @@ export function GiftDetailsView({
     ...(marketLink && !removed && marketLink !== telegramLink
       ? [
           {
-            kind: "market",
+            kind: "market" as const,
             url: marketLink,
             name: venue,
             label: `Open on ${venue}`,
           },
         ]
       : []),
+    ...(share && telegramSlug
+      ? [{ kind: "share" as const, run: () => share(telegramSlug, currency) }]
+      : []),
     ...(telegramLink
       ? [
           {
-            kind: "telegram",
+            kind: "telegram" as const,
             url: telegramLink,
             name: "Telegram",
             label: "Open in Telegram",
@@ -93,12 +104,6 @@ export function GiftDetailsView({
         ]
       : []),
   ];
-  const priceLabel =
-    order?.kind === "executed"
-      ? "Execution price"
-      : order?.kind === "bid"
-        ? "Bid price"
-        : "Asking price";
   const caption = (
     <div className="detail-caption">
       <h2 id="detail-title">
@@ -122,7 +127,10 @@ export function GiftDetailsView({
       viewportClose
       describedBy="detail-title"
     >
-      <div className={`detail-art${criteria ? " detail-bid-art" : ""}`}>
+      <div
+        className={`detail-art${criteria ? " detail-bid-art" : ""}${palette && !criteria ? " with-backdrop" : ""}`}
+        style={backdropStyle}
+      >
         {order && (
           <div className="detail-art-meta">
             {(order.kind === "bid" || order.quantity !== 1) && (
@@ -168,50 +176,24 @@ export function GiftDetailsView({
             media={collectionPreview}
             fallback="◇"
             size="large"
-            playback="static"
+            playback="detail"
           />
         )}
         {!criteria && caption}
       </div>
       <div className="detail-content">
         <div className="detail-body">
-          {notice}
-          <div className="detail-pricing">
-            {order && (
-              <section className="listing-price" aria-label={priceLabel}>
-                <div className="listing-price-row">
-                  <div className="listing-price-label">
-                    <h3>
-                      {order?.kind === "executed"
-                        ? "Paid"
-                        : order?.kind === "bid"
-                          ? "Bid price"
-                          : "Ask price"}
-                    </h3>
-                    {order?.kind === "executed" && order.executed_at && (
-                      <ExecutionTime
-                        key={`${state.key}:${order.executed_at}`}
-                        at={order.executed_at}
-                      />
-                    )}
-                  </div>
-                  <div className="detail-price">
-                    <Quote price={order.price} currency={currency} />
-                    {criteria && (
-                      <small className="detail-price-unit">/ gift</small>
-                    )}
-                  </div>
-                </div>
-              </section>
-            )}
-            <OrderValuationSummary
+          <div
+            className={`detail-valuation${palette ? " with-backdrop" : ""}`}
+            style={backdropStyle}
+          >
+            {notice}
+            <GiftPricing
+              order={order}
               state={state}
-              criteria={!!criteria}
-              history={order?.kind === "executed"}
-              price={
-                !removed && order?.kind === "ask" ? order.price : undefined
-              }
               currency={currency}
+              criteria={!!criteria}
+              removed={removed}
             />
           </div>
           {selected && (
@@ -232,29 +214,32 @@ export function GiftDetailsView({
         </div>
         {actions.length > 0 && (
           <div className="detail-actions">
-            {share && telegramSlug && (
-              <button
-                className="detail-link detail-share"
-                onClick={() => share(telegramSlug, currency)}
-              >
-                Share ↗
-              </button>
+            {actions.map((action) =>
+              action.kind === "share" ? (
+                <button
+                  key={action.kind}
+                  className="detail-link detail-share"
+                  onClick={action.run}
+                >
+                  <ShareIcon />
+                  <span className="detail-link-label">Share</span>
+                </button>
+              ) : (
+                <a
+                  key={action.kind}
+                  className={`detail-link detail-${action.kind}`}
+                  href={action.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={action.label}
+                  title={action.label}
+                >
+                  <VenueIcon name={action.name} />
+                  <span className="detail-link-label">{action.name}</span>
+                  <span aria-hidden="true">↗</span>
+                </a>
+              ),
             )}
-            {actions.map((action) => (
-              <a
-                key={action.kind}
-                className={`detail-link detail-${action.kind}`}
-                href={action.url}
-                target="_blank"
-                rel="noreferrer"
-                aria-label={action.label}
-                title={action.label}
-              >
-                <VenueIcon name={action.name} />
-                <span className="detail-link-label">{action.name}</span>
-                <span aria-hidden="true">↗</span>
-              </a>
-            ))}
           </div>
         )}
       </div>

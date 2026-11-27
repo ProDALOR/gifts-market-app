@@ -39,32 +39,58 @@ function subscribe(subscriber: () => void) {
 export function usePreviewEnvironment() {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
-const intersections = new Map<Element, (visible: boolean) => void>();
-let observer: IntersectionObserver | undefined;
-export function usePreviewVisibility(ref: { current: Element | null }) {
+type Intersections = {
+  observer: IntersectionObserver;
+  targets: Map<Element, Set<(visible: boolean) => void>>;
+};
+const intersections = new Map<number, Intersections>();
+/** Visibility controls playback; a bounded margin admits static painting ahead of scrolling. */
+export function usePreviewVisibility(
+  ref: { current: Element | null },
+  margin = 0,
+  enabled = true,
+) {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     const element = ref.current;
-    if (!element) return;
-    observer ??= new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries)
-          intersections.get(entry.target)?.(entry.isIntersecting);
-      },
-      { threshold: 0.01 },
-    );
-    intersections.set(element, setVisible);
-    observer.observe(element);
+    if (!element || !enabled) return;
+    let group = intersections.get(margin);
+    if (!group) {
+      const targets = new Map<Element, Set<(visible: boolean) => void>>();
+      group = {
+        targets,
+        observer: new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries)
+              targets
+                .get(entry.target)
+                ?.forEach((update) => update(entry.isIntersecting));
+          },
+          { threshold: 0.01, rootMargin: `${margin}px` },
+        ),
+      };
+      intersections.set(margin, group);
+    }
+    let updates = group.targets.get(element);
+    if (!updates) {
+      updates = new Set();
+      group.targets.set(element, updates);
+      group.observer.observe(element);
+    }
+    updates.add(setVisible);
     return () => {
-      observer?.unobserve(element);
-      intersections.delete(element);
-      if (!intersections.size) {
-        observer?.disconnect();
-        observer = undefined;
+      updates.delete(setVisible);
+      if (!updates.size) {
+        group.observer.unobserve(element);
+        group.targets.delete(element);
+      }
+      if (!group.targets.size) {
+        group.observer.disconnect();
+        intersections.delete(margin);
       }
     };
-  }, [ref]);
-  return visible;
+  }, [ref, margin, enabled]);
+  return enabled && visible;
 }
 
 const sizes = new Map<Element, () => void>();

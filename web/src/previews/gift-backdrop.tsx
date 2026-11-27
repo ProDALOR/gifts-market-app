@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import type { BackdropPalette } from "./gift-appearance";
 
 import { bannerPatternTiles, giftPatternTiles } from "./preview-layout";
-import { loadPattern } from "./pattern-data";
+import { loadPattern, peekPattern } from "./pattern-data";
 import { observePreviewSize } from "./preview-environment";
 
 /** Paint a still backdrop once per size/palette change, never on animation frames. */
@@ -27,18 +27,25 @@ export function GiftBackdrop({
   const { center, edge, pattern } = palette;
   const urls = patternUrls || [];
   const key = JSON.stringify([urls, pattern]);
-  useEffect(() => {
+  const data = useRef<{
+    key: string;
+    symbols: (HTMLCanvasElement | undefined)[];
+  }>({ key: "", symbols: [] });
+  const repaint = useRef<() => void>(() => {});
+  const active = visible || preload;
+  useLayoutEffect(() => {
     const target = canvas.current;
     if (!target) return;
+    if (data.current.key !== key)
+      data.current = { key, symbols: new Array(urls.length) };
     if (!visible) {
       target.width = target.height = 1;
-      if (!preload) return;
+      return;
     }
-    const stop = new AbortController();
-    const symbols: (HTMLCanvasElement | undefined)[] = new Array(urls.length);
+    for (let i = 0; i < urls.length; i++)
+      data.current.symbols[i] ??= peekPattern(urls[i], pattern);
     let frame = 0;
     const draw = () => {
-      if (!visible) return; // Warm shared symbol resources without painting offscreen canvases.
       const width = target.clientWidth,
         height = target.clientHeight;
       if (!width || !height) return;
@@ -62,6 +69,7 @@ export function GiftBackdrop({
         context.fillStyle = gradient;
         context.fillRect(0, 0, width, height);
       }
+      const symbols = data.current.symbols;
       if (!symbols.some(Boolean)) return;
       context.globalAlpha = 0.3;
       if (layout === "banner") {
@@ -97,28 +105,46 @@ export function GiftBackdrop({
           draw();
         });
     };
-    const unobserve = visible
-      ? observePreviewSize(target, schedule)
-      : undefined;
-    schedule();
+    repaint.current = schedule;
+    // Paint warm resources before this nearby card can enter the visible viewport.
+    draw();
+    const unobserve = observePreviewSize(target, schedule);
+    return () => {
+      unobserve();
+      cancelAnimationFrame(frame);
+      if (repaint.current === schedule) repaint.current = () => {};
+    };
+  }, [center, edge, key, layout, background, symbolScale, visible]);
+  useEffect(() => {
+    if (!active) return;
+    const stop = new AbortController();
     urls.forEach((url, index) => {
       // Shared resources bound HTTP/decode work; one slow symbol doesn't block others.
       void loadPattern(url, pattern, stop.signal).then(
         (symbol) => {
-          if (stop.signal.aborted || !visible) return;
-          symbols[index] = symbol;
-          schedule();
+          if (stop.signal.aborted || data.current.key !== key) return;
+          data.current.symbols[index] = symbol;
+          repaint.current();
         },
         () => {
           /* Keep the gradient for unavailable symbols. */
         },
       );
     });
-    return () => {
-      stop.abort();
-      unobserve?.();
-      cancelAnimationFrame(frame);
-    };
-  }, [center, edge, key, layout, background, symbolScale, visible, preload]);
-  return <canvas ref={canvas} className="gift-backdrop" aria-hidden="true" />;
+    return () => stop.abort();
+  }, [key, active]);
+  return (
+    <canvas
+      ref={canvas}
+      className="gift-backdrop"
+      aria-hidden="true"
+      style={
+        background
+          ? {
+              background: `radial-gradient(ellipse at 50% 42%,${center},${edge})`,
+            }
+          : undefined
+      }
+    />
+  );
 }

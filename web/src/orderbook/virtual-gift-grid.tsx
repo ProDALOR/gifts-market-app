@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
+import { GiftGridSkeleton } from "./gift-grid-skeleton";
 type Range = { start: number; end: number; top: number; bottom: number };
 function rowsRange(
   length: number,
@@ -73,7 +74,9 @@ export function VirtualGiftGrid<T>({
     previous.current !== orders && saved
       ? locateAnchor(orders, previous.current, saved.key, keyOf)
       : -1;
-  let rendered = range;
+  let rendered = orders.length
+    ? range
+    : { start: 0, end: 0, top: 0, bottom: 0 };
   if (nextAnchor >= 0 && saved) {
     const { columns, stride, gap } = geometry.current;
     const old = previous.current.findIndex(
@@ -95,6 +98,10 @@ export function VirtualGiftGrid<T>({
   const measure = useCallback(() => {
     const element = host.current;
     if (!element) return;
+    if (!orders.length) {
+      anchor.current = undefined;
+      return;
+    }
     const style = getComputedStyle(element);
     const columns = style.gridTemplateColumns.split(" ").length;
     const stride = parseFloat(style.gridAutoRows) + parseFloat(style.rowGap);
@@ -211,6 +218,7 @@ export function VirtualGiftGrid<T>({
           {render(item, rendered.start + index)}
         </Fragment>
       ))}
+      {!orders.length && busy && <GiftGridSkeleton />}
     </ul>
   );
 }

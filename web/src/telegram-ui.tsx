@@ -1,22 +1,11 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import type { ReactNode } from "react";
 import { request } from "./market";
-import {
-  applyTheme,
-  miniappEnabled,
-  telegramLink,
-  telegramBotLink,
-  telegramReopenLink,
-} from "./telegram";
+import { applyTheme, miniappEnabled, telegramLink } from "./telegram";
 import type { TelegramContext } from "./telegram";
 import { TelegramSessionController } from "./telegram-session";
-import { useNavigationBack } from "./app/navigation";
+import { AppLink, useNavigation } from "./app/navigation";
+import { SharedIcon, VenueIcon } from "./ui/icons";
 export function useTelegram(context: TelegramContext) {
   const controller = useMemo(
     () =>
@@ -81,204 +70,75 @@ export function useTelegramBack(
     };
   }, [context, visible]);
 }
+/** The avatar opens the account page; sign-in and recovery live there too. */
 export function TelegramAccount({
   telegram,
   context,
-  open,
-  setOpen,
   selection,
+  appActions,
 }: {
   telegram: ReturnType<typeof useTelegram>;
   context: TelegramContext;
-  open: boolean;
-  setOpen: (value: boolean) => void;
   selection: URLSearchParams;
+  appActions?: ReactNode;
 }) {
-  const host = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const id = useId();
-  const close = useCallback(() => {
-    setOpen(false);
-    trigger.current?.focus({ preventScroll: true });
-  }, [setOpen]);
-  useNavigationBack(open, close, 20);
-  useEffect(() => {
-    if (!open) return;
-    menu.current?.focus({ preventScroll: true });
-    const outside = (event: PointerEvent) => {
-      if (!host.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      close();
-    };
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("keydown", escape);
-    };
-  }, [open, close, setOpen]);
-  const link = context.initData
-    ? null
-    : telegramLink(telegram.config, selection);
-  const botLink = telegramBotLink(telegram.config, selection);
-  const reopenLink =
-    telegram.status === "reopen"
-      ? telegramReopenLink(telegram.config, selection)
-      : null;
-  if (!context.initData)
-    return link ? (
-      <a className="telegram-link" href={link} target="_blank" rel="noreferrer">
-        {new URL(link).hostname === "t.me" ? "Telegram ↗" : "Open market ↗"}
-      </a>
-    ) : null;
+  const profileActive = useNavigation()?.route.page === "profile";
   const user = telegram.identity?.user;
-  const pending = telegram.status === "connecting";
-  const label = user ? `Account: ${user.first_name}` : "Telegram sign-in";
   const initial = user?.first_name
     .match(/[\p{L}\p{N}]/u)?.[0]
     .toLocaleUpperCase();
-  return (
-    <div
-      className="telegram-account"
-      ref={host}
-      onBlur={(event) => {
-        if (
-          event.relatedTarget &&
-          !event.currentTarget.contains(event.relatedTarget)
-        )
-          setOpen(false);
-      }}
+  const profile = (
+    <AppLink
+      page="profile"
+      className="account-button"
+      aria-current={profileActive ? "page" : undefined}
+      aria-label={user ? `Profile: ${user.first_name}` : "Profile"}
+      title="Profile and settings"
     >
-      <button
-        ref={trigger}
-        className="account-button"
-        aria-expanded={open}
-        aria-controls={open ? id : undefined}
-        aria-haspopup="dialog"
-        aria-label={label}
-        aria-busy={pending}
-        title={user?.first_name || "Telegram account"}
-        onClick={() => setOpen(!open)}
-      >
-        {initial ? (
-          <span className="account-initial" aria-hidden="true">
-            {initial}
-          </span>
-        ) : (
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.7"
-          >
-            <circle cx="12" cy="8" r="4" />
-            <path d="M4 21v-2a8 8 0 0 1 16 0v2" />
-          </svg>
-        )}
+      {initial ? (
+        <span className="account-initial" aria-hidden="true">
+          {initial}
+        </span>
+      ) : (
+        <SharedIcon name="user" />
+      )}
+      {context.initData && (
         <span
           aria-hidden="true"
           className={`account-dot ${user ? "verified" : telegram.status}`}
         />
-      </button>
-      {open && (
-        <div
-          className="account-menu"
-          id={id}
-          ref={menu}
-          tabIndex={-1}
-          role="dialog"
-          aria-label="Telegram account"
-        >
-          {botLink && (
-            <a
-              className="account-action"
-              href={botLink}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(event) => {
-                if (
-                  context.app?.openTelegramLink &&
-                  new URL(botLink).hostname === "t.me"
-                ) {
-                  event.preventDefault();
-                  context.app.openTelegramLink(botLink);
-                }
-                close();
-              }}
-            >
-              Open in bot
-            </a>
-          )}
-          {user ? (
-            <>
-              <strong>
-                {user.first_name} {user.last_name}
-              </strong>
-              {user.username && <span>@{user.username}</span>}
-              <small>ID {user.id}</small>
-              <button
-                onClick={() => {
-                  telegram.logout();
-                  close();
-                }}
-              >
-                Sign out
-              </button>
-            </>
-          ) : (
-            <>
-              <strong>
-                {telegram.status === "reopen"
-                  ? "Reopen in Telegram"
-                  : "Telegram sign-in"}
-              </strong>
-              <p role="status">
-                {pending
-                  ? "Signing in…"
-                  : telegram.error || "Sign in to use your Telegram identity."}
-              </p>
-              {telegram.status === "reopen" ? (
-                reopenLink && (
-                  <a
-                    className="account-action"
-                    href={reopenLink}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={(event) => {
-                      if (
-                        context.app?.openTelegramLink &&
-                        new URL(reopenLink).hostname === "t.me"
-                      ) {
-                        event.preventDefault();
-                        context.app.openTelegramLink(reopenLink);
-                      }
-                    }}
-                  >
-                    {new URL(reopenLink).searchParams.has("text")
-                      ? "Send selection to bot"
-                      : new URL(reopenLink).hostname === "t.me"
-                        ? "Reopen in Telegram"
-                        : "Open selection"}
-                  </a>
-                )
-              ) : (
-                <button onClick={telegram.retry} disabled={pending}>
-                  {telegram.status === "retrying" ||
-                  telegram.status === "unavailable"
-                    ? "Retry sign-in"
-                    : "Sign in"}
-                </button>
-              )}
-            </>
-          )}
-        </div>
       )}
-    </div>
+    </AppLink>
+  );
+  if (context.initData)
+    return (
+      <>
+        {appActions}
+        {profile}
+      </>
+    );
+  const link = telegramLink(telegram.config, selection);
+  const isTelegram = link && new URL(link).hostname === "t.me";
+  const label = isTelegram ? "Open in Telegram" : "Open market";
+  return (
+    <>
+      {link && (
+        <a
+          className="telegram-link"
+          href={link}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={label}
+          title={label}
+        >
+          {isTelegram ? (
+            <VenueIcon name="Telegram" />
+          ) : (
+            <SharedIcon name="market" />
+          )}
+        </a>
+      )}
+      {profile}
+    </>
   );
 }

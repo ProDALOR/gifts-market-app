@@ -165,6 +165,9 @@ try {
   await mkdir(output, { recursive: true });
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.addInitScript(() =>
+    localStorage.setItem("market.display-mode", "quality"),
+  );
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "hardwareConcurrency", {
       configurable: true,
@@ -383,7 +386,9 @@ try {
       .evaluateAll((models) =>
         models.flatMap((model) => {
           const artwork = model.querySelector(".gift-preview");
-          const image = artwork?.querySelector("img");
+          const image = artwork?.querySelector(
+            ".model-animation, .gift-loading-placeholder",
+          );
           if (!image) return [];
           const host = artwork.getBoundingClientRect();
           const media = image.getBoundingClientRect();
@@ -432,7 +437,7 @@ try {
       `Bid artwork fills the shared picker-sized media box: ${JSON.stringify(sizes)}`,
     );
   };
-  await detailPreview.locator("img.loaded").first().waitFor();
+  await detailPreview.locator(".model-animation.ready").first().waitFor();
   assert.equal(
     await detailPreview.locator("figure > figcaption #detail-title").count(),
     1,
@@ -713,7 +718,7 @@ try {
         .getBoundingClientRect();
       const close = dialog.querySelector(".modal-close");
       const button = close.getBoundingClientRect();
-      const glyph = close.querySelector(".shared-icon").getBoundingClientRect();
+      const glyph = close.querySelector("svg").getBoundingClientRect();
       return {
         contained:
           bounds.top >= 0 &&
@@ -721,6 +726,9 @@ try {
           dialog.scrollWidth <= dialog.clientWidth,
         caption: caption.bottom <= art.bottom + 1,
         close:
+          button.width === 44 &&
+          button.height === 44 &&
+          !close.querySelector("img") &&
           Math.abs(glyph.x + glyph.width / 2 - button.x - button.width / 2) <
             1 &&
           Math.abs(glyph.y + glyph.height / 2 - button.y - button.height / 2) <
@@ -969,7 +977,7 @@ try {
   await details.waitFor();
   assert.equal(await details.locator(".condition-chip").count(), 223);
   assert.equal(await detailPreview.locator(".preview-model").count(), 16);
-  await detailPreview.locator("img.loaded").first().waitFor();
+  await detailPreview.locator(".model-animation.ready").first().waitFor();
   await checkModelSizing();
   await page.waitForTimeout(200);
   assert.equal(
@@ -1043,7 +1051,7 @@ try {
     .click();
   await details.waitFor({ state: "detached" });
   await largeCard.locator(".card-open").click();
-  await detailPreview.locator("img.loaded").first().waitFor();
+  await detailPreview.locator(".model-animation.ready").first().waitFor();
   await page.waitForFunction(
     () =>
       document.querySelectorAll(".bid-detail-preview .model-animation.ready")

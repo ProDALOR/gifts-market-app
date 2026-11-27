@@ -5,6 +5,7 @@ import { criteriaReport, giftReport } from "./valuation-fixture.mjs";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { gzipSync } from "node:zlib";
 import { join } from "node:path";
 import { createServer } from "vite";
 import { chromium } from "playwright";
@@ -21,7 +22,7 @@ import {orderKey} from '/src/orderbook/order-activity.ts';
 import '/src/style.css';
 const query={filters:{collection_id:'gift',currency_id:'GRAM',venue_id:null,models:[],backdrops:[],patterns:[],number:null,price:null},source:'asks',sort:'time_desc'};
 const options=new Map([
-['gold',{kind:'model',id:'gold',name:'Gold',media:{thumbnail_url:'/__gift.svg',animation_url:null}}],
+['gold',{kind:'model',id:'gold',name:'Gold',media:{thumbnail_url:'/__gift.svg',animation_url:'/__gift-motion'}}],
 ['symbol',{kind:'pattern',id:'symbol',name:'Star',media:{thumbnail_url:'/__symbol.svg',animation_url:'/__symbol-motion'}}],
 ['blue',{kind:'backdrop',id:'blue',name:'Sapphire',palette:{center:'#759fb4',edge:'#364e73',pattern:'#283d60'}}]
 ]);
@@ -35,7 +36,7 @@ React.createElement(GiftGrid,{orders:feed.displayOrders,busy:feed.loadingMore,vi
 selected&&React.createElement(OrderDetails,{selected,options,names,collectionName:'Gift',collectionSlug:'Gift',removed:feed.activity.get(orderKey(selected))?.state==='removed',close:()=>select(undefined)}));}
 const app=createRoot(document.getElementById('fixture'));app.render(React.createElement(App));window.unmount=()=>app.unmount();
 window.renderListing=(order,activity)=>app.render(React.createElement('ul',{className:'gift-grid'},React.createElement(GiftCard,{order,activity,options,collectionName:'Gift',venueName:'MRKT',selected:false,open:()=>{}})));
-window.renderDetails=order=>app.render(React.createElement(OrderDetails,{selected:order,options,names,collectionName:'Gift',collectionSlug:'Gift',close:()=>app.render(null)}));
+window.shareCalls=[];window.renderDetails=(order,withShare=false)=>app.render(React.createElement(OrderDetails,{selected:order,options,names,collectionName:'Gift',collectionSlug:'Gift',share:withShare?(slug,currency)=>window.shareCalls.push([slug,currency]):undefined,close:()=>app.render(null)}));
 window.renderMotionModal=()=>app.render(React.createElement(Modal,{label:'Motion test',heading:'Motion test',className:'valuation-popup',closeLabel:'Close motion test',close:()=>{window.modalCloseCalls=(window.modalCloseCalls||0)+1;app.render(null);}},React.createElement('p',null,'Motion fixture')));
 
 </script></body></html>`;
@@ -129,6 +130,53 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 440, height: 880 } });
+  await page.addInitScript(() =>
+    localStorage.setItem("market.display-mode", "quality"),
+  );
+  const tgs = gzipSync(
+    JSON.stringify({
+      v: "5.7.4",
+      w: 128,
+      h: 128,
+      fr: 30,
+      ip: 0,
+      op: 90,
+      assets: [],
+      layers: [
+        {
+          ddd: 0,
+          ind: 1,
+          ty: 1,
+          nm: "Fixture",
+          sr: 1,
+          ks: {
+            o: { a: 0, k: 100 },
+            r: { a: 0, k: 0 },
+            p: { a: 0, k: [64, 64, 0] },
+            a: { a: 0, k: [32, 32, 0] },
+            s: { a: 0, k: [100, 100, 100] },
+          },
+          ao: 0,
+          sw: 64,
+          sh: 64,
+          sc: "#e4a536",
+          ip: 0,
+          op: 90,
+          st: 0,
+          bm: 0,
+        },
+      ],
+    }),
+  );
+  await page.route("**/__gift-motion", (route) =>
+    route.fulfill({ contentType: "application/x-tgsticker", body: tgs }),
+  );
+  await page.route("**/media/icons/**", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>',
+    }),
+  );
   const refreshValuation = async () => {
     const before = requests.length;
     await page.clock.fastForward(60_000);
@@ -496,7 +544,7 @@ try {
   );
   const art = await page.locator(".detail-art").boundingBox();
   const giftArt = await page
-    .locator(".detail-art .gift-model-image")
+    .locator(".detail-art .model-animation.ready")
     .boundingBox();
   assert.ok(
     art.height >= 300 && giftArt.height > 200,
@@ -521,7 +569,7 @@ try {
       const bounds = caption.getBoundingClientRect();
       const artwork = caption
         .closest(".detail-art")
-        .querySelector(".gift-model-image")
+        .querySelector(".model-animation.ready")
         .getBoundingClientRect();
       return bounds.top >= artwork.bottom - 1;
     }),
@@ -531,7 +579,7 @@ try {
   await page.locator(".attribute-model .gift-model-image.loaded").waitFor();
   await page.locator(".attribute-pair .gift-model-image.loaded").waitFor();
   assert.equal(
-    await page.locator(".attribute-collection .gift-placeholder-gift").count(),
+    await page.locator(".attribute-collection .shared-icon").count(),
     1,
   );
   assert.equal(
@@ -571,7 +619,7 @@ try {
   await page.evaluate(() => {
     window.detailNodes = [
       document.querySelector(".detail"),
-      document.querySelector(".detail-art .gift-model-image"),
+      document.querySelector(".detail-art .model-animation.ready"),
       document.querySelector(".valuation-summary"),
     ];
   });
@@ -595,7 +643,13 @@ try {
         closeVisible: (() => {
           const button = dialog.querySelector(".modal-close");
           const r = button.getBoundingClientRect();
+          const glyph = button.querySelector("svg").getBoundingClientRect();
           return (
+            r.width === 44 &&
+            r.height === 44 &&
+            !button.querySelector("img") &&
+            Math.abs(glyph.x + glyph.width / 2 - r.x - r.width / 2) < 1 &&
+            Math.abs(glyph.y + glyph.height / 2 - r.y - r.height / 2) < 1 &&
             r.top >= 0 &&
             r.right <= innerWidth &&
             button.contains(
@@ -624,7 +678,7 @@ try {
       await page.evaluate(
         () =>
           document.querySelector(".detail") === window.detailNodes[0] &&
-          document.querySelector(".detail-art .gift-model-image") ===
+          document.querySelector(".detail-art .model-animation.ready") ===
             window.detailNodes[1] &&
           document.querySelector(".valuation-summary") ===
             window.detailNodes[2],
@@ -1263,7 +1317,7 @@ try {
       .count(),
     0,
   );
-  await page.locator(".detail-art .gift-model-image.loaded").waitFor();
+  await page.locator(".detail-art .model-animation.ready").waitFor();
   assert.match(await page.locator("#detail-title").textContent(), /#42/);
   assert.equal(await page.locator(".detail-caption p").textContent(), "Gold");
   assert.equal(
@@ -1380,14 +1434,38 @@ try {
           .querySelector(".detail-caption")
           .getBoundingClientRect();
         const media = dialog
-          .querySelector(".detail-art .gift-model-image")
+          .querySelector(".detail-art .model-animation.ready")
           .getBoundingClientRect();
         const close = dialog.querySelector(".modal-close");
         const button = close.getBoundingClientRect();
         const links = [...dialog.querySelectorAll(".detail-actions a")].map(
           (a) => a.getBoundingClientRect(),
         );
+        const fade = dialog.querySelector(".detail-valuation");
+        const fadeBox = fade.getBoundingClientRect();
+        const table = dialog.querySelector(".detail-attributes");
+        const content = dialog
+          .querySelector(".detail-content")
+          .getBoundingClientRect();
         return {
+          gradient:
+            getComputedStyle(fade).backgroundImage.includes(
+              "linear-gradient",
+            ) &&
+            getComputedStyle(fade)
+              .getPropertyValue("--gift-backdrop-edge")
+              .trim() === "#364e73" &&
+            fadeBox.top >= content.top - 1 &&
+            fadeBox.left >= content.left - 1 &&
+            fadeBox.right <= content.right + 1 &&
+            fadeBox.bottom <= table.getBoundingClientRect().top + 1,
+          opaqueText:
+            getComputedStyle(fade).opacity === "1" &&
+            getComputedStyle(dialog.querySelector(".detail-pricing"))
+              .opacity === "1",
+          plainTable: !getComputedStyle(table).getPropertyValue(
+            "--gift-backdrop-edge",
+          ),
           contained:
             bounds.left >= 0 &&
             bounds.right <= innerWidth &&
@@ -1409,6 +1487,9 @@ try {
       });
       assert.ok(
         layout.contained &&
+          layout.gradient &&
+          layout.opaqueText &&
+          layout.plainTable &&
           layout.caption &&
           layout.close &&
           layout.oneActionRow,
@@ -1430,10 +1511,60 @@ try {
       "Responsive layout changes do not request another valuation",
     );
   }
+  for (const kind of ["ask", "executed", "bid"]) {
+    await page.evaluate((order) => window.renderDetails(order, true), {
+      ...b,
+      kind,
+    });
+    for (const width of [320, 390, 1200]) {
+      await page.setViewportSize({ width, height: 844 });
+      const buttons = await page.locator(".detail-actions").evaluate((el) => {
+        const main = el.querySelector(".detail-market"),
+          share = el.querySelector(".detail-share"),
+          telegram = el.querySelector(".detail-telegram");
+        const a = main.getBoundingClientRect(),
+          b = share.getBoundingClientRect(),
+          c = telegram.getBoundingClientRect();
+        return {
+          all: el.children.length === 3,
+          mainFirst:
+            a.bottom <= b.top &&
+            Math.abs(a.width - (b.width + c.width + 8)) < 1,
+          paired: Math.abs(b.y - c.y) < 1 && Math.abs(b.width - c.width) < 1,
+          contained: [main, share, telegram].every(
+            (button) => button.scrollWidth <= button.clientWidth,
+          ),
+          secondary:
+            getComputedStyle(main).backgroundColor !==
+            getComputedStyle(share).backgroundColor,
+        };
+      });
+      assert.deepEqual(
+        buttons,
+        {
+          all: true,
+          mainFirst: true,
+          paired: true,
+          contained: true,
+          secondary: true,
+        },
+        `${kind} share actions at ${width}px`,
+      );
+      if (kind === "ask" && width !== 320)
+        await page.screenshot({
+          path: `/tmp/gifts-market-ui/actions-${width}.png`,
+        });
+    }
+    await page.getByRole("button", { name: "Share", exact: true }).click();
+  }
+  assert.equal(await page.evaluate(() => window.shareCalls.length), 3);
   await page.evaluate(
     (order) =>
       window.renderDetails({ ...order, market_url: "https://t.me/nft/Gift-2" }),
     b,
+  );
+  await page.waitForFunction(
+    () => document.querySelectorAll(".detail-actions a").length === 1,
   );
   assert.equal(
     await page.locator(".detail-actions a").count(),

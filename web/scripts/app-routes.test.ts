@@ -4,6 +4,7 @@ import {
   initialLocation,
   pathRoute,
   portfolioUser,
+  pagePath,
 } from "../src/app/routes.ts";
 import {
   marketLaunch,
@@ -14,6 +15,20 @@ import type { TelegramContext } from "../src/telegram.ts";
 const context = (start: string): TelegramContext => ({
   initData: "",
   app: { initDataUnsafe: { start_param: start } } as TelegramContext["app"],
+});
+test("profile routes use the current session and discard market and launch parameters", () => {
+  const result = initialLocation(
+    context("portfolio_123"),
+    new URL(
+      "https://market.test/profile/?currency=XTR&user=456&gift=Gift-7&tgWebAppData=private&f=c=gift",
+    ),
+    null,
+  );
+  assert.deepEqual(result.route, { page: "profile", index: 0 });
+  assert.equal(result.href, "/profile?currency=XTR");
+  assert.equal(result.currency, "XTR");
+  assert.equal(pagePath("profile"), "/profile");
+  assert.equal(pagePath("portfolio", 123), "/portfolio/123");
 });
 test("portfolio launch targets apply once and explicit routes override persistent Mini App start parameters", () => {
   const ctx = context("portfolio_123");

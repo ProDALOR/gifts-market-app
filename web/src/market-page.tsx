@@ -1,5 +1,6 @@
 import {
   aliasFilters,
+  availableFilterSelectors,
   preferredSelector,
   resolveFilterSelectors,
 } from "./catalog/aliases";
@@ -14,7 +15,6 @@ import type {
 } from "./market";
 import { useCatalog } from "./catalog/use-catalog";
 import { useOrderFeed } from "./use-order-feed";
-import { useBackgroundPlaybackSuspension } from "./previews/use-playback";
 import { CollectionRail } from "./collections/collection-picker";
 import { TraitPickers } from "./collections/trait-pickers";
 import { TraitPreview } from "./previews/trait-preview";
@@ -28,9 +28,10 @@ import { orderKey } from "./orderbook/order-activity";
 import { GiftGrid } from "./orderbook/gift-grid";
 import { SortPicker, marketSortOptions } from "./ui/pickers";
 import { ScrollLoader } from "./orderbook/scroll-loader";
-import { ShareButton, ShareStatus, useSharing } from "./use-sharing";
+import { ShareStatus, useSharing } from "./use-sharing";
 import { AppHeader } from "./app/header";
 import { BrandMark } from "./brand/brand-mark";
+import { LoadingScreen } from "./app/loading-screen";
 import { BackToTop } from "./ui/back-to-top";
 import type { TelegramContext } from "./telegram";
 import {
@@ -62,7 +63,6 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     state: undefined as import("./order-feed").FeedState | undefined,
     bookmark: undefined as import("./order-feed").Bookmark | undefined,
   }));
-  const [accountOpen, setAccountOpen] = useState(false);
   const [giftSlug, setGiftSlug] = useState(() => {
     const value = selectionAt(location).get("gift");
     return normalizeSlug(value) ? value! : undefined;
@@ -109,21 +109,55 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     optionsError,
     retryOptions,
     retryCatalog,
-  } = useCatalog(reloadKey, choice.collection);
+  } = useCatalog(choice.collection);
   const item = catalogItem?.id ? catalogItem : undefined;
+  const catalogReady =
+    !!item && (options.size > 0 || (!optionsLoading && !optionsError));
+  const availableFilters = useMemo(
+    () =>
+      catalogReady
+        ? availableFilterSelectors(choice.filters, options)
+        : choice.filters,
+    [catalogReady, choice.filters, options],
+  );
+  // Keep using known traits during a catalog refresh, but do not drop an
+  // unknown selector until the new catalog has successfully finished loading.
+  const filtersReady =
+    catalogReady &&
+    (availableFilters === choice.filters || (!optionsLoading && !optionsError));
+  const marketFilters = filtersReady ? availableFilters : choice.filters;
+  useEffect(() => {
+    if (marketFilters !== choice.filters)
+      setChoice((previous) =>
+        previous.filters === choice.filters
+          ? { ...previous, filters: marketFilters }
+          : previous,
+      );
+  }, [marketFilters, choice.filters]);
   const availableTypes = useMemo(
     () => types.filter((t) => directory.some((b) => b.collection_id === t.id)),
     [types, directory],
   );
   const filterAliases = useMemo(
-    () => aliasFilters(choice.filters, options),
-    [choice.filters, options],
+    () => aliasFilters(marketFilters, options),
+    [marketFilters, options],
+  );
+  const shareTarget = useMemo(
+    () => ({
+      type: "market" as const,
+      selection: choiceSelection({
+        ...storedChoice,
+        currency,
+        filters: filterAliases,
+        collection: preferredSelector(item) ?? storedChoice.collection,
+      }),
+    }),
+    [storedChoice, currency, filterAliases, item],
   );
   const pickerFilters = useMemo(
-    () => resolveFilterSelectors(choice.filters, options),
-    [choice.filters, options],
+    () => resolveFilterSelectors(marketFilters, options),
+    [marketFilters, options],
   );
-  useBackgroundPlaybackSuspension(accountOpen);
   useEffect(() => {
     if (!directory[0]) return;
     // Market reads stay scoped, including startup and old cross-collection links.
@@ -167,7 +201,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
         {
           ...choice,
           collection: preferredSelector(item) ?? choice.collection,
-          filters: aliasFilters(choice.filters, options),
+          filters: filterAliases,
         },
         giftSlug,
       ),
@@ -178,7 +212,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
       selectionHref(location.pathname, p),
     );
     navigation?.rememberLocation();
-  }, [JSON.stringify(choice), item, options, giftSlug]);
+  }, [JSON.stringify(choice), item, filterAliases, giftSlug]);
   useEffect(() => setSelected(undefined), [JSON.stringify(choice)]);
   const base = {
     filters: {
@@ -199,7 +233,10 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     sort: choice.sort,
   };
   const query: FeedQuery | null =
-    !choice.collection || !choice.currency
+    !choice.collection ||
+    !choice.currency ||
+    !item ||
+    (!filtersReady && Object.values(choice.filters).some((ids) => ids?.length))
       ? null
       : {
           ...base,
@@ -227,6 +264,8 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     loadMore,
     setVisibleRange,
   } = useOrderFeed(query, false, reloadKey, retainedFeed.current);
+  const compactStatus =
+    status === "Live" || status === "Connecting" || status === "Reconnecting";
   useEffect(
     () =>
       setSelected((current) =>
@@ -316,6 +355,8 @@ export function MarketPage({ context }: { context: TelegramContext }) {
         (giftSlug ? choice.collection : undefined)),
   );
 
+  if (catalogLoading && !types.length && !startupError)
+    return <LoadingScreen />;
   return (
     <FloorsProvider
       currency={choice.currency}
@@ -337,12 +378,19 @@ export function MarketPage({ context }: { context: TelegramContext }) {
               context={context}
               currencies={currencies}
               currency={choice.currency}
+              share={
+                choice.collection
+                  ? {
+                      controller: sharing,
+                      target: shareTarget,
+                      label: "Share market selection",
+                    }
+                  : undefined
+              }
               changeCurrency={(currency) => {
                 if (currency !== choice.currency)
                   set({ ...choice, currency, venue: "", min: "", max: "" });
               }}
-              accountOpen={accountOpen}
-              setAccountOpen={setAccountOpen}
             />
             <AppNavigation page="market" />
             <CollectionRail
@@ -392,6 +440,16 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                   <button
                     key={mode}
                     aria-pressed={choice.mode === mode}
+                    title={
+                      choice.mode === mode
+                        ? `${status} · ${orders.length.toLocaleString()} loaded`
+                        : undefined
+                    }
+                    aria-description={
+                      choice.mode === mode
+                        ? `${status} · ${orders.length.toLocaleString()} loaded`
+                        : undefined
+                    }
                     aria-controls={
                       mode === "bid" && choice.mode === "bid"
                         ? "bid-matching"
@@ -412,9 +470,22 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                       : mode === "bid"
                         ? "Bids"
                         : "History"}
+                    {choice.mode === mode && (
+                      <span
+                        className={`status market-view-status${status === "Live" ? " live" : ""}`}
+                        aria-hidden="true"
+                      >
+                        <i />
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
+              {compactStatus && (
+                <span className="sr mobile-feed-status" role="status">
+                  {status}
+                </span>
+              )}
               {choice.mode === "bid" && (
                 <div className="bid-matching" id="bid-matching">
                   <div
@@ -547,7 +618,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                     "Select a collection"
                   ))}
               </h1>
-              <div className="feed-status">
+              <div className="feed-status" data-compact={compactStatus}>
                 <span
                   role="status"
                   className={`status${status === "Live" ? " live" : ""}`}
@@ -557,18 +628,6 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                 </span>
                 <span aria-hidden="true">·</span>
                 <span>{orders.length.toLocaleString()} loaded</span>
-                {choice.collection && (
-                  <ShareButton
-                    sharing={sharing}
-                    label="Share market selection"
-                    click={() =>
-                      void sharing.share({
-                        type: "market",
-                        selection: choiceSelection(choice),
-                      })
-                    }
-                  />
-                )}
               </div>
             </header>
             <section className="orders" aria-label="Order book">
@@ -597,23 +656,23 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                   },
                 })}
               />
-              {!displayOrders.length && (
-                <div className="empty" role="status">
-                  <span>◇</span>
-                  <strong>
-                    {status === "Loading" || status === "Connecting"
-                      ? "Loading this market…"
-                      : choice.mode === "executed"
+              {!displayOrders.length &&
+                status !== "Loading" &&
+                status !== "Connecting" && (
+                  <div className="empty" role="status">
+                    <span>◇</span>
+                    <strong>
+                      {choice.mode === "executed"
                         ? "No confirmed executions"
                         : "No matching orders"}
-                  </strong>
-                  <p>
-                    {Object.keys(choice.filters).length
-                      ? "Adjust the traits to see more results."
-                      : "Orders will appear here as venues publish them."}
-                  </p>
-                </div>
-              )}
+                    </strong>
+                    <p>
+                      {Object.keys(choice.filters).length
+                        ? "Adjust the traits to see more results."
+                        : "Orders will appear here as venues publish them."}
+                    </p>
+                  </div>
+                )}
               <ScrollLoader
                 loading={loadingMore}
                 hasMore={hasMore}
@@ -635,10 +694,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
             </footer>
           </div>
         </main>
-        <BackToTop
-          target={controls}
-          blocked={!!selected || !!giftSlug || accountOpen}
-        />
+        <BackToTop target={controls} blocked={!!selected || !!giftSlug} />
         {giftSlug && choice.collection && choice.currency && (
           <SlugDetails
             slug={giftSlug}

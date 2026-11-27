@@ -1,6 +1,7 @@
 import { catalogFloors } from "./catalog-floors.ts";
 import { sameCatalogTarget } from "./targets.ts";
 import { evaluatedAfter } from "./freshness.ts";
+import { retryDelay, retryableFailure } from "../retry.ts";
 import { liveSocket } from "../live-socket.ts";
 import { valuation, ApiFailure } from "../market.ts";
 import type {
@@ -39,6 +40,7 @@ export type FloorsState = {
   selected: string;
   entries: ReadonlyMap<string, FloorsEntry>;
   error: string;
+  retrying: boolean;
   detail: { pending: boolean; error: string };
 };
 const REFRESH_MS = 60_000;
@@ -46,6 +48,7 @@ const BATCH_SIZE = 8;
 type Dependencies = {
   query: typeof valuation;
   watchStatus: (changed: (status: MarketStatus) => void) => () => void;
+  random: () => number;
 };
 /** All collection summaries, selected traits only, refreshed once a minute over the shared WS. */
 export class FloorsController {
@@ -68,6 +71,10 @@ export class FloorsController {
   private unsubscribe?: () => void;
   private timer?: ReturnType<typeof setTimeout>;
   private refreshTimer?: ReturnType<typeof setInterval>;
+  private retryTimer?: ReturnType<typeof setTimeout>;
+  private retryCollections = new Set<string>();
+  private retryDetails = false;
+  private failures = 0;
   private closed = false;
   private used = 0;
   private state: FloorsState = {
@@ -75,12 +82,14 @@ export class FloorsController {
     selected: "",
     entries: new Map(),
     error: "",
+    retrying: false,
     detail: { pending: false, error: "" },
   };
   constructor(deps: Partial<Dependencies> = {}) {
     this.deps = {
       query: valuation,
       watchStatus: (changed) => liveSocket.watchStatus(changed),
+      random: Math.random,
       ...deps,
     };
   }
@@ -92,11 +101,26 @@ export class FloorsController {
     };
   };
   private publish() {
+    const error = this.selected
+      ? this.detailError || this.errors.get(this.selected) || ""
+      : this.errors.values().next().value || "";
     this.state = {
       currency: this.currency,
       selected: this.selected,
       entries: new Map(this.cache),
-      error: this.detailError || this.errors.values().next().value || "",
+      error,
+      retrying:
+        !!error &&
+        this.available &&
+        (this.retryDetails ||
+          (this.selected
+            ? this.retryCollections.has(this.selected) ||
+              !!this.detail ||
+              this.detailsDirty ||
+              [...this.running.values()].some((ids) =>
+                ids.includes(this.selected),
+              )
+            : this.retryCollections.size > 0 || this.running.size > 0)),
       detail: {
         pending:
           !!this.selected &&
@@ -135,6 +159,7 @@ export class FloorsController {
       this.detailsAt.clear();
       this.errors.clear();
       this.queued.clear();
+      this.clearRetries();
       this.currency = currency;
     }
     for (const id of this.collections)
@@ -143,6 +168,7 @@ export class FloorsController {
         this.detailsAt.delete(id);
         this.errors.delete(id);
         this.queued.delete(id);
+        this.retryCollections.delete(id);
       }
     for (const id of ids)
       if (currencyChanged || !this.collections.has(id)) this.queued.add(id);
@@ -155,6 +181,7 @@ export class FloorsController {
       this.detail?.stop.abort();
       this.detail = undefined;
       this.detailError = "";
+      this.retryDetails = false;
       const entry = this.cache.get(selected);
       const cachedPair = entry?.traits?.pair;
       if (
@@ -180,6 +207,7 @@ export class FloorsController {
       this.unsubscribe?.();
       this.unsubscribe = undefined;
       clearTimeout(this.timer);
+      this.clearRetries();
       clearInterval(this.refreshTimer);
       this.refreshTimer = undefined;
       this.available = false;
@@ -194,6 +222,7 @@ export class FloorsController {
         this.available = available;
         if (available) this.refresh();
         else {
+          this.clearRetries();
           this.abort();
           this.markStale();
           this.publish();
@@ -211,10 +240,34 @@ export class FloorsController {
   }
   private refresh = () => {
     if (this.closed) return;
+    this.clearRetries();
     for (const id of this.collections) this.queued.add(id);
     this.detailsDirty = !!this.selected;
     this.schedule();
   };
+  private clearRetries() {
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    this.retryCollections.clear();
+    this.retryDetails = false;
+    this.failures = 0;
+  }
+  private deferRetry() {
+    if (this.closed || !this.available || this.retryTimer) return;
+    this.retryTimer = setTimeout(
+      () => {
+        this.retryTimer = undefined;
+        for (const id of this.retryCollections)
+          if (this.collections.has(id)) this.queued.add(id);
+        this.retryCollections.clear();
+        if (this.retryDetails && this.selected) this.detailsDirty = true;
+        this.retryDetails = false;
+        this.pump();
+        this.publish();
+      },
+      retryDelay(this.failures++, this.deps.random),
+    );
+  }
   private pump() {
     if (this.closed || !this.available || !this.currency) return;
     // A separate foreground request never queues behind the full catalog sweep.
@@ -235,7 +288,10 @@ export class FloorsController {
       this.running.set(stop, ids);
       void this.loadSummaries(currency, ids, stop).finally(() => {
         this.running.delete(stop);
-        if (!stop.signal.aborted) this.pump();
+        if (!stop.signal.aborted) {
+          this.pump();
+          if (this.state.error) this.publish();
+        }
       });
     }
   }
@@ -314,6 +370,7 @@ export class FloorsController {
           this.detailsDirty = true;
       }
       this.errors.delete(row.collection_id);
+      this.retryCollections.delete(row.collection_id);
     }
     this.trim();
     this.publish();
@@ -355,7 +412,9 @@ export class FloorsController {
         );
         const previous = this.cache.get(id);
         if (previous) this.cache.set(id, { ...previous, stale: true });
+        if (retryableFailure(error)) this.retryCollections.add(id);
       }
+      if (this.retryCollections.size) this.deferRetry();
       this.publish();
     }
   }
@@ -376,6 +435,7 @@ export class FloorsController {
       .then((value) => {
         if (!work.stop.signal.aborted && this.detail === work) {
           this.detailError = "";
+          this.retryDetails = false;
           this.accept(value);
         }
       })
@@ -387,6 +447,10 @@ export class FloorsController {
             : "Attribute floors unavailable";
         const previous = this.cache.get(selected);
         if (previous) this.cache.set(selected, { ...previous, stale: true });
+        if (retryableFailure(error)) {
+          this.retryDetails = true;
+          this.deferRetry();
+        }
         this.publish();
       })
       .finally(() => {
@@ -437,6 +501,7 @@ export class FloorsController {
     this.closed = true;
     clearTimeout(this.timer);
     clearInterval(this.refreshTimer);
+    this.clearRetries();
     this.abort();
     this.unsubscribe?.();
     this.listeners.clear();

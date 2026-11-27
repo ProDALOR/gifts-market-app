@@ -222,6 +222,9 @@ export const CollectionRail = memo(function CollectionRail({
               <span className="collection-art">
                 {media ? (
                   <GiftArtwork
+                    surface={
+                      item.id === selected ? "active_collection" : "collection"
+                    }
                     media={media}
                     fallback={item.name[0]}
                     label={item.name}

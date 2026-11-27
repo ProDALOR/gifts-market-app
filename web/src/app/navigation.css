@@ -22,11 +22,11 @@
   font-weight: 600;
   font-size: 13px;
 }
-.app-navigation a.active {
-  background: var(--plum);
-  color: white;
+.app-navigation a[aria-current="page"] {
+  background: var(--selection);
+  color: var(--on-selection);
 }
-.app-navigation a:hover {
+.app-navigation a:not([aria-current="page"]):hover {
   color: var(--ink);
 }
 .app-navigation .shared-icon {
@@ -47,6 +47,28 @@
     border-radius: 15px;
     box-shadow: 0 4px 20px #0004;
   }
+  @supports (backdrop-filter: blur(8px)) or (-webkit-backdrop-filter: blur(8px)) {
+    .app-navigation {
+      --navigation-tint: 85%;
+      background: color-mix(
+        in srgb,
+        var(--paper) var(--navigation-tint),
+        transparent
+      );
+      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(8px);
+    }
+    :root[data-color-scheme="light"] .app-navigation {
+      --navigation-tint: 90%;
+    }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .app-navigation {
+      background: var(--paper);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
   .app-navigation a {
     min-height: 48px;
     flex-direction: column;
@@ -54,7 +76,7 @@
     padding: 4px 10px;
     font-size: 11px;
   }
-  .app-navigation svg {
+  .app-navigation .shared-icon {
     width: 20px;
     height: 20px;
   }

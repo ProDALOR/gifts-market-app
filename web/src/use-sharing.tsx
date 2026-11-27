@@ -2,6 +2,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { TelegramContext } from "./telegram";
 import { useSession } from "./app/session";
 import { SharingController } from "./sharing";
+import { ShareIcon } from "./ui/icons";
 export function useSharing(context: TelegramContext, scope: string) {
   const session = useSession();
   const publicUrl = session.config?.public_url || undefined;
@@ -34,15 +35,7 @@ export function ShareButton({
       aria-busy={sharing.busy}
       onClick={click}
     >
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      >
-        <path d="M13 5V2l8 7-8 7v-4c-6 0-9 3-10 7 0-8 4-13 10-14Z" />
-      </svg>
+      <ShareIcon />
     </button>
   ) : null;
 }

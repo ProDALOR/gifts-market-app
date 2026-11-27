@@ -1,7 +1,11 @@
 import mrktLogo from "../icons/mrkt.svg?no-inline";
 import registry from "../../../crates/market-media/assets/icons.json";
+import { useCallback, useRef } from "react";
 import { useArtworkImage } from "../previews/use-artwork-image";
-import { usePreviewEnvironment } from "../previews/preview-environment";
+import {
+  usePreviewEnvironment,
+  usePreviewVisibility,
+} from "../previews/preview-environment";
 
 const manifest = registry.icons;
 export type IconName = keyof typeof manifest;
@@ -29,10 +33,23 @@ function StaticIcon({
   label?: string;
 }) {
   const url = `/media/icons/${name}/preview?v=${registry.preview_version}-${manifest[name].document_id}`;
+  const host = useRef<HTMLSpanElement>(null);
+  const visible = usePreviewVisibility(host);
   const { pageVisible } = usePreviewEnvironment();
-  const image = useArtworkImage(url, undefined, pageVisible);
+  // HTTP caching is enough for tiny static masks; reserve decoded retention for gifts.
+  const image = useArtworkImage(url, undefined, visible && pageVisible, {
+    retainDecoded: false,
+  });
+  const source = image.sources[0];
+  const complete = useCallback(
+    (image: HTMLImageElement | null) => {
+      if (image?.complete && image.naturalWidth) source?.loaded(image);
+    },
+    [source?.loaded],
+  );
   return (
     <span
+      ref={host}
       className={`shared-icon ${className}`}
       role={label ? "img" : undefined}
       aria-label={label}
@@ -46,6 +63,7 @@ function StaticIcon({
       )}
       {image.sources.map((source) => (
         <img
+          ref={complete}
           key={source.attempt}
           src={source.url}
           alt=""
@@ -79,6 +97,34 @@ export function CurrencySymbol({ currency }: { currency: string }) {
 
 export function SearchIcon() {
   return <SharedIcon name="search" className="search-icon" />;
+}
+/** Dismissal must remain available without media downloads or visibility observers. */
+export function CloseIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+    >
+      <path d="m6 6 12 12M18 6 6 18" />
+    </svg>
+  );
+}
+export function ShareIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+    >
+      <path d="M13 5V2l8 7-8 7v-4c-6 0-9 3-10 7 0-8 4-13 10-14Z" />
+    </svg>
+  );
 }
 export function VenueIcon({ name }: { name: string }) {
   const venue = name.toLowerCase();

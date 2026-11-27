@@ -15,8 +15,8 @@ function retryAfter(response: Response): number | undefined {
   return Number.isFinite(seconds) ? Math.max(1, seconds) * 1000 : undefined;
 }
 type MediaType = "image" | "tgs";
-/** Limit active HTTP transfers. Backoff never holds a transfer slot. */
-const downloads = new TaskQueue(4);
+/** Bound transfers independently of rendering. Small symbol stills must keep up with grid overscan. */
+const downloads = new TaskQueue(8);
 export async function fetchMedia(
   url: string,
   signal: AbortSignal,

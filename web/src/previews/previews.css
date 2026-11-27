@@ -13,7 +13,7 @@
   background: transparent;
 }
 .symbol-thumb {
-  background: #b5a3b6;
+  background: var(--dark-accent);
 }
 
 .trait-preview {
@@ -23,7 +23,7 @@
   height: 84px;
   margin: var(--control-gap) 0 0;
   border-radius: 13px;
-  background: var(--raised);
+  background: var(--dark-raised);
   color: white;
 }
 .trait-preview::after {

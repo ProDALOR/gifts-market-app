@@ -2,8 +2,12 @@ import { selectionAt, selectionHref } from "../market-selection.ts";
 import { mergeTargetParams } from "../targets.ts";
 import { cleanSelection, launchTarget } from "../telegram.ts";
 import type { TelegramContext } from "../telegram.ts";
-export type Page = "market" | "portfolio";
+export type Page = "market" | "portfolio" | "profile";
 export type Route = { page: Page; user?: number; index: number };
+export function pagePath(page: Page, user?: number) {
+  if (page === "portfolio") return `/portfolio${user ? `/${user}` : ""}`;
+  return page === "profile" ? "/profile" : "/";
+}
 export const portfolioUser = (value: unknown) => {
   if (typeof value !== "number" && typeof value !== "string") return undefined;
   if (typeof value === "string" && !/^[0-9]+$/.test(value)) return undefined;
@@ -11,6 +15,7 @@ export const portfolioUser = (value: unknown) => {
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 };
 export function pathRoute(path: string): Omit<Route, "index"> {
+  if (/^\/profile\/?$/.test(path)) return { page: "profile" };
   const match = /^\/portfolio(?:\/(\d+))?\/?$/.exec(path);
   return match
     ? { page: "portfolio", user: portfolioUser(match[1]) }
@@ -48,13 +53,12 @@ export function initialLocation(
     const allowed = new Set(["currency", "f", "collection", "filters", "sort"]);
     for (const key of [...params.keys()])
       if (!allowed.has(key)) params.delete(key);
+  } else if (route.page === "profile") {
+    for (const key of [...params.keys()])
+      if (key !== "currency") params.delete(key);
   }
   const currency = direct.get("currency") || params.get("currency") || "GRAM";
-  if (route.page === "portfolio") params.set("currency", currency);
-  const path =
-    route.page === "portfolio"
-      ? `/portfolio${route.user ? `/${route.user}` : ""}`
-      : "/";
+  if (route.page !== "market") params.set("currency", currency);
   return {
     route: {
       ...route,
@@ -63,7 +67,7 @@ export function initialLocation(
           ? remembered!.index
           : 0,
     },
-    href: selectionHref(path, params),
+    href: selectionHref(pagePath(route.page, route.user), params),
     currency,
   };
 }

@@ -33,7 +33,7 @@ function OptionImage({
   option: Exclude<CatalogOption, { kind: "backdrop" }>;
 }) {
   const host = useRef<HTMLSpanElement>(null);
-  const visible = usePreviewVisibility(host);
+  const visible = usePreviewVisibility(host, 256);
   const { pageVisible } = usePreviewEnvironment();
   const [requested, setRequested] = useState(false);
   useEffect(() => {
@@ -47,6 +47,7 @@ function OptionImage({
     >
       {requested && (
         <GiftArtwork
+          surface="item"
           media={option.media || undefined}
           fallback=""
           label={option.name}

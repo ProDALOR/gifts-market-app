@@ -20,12 +20,19 @@ export function BrandMark({ animated = false }: { animated?: boolean }) {
       aria-label="IGIFTS home"
       title="IGIFTS"
     >
-      <GiftArtwork
-        media={media}
-        fallback=""
-        label="Liberty Figure · Columbus"
-        playback={animated ? "collection" : "static"}
-      />
+      <BrandArtwork animated={animated} />
     </AppLink>
+  );
+}
+
+/** Local artwork also works before navigation, authentication or catalog requests finish. */
+export function BrandArtwork({ animated = false }: { animated?: boolean }) {
+  return (
+    <GiftArtwork
+      media={media}
+      fallback=""
+      label="Liberty Figure · Columbus"
+      playback={animated ? "collection" : "static"}
+    />
   );
 }

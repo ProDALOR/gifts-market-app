@@ -84,6 +84,48 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+.gift-card-loading {
+  pointer-events: none;
+}
+.gift-card-loading .card-preview {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+}
+.gift-card-loading .card-preview::after {
+  content: none;
+}
+.gift-card-loading .gift-loading-placeholder {
+  position: absolute;
+  width: 60%;
+  height: 65%;
+  left: 20%;
+  top: 4%;
+  color: var(--muted);
+}
+.card-loading-copy {
+  position: absolute;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  bottom: 10%;
+  width: 100%;
+}
+.card-loading-copy > span {
+  display: block;
+  width: 58%;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--raised);
+}
+.card-loading-copy > span + span {
+  width: 38%;
+  height: 10px;
+}
 .card-head {
   position: relative;
   z-index: 3;
@@ -198,10 +240,31 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #d5ad76;
+  background: var(--warning);
 }
 .status.live i {
-  background: #aaf3cf;
+  background: var(--success);
+}
+.market-view-status {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.market-view-status i {
+  box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 50%, transparent);
+}
+@media (max-width: 959px) {
+  .market-heading .feed-status[data-compact="true"] {
+    display: none;
+  }
+  .market-results > .orders {
+    margin-top: 12px;
+  }
+}
+@media (min-width: 960px) {
+  .market-view-status,
+  .mobile-feed-status {
+    display: none;
+  }
 }
 .empty {
   text-align: center;
@@ -239,10 +302,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  border: 1px solid #8b6c5f;
+  border: 1px solid var(--notice-line);
   border-radius: 10px;
-  color: #eac6b3;
-  background: #3b2d29;
+  color: var(--notice-ink);
+  background: var(--notice-surface);
   font-size: 12px;
   padding: 10px;
   margin-bottom: 10px;
@@ -256,8 +319,17 @@
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   height: clamp(180px, min(78vw, 40dvh), 400px);
-  background: var(--raised);
+  background: var(--dark-raised);
   color: white;
+}
+.detail-art.with-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 64px;
+  background: linear-gradient(180deg, transparent, var(--gift-backdrop-edge));
+  pointer-events: none;
+  z-index: 2;
 }
 .detail-art-meta {
   position: absolute;
@@ -295,8 +367,27 @@
   object-fit: contain;
 }
 .detail-body {
+  --detail-padding-top: 10px;
+  --detail-padding-inline: 18px;
   min-width: 0;
-  padding: 20px 18px 0;
+  padding: var(--detail-padding-top) var(--detail-padding-inline) 0;
+}
+.detail-valuation {
+  display: flow-root;
+  margin: calc(-1 * var(--detail-padding-top))
+    calc(-1 * var(--detail-padding-inline)) 0;
+  padding: var(--detail-padding-top) var(--detail-padding-inline) 0;
+}
+.detail-valuation.with-backdrop {
+  background: linear-gradient(
+    180deg,
+    var(--gift-backdrop-edge),
+    color-mix(in srgb, var(--gift-backdrop-edge) 30%, transparent) 65%,
+    transparent
+  );
+}
+.detail-valuation.with-backdrop .detail-pricing {
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
 }
 .detail-body:last-child {
   padding-bottom: max(
@@ -308,7 +399,7 @@
 .detail-caption {
   position: relative;
   grid-area: 2 / 1;
-  padding: 0 20px 28px;
+  padding: 0 20px 14px;
   z-index: 3;
   text-align: center;
   pointer-events: none;
@@ -340,7 +431,7 @@
   min-height: 48px;
   border-radius: 12px;
   background: var(--accent);
-  color: #2a1728;
+  color: var(--on-accent);
   font-weight: 650;
   min-width: 0;
   padding-inline: 10px;
@@ -353,10 +444,6 @@
 }
 .telegram .api-link {
   display: none;
-}
-.telegram[data-telegram-theme="light"] .detail-market {
-  background: #75506e;
-  color: white;
 }
 .gift-preview.card-preview {
   isolation: isolate;
@@ -371,7 +458,11 @@
   border: 0;
   border-radius: 13px;
   color: white;
-  background: radial-gradient(ellipse at 15% 38%, #4c4658, #302d3c 85%);
+  background: radial-gradient(
+    ellipse at 15% 38%,
+    var(--dark-raised),
+    var(--dark-surface) 85%
+  );
 }
 .gift-preview.card-preview > .card-head {
   position: absolute;
@@ -461,16 +552,22 @@
   margin-left: 0;
 }
 .detail-price {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  flex-wrap: nowrap;
   gap: 5px;
   margin: 0;
   color: var(--accent);
   font-size: 22px;
-  line-height: 1.2;
+  line-height: 1.35;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  min-width: 0;
+  max-width: 100%;
+  text-align: right;
+}
+.detail-price:has(.detail-price-unit) {
+  grid-template-columns: auto minmax(0, 1fr) auto;
 }
 .detail-price small {
   font-size: 11px;
@@ -481,9 +578,9 @@
   color: var(--muted);
 }
 .detail-price .quote-amount {
-  overflow-wrap: normal;
-  white-space: nowrap;
-  overflow-x: auto;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  overflow: visible;
 }
 .detail-price .quote-amount.precise {
   font-size: 16px;
@@ -564,6 +661,7 @@
   min-width: 0;
   gap: 4px;
   min-height: 28px;
+  flex: 1 1 96px;
 }
 .valuation-heading > h4 {
   margin: 0;
@@ -605,7 +703,7 @@
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
-.valuation-value svg {
+.valuation-value .currency-symbol {
   width: 14px;
   height: 14px;
 }
@@ -632,6 +730,8 @@
 
 /* Explicit compact mode must never shrink the nested calculation popup. */
 .valuation-metrics-compact {
+  min-width: 0;
+  max-width: 100%;
   grid-template-columns: minmax(0, 1fr);
   gap: 4px;
 }
@@ -642,10 +742,14 @@
 }
 .valuation-metrics-compact .valuation-value {
   font-size: 14px;
-  line-height: 1.2;
+  line-height: 1.35;
   justify-content: flex-end;
 }
-.valuation-metrics-compact .valuation-value svg {
+.valuation-metrics-compact .valuation-value:has(.currency-symbol) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.valuation-metrics-compact .valuation-value .currency-symbol {
   width: 12px;
   height: 12px;
 }
@@ -720,11 +824,14 @@
   background: var(--surface);
   margin-bottom: 12px;
 }
-.listing-price-row {
+.listing-price-row,
+.valuation-result-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 4px 12px;
+  min-width: 0;
 }
 .listing-price h3 {
   font-size: 11px;
@@ -739,7 +846,9 @@
   font-size: 10px;
   line-height: 14px;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 .detail-pricing > :is(.valuation-summary, .matching-floor) {
   border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
@@ -751,12 +860,6 @@
   padding-top: 0;
   margin-top: 0;
 }
-.valuation-result-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
 .valuation-primary-result {
   display: flex;
   align-items: center;
@@ -765,6 +868,8 @@
   gap: 4px 6px;
   min-width: 0;
   text-align: right;
+  max-width: 100%;
+  margin-left: auto;
 }
 .valuation-primary-result > .valuation-note {
   margin: 0;
@@ -790,20 +895,20 @@
 .detail-actions > :only-child {
   grid-column: 1 / -1;
 }
+.detail-actions:has(> :nth-child(3)) > .detail-market {
+  grid-column: 1 / -1;
+}
+.detail-share,
 .detail-telegram {
   background: var(--surface);
   color: var(--ink);
   border: 1px solid var(--line);
 }
-.telegram[data-telegram-theme="light"] .detail-telegram {
-  background: var(--surface);
-  color: var(--ink);
-}
 .detail-link svg,
 .detail-link .venue-logo {
   flex: none;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   object-fit: contain;
 }
 @media (hover: hover) {
@@ -1159,6 +1264,7 @@
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
+  flex: 1 1 96px;
 }
 .execution-time-trigger {
   display: inline-flex;

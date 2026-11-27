@@ -19,6 +19,7 @@ const empty: FloorsState = {
   selected: "",
   entries: new Map(),
   error: "",
+  retrying: false,
   detail: { pending: false, error: "" },
 };
 const Context = createContext<{
@@ -82,8 +83,13 @@ export function FloorsStatus() {
   const { state, retry } = useFloorReport();
   return state.error ? (
     <p className="floors-error" role="status" title={state.error}>
-      Current floors are unavailable.{" "}
-      <button onClick={retry}>Retry floors</button>
+      {state.retrying ? (
+        "Updating floors…"
+      ) : (
+        <>
+          Floors unavailable. <button onClick={retry}>Retry</button>
+        </>
+      )}
     </p>
   ) : null;
 }

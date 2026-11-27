@@ -1,5 +1,5 @@
 import { useNavigationBack } from "../app/navigation";
-import { SharedIcon } from "./icons";
+import { CloseIcon } from "./icons";
 import { useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { usePreviewEnvironment } from "../previews/preview-environment";
@@ -105,7 +105,7 @@ export function Modal({
       onClick={dismiss}
       autoFocus
     >
-      <SharedIcon name="close" />
+      <CloseIcon />
     </button>
   );
   return (

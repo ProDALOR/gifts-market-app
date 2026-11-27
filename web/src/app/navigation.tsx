@@ -14,7 +14,7 @@ import {
 import type { ReactNode, Dispatch, SetStateAction } from "react";
 import type { TelegramContext } from "../telegram";
 import { useTelegramBack } from "../telegram-ui";
-import { initialLocation, pathRoute } from "./routes";
+import { initialLocation, pagePath, pathRoute } from "./routes";
 import type { Page, Route } from "./routes";
 export type { Page } from "./routes";
 type Memory = Map<string, unknown>;
@@ -23,7 +23,7 @@ type Navigation = {
   currency: string;
   setCurrency: (value: string) => void;
   go: (page: Page, user?: number, replace?: boolean) => void;
-  href: (page: Page) => string;
+  href: (page: Page, user?: number) => string;
   memory: Memory;
   rememberLocation: () => void;
   registerBack: (close: () => void, priority: number) => () => void;
@@ -58,6 +58,7 @@ export function NavigationProvider({
   const urls = useRef<Record<Page, string>>({
     market: "/",
     portfolio: "/portfolio",
+    profile: "/profile",
   });
   const scrolls = useRef(new Map<number, number>());
   const pageScrolls = useRef(new Map<string, number>());
@@ -108,7 +109,9 @@ export function NavigationProvider({
         location.pathname + location.search + location.hash;
       rememberScroll();
       const url = new URL(
-        user != null ? `/portfolio/${user}` : urls.current[page],
+        page === "portfolio" && user != null
+          ? pagePath(page, user)
+          : urls.current[page],
         location.origin,
       );
       url.searchParams.set("currency", currency);
@@ -205,8 +208,13 @@ export function NavigationProvider({
     };
   }, [route.index, route.page, route.user]);
   const href = useCallback(
-    (page: Page) => {
-      const url = new URL(urls.current[page], location.origin);
+    (page: Page, user?: number) => {
+      const url = new URL(
+        page === "portfolio" && user != null
+          ? pagePath(page, user)
+          : urls.current[page],
+        location.origin,
+      );
       url.searchParams.set("currency", currency);
       // Modified clicks/new tabs need an explicit destination without history state.
       if (page === "market") url.searchParams.set("page", "market");
@@ -281,18 +289,21 @@ export function useNavigationBack(
 }
 export function AppLink({
   page,
+  user,
   children,
   onClick,
   ...props
 }: Omit<import("react").AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & {
   page: Page;
+  user?: number;
 }) {
   const nav = useNavigation();
   return (
     <a
       {...props}
       href={
-        nav?.href(page) ?? (page === "market" ? "/?page=market" : "/portfolio")
+        nav?.href(page, user) ??
+        (page === "market" ? "/?page=market" : pagePath(page, user))
       }
       onClick={(event) => {
         onClick?.(event);
@@ -309,7 +320,7 @@ export function AppLink({
         )
           return;
         event.preventDefault();
-        nav.go(page);
+        nav.go(page, user);
       }}
     >
       {children}
@@ -327,9 +338,21 @@ export function AppNavigation({ page }: { page: Page }) {
         baseline = innerHeight;
       }
       baseline = Math.max(baseline, innerHeight);
+      const active = document.activeElement;
       const focused =
-        document.activeElement instanceof HTMLInputElement ||
-        document.activeElement instanceof HTMLTextAreaElement;
+        (active instanceof HTMLTextAreaElement ||
+          (active instanceof HTMLInputElement &&
+            [
+              "text",
+              "search",
+              "email",
+              "url",
+              "tel",
+              "password",
+              "number",
+            ].includes(active.type))) &&
+        !active.readOnly &&
+        !active.disabled;
       setKeyboard(
         focused &&
           baseline - (window.visualViewport?.height ?? innerHeight) > 120,
@@ -355,7 +378,6 @@ export function AppNavigation({ page }: { page: Page }) {
         <AppLink
           page={item}
           key={item}
-          className={page === item ? "active" : ""}
           aria-current={page === item ? "page" : undefined}
         >
           <SharedIcon name={item === "market" ? "market" : "portfolio"} />

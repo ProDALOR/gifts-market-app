@@ -37,7 +37,9 @@ function fixture(t: TestContext) {
   let command: any;
   const watchCommands: any[] = [];
   let retries = 0;
+  let deliverVersions = true;
   const emit = () =>
+    deliverVersions &&
     callback?.({
       type: "catalog.versions",
       id: "catalog",
@@ -143,6 +145,10 @@ function fixture(t: TestContext) {
     requests,
     watchCommands,
     emit,
+    versions: (enabled: boolean) => {
+      deliverVersions = enabled;
+    },
+    captureWatch: () => callback,
     directory: (version: string) => {
       directoryVersion = version;
     },
@@ -168,6 +174,69 @@ function fixture(t: TestContext) {
 }
 const choiceCalls = (f: ReturnType<typeof fixture>, id = "a") =>
   f.requests.filter((r) => r.kind === "choices" && r.id === id).length;
+test("suspending catalog work preserves values and unchanged resume performs no reads", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const previous = f.controller.getSnapshot();
+  const before = f.requests.length;
+  const retired = f.captureWatch()!;
+  f.controller.suspend();
+  assert.equal(f.controller.getSnapshot().options, previous.options);
+  assert.equal(f.controller.getSnapshot().catalogLoading, false);
+  assert.equal(f.controller.peekOptions("a"), previous.options);
+  f.controller.start();
+  await tick();
+  await tick();
+  assert.equal(f.requests.length, before);
+  retired({
+    type: "catalog.versions",
+    versions: { directory: "retired", collections: { a: "retired" } },
+  });
+  await tick();
+  assert.equal(
+    f.requests.length,
+    before,
+    "A retired watch cannot invalidate resumed data",
+  );
+});
+test("resuming checks new versions while keeping cached options available", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const previous = f.controller.getSnapshot();
+  f.controller.suspend();
+  f.definitions.get("a")!.version = "a2";
+  const waiting = gate();
+  f.holdCollection(() => waiting.promise);
+  f.controller.start();
+  await until(() => choiceCalls(f) === 2);
+  assert.equal(f.controller.getSnapshot().options, previous.options);
+  waiting.release();
+  await until(
+    () => f.controller.getSnapshot().options.get("a.0")?.name === "a2",
+  );
+  assert.equal(f.requests.filter((r) => r.kind === "directory").length, 1);
+});
+test("a resumed catalog with no watch falls back to HTTP validation without clearing its cache", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.controller.suspend();
+  f.versions(false);
+  f.definitions.get("a")!.version = "a2";
+  const previous = f.controller.getSnapshot().options;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  f.controller.start();
+  assert.equal(f.controller.getSnapshot().options, previous);
+  t.mock.timers.tick(1000);
+  await until(
+    () => f.controller.getSnapshot().options.get("a.0")?.name === "a2",
+  );
+  assert.equal(f.requests.filter((r) => r.kind === "directory").length, 2);
+  assert.equal(choiceCalls(f), 2);
+  f.controller.close();
+  const before = f.requests.length;
+  t.mock.timers.tick(5000);
+  assert.equal(f.requests.length, before);
+});
 test("initial manifest avoids duplicate reads and cached switching preserves options", async (t) => {
   const f = fixture(t);
   await f.start();

@@ -19,6 +19,8 @@ import {
 import { useArtworkImage } from "./use-artwork-image";
 import { useSettledVisibility } from "./use-playback";
 import type { PlaybackPolicy } from "./use-playback";
+import { useDisplayMode } from "../app/preferences";
+import { artworkPolicy, type ArtworkSurface } from "./artwork-policy";
 const ModelAnimation = lazy(() => import("./model-animation"));
 
 type ArtworkProps = {
@@ -30,6 +32,7 @@ type ArtworkProps = {
   fallback: string;
   size?: "small" | "large";
   playback?: PlaybackPolicy;
+  surface?: ArtworkSurface;
   /** Load stills and symbols ahead of visibility inside a bounded virtual grid. */
   preload?: boolean;
   className?: string;
@@ -39,14 +42,23 @@ type ArtworkProps = {
 
 /** Media identity owns image failures, hover state and renderer lifetime for every caller. */
 export const GiftArtwork = memo(function GiftArtwork(props: ArtworkProps) {
+  const mode = useDisplayMode();
+  const policy = artworkPolicy(
+    mode,
+    props.surface ?? "preview",
+    props.playback ?? "interaction",
+  );
   return (
     <Artwork
       key={JSON.stringify([
         props.media?.thumbnail_url,
         props.media?.animation_url,
         props.media?.preview_url,
+        policy.format,
+        policy.playback,
       ])}
       {...props}
+      {...policy}
     />
   );
 });
@@ -64,18 +76,26 @@ function Artwork({
   className = "",
   placeholderKind = "gift",
   children,
-}: ArtworkProps) {
+  surface,
+  format,
+}: ArtworkProps & { format: "thumbnail" | "preview" | "animation" }) {
   const preferVectorPlayback = size === "large" || playback === "detail";
-  const preferred = media?.preview_url ?? media?.thumbnail_url;
+  const preferred =
+    format === "animation"
+      ? undefined
+      : format === "thumbnail"
+        ? media?.thumbnail_url
+        : (media?.preview_url ?? media?.thumbnail_url);
   const animationUrl = media?.animation_url;
   const host = useRef<HTMLSpanElement>(null);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const visible = usePreviewVisibility(host);
+  const nearby = usePreviewVisibility(host, 256, preload);
   const { pageVisible, reducedMotion } = usePreviewEnvironment();
   const image = useArtworkImage(
     preferred,
-    media?.thumbnail_url,
+    format === "animation" ? undefined : media?.thumbnail_url,
     visible && pageVisible,
   );
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -125,6 +145,7 @@ function Artwork({
     return () => clearTimeout(hoverTimer.current);
   }, [visible, canInteract]);
   const [animationReady, setAnimationReady] = useState(false);
+  const [animationFailed, setAnimationFailed] = useState(false);
   const artworkReady = image.ready || animationReady;
   const [requested, setRequested] = useState(false);
   useEffect(() => {
@@ -150,7 +171,7 @@ function Artwork({
       onFocus={canInteract ? () => setFocused(true) : undefined}
       onBlur={() => setFocused(false)}
       tabIndex={
-        preferred &&
+        (preferred || animationUrl) &&
         (playback === "interaction" || playback === "selected") &&
         !children
           ? 0
@@ -165,16 +186,19 @@ function Artwork({
           palette={palette}
           patternUrls={patternUrls}
           layout={patternLayout}
-          visible={visible && pageVisible}
+          visible={(visible || nearby) && pageVisible}
           preload={preload && pageVisible}
         />
       )}
       {!artworkReady &&
-        (media || placeholderKind === "symbol" ? (
+        (format === "animation" ||
+        surface === "item" ||
+        media ||
+        placeholderKind === "symbol" ? (
           <GiftPlaceholder
             kind={placeholderKind}
             active={visible && pageVisible}
-            loading={image.loading || shouldAnimate}
+            loading={image.loading || (shouldAnimate && !animationFailed)}
           />
         ) : (
           <span className="gift-preview-fallback">{fallback}</span>
@@ -198,6 +222,7 @@ function Artwork({
             retain={visible && pageVisible && !reducedMotion}
             ready={animationReady}
             onReady={setAnimationReady}
+            onFailed={setAnimationFailed}
           />
         </Suspense>
       )}

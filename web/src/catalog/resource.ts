@@ -1,5 +1,4 @@
-import { ApiFailure } from "../market.ts";
-import { retryDelay } from "../retry.ts";
+import { retryDelay, retryableFailure } from "../retry.ts";
 export type Query<T> = (
   signal: AbortSignal,
   revision: (value: string) => void,
@@ -119,13 +118,8 @@ export class CatalogResource<T> {
         )
           return;
         this.error = error instanceof Error ? error.message : String(error);
-        const transient =
-          !(error instanceof ApiFailure) ||
-          ["unavailable", "capacity_exceeded", "restart_read"].includes(
-            error.code,
-          );
         this.blocked = true;
-        if (transient && this.active)
+        if (retryableFailure(error) && this.active)
           this.retry = setTimeout(
             () => {
               this.retry = undefined;

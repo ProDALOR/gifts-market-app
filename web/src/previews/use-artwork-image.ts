@@ -5,11 +5,15 @@ import { hasImageFailure, recoverImage } from "./media-client";
 type Status = "loading" | "ready" | "failed";
 
 /** The enclosing artwork is keyed by media identity; each URL owns its retries. */
-function useImageSource(url: string | undefined, active: boolean) {
+function useImageSource(
+  url: string | undefined,
+  active: boolean,
+  retainDecoded: boolean,
+) {
   const [state, setState] = useState<{ status: Status; attempt: number }>(
     () => ({
       status:
-        url && stillImages.has(url)
+        retainDecoded && url && stillImages.has(url)
           ? "ready"
           : url && hasImageFailure(url)
             ? "failed"
@@ -21,19 +25,20 @@ function useImageSource(url: string | undefined, active: boolean) {
     (image?: HTMLImageElement) => {
       // The mounted overscan already retains prefetched images. Pin actually viewed
       // artwork so speculative loads cannot evict the user's recent scroll history.
-      if (url && image && active) stillImages.remember(url, image);
+      if (retainDecoded && url && image && active)
+        stillImages.remember(url, image);
       setState((old) =>
         old.status === "ready" ? old : { ...old, status: "ready" },
       );
     },
-    [url, active],
+    [url, active, retainDecoded],
   );
   const failed = useCallback(() => {
-    if (url) stillImages.forget(url);
+    if (retainDecoded && url) stillImages.forget(url);
     setState((old) =>
       old.status === "failed" ? old : { ...old, status: "failed" },
     );
-  }, [url]);
+  }, [url, retainDecoded]);
   useEffect(() => {
     if (!url || !active || state.status !== "failed") return;
     const stop = new AbortController();
@@ -55,14 +60,16 @@ export function useArtworkImage(
   preferred: string | undefined,
   fallback: string | undefined,
   active: boolean,
+  { retainDecoded = true }: { retainDecoded?: boolean } = {},
 ) {
-  const primary = useImageSource(preferred, active);
+  const primary = useImageSource(preferred, active, retainDecoded);
   const showFallback =
     primary.status === "failed" ||
     (primary.attempt > 0 && primary.status !== "ready");
   const secondary = useImageSource(
     fallback !== preferred ? fallback : undefined,
     active && showFallback,
+    retainDecoded,
   );
   // Retain the decoded fallback until the recovered preferred image has loaded.
   const sources = [...(showFallback ? [secondary] : []), primary].filter(

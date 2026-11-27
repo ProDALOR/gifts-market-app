@@ -1,3 +1,4 @@
+@import "./app/palettes.css";
 @import "./orderbook/orderbook.css";
 @import "./ui/account.css";
 @import "./collections/collections.css";
@@ -12,21 +13,6 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color-scheme: dark;
-  color: var(--ink);
-  background: #100f13;
-  --paper: #151419;
-  --surface: #242229;
-  --raised: #302d36;
-  --line: #4a454f;
-  --ink: #f5f1f6;
-  --muted: #bbb3c0;
-  --plum: #75506e;
-  --accent: #eac2e1;
-  --tint: #382c38;
-  --accent-line: #a47999;
-  --green: var(--accent);
-  --quote-flash: #75506e66;
   --control-gap: 8px;
   --rail-duration: 220ms;
   --rail-easing: cubic-bezier(0.2, 0.7, 0.2, 1);
@@ -88,25 +74,6 @@ p {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
-}
-.telegram[data-telegram-theme="light"] {
-  color-scheme: light;
-  background: var(--tg-bg, #fff);
-  --paper: var(--tg-bg, #fff);
-  --surface: var(--tg-surface, #f3f5f7);
-  --raised: #e5e1e8;
-  --line: #cbc3ce;
-  --ink: var(--tg-text, #18212b);
-  --muted: var(--tg-hint, #65717e);
-  --plum: #75506e;
-  --accent: #734868;
-  --tint: #f0e5ee;
-  --quote-flash: #75506e25;
-  --accent-line: #a47999;
-}
-.telegram[data-telegram-theme="light"] .primary {
-  background: #75506e;
-  color: white;
 }
 @media (prefers-reduced-motion: reduce) {
   *,

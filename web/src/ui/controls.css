@@ -23,8 +23,8 @@
   padding: 0;
   border: 1px solid var(--accent-line);
   border-radius: 50%;
-  background: var(--plum);
-  color: white;
+  background: var(--selection);
+  color: var(--on-selection);
   box-shadow: 0 4px 18px #0005;
 }
 .back-to-top > .shared-icon {
@@ -59,8 +59,8 @@ body:has(dialog[open], [role="listbox"]) .back-to-top {
   color: var(--muted);
 }
 .segments button.active {
-  background: var(--plum);
-  color: white;
+  background: var(--selection);
+  color: var(--on-selection);
 }
 .market-toolbar {
   display: grid;
@@ -116,8 +116,8 @@ body:has(dialog[open], [role="listbox"]) .back-to-top {
   color: var(--ink);
 }
 .venue[aria-pressed="true"] {
-  background: var(--plum);
-  color: white;
+  background: var(--selection);
+  color: var(--on-selection);
 }
 .venue:focus-visible {
   outline-offset: -2px;
@@ -224,10 +224,13 @@ body:has(dialog[open], [role="listbox"]) .back-to-top {
   font-weight: 650;
   line-height: 20px;
 }
-.picker-trigger > span:first-child {
+.picker-trigger > span:first-child:not(.shared-icon) {
   flex: 1;
   text-align: left;
   white-space: nowrap;
+}
+.currency-picker .picker-trigger {
+  gap: 6px;
 }
 .picker-trigger:disabled {
   opacity: 1;
@@ -279,8 +282,8 @@ body:has(dialog[open], [role="listbox"]) .back-to-top {
   white-space: nowrap;
 }
 .picker-options [aria-selected="true"] {
-  background: var(--plum);
-  color: white;
+  background: var(--selection);
+  color: var(--on-selection);
 }
 .picker-options button + button {
   margin-top: 4px;
@@ -366,7 +369,7 @@ body:has(dialog[open], [role="listbox"]) .back-to-top {
   padding: 0;
 }
 .primary {
-  color: #2a1728;
+  color: var(--on-accent);
   background: var(--accent);
   font-weight: 650;
   min-height: 36px;
@@ -484,7 +487,7 @@ body:has(.detail[open]) {
   padding: 3px;
   filter: brightness(0) invert(0.9);
 }
-.telegram[data-telegram-theme="light"] .attribute-pattern .gift-model-image {
+:root[data-color-scheme="light"] .attribute-pattern .gift-model-image {
   filter: brightness(0) invert(0.3);
 }
 
@@ -500,7 +503,7 @@ body:has(.detail[open]) {
   color: var(--ink);
   line-height: 1;
 }
-.modal-close > .shared-icon {
+.modal-close > svg {
   display: block;
   width: 20px;
   height: 20px;
@@ -514,8 +517,8 @@ body:has(.detail[open]) {
 /* Keep preview dismissal outside its scrolling content and artwork pane.
    These dialogs fade without transforms, preserving the viewport containing block. */
 .modal-viewport-close > .modal-close {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--line);
   box-shadow: 0 2px 12px #0005;
   position: fixed;

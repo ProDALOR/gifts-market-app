@@ -122,6 +122,9 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+  await page.addInitScript(() =>
+    localStorage.setItem("market.display-mode", "quality"),
+  );
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "hardwareConcurrency", {
       configurable: true,
@@ -709,7 +712,12 @@ try {
   await page.waitForFunction(
     () => !document.querySelector(".detail-art .model-animation > svg"),
   );
-  await page.locator(".detail-art .gift-model-image.loaded").waitFor();
+  await page.locator(".detail-art .gift-loading-placeholder").waitFor();
+  assert.equal(
+    await page.locator(".detail-art .gift-model-image").count(),
+    0,
+    "animation-only details never request a still image",
+  );
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.locator(".detail-art .model-animation.ready > svg").waitFor();
   assert.equal(
@@ -943,7 +951,8 @@ try {
   await page.evaluate(() => window.unmount());
   const beforeReferences = animations;
   await page.evaluate(() => window.mountReference(false));
-  await page.locator('img[src="/media/custom-still?v=1"]').waitFor();
+  await page.locator(".gift-loading-placeholder").waitFor();
+  assert.equal(await page.locator(".gift-model-image").count(), 0);
   await page.waitForTimeout(300);
   assert.equal(
     animations,
@@ -1000,9 +1009,8 @@ try {
     window.__trackPreviewTimers = true;
     window.mountSource("/media/reduced-motion-source", "selected");
   });
-  await page
-    .locator('img.loaded[src="/media/reduced-motion-source"]')
-    .waitFor();
+  await page.locator(".gift-loading-placeholder").waitFor();
+  assert.equal(await page.locator(".gift-model-image").count(), 0);
   await page.locator(".gift-preview").hover();
   await page.waitForTimeout(220);
   assert.equal(
@@ -1069,7 +1077,8 @@ try {
   await page.waitForFunction(
     () => !document.querySelector(".model-animation > svg"),
   );
-  await page.locator('img.loaded[src="/media/opacity-test/preview"]').waitFor();
+  await page.locator(".gift-loading-placeholder").waitFor();
+  assert.equal(await page.locator(".gift-model-image").count(), 0);
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await svg.waitFor();
   await page.evaluate(() => window.scrollTo(0, 2000));

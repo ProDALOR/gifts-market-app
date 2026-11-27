@@ -6,6 +6,7 @@ import {
   preferredSelector,
   resolveSelector,
   resolveFilterSelectors,
+  availableFilterSelectors,
 } from "../src/catalog/aliases.ts";
 test("selectors emit public slugs and names while accepting legacy collection links", () => {
   const one = {
@@ -38,6 +39,42 @@ test("selectors emit public slugs and names while accepting legacy collection li
     { backdrops: ["b1"], patterns: ["@tg:42"] },
   );
   assert.equal(resolveSelector([option], "@malformed"), undefined);
+});
+test("market filters keep only unambiguous traits available in the selected collection", () => {
+  const options = new Map([
+    ["m", { id: "m", name: "Aura", kind: "model" as const }],
+    ["b", { id: "b", name: "Black", kind: "backdrop" as const }],
+    ["p", { id: "p", name: "Sun", kind: "pattern" as const }],
+  ]);
+  assert.deepEqual(
+    availableFilterSelectors(
+      {
+        models: ["m", "@name:Old model"],
+        backdrops: ["@name:Carmine", "@name:black"],
+        patterns: ["@name:Sun", "@name:Black"],
+      },
+      options,
+    ),
+    { models: ["m"], backdrops: ["@name:black"], patterns: ["@name:Sun"] },
+  );
+  assert.deepEqual(
+    availableFilterSelectors({ backdrops: ["@name:Carmine"] }, options),
+    {},
+    "An absent backdrop must not block the market",
+  );
+  const filters = { backdrops: ["@name:Black"] };
+  assert.equal(availableFilterSelectors(filters, options), filters);
+  assert.deepEqual(
+    availableFilterSelectors(
+      filters,
+      new Map([
+        ...options,
+        ["b2", { id: "b2", name: "Black", kind: "backdrop" as const }],
+      ]),
+    ),
+    {},
+    "Ambiguous names are never chosen arbitrarily",
+  );
 });
 test("new catalog selectors use canonical slugs or unique names without numeric source identities", () => {
   const collection = {

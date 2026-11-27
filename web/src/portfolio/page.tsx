@@ -28,9 +28,8 @@ import { FloorsProvider } from "../valuation/floors";
 import { SortPicker } from "../ui/pickers";
 import { Quote } from "../ui/market-controls";
 import { RelativeAge } from "../ui/relative-age";
-import { ShareButton, ShareStatus, useSharing } from "../use-sharing";
+import { ShareStatus, useSharing } from "../use-sharing";
 import { AppHeader } from "../app/header";
-import { useBackgroundPlaybackSuspension } from "../previews/use-playback";
 import { VirtualGiftGrid } from "../orderbook/virtual-gift-grid";
 import { BackToTop } from "../ui/back-to-top";
 import type { TraitKey } from "../market";
@@ -240,8 +239,6 @@ function PortfolioView({
       }
     },
   );
-  const [accountOpen, setAccountOpen] = useState(false);
-  useBackgroundPlaybackSuspension(accountOpen);
   const [open, setOpen] = useState<TraitKey>(),
     [selectedId, setSelected] = useState<string>(),
     [previewIds, setPreviewIds] = useState<string[]>([]),
@@ -292,7 +289,7 @@ function PortfolioView({
     () => [selectedCollection, ...previewIds].filter(Boolean),
     [selectedCollection, previewIds],
   );
-  const catalog = useCatalog(0, filters.collection, demanded),
+  const catalog = useCatalog(filters.collection, demanded),
     availability = useMarketStatus(!!user);
   const pickerFilters = useMemo(
     () => resolveFilterSelectors(filters.traits, catalog.options),
@@ -409,6 +406,23 @@ function PortfolioView({
       ? "position"
       : "value";
   const ascending = filters.sort.endsWith("_asc");
+  const shareTarget = useMemo(() => {
+    const query = portfolioQuery(user, currency, {
+      ...filters,
+      traits: pickerFilters,
+    });
+    return query
+      ? {
+          type: "portfolio" as const,
+          target: {
+            user_id: query.user_id,
+            currency_id: query.currency_id,
+            filters: query.filters,
+            sort: query.sort,
+          },
+        }
+      : undefined;
+  }, [user, currency, filters, pickerFilters]);
   return (
     <FloorsProvider
       currency={currency}
@@ -431,8 +445,15 @@ function PortfolioView({
               currencies={["GRAM", "XTR"]}
               currency={currency}
               changeCurrency={setCurrency}
-              accountOpen={accountOpen}
-              setAccountOpen={setAccountOpen}
+              share={
+                shareTarget
+                  ? {
+                      controller: sharing,
+                      label: "Share portfolio",
+                      target: shareTarget,
+                    }
+                  : undefined
+              }
             />
             <AppNavigation page="portfolio" />
             <button
@@ -572,29 +593,6 @@ function PortfolioView({
                     </div>
                   </div>
                   <div className="portfolio-check">
-                    {report && items.length > 0 && (
-                      <ShareButton
-                        sharing={sharing}
-                        label="Share portfolio"
-                        click={() => {
-                          const query = portfolioQuery(user, currency, {
-                            ...filters,
-                            traits: pickerFilters,
-                          });
-                          if (query)
-                            void sharing.share({
-                              type: "portfolio",
-                              target: {
-                                user_id: query.user_id,
-                                currency_id: query.currency_id,
-                                filters: query.filters,
-                                sort: query.sort,
-                              },
-                            });
-                        }}
-                      />
-                    )}
-
                     {state?.inventory && (
                       <RelativeAge
                         at={state.inventory.checked_at}
@@ -743,10 +741,7 @@ function PortfolioView({
               )}
           </section>
         </main>
-        <BackToTop
-          target={controls}
-          blocked={!!selected || ownerOpen || accountOpen}
-        />
+        <BackToTop target={controls} blocked={!!selected || ownerOpen} />
         {selected?.resolved && (
           <PortfolioDetails
             item={selected}

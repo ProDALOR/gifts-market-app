@@ -21,8 +21,9 @@ const artwork = await readFile(
 );
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module">
 import React from 'react';import{createRoot}from'react-dom/client';import{AppShell}from'/src/app/shell.tsx';import{MarketPage}from'/src/market-page.tsx';import'/src/style.css';
-window.inlineShares=[];window.fixtureInstance=Math.random();window.nativeBack={visible:false,handlers:new Set()};window.tapNativeBack=()=>[...window.nativeBack.handlers].forEach(f=>f());
-const context={initData:'fixture',app:{isVersionAtLeast(){return true},switchInlineQuery(query){window.inlineShares.push(query)},initData:'fixture',initDataUnsafe:{start_param:new URLSearchParams(location.search).get('tgWebAppStartParam')||'portfolio_7'},themeParams:{},colorScheme:'dark',onEvent(){},offEvent(){},BackButton:{show(){window.nativeBack.visible=true},hide(){window.nativeBack.visible=false},onClick(f){window.nativeBack.handlers.add(f)},offClick(f){window.nativeBack.handlers.delete(f)}}}};
+window.inlineShares=[];window.websiteLinks=[];window.fixtureInstance=Math.random();window.nativeBack={visible:false,handlers:new Set()};window.tapNativeBack=()=>[...window.nativeBack.handlers].forEach(f=>f());
+window.startupScreens=0;new MutationObserver(records=>{for(const record of records)for(const node of record.addedNodes)if(node.nodeType===1&&(node.matches('.startup-loading')||node.querySelector('.startup-loading')))window.startupScreens++;}).observe(document.getElementById('root'),{childList:true,subtree:true});
+const context={initData:'fixture',app:{isVersionAtLeast(){return true},openLink(url){window.websiteLinks.push(url)},switchInlineQuery(query){window.inlineShares.push(query)},initData:'fixture',initDataUnsafe:{start_param:new URLSearchParams(location.search).get('tgWebAppStartParam')||'portfolio_7'},themeParams:{},colorScheme:'dark',onEvent(){},offEvent(){},BackButton:{show(){window.nativeBack.visible=true},hide(){window.nativeBack.visible=false},onClick(f){window.nativeBack.handlers.add(f)},offClick(f){window.nativeBack.handlers.delete(f)}}}};
 createRoot(document.getElementById('root')).render(React.createElement(AppShell,{context,market:React.createElement(MarketPage,{context})}));</script></body></html>`;
 
 const server = await createServer({
@@ -158,6 +159,7 @@ try {
             auth_enabled: true,
             bot_id: "42",
             bot_username: "fixture_bot",
+            public_url: "https://example.test",
           },
         });
       },
@@ -185,11 +187,13 @@ try {
           ? r.fulfill({ status: 404 })
           : r.fulfill({ contentType: "image/svg+xml", body: artwork }),
     );
-    let catalogDetails = 0;
+    let catalogDetails = 0,
+      catalogDirectories = 0;
     await page.route(
       (url) => url.pathname === "/catalog",
-      (r) =>
-        r.fulfill({
+      (r) => {
+        catalogDirectories++;
+        return r.fulfill({
           headers: { etag: '"directory"' },
           json: {
             collections: [collection],
@@ -204,7 +208,8 @@ try {
               venue_id: "venue",
             })),
           },
-        }),
+        });
+      },
     );
     await page.route(
       (url) => url.pathname.startsWith("/collections/"),
@@ -265,6 +270,8 @@ try {
       cancellations = 0;
     let holdMarketSnapshots = false;
     const heldMarketSnapshots = [];
+    let holdCatalogVersions = false;
+    const heldCatalogVersions = [];
     const send = (socket, value) => socket.send(JSON.stringify(value));
     await page.routeWebSocket("**/ws", (socket) => {
       const ids = new Set();
@@ -303,17 +310,21 @@ try {
             method: frame.method,
             ...orderResult(frame.params, rows(frame.params)),
           });
-        if (frame.type === "catalog.watch")
-          send(socket, {
-            type: "catalog.versions",
-            id: frame.id,
-            versions: {
-              directory: "directory",
-              collections: Object.fromEntries(
-                frame.collection_ids.map((id) => [id, "details"]),
-              ),
-            },
-          });
+        if (frame.type === "catalog.watch") {
+          const deliver = () =>
+            send(socket, {
+              type: "catalog.versions",
+              id: frame.id,
+              versions: {
+                directory: "directory",
+                collections: Object.fromEntries(
+                  frame.collection_ids.map((id) => [id, "details"]),
+                ),
+              },
+            });
+          if (holdCatalogVersions) heldCatalogVersions.push(deliver);
+          else deliver();
+        }
         if (frame.type === "portfolio.watch") {
           peer = socket;
           watchId = frame.id;
@@ -478,6 +489,30 @@ try {
     const portfolioShare = await page.evaluate(() => window.inlineShares[0]);
     assert.match(portfolioShare, /^portfolio user=7 currency=GRAM/);
     assert(!/version=|offset=/.test(portfolioShare));
+    assert.equal(
+      await page.locator(".header-actions .share-button").count(),
+      1,
+    );
+    assert.equal(
+      await page.locator(".portfolio-check .share-button").count(),
+      0,
+    );
+    const portfolioWebsite = new URL(
+      await page
+        .getByRole("link", { name: "Open website", exact: true })
+        .getAttribute("href"),
+    );
+    assert.equal(portfolioWebsite.origin, "https://example.test");
+    assert.equal(portfolioWebsite.pathname, "/portfolio/7");
+    assert.match(
+      new URLSearchParams(portfolioWebsite.hash.slice(1)).get("f"),
+      /n=10/,
+    );
+    await page.getByRole("link", { name: "Open website", exact: true }).click();
+    assert.equal(
+      await page.evaluate(() => window.websiteLinks[0]),
+      portfolioWebsite.href,
+    );
     assert.equal(refreshCount, 0, "sharing does not recheck inventory");
     assert.equal(preparationRequests, 0, "sharing makes no API request");
     await page
@@ -498,6 +533,28 @@ try {
     const marketShare = await page.evaluate(() => window.inlineShares[1]);
     assert.match(marketShare, /^market f=c=gift /);
     assert.match(marketShare, /mode=ask/);
+    assert.equal(
+      await page.locator(".header-actions .share-button").count(),
+      1,
+    );
+    assert.equal(await page.locator(".feed-status .share-button").count(), 0);
+    assert.equal(
+      await page
+        .getByRole("link", { name: "Open in Telegram", exact: true })
+        .count(),
+      0,
+    );
+    const marketWebsite = new URL(
+      await page
+        .getByRole("link", { name: "Open website", exact: true })
+        .getAttribute("href"),
+    );
+    assert.equal(marketWebsite.origin, "https://example.test");
+    assert.equal(
+      new URLSearchParams(marketWebsite.hash.slice(1)).get("f"),
+      "c=gift",
+    );
+    assert(!/initData|tgWebAppStartParam|token=/.test(marketWebsite.href));
     assert(
       ![...active.values()].includes("portfolio.watch"),
       "inactive portfolio releases its lease",
@@ -522,6 +579,9 @@ try {
     );
     // Reopening must retain rows/scroll even before the new watch initializes.
     holdMarketSnapshots = true;
+    holdCatalogVersions = true;
+    const cachedCatalogReads = [catalogDirectories, catalogDetails];
+    const startupScreens = await page.evaluate(() => window.startupScreens);
     await page
       .locator(".app-navigation")
       .getByRole("link", { name: "Market", exact: true })
@@ -538,6 +598,43 @@ try {
       heldMarketSnapshots.length > 0,
       "restored cards did not wait for a fresh snapshot",
     );
+    if (viewport.width < 960) {
+      assert.equal(
+        await page.locator(".feed-status").isVisible(),
+        false,
+        "Connecting does not add a row above retained listings",
+      );
+      assert.match(
+        await page
+          .locator('.market-views [aria-pressed="true"]')
+          .getAttribute("aria-description"),
+        /Connecting|Reconnecting/,
+      );
+      assert.equal(
+        await page
+          .locator(".market-results > .orders")
+          .evaluate((el) => getComputedStyle(el).marginTop),
+        "12px",
+      );
+    } else {
+      assert.equal(
+        await page.locator(".feed-status").isVisible(),
+        true,
+        "Desktop retains its collection header status",
+      );
+    }
+    assert.equal(
+      await page.evaluate(() => window.startupScreens),
+      startupScreens,
+      "Returning to Market never flashes the startup logo",
+    );
+    assert.deepEqual(
+      [catalogDirectories, catalogDetails],
+      cachedCatalogReads,
+      "Cached catalog renders without another download",
+    );
+    holdCatalogVersions = false;
+    for (const deliver of heldCatalogVersions.splice(0)) deliver();
     holdMarketSnapshots = false;
     for (const deliver of heldMarketSnapshots.splice(0)) deliver();
     await page
@@ -579,10 +676,22 @@ try {
     );
     // Virtual rows can start before the visible anchor. Share the clicked order,
     // rather than assuming the first mounted card is the market's first order.
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll(".orders .card-open")].some((button) => {
+        const rect = button.getBoundingClientRect();
+        return rect.top >= 0 && rect.bottom <= innerHeight - 80;
+      }),
+    );
     const sharedOrderId = await page
       .locator(".orders .card-open")
-      .first()
-      .getAttribute("data-order-id");
+      .evaluateAll((buttons) =>
+        buttons
+          .find((button) => {
+            const rect = button.getBoundingClientRect();
+            return rect.top >= 0 && rect.bottom <= innerHeight - 80;
+          })
+          .getAttribute("data-order-id"),
+      );
     await page
       .locator(`.orders .card-open[data-order-id="${sharedOrderId}"]`)
       .click();
@@ -591,7 +700,7 @@ try {
       .waitFor();
     assert.equal(await page.locator(".detail-venue").count(), 1);
     assert.equal(await page.locator(".listing-price").count(), 1);
-    await page.getByRole("button", { name: "Share ↗", exact: true }).click();
+    await page.getByRole("button", { name: "Share", exact: true }).click();
     await page.waitForFunction(() => window.inlineShares.length === 3);
     assert.equal(
       await page.evaluate(() => window.inlineShares[2]),
@@ -622,6 +731,39 @@ try {
     await page.goForward();
     await page.locator(".orders .gift-card").first().waitFor();
     assert.equal(authRequests, 1);
+    const marketUrl = page.url();
+    const refreshesBeforeProfile = refreshCount;
+    await page.locator(".account-button").click();
+    await page.getByRole("heading", { name: "Profile", exact: true }).waitFor();
+    for (let i = 0; active.size && i < 100; i++) await page.waitForTimeout(10);
+    assert.equal(
+      active.size,
+      0,
+      "profile releases data watches and starts none",
+    );
+    assert.equal(
+      refreshCount,
+      refreshesBeforeProfile,
+      "profile never rechecks inventory",
+    );
+    assert.equal(authRequests, 1, "profile shares the authenticated session");
+    assert.match(
+      await page
+        .getByRole("link", { name: "My portfolio", exact: true })
+        .getAttribute("href"),
+      /\/portfolio\/7\?/,
+    );
+    await page.getByRole("link", { name: "My portfolio", exact: true }).click();
+    await page.locator(".portfolio-card").first().waitFor();
+    await page.evaluate(() => window.tapNativeBack());
+    await page.getByRole("heading", { name: "Profile", exact: true }).waitFor();
+    await page.evaluate(() => window.tapNativeBack());
+    await page.locator(".orders .gift-card").first().waitFor();
+    assert.equal(
+      page.url(),
+      marketUrl,
+      "profile Back restores the market selection",
+    );
     assert.equal(
       await page.evaluate(() => window.nativeBack.handlers.size),
       1,

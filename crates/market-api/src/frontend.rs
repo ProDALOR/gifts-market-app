@@ -69,9 +69,15 @@ pub(crate) fn configure(cfg: &mut web::ServiceConfig) {
             .route(web::get().to(websocket_docs)),
     )
     .service(
-        web::resource(["/", "/portfolio", "/portfolio/{user_id}"])
-            .wrap(Compress::default())
-            .route(web::get().to(index)),
+        web::resource([
+            "/",
+            "/portfolio",
+            "/portfolio/{user_id}",
+            "/profile",
+            "/profile/",
+        ])
+        .wrap(Compress::default())
+        .route(web::get().to(index)),
     )
     .service(
         web::resource("/assets/{name}")
@@ -129,6 +135,15 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(!market_policy.contains("unsafe-inline"));
+        for path in ["/profile", "/profile/?currency=XTR"] {
+            let profile =
+                test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+            assert_eq!(profile.status(), StatusCode::OK);
+            assert_eq!(
+                profile.headers().get(header::CACHE_CONTROL).unwrap(),
+                "no-cache"
+            );
+        }
         for path in ["/docs", "/docs/", "/docs/ws", "/docs/ws/"] {
             let page =
                 test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;

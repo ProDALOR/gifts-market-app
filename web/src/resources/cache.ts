@@ -60,6 +60,7 @@ export class ResourceCache<T> {
         .then(({ value, bytes }) => {
           controller.signal.throwIfAborted();
           if (this.entries.get(key) === created) {
+            created.value = value;
             created.expires = this.now() + this.maxAge;
             created.bytes = bytes;
             this.bytes += bytes;
@@ -112,6 +113,19 @@ export class ResourceCache<T> {
       }
     }
   }
+  /** Read an already decoded success without an asynchronous handoff or a new producer. */
+  peek(key: string): T | undefined {
+    const entry = this.entries.get(key);
+    if (!entry?.settled) return;
+    if (entry.expires <= this.now()) {
+      this.remove(key, entry);
+      return;
+    }
+    if (entry.value === undefined) return;
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.value;
+  }
   hasFresh(key: string) {
     const entry = this.entries.get(key);
     return !!entry?.settled && entry.expires > this.now();
@@ -139,4 +153,5 @@ type Entry<T> = {
   bytes: number;
   expires: number;
   promise: Promise<T>;
+  value?: T;
 };

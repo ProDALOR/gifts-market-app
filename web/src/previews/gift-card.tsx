@@ -154,6 +154,7 @@ export const GiftCardView = memo(function GiftCardView({
         </div>
       ) : subject ? (
         <GiftPreview
+          surface="item"
           order={subject}
           options={options}
           fallback={collectionName[0] || "◇"}
@@ -171,6 +172,7 @@ export const GiftCardView = memo(function GiftCardView({
         </GiftPreview>
       ) : (
         <GiftArtwork
+          surface="item"
           media={media}
           className="card-preview"
           preload

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadPattern } from "../src/previews/pattern-data.ts";
+import { loadPattern, peekPattern } from "../src/previews/pattern-data.ts";
 test("rows and details share in-flight pattern decoding and tinting", async (t) => {
   let downloads = 0,
     decodes = 0,
@@ -64,6 +64,7 @@ test("rows and details share in-flight pattern decoding and tinting", async (t) 
     loadPattern("/pattern-shared", "#112233", signal),
   ]);
   assert.equal(first, second);
+  assert.equal(peekPattern("/pattern-shared", "#112233"), first);
   await loadPattern("/pattern-shared", "#334455", signal);
   assert.equal(downloads, 1);
   assert.equal(decodes, 1);

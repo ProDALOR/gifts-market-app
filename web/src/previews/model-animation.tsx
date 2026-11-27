@@ -14,6 +14,7 @@ export default function ModelAnimation({
   vector = false,
   ready,
   onReady,
+  onFailed,
 }: {
   url: string;
   active: boolean;
@@ -23,6 +24,7 @@ export default function ModelAnimation({
   vector?: boolean;
   ready: boolean;
   onReady: (ready: boolean) => void;
+  onFailed?: (failed: boolean) => void;
 }) {
   const container = useRef<HTMLSpanElement>(null);
   const lifecycle = useRef<AnimationLifecycle | null>(null);
@@ -30,6 +32,7 @@ export default function ModelAnimation({
   const readyRef = useRef(ready);
   readyRef.current = ready;
   const [failure, setFailure] = useState<{ error: unknown }>();
+  useEffect(() => onFailed?.(!!failure), [failure, onFailed]);
   const priorityRef = useRef(priority);
   priorityRef.current = priority;
   useEffect(() => setFailure(undefined), [active, url, vector]);

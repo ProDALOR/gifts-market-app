@@ -247,7 +247,6 @@
     contain: size;
     height: 100%;
     min-height: 0;
-    border-right: 1px solid var(--line);
   }
   .detail-content {
     display: flex;
@@ -260,8 +259,9 @@
     scrollbar-color: var(--line) transparent;
   }
   .detail-body {
+    --detail-padding-top: 18px;
+    --detail-padding-inline: 24px;
     flex: 1;
-    padding: 28px 24px 0;
   }
   .detail-actions {
     padding-inline: 24px;

@@ -92,6 +92,9 @@ export class CatalogController {
     );
   }
   getSnapshot = () => this.state;
+  peekOptions(id: string) {
+    return id ? this.collections.get(id)?.resource.value : this.sharedOptions;
+  }
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => {
@@ -101,12 +104,11 @@ export class CatalogController {
   start() {
     if (this.started || this.closed) return;
     this.started = true;
-    this.updateWatch();
     // HTTP remains usable when a proxy or older deployment cannot establish a catalog watch.
     this.fallbackTimer = setTimeout(() => {
-      this.fallback = true;
-      this.reconcile();
+      this.useFallback();
     }, 1000);
+    this.updateWatch();
     this.reconcile();
   }
   select(id: string) {
@@ -141,11 +143,25 @@ export class CatalogController {
     this.collections.get(this.selectedId)?.resource.reload();
     if (this.directory.error) this.directory.reload();
   };
-  close() {
-    this.closed = true;
+  suspend() {
+    if (!this.started || this.closed) return;
+    this.started = false;
     clearTimeout(this.fallbackTimer);
-    for (const watch of this.watches.values()) watch.stop();
+    const watches = [...this.watches.values()];
     this.watches.clear();
+    for (const watch of watches) watch.stop();
+    this.manifest = undefined;
+    this.fallback = false;
+    this.liveError = "";
+    this.directory.activate(false);
+    for (const entry of this.collections.values())
+      entry.resource.activate(false);
+    this.publish();
+  }
+  close() {
+    if (this.closed) return;
+    this.suspend();
+    this.closed = true;
     this.directory.dispose();
     for (const entry of this.collections.values()) entry.resource.dispose();
     this.listeners.clear();
@@ -160,6 +176,19 @@ export class CatalogController {
   }
   private watchError() {
     return [...this.watches.values()].find((watch) => watch.error)?.error || "";
+  }
+  private useFallback() {
+    if (!this.started || this.closed || this.fallback) return;
+    this.fallback = true;
+    // A resumed cache must also validate over HTTP when no live revision arrives.
+    if (!this.manifest) {
+      if (this.directory.value !== undefined) this.directory.reload();
+      for (const id of this.wanted()) {
+        const resource = this.collections.get(id)?.resource;
+        if (resource?.value !== undefined) resource.reload();
+      }
+    }
+    this.reconcile();
   }
   private updateWatch() {
     if (!this.started || this.closed) return;
@@ -218,8 +247,8 @@ export class CatalogController {
           } else if (frame.type === "error") {
             entry.error = `Catalog live updates: ${frame.error.message}`;
             this.liveError = this.watchError();
-            this.fallback = true;
-            this.reconcile();
+            this.useFallback();
+            this.publish();
           }
         },
         (status) => {

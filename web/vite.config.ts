@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 const schema = JSON.parse(
   readFileSync(new URL("./src/gen/openapi.json", import.meta.url), "utf8"),
 );
+const backend = process.env.MARKET_DEV_BACKEND || "http://127.0.0.1:8080";
 export default defineConfig({
   define: {
     "import.meta.env.VITE_MARKET_MINIAPP": JSON.stringify(
@@ -27,7 +28,6 @@ export default defineConfig({
         "/media",
         "/telegram",
         "/auth",
-        "/sync",
         "/catalog",
         "/collections",
         "/valuations",
@@ -41,7 +41,12 @@ export default defineConfig({
         "/ws",
       ].map((path) => [
         path,
-        { target: "http://127.0.0.1:8080", ws: path === "/ws" },
+        {
+          target: backend,
+          changeOrigin: true,
+          ws: path === "/ws",
+          rewriteWsOrigin: path === "/ws",
+        },
       ]),
     ),
   },

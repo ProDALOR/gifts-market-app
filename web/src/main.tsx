@@ -4,17 +4,16 @@ import { initialLocation } from "./app/routes";
 import { selectionFromParams, selectionAt } from "./market-selection";
 import { AppShell } from "./app/shell";
 import { MarketPage } from "./market-page";
+import { LoadingScreen } from "./app/loading-screen";
 import "./style.css";
+import { applyAppearance } from "./app/appearance";
+applyAppearance();
 const root = createRoot(document.getElementById("root")!);
 let controller: AbortController | undefined;
 async function start() {
   controller?.abort();
   const current = (controller = new AbortController());
-  root.render(
-    <main className="workspace">
-      <p role="status">Opening market…</p>
-    </main>,
-  );
+  root.render(<LoadingScreen />);
   try {
     const context = await initializeTelegram();
     const selected = initialLocation(

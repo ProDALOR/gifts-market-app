@@ -203,7 +203,7 @@
   height: 12px;
 }
 .portfolio-unpriced {
-  color: #d9bd8d;
+  color: var(--warning);
 }
 .portfolio-progress {
   display: grid;

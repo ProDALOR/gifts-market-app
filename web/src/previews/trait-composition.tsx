@@ -39,6 +39,7 @@ export function TraitComposition({
 }) {
   const host = useRef<HTMLElement>(null),
     visible = usePreviewVisibility(host);
+  const nearby = usePreviewVisibility(host, 256, compact);
   const { pageVisible } = usePreviewEnvironment();
   const [width, setWidth] = useState(358);
   useEffect(() => {
@@ -114,7 +115,8 @@ export function TraitComposition({
                 ? [option.media.thumbnail_url]
                 : [],
             )}
-            visible={visible && pageVisible}
+            visible={(visible || nearby) && pageVisible}
+            preload={compact && pageVisible}
             layout="banner"
             symbolScale={compact ? CARD_SYMBOL_SCALE : 1}
             background={false}
@@ -137,6 +139,7 @@ export function TraitComposition({
               style={{ gridRow: row, gridColumn: `${column} / span ${span}` }}
             >
               <GiftArtwork
+                surface={compact ? "item" : "preview"}
                 key={model.id}
                 media={
                   model.kind === "model" ? model.media || undefined : undefined

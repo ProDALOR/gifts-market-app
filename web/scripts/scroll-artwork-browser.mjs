@@ -13,12 +13,14 @@ let png;
 const svg =
   '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><path fill="#fcb731" d="M80 80H432V432H80Z"/></svg>';
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module">
-import React from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{VirtualGiftGrid}from'/src/orderbook/virtual-gift-grid.tsx';import{GiftArtwork}from'/src/previews/gift-artwork.tsx';import'/src/style.css';
+import React from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{VirtualGiftGrid}from'/src/orderbook/virtual-gift-grid.tsx';import{GiftArtwork}from'/src/previews/gift-artwork.tsx';import{GiftBackdrop}from'/src/previews/gift-backdrop.tsx';import'/src/style.css';
+const draw=CanvasRenderingContext2D.prototype.drawImage;CanvasRenderingContext2D.prototype.drawImage=function(...args){if(this.canvas.matches('.gift-backdrop'))this.canvas.hasSymbols=true;return draw.apply(this,args)};
 const root=createRoot(document.getElementById('root')),orders=Array.from({length:6000},(_,i)=>({id:String(i),model:i%96}));
 const render=item=>React.createElement('li',{className:'gift-card','data-id':item.id},React.createElement(GiftArtwork,{className:'card-preview',preload:true,media:{preview_url:'/media/scroll/'+item.model+'/preview',animation_url:'/media/scroll/'+item.model+'/animation'},playback:'interaction',fallback:'G',palette:{center:'#a6b67f',edge:'#62904b',pattern:'#37552a'},patternUrls:['/media/scroll/symbol.png']}));
 const show=()=>root.render(React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook market-shell'},React.createElement('aside',{className:'market-sidebar'},'Controls'),React.createElement('div',{className:'market-results'},React.createElement(VirtualGiftGrid,{orders,keyOf:item=>item.id,render,visible:()=>{},busy:false})))));
 window.visibleState=()=>{const images=[...document.querySelectorAll('.gift-model-image')].filter(i=>{const r=i.getBoundingClientRect();return r.bottom>0&&r.top<innerHeight});return{images:images.length,ready:images.filter(i=>i.classList.contains('loaded')&&i.complete&&i.naturalWidth).length,placeholders:document.querySelectorAll('.gift-loading-placeholder').length,total:document.querySelectorAll('.gift-card').length}};
 window.remount=()=>{flushSync(()=>root.render(null));window.scrollTo(0,0);flushSync(show);return window.visibleState();};
+window.backdrop=(visible,clear=false)=>{if(clear)flushSync(()=>root.render(null));flushSync(()=>root.render(React.createElement('div',{style:{position:'relative',width:200,height:200}},React.createElement(GiftBackdrop,{palette:{center:'#a6b67f',edge:'#62904b',pattern:'#37552a'},patternUrls:['/media/scroll/warm-symbol.png'],preload:true,visible}))));const c=document.querySelector('.gift-backdrop');return{ready:c.width>1&&!!c.hasSymbols,background:c.style.background};};
 show();window.fixtureReady=true;
 </script></body></html>`;
 const server = await createServer({
@@ -147,12 +149,44 @@ try {
       0,
       "offscreen preloading does not activate animation",
     );
+    const start = counts.get("/media/scroll/warm-symbol.png") || 0;
+    const cold = await page.evaluate(() => window.backdrop(false, true));
+    assert.notEqual(
+      cold.background,
+      "",
+      "backdrop palette appears before symbol/network completion",
+    );
+    while ((counts.get("/media/scroll/warm-symbol.png") || 0) === start)
+      await page.waitForTimeout(10);
+    await page.evaluate(() => window.backdrop(true));
+    await page.waitForFunction(
+      () => document.querySelector(".gift-backdrop")?.hasSymbols,
+    );
+    assert.equal(
+      counts.get("/media/scroll/warm-symbol.png"),
+      start + 1,
+      "entering the viewport must not cancel and restart a prefetched symbol",
+    );
+    await page.evaluate(() => window.backdrop(false));
+    assert.equal(
+      (await page.evaluate(() => window.backdrop(true))).ready,
+      true,
+      "warm symbols paint in the visibility commit",
+    );
+    assert.equal(
+      (await page.evaluate(() => window.backdrop(true, true))).ready,
+      true,
+      "remounted backdrops reuse decoded/tinted symbols synchronously",
+    );
     assert.deepEqual(errors, []);
     await page.close();
   }
   assert.ok(
     [...counts.keys()].every(
-      (url) => url.endsWith("/preview") || url.endsWith("/symbol.png"),
+      (url) =>
+        url.endsWith("/preview") ||
+        url.endsWith("/symbol.png") ||
+        url.endsWith("/warm-symbol.png"),
     ),
     "no animation or thumbnail downloads while scrolling",
   );

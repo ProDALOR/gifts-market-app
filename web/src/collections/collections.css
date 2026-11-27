@@ -59,7 +59,7 @@
   padding: 0;
   flex: none;
 }
-.search-icon {
+.shared-icon.search-icon {
   width: 23px;
   height: 23px;
 }
@@ -67,8 +67,8 @@
   width: 153px;
   padding: 0 6px 0 9px;
   gap: 4px;
-  color: white;
-  background: var(--plum);
+  color: var(--on-selection);
+  background: var(--selection);
 }
 .search-tile.open .search-toggle {
   width: 18px;
@@ -76,6 +76,7 @@
 }
 .search-tile.open .search-icon {
   width: 17px;
+  height: 17px;
 }
 .search-tile input {
   flex: 1;
@@ -90,7 +91,7 @@
   font-size: 16px;
 }
 .search-tile input::placeholder {
-  color: #f2dce9;
+  color: color-mix(in srgb, var(--on-selection) 80%, transparent);
 }
 .search-tile input::-webkit-search-cancel-button {
   display: none;
@@ -119,8 +120,8 @@
 }
 .collection-tile[aria-pressed="true"] {
   width: var(--collection-selected-width);
-  background: var(--plum);
-  color: white;
+  background: var(--selection);
+  color: var(--on-selection);
 }
 .collection-art {
   position: absolute;
@@ -250,8 +251,8 @@
 }
 .pick-count {
   font-size: 10px;
-  background: var(--plum);
-  color: white;
+  background: var(--selection);
+  color: var(--on-selection);
   border-radius: 10px;
   padding: 2px 5px;
   animation: trait-count-in 140ms ease-out;
@@ -413,16 +414,16 @@
 [data-craft="uncommon"] {
   --rarity-color: #85ce9f;
 }
-.telegram[data-telegram-theme="light"] [data-craft="legendary"] {
+:root[data-color-scheme="light"] [data-craft="legendary"] {
   --rarity-color: #956000;
 }
-.telegram[data-telegram-theme="light"] [data-craft="epic"] {
+:root[data-color-scheme="light"] [data-craft="epic"] {
   --rarity-color: #7150b4;
 }
-.telegram[data-telegram-theme="light"] [data-craft="rare"] {
+:root[data-color-scheme="light"] [data-craft="rare"] {
   --rarity-color: #216b9f;
 }
-.telegram[data-telegram-theme="light"] [data-craft="uncommon"] {
+:root[data-color-scheme="light"] [data-craft="uncommon"] {
   --rarity-color: #277948;
 }
 .trait-group[data-craft] :is(.trait-group-toggle, .trait-option) {

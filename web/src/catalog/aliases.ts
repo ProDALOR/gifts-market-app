@@ -110,6 +110,34 @@ export function resolveFilterSelectors(
     ]),
   );
 }
+/** Apply only after this collection's catalog is available, never to a loading catalog. */
+export function availableFilterSelectors(
+  filters: TraitFilters,
+  options: ReadonlyMap<string, CatalogOption>,
+): TraitFilters {
+  if (!Object.values(filters).some((ids) => ids?.length)) return filters;
+  const groups = {
+    models: [] as CatalogOption[],
+    backdrops: [] as CatalogOption[],
+    patterns: [] as CatalogOption[],
+  };
+  for (const option of options.values())
+    groups[
+      { model: "models", backdrop: "backdrops", pattern: "patterns" }[
+        option.kind
+      ] as keyof typeof groups
+    ].push(option);
+  let changed = false;
+  const available: TraitFilters = {};
+  for (const key of Object.keys(groups) as (keyof typeof groups)[]) {
+    const ids = filters[key];
+    if (!ids) continue;
+    const valid = ids.filter((id) => resolveSelector(groups[key], id));
+    if (valid.length) available[key] = valid;
+    if (valid.length !== ids.length) changed = true;
+  }
+  return changed ? available : filters;
+}
 export const allCollections: Collection = {
   id: "",
   name: "All gifts",

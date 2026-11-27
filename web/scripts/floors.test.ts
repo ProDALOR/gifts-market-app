@@ -218,6 +218,7 @@ function fixture(t: TestContext) {
   let load = async (query: ValuationQuery, _signal: AbortSignal) =>
     report(query);
   const controller = new FloorsController({
+    random: () => 0.5,
     query: (query, signal) => {
       calls.push({ query, signal: signal! });
       return load(query, signal!);
@@ -256,6 +257,113 @@ test("startup fetches every collection in summary-only batches, including more t
   assert.equal(f.calls.length, 20);
   assert.equal(target(f.calls.at(-1)!.query).details?.collection_id, "gift-4");
   assert.ok(f.controller.getSnapshot().entries.get("gift-4")?.traits);
+});
+test("temporary floor failures retry only failed scopes with backoff and keep cached prices", async (t) => {
+  const f = fixture(t);
+  f.controller.configure("GRAM", ["a", "b"], "a", null);
+  await flush(t);
+  const baseline = f.calls.length;
+  f.load(async (q) => {
+    if (target(q).details) throw new ApiFailure("timed_out", "Busy");
+    return report(q);
+  });
+  f.controller.retry();
+  await flush(t);
+  assert.equal(f.controller.getSnapshot().retrying, true);
+  assert.equal(f.controller.getSnapshot().entries.get("a")?.floor.value, "3");
+  assert.equal(f.controller.getSnapshot().entries.get("a")?.stale, true);
+  const failed = f.calls.length;
+  assert.equal(failed, baseline + 2);
+  await flush(t, 999);
+  assert.equal(f.calls.length, failed, "No immediate retry loop");
+  await flush(t, 1);
+  assert.equal(f.calls.length, failed + 1);
+  await flush(t, 1_999);
+  assert.equal(f.calls.length, failed + 1, "Repeated failures back off");
+  f.load(async (q) => report(q, "4"));
+  await flush(t, 1);
+  assert.equal(f.calls.length, failed + 2);
+  assert.equal(f.controller.getSnapshot().error, "");
+  assert.equal(f.controller.getSnapshot().retrying, false);
+  assert.equal(f.controller.getSnapshot().entries.get("a")?.floor.value, "4");
+  assert.equal(f.controller.getSnapshot().entries.get("a")?.stale, false);
+  assert.ok(f.calls.slice(failed).every(({ query }) => target(query).details));
+});
+test("floor retries respect collection/currency switches, disconnects, close and terminal errors", async (t) => {
+  const f = fixture(t);
+  f.load(async () => {
+    throw new ApiFailure("unavailable", "Busy");
+  });
+  f.controller.configure("GRAM", ["a", "b"], "a", null);
+  await flush(t);
+  f.load(async (q) => report(q));
+  f.controller.configure("XTR", ["b"], "b", null);
+  await flush(t);
+  const before = f.calls.length;
+  await flush(t, 3_000);
+  assert.equal(f.calls.length, before, "Old currency retry was cancelled");
+  f.load(async () => {
+    throw new ApiFailure("unavailable", "Busy");
+  });
+  f.controller.retry();
+  await flush(t);
+  f.status("unavailable");
+  const disconnected = f.calls.length;
+  await flush(t, 3_000);
+  assert.equal(f.calls.length, disconnected);
+  f.load(async () => {
+    throw new ApiFailure("invalid_argument", "Invalid");
+  });
+  f.status("available");
+  await flush(t);
+  const terminal = f.calls.length;
+  assert.equal(f.controller.getSnapshot().retrying, false);
+  await flush(t, 5_000);
+  assert.equal(
+    f.calls.length,
+    terminal,
+    "Invalid inputs are not retried rapidly",
+  );
+  f.load(async () => {
+    throw new ApiFailure("unavailable", "Busy");
+  });
+  f.controller.retry();
+  await flush(t);
+  f.controller.close();
+  const closed = f.calls.length;
+  await flush(t, 180_000);
+  assert.equal(f.calls.length, closed);
+});
+test("an unrelated summary failure retries in the background without a selected floor alert", async (t) => {
+  const f = fixture(t);
+  f.load(async (q) => {
+    if (!target(q).details)
+      throw new ApiFailure("unavailable", "Other collection busy");
+    return report(q);
+  });
+  f.controller.configure("GRAM", ["a", "b"], "a", null);
+  await flush(t);
+  assert.equal(f.controller.getSnapshot().error, "");
+  assert.equal(f.controller.getSnapshot().entries.get("a")?.stale, false);
+  const before = f.calls.length;
+  f.load(async (q) => report(q));
+  await flush(t, 1_000);
+  assert.equal(f.calls.length, before + 1);
+  assert.deepEqual(target(f.calls.at(-1)!.query).collection_ids, ["b"]);
+  assert.equal(f.controller.getSnapshot().entries.size, 2);
+});
+test("terminal summary errors do not advertise an automatic retry after the job finishes", async (t) => {
+  const f = fixture(t);
+  f.load(async () => {
+    throw new ApiFailure("invalid_argument", "Invalid collection");
+  });
+  f.controller.configure("GRAM", ["a"], "", null);
+  await flush(t);
+  assert.equal(f.controller.getSnapshot().error, "Invalid collection");
+  assert.equal(f.controller.getSnapshot().retrying, false);
+  const count = f.calls.length;
+  await flush(t, 15_000);
+  assert.equal(f.calls.length, count);
 });
 test("collections and selected traits refresh every minute without polling on rerenders", async (t) => {
   const f = fixture(t),

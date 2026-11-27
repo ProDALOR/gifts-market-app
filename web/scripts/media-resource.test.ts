@@ -244,3 +244,38 @@ test("producer timeouts retry as transient failures while consumer cancellation 
   await assert.rejects(cancelled);
   assert.equal(resource.hasFresh("cancel"), false);
 });
+
+test("small image transfers fill a bounded eight-slot budget while scroll previews warm", async (t) => {
+  const releases: (() => void)[] = [];
+  let active = 0,
+    peak = 0;
+  t.mock.method(
+    globalThis,
+    "fetch",
+    () =>
+      new Promise<Response>((resolve) => {
+        peak = Math.max(peak, ++active);
+        releases.push(() => {
+          active--;
+          resolve(
+            new Response(new Uint8Array([1]), {
+              headers: { "Content-Type": "image/png" },
+            }),
+          );
+        });
+      }),
+  );
+  const reads = Array.from({ length: 12 }, (_, i) =>
+    fetchMedia(`/bounded-image-${i}`, signal(), "image"),
+  );
+  await flush();
+  assert.equal(releases.length, 8);
+  assert.equal(peak, 8);
+  while (releases.length) {
+    releases.splice(0).forEach((release) => release());
+    await flush();
+  }
+  await Promise.all(reads);
+  assert.equal(active, 0);
+  assert.equal(peak, 8);
+});

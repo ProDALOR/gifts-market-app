@@ -317,6 +317,7 @@ try {
   const catalogPeers = new Set();
   const openSockets = new Set();
   let floorRequests = 0;
+  const floorScopes = [];
   let floorPrice = "8";
   const catalogCommands = [];
   let socketCount = 0,
@@ -430,6 +431,7 @@ try {
           frame.params.target?.kind === "catalog"
         ) {
           floorRequests++;
+          floorScopes.push(frame.params.target);
           const data = floorReport(
             frame.params,
             models.map((row) => row.id),
@@ -508,10 +510,9 @@ try {
   await page.goto(`${base}/?collection=bunny&currency=GRAM`);
   const title = page.locator(".market-heading h1");
   await page
-    .getByRole("heading", { name: "Loading collection", exact: true })
+    .getByRole("status", { name: "Loading app", exact: true })
     .waitFor();
-  assert.equal(await title.getAttribute("aria-busy"), "true");
-  assert.equal(await title.locator(".collection-title-skeleton").count(), 1);
+  assert.equal(await title.count(), 0);
   assert.equal(
     await page.getByText("Select a collection", { exact: true }).count(),
     0,
@@ -551,6 +552,36 @@ try {
     "·",
   );
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(".market-view-status.live").waitFor();
+  assert.equal(
+    await page.locator(".feed-status").isVisible(),
+    false,
+    "Mobile live status is integrated into the active tab",
+  );
+  assert.match(
+    await page
+      .getByRole("button", { name: "Asks", exact: true })
+      .getAttribute("title"),
+    /Live.*loaded/,
+  );
+  for (const socket of openSockets)
+    socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
+  await page
+    .locator(".feed-status")
+    .getByText("Updates delayed", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.locator(".feed-status").isVisible(),
+    true,
+    "Delayed updates remain visible on mobile",
+  );
+  for (const socket of openSockets)
+    socket.send(JSON.stringify({ type: "market.status", status: "available" }));
+  await page.waitForFunction(
+    () =>
+      getComputedStyle(document.querySelector(".feed-status")).display ===
+      "none",
+  );
 
   await page.waitForSelector('.collection-tile[data-collection-id="bunny"]');
   assert.deepEqual(
@@ -674,13 +705,12 @@ try {
     "0.500000001 GRAM",
     "Cards retain the full quote on hover",
   );
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Choices unavailable" })
-    .waitFor();
-  await button("Reload").click();
   await page.waitForFunction(() => !document.querySelector('[role="alert"]'));
-  assert.equal(optionRequests, 2, "Failed choice loads expose a working retry");
+  assert.equal(
+    optionRequests,
+    2,
+    "Temporary choice failures recover automatically without Reload",
+  );
   const sortTrigger = page.getByRole("combobox", {
     name: "Sort by",
     exact: true,
@@ -962,7 +992,7 @@ try {
   await scrollMore(125);
   await page.evaluate(() => window.scrollTo(0, 0));
   await button("Reverse sort direction").click();
-  await price("10,000,000,000,000,000.00..");
+  await price("10\u00a0000\u00a0000\u00a0000\u00a0000\u00a0000.00..");
   for (const width of [320, 390, 480, 1440]) {
     await page.setViewportSize({ width, height: 844 });
     assert.equal(
@@ -1320,7 +1350,9 @@ try {
       document.querySelector(".gift-card .serial")?.textContent ===
       "#1\u00a0926",
   );
-  await page.locator(".feed-status .status.live").waitFor();
+  await page
+    .locator(".feed-status .status.live")
+    .waitFor({ state: "attached" });
   await scrollMore(75);
   assert.equal(snapshotSequence, 0, "GUI history uses no frozen REST lease");
   await page.evaluate(() => window.scrollTo(0, 700));
@@ -1452,9 +1484,14 @@ try {
   assert.match(countTooltip, /same gift counts once across markets/);
   assert.doesNotMatch(countTooltip, /listings/);
 
+  const refreshedScopes = floorScopes.slice(beforeFloorUpdate);
   assert.ok(
-    floorRequests > beforeFloorUpdate && floorRequests <= beforeFloorUpdate + 2,
-    "Reconnect refreshes collection summaries and selected traits with bounded finite queries",
+    refreshedScopes.some((scope) => scope.details?.collection_id === "bunny"),
+    "Reconnect refreshes selected traits",
+  );
+  assert.ok(
+    refreshedScopes.every((scope) => scope.collection_ids.length <= 8),
+    "Reconnect and minute refreshes retain bounded summary batches",
   );
   await page.screenshot({
     path: "/tmp/gifts-market-ui/shared-values-details.png",
@@ -1802,7 +1839,9 @@ try {
       await page
         .getByRole("heading", { name: "Jelly Bunny", exact: true })
         .waitFor();
-      await page.locator(".feed-status .status.live").waitFor();
+      await page
+        .locator(".feed-status .status.live")
+        .waitFor({ state: "attached" });
       assert.equal(
         await page.locator('.collection-tile[data-collection-id=""]').count(),
         0,

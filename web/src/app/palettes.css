@@ -1,0 +1,92 @@
+/* Palette definitions are shared by the application and the profile swatches. */
+:root,
+[data-palette="rose"] {
+  --dark-paper: #151419;
+  --dark-surface: #242229;
+  --dark-raised: #302d36;
+  --dark-line: #4a454f;
+  --dark-accent: #eac2e1;
+  --light-paper: #faf7fb;
+  --light-surface: #f1ebf2;
+  --light-raised: #e7dfe9;
+  --light-line: #c9bdce;
+  --light-accent: #734868;
+  --selection: #75506e;
+}
+[data-palette="ocean"] {
+  --dark-paper: #101820;
+  --dark-surface: #1c2935;
+  --dark-raised: #283b4b;
+  --dark-line: #405768;
+  --dark-accent: #acd7f4;
+  --light-paper: #f4f9fc;
+  --light-surface: #e8f1f8;
+  --light-raised: #d8e7f2;
+  --light-line: #b1c9da;
+  --light-accent: #245c80;
+  --selection: #2c6484;
+}
+[data-palette="mint"] {
+  --dark-paper: #111b18;
+  --dark-surface: #1e2c26;
+  --dark-raised: #2b3e34;
+  --dark-line: #435d50;
+  --dark-accent: #ace3c6;
+  --light-paper: #f5faf7;
+  --light-surface: #e8f2ec;
+  --light-raised: #d8e8de;
+  --light-line: #b1cdbb;
+  --light-accent: #286549;
+  --selection: #326e58;
+}
+[data-palette="amber"] {
+  --dark-paper: #1c1812;
+  --dark-surface: #2d271e;
+  --dark-raised: #3e3528;
+  --dark-line: #5c503c;
+  --dark-accent: #ebcf99;
+  --light-paper: #fcf9f2;
+  --light-surface: #f5eee0;
+  --light-raised: #eae0c9;
+  --light-line: #cfbf9d;
+  --light-accent: #78551f;
+  --selection: #805c2c;
+}
+:root {
+  color-scheme: dark;
+  color: var(--ink);
+  background: var(--paper);
+  --paper: var(--dark-paper);
+  --surface: var(--dark-surface);
+  --raised: var(--dark-raised);
+  --line: var(--dark-line);
+  --accent: var(--dark-accent);
+  --ink: #f5f1f6;
+  --muted: #bbb8c0;
+  --on-selection: #ffffff;
+  --on-accent: #17171b;
+  --tint: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  --accent-line: color-mix(in srgb, var(--selection) 65%, var(--accent));
+  --quote-flash: color-mix(in srgb, var(--selection) 40%, transparent);
+  --success: #aaf3cf;
+  --warning: #e3bd7d;
+  --notice-ink: #eac6b3;
+  --notice-line: #8b6c5f;
+  --notice-surface: #3b2d29;
+}
+:root[data-color-scheme="light"] {
+  color-scheme: light;
+  --paper: var(--light-paper);
+  --surface: var(--light-surface);
+  --raised: var(--light-raised);
+  --line: var(--light-line);
+  --accent: var(--light-accent);
+  --ink: #24212a;
+  --muted: #635e6b;
+  --on-accent: #ffffff;
+  --success: #216c49;
+  --warning: #805f1d;
+  --notice-ink: #783b22;
+  --notice-line: #c3a08e;
+  --notice-surface: #fff0e7;
+}

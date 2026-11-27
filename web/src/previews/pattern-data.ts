@@ -22,6 +22,7 @@ const symbols = new MediaResource<HTMLCanvasElement>(
     }
   },
   2 * 1024 * 1024,
+  8,
 );
 const frames = new MediaResource<HTMLCanvasElement>(
   async (key, signal) => {
@@ -39,6 +40,11 @@ const frames = new MediaResource<HTMLCanvasElement>(
     return { value: canvas, bytes: 96 * 96 * 4 };
   },
   2 * 1024 * 1024,
+  8,
 );
 export const loadPattern = (url: string, color: string, signal: AbortSignal) =>
   retryMedia(() => frames.get(JSON.stringify([url, color]), signal), signal);
+
+/** Warm remounts can draw their tinted symbol in the same layout commit. */
+export const peekPattern = (url: string, color: string) =>
+  frames.peek(JSON.stringify([url, color]));
