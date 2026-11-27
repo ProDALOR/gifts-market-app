@@ -1,10 +1,4 @@
 use url::Url;
-/// Telegram-owned message identifier, bound to one verified Mini App user.
-#[derive(Debug, Clone)]
-pub struct PreparedMessage {
-    pub id: String,
-    pub expires_at: i64,
-}
 #[derive(Debug, Clone, Copy)]
 pub struct IncomingMessage<'a> {
     pub private: bool,
@@ -24,11 +18,28 @@ pub struct LaunchButton {
     pub url: Url,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShareLink {
+    Inline(String),
+    Url(Url),
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplyButton {
-    Url { text: String, url: Url },
-    Callback { text: String, data: Vec<u8> },
-    SwitchInline { text: String, query: String },
-    Preview { text: String, payload: String },
+    Url {
+        text: String,
+        url: Url,
+    },
+    Callback {
+        text: String,
+        data: Vec<u8>,
+    },
+    Share {
+        text: String,
+        destination: ShareLink,
+    },
+    OpenApp {
+        text: String,
+        payload: String,
+    },
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reply {
@@ -107,14 +118,21 @@ impl Reply {
                         && url.username().is_empty()
                         && url.password().is_none()
                 }
-                ReplyButton::Preview { payload, .. } => {
+                ReplyButton::OpenApp { payload, .. } => {
                     !payload.is_empty()
                         && payload.len() <= 512
                         && payload
                             .bytes()
                             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
                 }
-                ReplyButton::SwitchInline { query, .. } => query.len() <= 256,
+                ReplyButton::Share { destination, .. } => match destination {
+                    ShareLink::Inline(query) => query.chars().count() <= 256,
+                    ShareLink::Url(url) => {
+                        matches!(url.scheme(), "http" | "https")
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                    }
+                },
             });
         }
         self.buttons.retain(|row| !row.is_empty());
@@ -168,7 +186,7 @@ mod tests {
                     text: "Bad data".into(),
                     data: vec![0; 65],
                 },
-                ReplyButton::Preview {
+                ReplyButton::OpenApp {
                     text: "Invalid payload".into(),
                     payload: "javascript:alert(1)".into(),
                 },

@@ -116,9 +116,17 @@ fn entry_points_share_value_requests_without_trusting_payload_identities() {
 }
 #[test]
 fn rich_report_escapes_catalog_content_and_links_use_the_existing_deep_link_codec() {
-    use base64::Engine;
     let report = view();
     let reply = report.render().bounded();
+    let payload = reply
+        .buttons
+        .iter()
+        .flatten()
+        .find_map(|b| match b {
+            ReplyButton::OpenApp { payload, .. } => Some(payload.clone()),
+            _ => None,
+        })
+        .unwrap();
     let html = reply.rich_html.unwrap();
     assert!(html.contains("Gift &lt;unsafe&gt; &amp; friends"));
     assert!(html.contains("&lt;b&gt;Model&lt;/b&gt;"));
@@ -145,16 +153,14 @@ fn rich_report_escapes_catalog_content_and_links_use_the_existing_deep_link_code
             .any(|button| matches!(button, ReplyButton::Url { .. })),
         "gift link lives in the title"
     );
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&report.preview_payload()[2..])
-        .unwrap();
-    let params = url::form_urlencoded::parse(&bytes)
-        .into_owned()
-        .collect::<std::collections::HashMap<_, _>>();
-    assert_eq!(params["gift"], "Gift-123");
-    assert_eq!(params["collection"], "collection");
-    assert_eq!(params["currency"], "GRAM");
-    assert!(report.preview_payload().len() <= 512);
+    assert_eq!(
+        market_links::Target::from_launch(&payload).unwrap(),
+        market_links::Target::Gift {
+            slug: GiftSlug::new("Gift-123").unwrap(),
+            currency_id: "GRAM".into()
+        }
+    );
+    assert!(payload.len() <= 512);
 }
 #[test]
 fn covers_use_the_selected_backdrop_and_resolved_model_and_symbol_documents() {
@@ -902,7 +908,10 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
         .iter()
         .flatten()
         .find_map(|b| match b {
-            ReplyButton::SwitchInline { query, .. } => Some(query.clone()),
+            ReplyButton::Share {
+                destination: market_telegram::ShareLink::Inline(query),
+                ..
+            } => Some(query.clone()),
             _ => None,
         })
         .unwrap();
@@ -1066,37 +1075,25 @@ async fn tabs_dual_floors_pagination_and_refresh_share_reports_and_keep_view_sta
             .unwrap()
             .contains("Retry sales")
     );
-    let commands = Arc::new(commands);
-    let sharing = crate::Sharing::new(commands.clone(), Default::default());
-    let first = sharing
-        .gift(7, GiftSlug::new("Gift-123").unwrap(), "GRAM".into())
-        .await
-        .unwrap();
-    let other = sharing
-        .gift(8, GiftSlug::new("Gift-123").unwrap(), "GRAM".into())
-        .await
-        .unwrap();
-    assert!(first.prepared.is_none());
+    let target = market_links::Target::Gift {
+        slug: GiftSlug::new("Gift-123").unwrap(),
+        currency_id: "GRAM".into(),
+    };
     assert_eq!(
-        first.fallback, other.fallback,
-        "targets remain usable by new senders without cache tokens"
-    );
-    assert_eq!(
-        first.fallback,
-        crate::ShareFallback::Inline {
+        target.share(None).unwrap(),
+        market_links::ShareDestination::Inline {
             query: "Gift-123 GRAM".into()
         }
     );
-    let market = sharing
-        .market(500, browse::parse("/market collection=Gift").unwrap())
-        .await
-        .unwrap();
-    let crate::ShareFallback::Inline { query } = market.fallback else {
+    let target = market_links::Target::Market {
+        selection: browse::parse("/market collection=Gift").unwrap(),
+    };
+    let market_links::ShareDestination::Inline { query } = target.share(None).unwrap() else {
         panic!()
     };
     assert!(
-        sharing::parse_target(&query).is_some(),
-        "stateless targets survive service shutdown"
+        parse::target(&query, 500, &[] as &[String], None).is_some(),
+        "targets survive service shutdown"
     );
     reads.shutdown().await;
 }
@@ -1538,4 +1535,172 @@ fn attribute_table_keeps_native_quote_columns_names_and_missing_values_separate(
             .contains("Sun &amp; Moon"),
         "attributes remain visible when floor services are unavailable"
     );
+}
+
+#[test]
+fn private_and_inline_links_dispatch_the_same_target_without_inventory_checks() {
+    let usernames = ["market_bot".to_owned()];
+    let origin = url::Url::parse("https://app.example/").unwrap();
+    for text in [
+        "Gift-123 XTR",
+        "market f=c=@slug:Gift|b=@name:Black currency=GRAM mode=bid bid_match=all",
+        "portfolio 123 XTR sort=number_desc",
+        "market f=b=@name:Black currency=XTR",
+    ] {
+        let target = market_links::Target::parse_text(text, 7).unwrap();
+        let expected = parse::command_target(target.clone()).unwrap();
+        for url in [
+            target.website_url(&origin).unwrap(),
+            target.bot_url("market_bot", Some(&origin)).unwrap(),
+        ] {
+            let command = parse::target(url.as_str(), 7, &usernames, Some(&origin));
+            assert_eq!(command, Some(expected.clone()), "{url}");
+        }
+        if let Some(payload) = target.launch(64).unwrap() {
+            let input = format!("/start@market_bot {payload}");
+            let request = parse::parse(
+                market_telegram::IncomingMessage {
+                    private: true,
+                    outgoing: false,
+                    user_id: Some(7),
+                    message_id: 1,
+                    text: Some(&input),
+                },
+                &usernames,
+            )
+            .unwrap();
+            assert_eq!(request.command, expected);
+            assert_eq!(request.user_id, 7);
+        }
+        if let Command::Portfolio(p) = expected {
+            assert_eq!(p.mode, PortfolioMode::Inline);
+            assert_ne!(p.action, PortfolioAction::Refresh);
+        }
+    }
+    for text in [
+        "https://other.example/#gift=Gift-123",
+        "https://t.me/other_bot?start=t_Z2lmdA",
+        "https://user:secret@t.me/market_bot?start=x",
+    ] {
+        assert!(
+            parse::target(text, 7, &usernames, Some(&origin)).is_none(),
+            "{text}"
+        );
+    }
+    assert!(matches!(
+        parse::parse(
+            market_telegram::IncomingMessage {
+                private: true,
+                outgoing: false,
+                user_id: Some(7),
+                message_id: 1,
+                text: Some("/start broken")
+            },
+            &usernames
+        )
+        .unwrap()
+        .command,
+        Command::Help
+    ));
+}
+
+#[actix::test]
+async fn landing_checks_are_explicit_and_bound_to_the_authenticated_sender() {
+    let reply = LaunchCommands
+        .handle(CommandRequest {
+            command: Command::Start,
+            user_id: 7,
+            message_id: 1,
+            inline: false,
+        })
+        .await
+        .unwrap();
+    let reports = reports::Reports::default();
+    let reply = reports.reply(7, reply);
+    let data = reply
+        .buttons
+        .iter()
+        .flatten()
+        .find_map(|b| match b {
+            ReplyButton::Callback { data, .. } => Some(data.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let target = CallbackTarget::Inline(InlineMessageId::Standard {
+        dc_id: 2,
+        id: 1,
+        access_hash: 0,
+    });
+    let event = |user_id| Event::Callback {
+        id: 1,
+        user_id,
+        data: data.clone(),
+        target: target.clone(),
+    };
+    assert!(matches!(
+        reports.parse(&event(8), &[]).unwrap().command,
+        Command::CallbackDenied
+    ));
+    let Command::Portfolio(request) = reports.parse(&event(7), &[]).unwrap().command else {
+        panic!()
+    };
+    assert_eq!(request.user_id.get(), 7);
+    // Inline copies cannot trigger checks even if a private landing control is copied.
+    assert_eq!(request.action, PortfolioAction::Navigate);
+}
+
+#[test]
+fn guest_targets_reuse_cached_navigation_and_never_start_inventory_checks() {
+    let event = Event::Guest {
+        id: 1,
+        user_id: 7,
+        text: "@market_bot portfolio 123 XTR sort=number_desc".into(),
+        references: vec![],
+    };
+    let request = interactions::parse_event(&event, &["market_bot".into()]).unwrap();
+    assert!(request.inline);
+    let Command::Portfolio(p) = request.command else {
+        panic!()
+    };
+    assert_eq!(p.user_id.get(), 123);
+    assert_eq!(p.mode, PortfolioMode::Inline);
+    assert_eq!(p.action, PortfolioAction::Open);
+}
+
+#[test]
+fn malformed_explicit_targets_never_fall_back_to_gram_or_reply_context() {
+    let names = ["market_bot".to_owned()];
+    for text in [
+        "Gift-123 USD",
+        "https://t.me/nft/Gift-123 USD",
+        "market f=c=gift currency=USD Gift-123",
+        "portfolio 123 USD",
+    ] {
+        assert!(
+            parse::input(text, 7, &names, None, &["Gift-456".into()]).is_none(),
+            "{text}"
+        );
+        assert!(
+            interactions::parse_event(
+                &Event::Inline {
+                    id: 1,
+                    user_id: 7,
+                    query: text.into(),
+                    offset: String::new()
+                },
+                &names
+            )
+            .is_none(),
+            "{text}"
+        );
+    }
+    assert!(parse::input("", 7, &names, None, &[]).is_none());
+    assert!(matches!(
+        parse::input("", 7, &names, None, &["Gift-123".into()]),
+        Some(Command::Gift(_))
+    ));
+    assert!(matches!(
+        parse::input("Please check Gift-123 in TON", 7, &names, None, &[]),
+        Some(Command::Gift(_))
+    ));
 }

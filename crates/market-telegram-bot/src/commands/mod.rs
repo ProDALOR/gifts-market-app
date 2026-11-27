@@ -25,7 +25,6 @@ use market_actors::MarketDataHandle;
 use market_telegram::{BotError, IncomingMessage, MenuCommand, MessageHandler, Reply};
 pub use parse::CommandKind;
 pub(crate) use parse::parse;
-use std::future::Future;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -106,14 +105,18 @@ impl MessageHandler for MarketCommands {
         "Open market"
     }
     fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<CommandRequest> {
-        parse(message, usernames)
+        parse::parse_with_origin(message, usernames, self.public_url.as_ref())
     }
     fn parse_event(
         &self,
         event: &market_telegram::Event,
         usernames: &[String],
     ) -> Option<CommandRequest> {
-        self.reports.parse(event, usernames)
+        if matches!(event, market_telegram::Event::Callback { .. }) {
+            self.reports.parse(event, usernames)
+        } else {
+            interactions::parse_event_with_origin(event, usernames, self.public_url.as_ref())
+        }
     }
     async fn handle_with_progress(
         &self,
@@ -179,14 +182,14 @@ impl MessageHandler for LaunchCommands {
         parse(message, usernames)
     }
     async fn handle(&self, request: CommandRequest) -> Result<Reply, BotError> {
-        render::launch_reply(&request.command).ok_or(BotError::Configuration(
+        render::launch_reply(&request.command, request.user_id).ok_or(BotError::Configuration(
             "Market data handler is required for this request",
         ))
     }
 }
 
 fn menu() -> Vec<MenuCommand> {
-    CommandKind::ALL
+    CommandKind::PUBLIC
         .iter()
         .map(|kind| MenuCommand {
             name: kind.name(),

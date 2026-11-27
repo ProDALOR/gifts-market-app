@@ -1,5 +1,4 @@
 use crate::{LinkError, MarketSelection, Result};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use market_gifts::*;
 use market_gifts_hub::input::{BackdropRef, CollectionRef, GiftFilters, ModelRef, PatternRef};
 use std::collections::{BTreeMap, BTreeSet};
@@ -337,22 +336,15 @@ impl MarketSelection {
         }
         Ok(query)
     }
-    pub fn website_url(&self, origin: &url::Url) -> Result<url::Url> {
-        if !matches!(origin.scheme(), "http" | "https")
-            || origin.host_str().is_none()
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-        {
-            return Err(LinkError::Invalid("Invalid public app URL"));
-        }
-        let mut url = origin.clone();
-        let query = self.to_query()?;
-        url.set_query(None);
-        url.set_fragment(Some(&query));
-        Ok(url)
+}
+
+pub(crate) fn website_base(origin: &url::Url) -> Result<url::Url> {
+    if !matches!(origin.scheme(), "http" | "https")
+        || origin.host_str().is_none()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+    {
+        return Err(LinkError::Invalid("Invalid public app URL"));
     }
-    pub fn launch_payload(&self) -> Result<Option<String>> {
-        let encoded = format!("v_{}", URL_SAFE_NO_PAD.encode(self.to_query()?));
-        Ok((encoded.len() <= LAUNCH_LIMIT).then_some(encoded))
-    }
+    Ok(origin.clone())
 }

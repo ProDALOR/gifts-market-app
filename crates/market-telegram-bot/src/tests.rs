@@ -105,7 +105,7 @@ async fn command_menu_and_help_use_automatic_gift_detection() {
             .iter()
             .map(|c| c.name)
             .collect::<Vec<_>>(),
-        ["start", "market", "help", "status", "portfolio"]
+        ["start", "help"]
     );
     for command in [Command::Start, Command::Help, Command::GiftHelp] {
         let is_help = matches!(command, Command::Help);

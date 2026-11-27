@@ -164,14 +164,6 @@ impl Drop for MtProtoTransport {
     }
 }
 impl TelegramActions for MtProtoActions {
-    async fn prepare_message(
-        &self,
-        user_id: u64,
-        reply: &crate::Reply,
-        launch: Option<&crate::LaunchButton>,
-    ) -> Result<crate::PreparedMessage, BotError> {
-        self.save_prepared(user_id, reply, launch).await
-    }
     async fn media(
         &self,
         key: market_media::MediaKey,
@@ -628,7 +620,7 @@ mod tests {
             .unwrap();
         let payload = "v_Zj1jJTNEdGcuZ2lmdC41OTk5Mjc3NTYxMDYwNzg3MTY2JTdDYiUzRCU0MG5hbWUlM0FCbGFjayZjdXJyZW5jeT1HUkFNJm1vZGU9YXNrJnNvcnQ9cHJpY2VfYXNj";
         let reply = Reply {
-            buttons: vec![vec![crate::ReplyButton::Preview {
+            buttons: vec![vec![crate::ReplyButton::OpenApp {
                 text: "Open market".into(),
                 payload: payload.into(),
             }]],

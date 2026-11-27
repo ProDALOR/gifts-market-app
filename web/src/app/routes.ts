@@ -1,6 +1,6 @@
 import { selectionAt, selectionHref } from "../market-selection.ts";
-import { decodePortfolioLaunch } from "../portfolio/links.ts";
-import { cleanSelection, launchSelection } from "../telegram.ts";
+import { mergeTargetParams } from "../targets.ts";
+import { cleanSelection, launchTarget } from "../telegram.ts";
 import type { TelegramContext } from "../telegram.ts";
 export type Page = "market" | "portfolio";
 export type Route = { page: Page; user?: number; index: number };
@@ -26,7 +26,6 @@ export function initialLocation(
       ? (state as { giftsMarket?: Route }).giftsMarket
       : undefined;
   let route = pathRoute(url.pathname);
-  let portfolioLaunch: URLSearchParams | null = null;
   const direct = selectionAt(url);
   const explicitMarket =
     direct.get("page") === "market" ||
@@ -34,24 +33,17 @@ export function initialLocation(
     direct.has("filters") ||
     direct.has("collection") ||
     direct.has("gift");
-  if (!remembered && !explicitMarket && route.page === "market") {
-    const launch =
-      context.app?.initDataUnsafe?.start_param ||
-      direct.get("tgWebAppStartParam") ||
-      new URLSearchParams(context.initData).get("start_param");
-    portfolioLaunch = launch ? decodePortfolioLaunch(launch) : null;
-    const match = launch && /^portfolio_(\d+)$/.exec(launch);
-    const user = portfolioUser(portfolioLaunch?.get("user") || match?.[1]);
-    if (user) route = { page: "portfolio", user };
-  }
+  const launch =
+    !remembered && !explicitMarket && route.page === "market"
+      ? launchTarget(context, direct)
+      : null;
+  if (launch?.type === "portfolio")
+    route = { page: "portfolio", user: launch.target.user_id };
+  const restored = launch ? mergeTargetParams(direct, launch) : direct;
   const params =
     route.page === "market"
-      ? cleanSelection(
-          remembered || explicitMarket
-            ? direct
-            : launchSelection(context, direct.toString()),
-        )
-      : new URLSearchParams(portfolioLaunch || direct);
+      ? cleanSelection(restored)
+      : new URLSearchParams(restored);
   if (route.page === "portfolio") {
     const allowed = new Set(["currency", "f", "collection", "filters", "sort"]);
     for (const key of [...params.keys()])

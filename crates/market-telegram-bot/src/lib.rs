@@ -11,4 +11,4 @@ pub use service::{BotService, configure};
 #[cfg(test)]
 mod tests;
 
-pub use commands::sharing::{PortfolioTarget, ShareError, ShareFallback, SharedMessage, Sharing};
+pub use commands::sharing::PortfolioTarget;

@@ -370,7 +370,7 @@ export function selectionAt(
 ): URLSearchParams {
   const direct = new URLSearchParams(url.search),
     fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
-  if (fragment.has("f")) {
+  if (fragment.has("f") || fragment.has("gift")) {
     const directKeys = new Set(direct.keys());
     const attrs = ["f", "collection", "filters"].some((key) => direct.has(key));
     for (const [key, value] of fragment)

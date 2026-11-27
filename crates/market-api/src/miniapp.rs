@@ -5,18 +5,15 @@ use market_miniapp::{
     app_url,
     auth::{Auth, Identity, Session},
 };
-use market_portfolio::PortfolioTarget;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 use tokio::sync::Semaphore;
 use utoipa::{OpenApi, ToSchema};
 #[derive(OpenApi)]
-#[openapi(paths(config, sign_in, me, prepare_share))]
+#[openapi(paths(config, sign_in, me))]
 pub(crate) struct MiniAppDoc;
 #[derive(Clone)]
 pub struct MiniAppApi {
-    sharing: Option<ShareProvider>,
-    share_slots: Arc<Semaphore>,
     identity: Arc<RwLock<BotIdentity>>,
     public_url: Option<String>,
     slots: Arc<Semaphore>,
@@ -38,8 +35,6 @@ impl MiniAppApi {
             .map(|v| app_url(&v).map(String::from))
             .transpose()?;
         Ok(Self {
-            sharing: None,
-            share_slots: Arc::new(Semaphore::new(4)),
             identity: Arc::new(RwLock::new(identity)),
             public_url,
             slots: Arc::new(Semaphore::new(16)),
@@ -72,10 +67,6 @@ impl MiniAppApi {
             .map(|identity| identity.clone())
             .map_err(|_| unavailable())
     }
-    pub fn with_sharing(mut self, provider: ShareProvider) -> Self {
-        self.sharing = Some(provider);
-        self
-    }
     fn verified(&self, request: &HttpRequest) -> Result<Identity> {
         let auth = self.identity()?.auth.ok_or_else(unavailable)?;
         let token = request
@@ -86,75 +77,6 @@ impl MiniAppApi {
             .ok_or(market_miniapp::auth::AuthError::Invalid)?;
         Ok(auth.identity(token, jiff::Timestamp::now())?)
     }
-}
-/// Server-built reports only: no client HTML, amounts, or sharing-user identity.
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ShareTarget {
-    Gift {
-        slug: market_gifts::GiftSlug,
-        currency_id: market_gifts::CurrencyId,
-    },
-    Portfolio {
-        target: PortfolioTarget<
-            market_actors::input::CollectionRef,
-            market_actors::input::ModelRef,
-            market_actors::input::BackdropRef,
-            market_actors::input::PatternRef,
-        >,
-    },
-    Market {
-        selection: market_links::MarketSelection,
-    },
-}
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct PreparedShare {
-    pub id: String,
-    /// Only this native prepared ID expires; the fallback target remains usable.
-    pub expires_at: i64,
-}
-#[derive(Debug, Clone, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ShareFallback {
-    Inline {
-        query: String,
-    },
-    Link {
-        #[schema(format = "uri")]
-        url: String,
-    },
-}
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct SharedMessage {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prepared: Option<PreparedShare>,
-    pub fallback: ShareFallback,
-}
-pub type ShareFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<SharedMessage>> + Send>>;
-pub type ShareProvider = Arc<dyn Fn(u64, ShareTarget) -> ShareFuture + Send + Sync>;
-#[utoipa::path(post,path="/telegram/share",tag="telegram",request_body=ShareTarget,responses((status=200,body=SharedMessage),(status=401,body=ErrorResponse),(status=400,body=ErrorResponse),(status=429,body=ErrorResponse),(status=503,body=ErrorResponse)))]
-pub async fn prepare_share(
-    state: Option<web::Data<MiniAppApi>>,
-    request: HttpRequest,
-    input: web::Json<ShareTarget>,
-) -> Result<web::Json<SharedMessage>> {
-    let state = state.ok_or_else(unavailable)?;
-    let identity = state.verified(&request)?;
-    let provider = state
-        .sharing
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("Prepared sharing is unavailable"))?;
-    let _permit = state.share_slots.try_acquire().map_err(|_| ApiError {
-        code: ErrorCode::CapacityExceeded,
-        message: "Sharing is busy. Please try again".into(),
-    })?;
-    let user = identity
-        .user
-        .id
-        .parse()
-        .map_err(|_| ApiError::invalid("Invalid sharing user"))?;
-    Ok(web::Json(provider(user, input.into_inner()).await?))
 }
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TelegramConfig {
@@ -225,6 +147,5 @@ pub async fn me(
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.route("/telegram", web::get().to(config))
         .route("/auth/telegram", web::post().to(sign_in))
-        .route("/auth/me", web::get().to(me))
-        .route("/telegram/share", web::post().to(prepare_share));
+        .route("/auth/me", web::get().to(me));
 }

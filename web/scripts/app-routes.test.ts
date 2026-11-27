@@ -5,7 +5,11 @@ import {
   pathRoute,
   portfolioUser,
 } from "../src/app/routes.ts";
-import { encodeView } from "../src/telegram.ts";
+import {
+  marketLaunch,
+  portfolioLaunch,
+  decodedPortfolio,
+} from "./navigation-helpers.ts";
 import type { TelegramContext } from "../src/telegram.ts";
 const context = (start: string): TelegramContext => ({
   initData: "",
@@ -42,7 +46,7 @@ test("portfolio launch targets apply once and explicit routes override persisten
 });
 test("gift launches canonicalize public selection once without keeping launch credentials in URLs", () => {
   const ctx = context(
-    encodeView(
+    marketLaunch(
       new URLSearchParams({
         gift: "Gift-123",
         collection: "gift",
@@ -113,19 +117,16 @@ test("portfolio routes and identities reject invalid or lossy identifiers", () =
 });
 
 test("portfolio message links restore owner currency filters and sorting while explicit routes still win", async () => {
-  const {
-    encodePortfolioLaunch,
-    decodePortfolioLaunch,
-    portfolioFiltersFromParams,
-  } = await import("../src/portfolio/links.ts");
+  const { portfolioFiltersFromParams } =
+    await import("../src/portfolio/links.ts");
   const params = new URLSearchParams({
     user: "123",
     currency: "XTR",
     f: "c=gift|m=model|b=black|s=sun|n=42",
     sort: "position_desc",
   });
-  const payload = encodePortfolioLaunch(params)!;
-  assert.ok(payload.startsWith("p_"));
+  const payload = portfolioLaunch(params)!;
+  assert.ok(payload.startsWith("t_"));
   assert.ok(payload.length <= 512);
   const first = initialLocation(
     context(payload),
@@ -169,6 +170,24 @@ test("portfolio message links restore owner currency filters and sorting while e
     ).route.user,
     456,
   );
-  assert.equal(decodePortfolioLaunch("p_" + "a".repeat(511)), null);
-  assert.equal(decodePortfolioLaunch("p_!!!!"), null);
+  assert.equal(decodedPortfolio("p_" + "a".repeat(511)), null);
+  assert.equal(decodedPortfolio("p_!!!!"), null);
+});
+
+test("portfolio launches merge direct sort and currency overrides once without changing the owner", async () => {
+  const { encodeTarget } = await import("../src/targets.ts");
+  const payload = encodeTarget({
+    type: "portfolio",
+    target: { user_id: 123, currency_id: "GRAM", sort: "number_desc" },
+  })!;
+  const result = initialLocation(
+    context(payload),
+    new URL("https://market.test/?sort=value_asc&currency=XTR"),
+    null,
+  );
+  const query = new URL(result.href, "https://market.test").searchParams;
+  assert.equal(result.route.user, 123);
+  assert.equal(query.get("sort"), "value_asc");
+  assert.equal(query.get("currency"), "XTR");
+  assert(!result.href.includes("tgWebApp"));
 });

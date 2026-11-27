@@ -13,7 +13,7 @@ pub use mtproto::{
 };
 pub use transport::BotUser;
 pub use types::{
-    IncomingMessage, LaunchButton, MenuCommand, PreparedMessage, Reply, ReplyButton, ReplyKind,
+    IncomingMessage, LaunchButton, MenuCommand, Reply, ReplyButton, ReplyKind, ShareLink,
 };
 #[cfg(test)]
 mod tests;

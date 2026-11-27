@@ -2319,7 +2319,6 @@ version = "0.1.0"
 dependencies = [
  "actix",
  "anyhow",
- "base64 0.22.1",
  "grammers-session",
  "jiff",
  "market-actors",
@@ -2335,7 +2334,6 @@ dependencies = [
  "market-valuation",
  "rust_decimal",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",

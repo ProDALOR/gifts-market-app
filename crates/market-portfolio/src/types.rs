@@ -6,47 +6,7 @@ use std::sync::Arc;
 #[cfg(feature = "schema")]
 use utoipa::ToSchema;
 
-const MAX_USER_ID: u64 = 9_007_199_254_740_991;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "u64", into = "u64")]
-pub struct UserId(u64);
-#[cfg(feature = "schema")]
-impl utoipa::PartialSchema for UserId {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        utoipa::openapi::schema::ObjectBuilder::new()
-            .schema_type(utoipa::openapi::schema::Type::Integer)
-            .minimum(Some(1u64))
-            .maximum(Some(MAX_USER_ID))
-            .into()
-    }
-}
-#[cfg(feature = "schema")]
-impl ToSchema for UserId {}
-impl UserId {
-    pub fn new(value: u64) -> Result<Self, PortfolioError> {
-        if !(1..=MAX_USER_ID).contains(&value) {
-            return Err(PortfolioError::InvalidData(
-                "invalid Telegram user ID".into(),
-            ));
-        }
-        Ok(Self(value))
-    }
-    pub fn get(self) -> u64 {
-        self.0
-    }
-}
-impl TryFrom<u64> for UserId {
-    type Error = PortfolioError;
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-impl From<UserId> for u64 {
-    fn from(value: UserId) -> u64 {
-        value.0
-    }
-}
+pub use market_gifts::UserId;
 #[derive(Debug, Clone)]
 pub struct InventoryPageRequest {
     pub user: UserId,
@@ -152,3 +112,9 @@ impl std::fmt::Display for PortfolioError {
     }
 }
 impl std::error::Error for PortfolioError {}
+
+impl From<market_gifts::InvalidValue> for PortfolioError {
+    fn from(error: market_gifts::InvalidValue) -> Self {
+        Self::InvalidData(error.to_string())
+    }
+}

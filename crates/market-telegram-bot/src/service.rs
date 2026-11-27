@@ -29,9 +29,6 @@ impl BotService {
         std::sync::Arc::make_mut(&mut self.commands).set_report_icons(icons);
         self
     }
-    pub fn sharing(&self) -> crate::Sharing {
-        crate::Sharing::new(self.commands.clone(), self.worker.prepared_messages())
-    }
     pub async fn run_with_invocations(
         self,
         stop: CancellationToken,

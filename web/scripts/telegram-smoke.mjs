@@ -170,7 +170,7 @@ try {
   const link = await site
     .getByRole("link", { name: "Telegram ↗", exact: true })
     .getAttribute("href");
-  assert.ok(link.startsWith("https://t.me/test_market_bot?startapp=v_"));
+  assert.ok(link.startsWith("https://t.me/test_market_bot?startapp=t_"));
   console.log(
     "Telegram bridge, real signed login, session restore, safe areas, themes, launch selection, Back button, sign-out and standalone browsing passed.",
   );

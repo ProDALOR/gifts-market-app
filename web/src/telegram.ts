@@ -1,9 +1,13 @@
 import {
-  encodePortfolioLaunch,
-  portfolioFiltersFromParams,
   portfolioParams,
+  portfolioFiltersFromParams,
 } from "./portfolio/links.ts";
-import { selectionFromParams, selectionParams } from "./market-selection.ts";
+import {
+  decodeTarget,
+  targetFromParams,
+  targetAppUrl,
+  targetBotUrl,
+} from "./targets.ts";
 import type { components } from "./gen/api";
 // Mini App schemas are absent from API-only builds; keep the dormant adapter type-safe.
 export type OptionalSchema<
@@ -65,7 +69,6 @@ export type WebApp = {
   setBackgroundColor?(color: string): void;
   setBottomBarColor?(color: string): void;
   openTelegramLink?(url: string): void;
-  shareMessage?(id: string, callback?: (sent: boolean) => void): void;
   switchInlineQuery?(query: string, chatTypes?: string[]): void;
   onEvent(event: string, callback: () => void): void;
   offEvent(event: string, callback: () => void): void;
@@ -200,110 +203,78 @@ export function cleanSelection(params: URLSearchParams): URLSearchParams {
   }
   return clean;
 }
-export function encodeView(params: URLSearchParams): string | null {
-  try {
-    const bytes = new TextEncoder().encode(
-      selectionParams(selectionFromParams(cleanSelection(params))).toString(),
-    );
-    const encoded =
-      "v_" +
-      btoa(String.fromCharCode(...bytes))
-        .replaceAll("+", "-")
-        .replaceAll("/", "_")
-        .replace(/=+$/, "");
-    return encoded.length <= 512 ? encoded : null;
-  } catch {
-    return null;
-  }
-}
-export function decodeView(value: string): URLSearchParams | null {
-  if (!/^v_[a-zA-Z0-9_-]+$/.test(value) || value.length > 512) return null;
-  try {
-    const encoded = value.slice(2).replaceAll("-", "+").replaceAll("_", "/");
-    const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
-    return cleanSelection(
-      new URLSearchParams(
-        new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-      ),
-    );
-  } catch {
-    return null;
-  }
-}
-export function launchSelection(
+export function launchTarget(
   context: TelegramContext,
-  search: string,
-): URLSearchParams {
-  const direct = new URLSearchParams(search);
-  const launch =
+  direct: URLSearchParams,
+) {
+  return decodeTarget(
     context.app?.initDataUnsafe?.start_param ||
-    direct.get("tgWebAppStartParam") ||
-    new URLSearchParams(context.initData).get("start_param") ||
-    "";
-  const decoded = decodeView(launch);
-  if (decoded) {
-    const ownAttributes = ["f", "collection", "filters"].some((key) =>
-      direct.has(key),
-    );
-    for (const [key, value] of decoded)
-      if (
-        !direct.has(key) &&
-        !(ownAttributes && ["f", "collection", "filters"].includes(key))
-      )
-        direct.set(key, value);
-  }
-  return direct;
+      direct.get("tgWebAppStartParam") ||
+      new URLSearchParams(context.initData).get("start_param") ||
+      "",
+  );
+}
+export function selectionTarget(selection: URLSearchParams) {
+  const p =
+    selection.get("page") === "portfolio"
+      ? portfolioParams(
+          portfolioFiltersFromParams(selection),
+          selection.get("currency") || "GRAM",
+        )
+      : cleanSelection(selection);
+  if (selection.get("page") === "portfolio")
+    p.set("user", selection.get("user") || "");
+  p.set("t", selection.get("page") === "portfolio" ? "portfolio" : "market");
+  p.delete("page");
+  return targetFromParams(p);
 }
 export function telegramLink(
   config: TelegramConfig | undefined,
   selection: URLSearchParams,
 ): string | null {
   if (!config?.bot_username) return null;
-  if (selection.get("page") === "portfolio") {
-    const payload = encodePortfolioLaunch(selection);
-    if (payload)
-      return `https://t.me/${config.bot_username}?startapp=${payload}`;
-    if (!config.public_url) return null;
-    try {
-      const user = selection.get("user");
-      if (
-        !user ||
-        !/^[1-9][0-9]*$/.test(user) ||
-        !Number.isSafeInteger(Number(user))
-      )
-        return null;
-      const url = new URL(config.public_url);
-      url.pathname = `${url.pathname.replace(/\/$/, "")}/portfolio/${user}`;
-      url.search = "";
-      url.hash = portfolioParams(
-        portfolioFiltersFromParams(selection),
-        selection.get("currency") || "GRAM",
-      ).toString();
-      return url.toString();
-    } catch {
-      return null;
-    }
+  try {
+    return targetAppUrl(
+      selectionTarget(selection),
+      config.bot_username,
+      config.public_url ?? undefined,
+    );
+  } catch {
+    return null;
   }
-  const payload = encodeView(selection);
-  if (payload) return `https://t.me/${config.bot_username}?startapp=${payload}`;
-  if (!config.public_url) return null;
-  const url = new URL(config.public_url),
-    params = selectionParams(selectionFromParams(cleanSelection(selection)));
-  if (!params.has("f")) params.set("f", "");
-  url.search = "";
-  url.hash = params.toString();
-  return url.toString();
 }
-/** Authentication recovery must launch Telegram, including for oversized selections. */
+/** Oversized targets open a bot draft or complete website link; never discard selection state. */
 export function telegramReopenLink(
   config: TelegramConfig | undefined,
   selection: URLSearchParams,
 ): string | null {
   if (!config?.bot_username) return null;
   const link = telegramLink(config, selection);
-  return link && new URL(link).hostname === "t.me"
-    ? link
-    : `https://t.me/${config.bot_username}?startapp`;
+  if (link && new URL(link).hostname === "t.me") return link;
+  try {
+    return targetBotUrl(
+      selectionTarget(selection),
+      config.bot_username,
+      config.public_url ?? undefined,
+    );
+  } catch {
+    return null;
+  }
+}
+export function telegramBotLink(
+  config: TelegramConfig | undefined,
+  selection: URLSearchParams,
+): string | null {
+  if (!config?.bot_username) return null;
+  try {
+    return targetBotUrl(
+      selectionTarget(selection),
+      config.bot_username,
+      config.public_url ?? undefined,
+    );
+  } catch {
+    return null;
+  }
 }
 export async function launchFingerprint(
   context: TelegramContext,

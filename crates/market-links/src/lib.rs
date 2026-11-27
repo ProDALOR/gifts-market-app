@@ -1,8 +1,10 @@
 //! Public market navigation, independent of HTTP, Telegram transport and replica state.
 mod codec;
 mod selection;
+mod target;
 pub use codec::{LAUNCH_LIMIT, MAX_SELECTION_BYTES};
 pub use selection::MarketSelection;
+pub use target::{PortfolioLink, ShareDestination, Target};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkError {
     Invalid(&'static str),

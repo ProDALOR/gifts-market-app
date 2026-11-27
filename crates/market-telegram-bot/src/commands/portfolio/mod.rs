@@ -29,7 +29,7 @@ impl MarketCommands {
         target.currency_id = BotCurrency::parse(target.currency_id.as_str())
             .ok_or_else(|| ShareError::Invalid("Unsupported currency".into()))?
             .id();
-        let fallback = sharing::portfolio_fallback(&target, self.public_url.as_ref())?;
+        let destination = sharing::portfolio_destination(&target, self.public_url.as_ref())?;
         let input = market_actors::input::GiftFilters {
             collection_id: target.filters.collection_id,
             currency_id: target.currency_id.clone(),
@@ -50,7 +50,7 @@ impl MarketCommands {
                 .into_resolved()
                 .map_err(|e| ShareError::Invalid(e.to_string()))?
         };
-        let query = market_portfolio::ResolvedPortfolioTarget {
+        let query = ResolvedPortfolioReadQuery {
             user_id: target.user_id,
             currency_id: target.currency_id,
             sort: target.sort,
@@ -61,11 +61,13 @@ impl MarketCommands {
                 patterns: filters.patterns,
                 number: target.filters.number,
             },
-        }
-        .into_query();
+            offset: 0,
+            limit: PAGE_SIZE,
+            version: None,
+        };
         self.shared_portfolio(query)
             .await
-            .map(|reply| sharing::with_share(reply, &fallback))
+            .map(|reply| sharing::with_share(reply, &destination))
     }
     pub(super) async fn shared_portfolio(
         &self,
@@ -127,7 +129,7 @@ impl MarketCommands {
             );
             for row in &mut reply.buttons {
                 for button in row {
-                    if matches!(button, ReplyButton::Preview { .. }) {
+                    if matches!(button, ReplyButton::OpenApp { .. }) {
                         *button = app_link.clone();
                     }
                 }

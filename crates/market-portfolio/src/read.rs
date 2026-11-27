@@ -1,8 +1,8 @@
 //! Bounded, cached selection indexes over an immutable valued inventory.
 use crate::{PortfolioError, PortfolioQuery, PortfolioState, UserId};
 use market_gifts::{
-    Amount, BackdropId, BackdropRef, CollectionId, CollectionRef, CurrencyId, GiftNumber, ModelId,
-    ModelRef, PatternId, PatternRef,
+    Amount, BackdropId, BackdropRef, CollectionId, CollectionRef, CurrencyId, ModelId, ModelRef,
+    PatternId, PatternRef,
 };
 use market_valuation::{InventoryValuation, InventoryValue};
 use rust_decimal::Decimal;
@@ -41,139 +41,35 @@ impl From<PortfolioVersion> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(bound(
-    deserialize = "C: Deserialize<'de>, M: Deserialize<'de>, B: Deserialize<'de>, P: Deserialize<'de>"
-))]
-pub struct PortfolioFilters<C = CollectionRef, M = ModelRef, B = BackdropRef, P = PatternRef> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schema", schema(required = false))]
-    pub collection_id: Option<C>,
-    #[serde(default)]
-    #[cfg_attr(feature = "schema", schema(max_items = 4096))]
-    pub models: Vec<M>,
-    #[serde(default)]
-    #[cfg_attr(feature = "schema", schema(max_items = 4096))]
-    pub backdrops: Vec<B>,
-    #[serde(default)]
-    #[cfg_attr(feature = "schema", schema(max_items = 4096))]
-    pub patterns: Vec<P>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schema", schema(required = false))]
-    pub number: Option<GiftNumber>,
-}
-pub type ResolvedPortfolioFilters = PortfolioFilters<CollectionId, ModelId, BackdropId, PatternId>;
-impl<C, M, B, P> Default for PortfolioFilters<C, M, B, P> {
-    fn default() -> Self {
-        Self {
-            collection_id: None,
-            models: vec![],
-            backdrops: vec![],
-            patterns: vec![],
-            number: None,
-        }
-    }
-}
-impl<C, M: Ord, B: Ord, P: Ord> PortfolioFilters<C, M, B, P> {
-    fn validate(&self) -> Result<(), PortfolioError> {
-        if self.collection_id.is_none() && !self.models.is_empty() {
-            return Err(PortfolioError::InvalidData(
-                "model filters require a collection".into(),
-            ));
-        }
-        if [self.models.len(), self.backdrops.len(), self.patterns.len()]
-            .into_iter()
-            .any(|n| n > 4096)
-        {
-            return Err(PortfolioError::InvalidData(
-                "select at most 4096 resolved values per trait".into(),
-            ));
-        }
-        Ok(())
-    }
-    fn normalize(&mut self) -> Result<(), PortfolioError> {
-        self.validate()?;
-        self.models.sort();
-        self.models.dedup();
-        self.backdrops.sort();
-        self.backdrops.dedup();
-        self.patterns.sort();
-        self.patterns.dedup();
-        Ok(())
-    }
-}
-impl ResolvedPortfolioFilters {
-    fn matches(&self, item: &InventoryValue) -> bool {
-        let gift = item.resolved.as_ref();
-        let traits = gift.map(|gift| &gift.traits);
-        self.collection_id
-            .as_ref()
-            .is_none_or(|id| gift.is_some_and(|gift| &gift.collection_id == id))
-            && self
-                .number
-                .is_none_or(|number| item.gift.gift.number == number)
-            && (self.models.is_empty()
-                || traits
-                    .and_then(|t| t.model.as_ref())
-                    .is_some_and(|id| self.models.binary_search(id).is_ok()))
-            && (self.backdrops.is_empty()
-                || traits
-                    .and_then(|t| t.backdrop.as_ref())
-                    .is_some_and(|id| self.backdrops.binary_search(id).is_ok()))
-            && (self.patterns.is_empty()
-                || traits
-                    .and_then(|t| t.pattern.as_ref())
-                    .is_some_and(|id| self.patterns.binary_search(id).is_ok()))
-    }
-}
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub enum PortfolioSort {
-    PositionAsc,
-    PositionDesc,
-    NumberAsc,
-    NumberDesc,
-    ValueAsc,
-    #[default]
-    ValueDesc,
+pub use market_gifts::{
+    PortfolioFilters, PortfolioSort, PortfolioTarget, ResolvedPortfolioFilters,
+    ResolvedPortfolioTarget,
+};
+fn matches(filters: &ResolvedPortfolioFilters, item: &InventoryValue) -> bool {
+    let gift = item.resolved.as_ref();
+    let traits = gift.map(|gift| &gift.traits);
+    filters
+        .collection_id
+        .as_ref()
+        .is_none_or(|id| gift.is_some_and(|gift| &gift.collection_id == id))
+        && filters
+            .number
+            .is_none_or(|number| item.gift.gift.number == number)
+        && (filters.models.is_empty()
+            || traits
+                .and_then(|t| t.model.as_ref())
+                .is_some_and(|id| filters.models.binary_search(id).is_ok()))
+        && (filters.backdrops.is_empty()
+            || traits
+                .and_then(|t| t.backdrop.as_ref())
+                .is_some_and(|id| filters.backdrops.binary_search(id).is_ok()))
+        && (filters.patterns.is_empty()
+            || traits
+                .and_then(|t| t.pattern.as_ref())
+                .is_some_and(|id| filters.patterns.binary_search(id).is_ok()))
 }
 fn page_size() -> usize {
     100
-}
-/// A reusable portfolio selection, independent of page coverage and inventory versions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(bound(
-    deserialize = "C: Deserialize<'de>, M: Deserialize<'de>, B: Deserialize<'de>, P: Deserialize<'de>"
-))]
-pub struct PortfolioTarget<C = CollectionRef, M = ModelRef, B = BackdropRef, P = PatternRef> {
-    pub user_id: UserId,
-    pub currency_id: CurrencyId,
-    #[serde(default)]
-    pub filters: PortfolioFilters<C, M, B, P>,
-    #[serde(default)]
-    pub sort: PortfolioSort,
-}
-pub type ResolvedPortfolioTarget = PortfolioTarget<CollectionId, ModelId, BackdropId, PatternId>;
-impl<C, M: Ord, B: Ord, P: Ord> PortfolioTarget<C, M, B, P> {
-    pub fn validate(&self) -> Result<(), PortfolioError> {
-        self.filters.validate()
-    }
-    pub fn into_query(self) -> PortfolioReadQuery<C, M, B, P> {
-        PortfolioReadQuery {
-            user_id: self.user_id,
-            currency_id: self.currency_id,
-            filters: self.filters,
-            sort: self.sort,
-            offset: 0,
-            limit: 30,
-            version: None,
-        }
-    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -217,7 +113,7 @@ impl<C, M: Ord, B: Ord, P: Ord> PortfolioReadQuery<C, M, B, P> {
                 "continuation requires a portfolio version".into(),
             ));
         }
-        self.filters.validate()
+        self.filters.validate().map_err(Into::into)
     }
 }
 
@@ -436,7 +332,7 @@ fn build_index(
     let mut positions = Vec::new();
     for (index, item) in report.items.iter().enumerate() {
         check()?;
-        if key.filters.matches(item) {
+        if matches(&key.filters, item) {
             positions.push(index);
         }
     }
@@ -484,6 +380,7 @@ fn build_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use market_gifts::GiftNumber;
     fn state(count: u32) -> PortfolioState {
         let items: Vec<_> = (1..=count)
             .rev()

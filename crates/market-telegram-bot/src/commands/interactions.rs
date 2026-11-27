@@ -2,6 +2,13 @@
 use super::*;
 use market_telegram::{CallbackTarget, Event};
 pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<CommandRequest> {
+    parse_event_with_origin(event, usernames, None)
+}
+pub(super) fn parse_event_with_origin(
+    event: &Event,
+    usernames: &[String],
+    origin: Option<&url::Url>,
+) -> Option<CommandRequest> {
     let inline = matches!(
         event,
         Event::Inline { .. }
@@ -13,7 +20,11 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
     );
     let (command, user_id, message_id) = match event {
         Event::Message(message) => {
-            return super::parse::parse(market_telegram::transport::incoming(message), usernames);
+            return super::parse::parse_with_origin(
+                market_telegram::transport::incoming(message),
+                usernames,
+                origin,
+            );
         }
         Event::Inline {
             user_id,
@@ -26,12 +37,10 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
             }
             let command = if query.starts_with("s:") {
                 Command::Help
-            } else if let Some(command) = sharing::parse_target(query) {
-                command
-            } else if let Some(query) = super::portfolio::inline(query, *user_id) {
-                Command::Portfolio(query)
+            } else if query.trim().is_empty() {
+                Command::Portfolio(super::portfolio::inline("", *user_id)?)
             } else {
-                Command::Gift(super::parse::gift(query, &[])?)
+                super::parse::input(query, *user_id, usernames, origin, &[])?
             };
             (command, *user_id, 0)
         }
@@ -41,12 +50,19 @@ pub(super) fn parse_event(event: &Event, usernames: &[String]) -> Option<Command
             references,
             ..
         } => {
-            let input = super::parse::gift(text, references);
-            (
-                input.map(Command::Gift).unwrap_or(Command::GiftHelp),
-                *user_id,
-                0,
-            )
+            let direct = text
+                .split_once(char::is_whitespace)
+                .filter(|(first, _)| {
+                    usernames.iter().any(|name| {
+                        first
+                            .strip_prefix('@')
+                            .is_some_and(|value| value.eq_ignore_ascii_case(name))
+                    })
+                })
+                .map(|(_, rest)| rest.trim())
+                .unwrap_or(text);
+            let command = super::parse::input(direct, *user_id, usernames, origin, references);
+            (command.unwrap_or(Command::GiftHelp), *user_id, 0)
         }
         Event::Callback {
             user_id,

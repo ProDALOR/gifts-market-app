@@ -1,10 +1,12 @@
+import {
+  marketLaunch,
+  decodedMarket,
+  launchParams,
+} from "./navigation-helpers.ts";
 import { selectionFromParams } from "../src/market-selection.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  encodeView,
-  decodeView,
-  launchSelection,
   cleanSelection,
   telegramLink,
   telegramReopenLink,
@@ -22,14 +24,14 @@ test("Telegram links restore market selection without credentials", () => {
     token: "private",
     tgWebAppData: "private",
   });
-  const payload = encodeView(params)!;
+  const payload = marketLaunch(params)!;
   assert.ok(payload.length <= 512);
   assert.deepEqual(
-    selectionFromParams(decodeView(payload)!),
+    selectionFromParams(decodedMarket(payload)!),
     selectionFromParams(cleanSelection(params)),
   );
-  assert.ok(!decodeView(payload)!.has("token"));
-  const selected = launchSelection(
+  assert.ok(!decodedMarket(payload)!.has("token"));
+  const selected = launchParams(
     { initData: new URLSearchParams({ start_param: payload }).toString() },
     "?currency=XTR",
   );
@@ -48,14 +50,14 @@ test("Telegram links restore market selection without credentials", () => {
     },
     params,
   )!;
-  assert.ok(link.startsWith("https://t.me/test_market_bot?startapp=v_"));
+  assert.ok(link.startsWith("https://t.me/test_market_bot?startapp=t_"));
   assert.ok(!link.includes("private"));
 });
 test("Malformed or excessive launch parameters cannot create arbitrary routes", () => {
   for (const value of ["bad", "v_%GG", "v_!", "v_" + "a".repeat(512)])
-    assert.equal(decodeView(value), null);
+    assert.equal(decodedMarket(value), null);
   assert.equal(
-    encodeView(new URLSearchParams({ filters: "x".repeat(1000) })),
+    marketLaunch(new URLSearchParams({ filters: "x".repeat(1000) })),
     null,
   );
   assert.throws(() =>
@@ -66,7 +68,7 @@ test("Malformed or excessive launch parameters cannot create arbitrary routes", 
 });
 
 test("gift preview deep links preserve only public gift selection", () => {
-  const payload = encodeView(
+  const payload = marketLaunch(
     new URLSearchParams({
       collection: "c",
       currency: "GRAM",
@@ -74,7 +76,7 @@ test("gift preview deep links preserve only public gift selection", () => {
       token: "private",
     }),
   )!;
-  const result = launchSelection(
+  const result = launchParams(
     { initData: new URLSearchParams({ start_param: payload }).toString() },
     "",
   );
@@ -83,7 +85,7 @@ test("gift preview deep links preserve only public gift selection", () => {
   assert.equal(result.has("token"), false);
 });
 
-test("expired sign-in recovery always opens Telegram, even when selection links exceed its limit", () => {
+test("expired sign-in recovery preserves oversized selections in a bot draft", () => {
   const config = {
     auth_enabled: true,
     bot_username: "fixture_bot",
@@ -103,9 +105,9 @@ test("expired sign-in recovery always opens Telegram, even when selection links 
   assert.ok(
     telegramLink(config, large)!.startsWith("https://markets.example/"),
   );
-  assert.equal(
-    telegramReopenLink(config, large),
-    "https://t.me/fixture_bot?startapp",
-  );
+  const reopen = new URL(telegramReopenLink(config, large)!);
+  assert.equal(reopen.hostname, "t.me");
+  assert(reopen.searchParams.get("text")?.includes("model-79-"));
+  assert(!reopen.searchParams.has("startapp"));
   assert.equal(telegramReopenLink(undefined, small), null);
 });

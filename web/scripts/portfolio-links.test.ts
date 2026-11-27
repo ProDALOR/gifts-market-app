@@ -1,11 +1,11 @@
+import { portfolioLaunch, decodedPortfolio } from "./navigation-helpers.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  encodePortfolioLaunch,
-  decodePortfolioLaunch,
   portfolioFiltersFromParams,
   portfolioParams,
 } from "../src/portfolio/links.ts";
+import { targetParams, targetFromParams } from "../src/targets.ts";
 import { telegramLink } from "../src/telegram.ts";
 test("portfolio links use the shared readable filter codec and fall back to a stateless website URL", () => {
   const filters = {
@@ -24,7 +24,7 @@ test("portfolio links use the shared readable filter codec and fall back to a st
   };
   const link = telegramLink(config, params)!;
   assert.equal(new URL(link).hostname, "t.me");
-  const decoded = decodePortfolioLaunch(
+  const decoded = decodedPortfolio(
     new URL(link).searchParams.get("startapp")!,
   )!;
   assert.deepEqual(portfolioFiltersFromParams(decoded), filters);
@@ -37,7 +37,7 @@ test("portfolio links use the shared readable filter codec and fall back to a st
   );
   large.set("user", "123");
   large.set("page", "portfolio");
-  assert.equal(encodePortfolioLaunch(large), null);
+  assert.equal(portfolioLaunch(large), null);
   const website = new URL(telegramLink(config, large)!);
   assert.equal(website.hostname, "app.example");
   assert.equal(website.pathname, "/portfolio/123");
@@ -50,14 +50,16 @@ test("portfolio links use the shared readable filter codec and fall back to a st
 });
 test("malformed and ambiguous portfolio links cannot create valid launch payloads", () => {
   for (const user of ["0", "-1", "9007199254740992", "1e3"]) {
-    assert.equal(encodePortfolioLaunch(new URLSearchParams({ user })), null);
+    assert.equal(portfolioLaunch(new URLSearchParams({ user })), null);
   }
   for (const query of [
     "user=123&currency=GRAM&f=&sort=unknown",
     "user=123&currency=GRAM&f=&f=&sort=value_desc",
+    "user=123&user=456&currency=GRAM&f=&sort=value_desc",
+    "user=123&currency=GRAM&f=&sort=value_desc&sort=number_desc",
   ]) {
     const payload = "p_" + Buffer.from(query).toString("base64url");
-    assert.equal(decodePortfolioLaunch(payload), null);
+    assert.equal(decodedPortfolio(payload), null);
   }
 });
 
@@ -74,7 +76,7 @@ test("Main Mini App return links do not need a separate public origin", () => {
     params,
   )!;
   assert.equal(new URL(url).hostname, "t.me");
-  assert.ok(decodePortfolioLaunch(new URL(url).searchParams.get("startapp")!));
+  assert.ok(decodedPortfolio(new URL(url).searchParams.get("startapp")!));
 });
 
 test("portfolio launch encoding respects the exact 512-character base64url boundary", () => {
@@ -90,13 +92,15 @@ test("portfolio launch encoding respects the exact 512-character base64url bound
       "GRAM",
     );
     params.set("user", "123");
-    const bytes = new TextEncoder().encode(params.toString()).length;
+    const bytes = new TextEncoder().encode(
+      targetParams(targetFromParams(params)).toString(),
+    ).length;
     if (bytes !== 382 && bytes !== 383) continue;
     found.add(bytes);
-    const payload = encodePortfolioLaunch(params);
+    const payload = portfolioLaunch(params);
     if (bytes === 382) {
       assert.equal(payload?.length, 512);
-      assert.ok(decodePortfolioLaunch(payload!));
+      assert.ok(decodedPortfolio(payload!));
     } else assert.equal(payload, null);
   }
   assert.deepEqual([...found], [382, 383]);

@@ -29,14 +29,6 @@ pub struct Delivery {
 }
 /// Named Telegram operations; callers never construct TL requests.
 pub trait TelegramActions: Clone + Send + Sync {
-    fn prepare_message(
-        &self,
-        _user_id: u64,
-        _reply: &Reply,
-        _launch: Option<&LaunchButton>,
-    ) -> impl Future<Output = Result<crate::PreparedMessage, BotError>> + Send {
-        async { Err(BotError::Transport) }
-    }
     fn media(
         &self,
         _: market_media::MediaKey,

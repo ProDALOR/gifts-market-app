@@ -186,101 +186,34 @@ async fn authenticated_identity_enables_sign_in_across_existing_http_workers() {
 }
 
 #[actix_web::test]
-async fn prepared_sharing_binds_only_the_signed_in_user_and_rejects_client_content() {
-    use market_api::miniapp::{PreparedShare, ShareFallback, ShareTarget, SharedMessage};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    let key = SigningKey::from_bytes(&[17; 32]);
-    let auth = Auth::new(42, key.verifying_key().to_bytes(), [91; 32]).unwrap();
-    let session = auth
-        .sign_in(
-            &proof(&key, 42, jiff::Timestamp::now().as_second()),
-            jiff::Timestamp::now(),
-        )
-        .unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let seen = calls.clone();
-    let state = MiniAppApi::new(Some(auth), None, None)
-        .unwrap()
-        .with_sharing(Arc::new(move |user, target| {
-            seen.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async move {
-                assert_eq!(user, 9007199254740991);
-                assert!(matches!(target, ShareTarget::Gift { .. }));
-                Ok(SharedMessage {
-                    prepared: Some(PreparedShare {
-                        id: "telegram-message".into(),
-                        expires_at: jiff::Timestamp::now().as_second() + 60,
-                    }),
-                    fallback: ShareFallback::Inline {
-                        query: "Gift-123 GRAM".into(),
-                    },
-                })
-            })
-        }));
+async fn sharing_has_no_server_storage_endpoint() {
+    use utoipa::OpenApi;
+    let schema = serde_json::to_value(market_api::ApiDoc::openapi()).unwrap();
+    assert!(schema["paths"].get("/telegram/share").is_none());
+    for name in [
+        "ShareTarget",
+        "SharedMessage",
+        "ShareFallback",
+        "PreparedShare",
+    ] {
+        assert!(
+            schema["components"]["schemas"].get(name).is_none(),
+            "{name}"
+        );
+    }
     let app = test::init_service(
         App::new()
-            .wrap(security_headers())
-            .app_data(web::Data::new(state))
+            .app_data(web::Data::new(MiniAppApi::new(None, None, None).unwrap()))
             .configure(configure),
     )
     .await;
-    let target = json!({"type":"gift","slug":"Gift-123","currency_id":"GRAM"});
-    let anonymous = test::call_service(
-        &app,
-        test::TestRequest::post()
-            .uri("/telegram/share")
-            .set_json(&target)
-            .to_request(),
-    )
-    .await;
-    assert_eq!(anonymous.status(), 401);
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
     let response = test::call_service(
         &app,
         test::TestRequest::post()
             .uri("/telegram/share")
-            .insert_header(("Authorization", format!("Bearer {}", session.token)))
-            .set_json(&target)
+            .set_json(json!({"type":"gift","slug":"Gift-123","currency_id":"GRAM"}))
             .to_request(),
     )
     .await;
-    assert_eq!(response.status(), 200);
-    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
-    let result: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(result["prepared"]["id"], "telegram-message");
-    assert_eq!(result["fallback"]["query"], "Gift-123 GRAM");
-    for field in ["user_id", "html", "price"] {
-        let mut forged = target.clone();
-        forged[field] = json!("client supplied");
-        let rejected = test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri("/telegram/share")
-                .insert_header(("Authorization", format!("Bearer {}", session.token)))
-                .set_json(forged)
-                .to_request(),
-        )
-        .await;
-        assert_eq!(rejected.status(), 400);
-    }
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-}
-
-#[actix_web::test]
-async fn portfolio_share_targets_reject_pagination_and_snapshot_metadata() {
-    use market_api::miniapp::ShareTarget;
-    let target = json!({"type":"portfolio","target":{"user_id":7,"currency_id":"GRAM","sort":"value_desc","filters":{"collection_id":"gift","models":["model"]}}});
-    assert!(serde_json::from_value::<ShareTarget>(target.clone()).is_ok());
-    for (field, value) in [
-        ("version", json!("a".repeat(32))),
-        ("offset", json!(30)),
-        ("limit", json!(30)),
-    ] {
-        let mut bad = target.clone();
-        bad["target"][field] = value;
-        assert!(serde_json::from_value::<ShareTarget>(bad).is_err());
-    }
+    assert_eq!(response.status(), 404);
 }

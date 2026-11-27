@@ -73,21 +73,16 @@ impl PortfolioRequest {
         }
     }
     pub(super) fn inline_query(&self) -> String {
-        let name = SORTS
-            .iter()
-            .find(|(candidate, _, _)| *candidate == self.sort)
-            .unwrap()
-            .1;
-        let query = format!(
-            "portfolio {} {} sort={name}",
-            self.user_id.get(),
-            self.currency_id
-        );
-        if self.layout == GridMode::Gallery {
-            format!("{query} view=gallery")
-        } else {
-            query
+        market_links::Target::Portfolio {
+            target: sharing::PortfolioTarget {
+                user_id: self.user_id,
+                currency_id: self.currency_id.id(),
+                sort: self.sort,
+                filters: Default::default(),
+            },
         }
+        .inline_query()
+        .expect("valid portfolio target")
     }
     pub(super) fn page_size(&self) -> usize {
         if self.layout == GridMode::Gallery {

@@ -135,9 +135,9 @@ fn portfolio_buttons_share_one_target_and_keep_absolute_pages_and_private_refres
                 text: "Refresh".into(),
                 data: b"p:123:GRAM:r:0:pa".to_vec(),
             },
-            ReplyButton::SwitchInline {
+            ReplyButton::Share {
                 text: "Share".into(),
-                query: "portfolio 123".into(),
+                destination: market_telegram::ShareLink::Inline("portfolio 123".into()),
             },
         ]],
         ..Reply::text("Portfolio")

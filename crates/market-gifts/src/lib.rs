@@ -10,6 +10,8 @@ pub mod inventory;
 mod lookup;
 pub mod media;
 mod money;
+pub mod portfolio;
+pub use portfolio::*;
 pub mod orders;
 pub mod query;
 pub mod read;

@@ -1,3 +1,8 @@
+import {
+  marketLaunch,
+  decodedMarket,
+  launchParams,
+} from "./navigation-helpers.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
@@ -10,12 +15,7 @@ import {
   selectionAt,
   selectionHref,
 } from "../src/market-selection.ts";
-import {
-  encodeView,
-  decodeView,
-  telegramLink,
-  launchSelection,
-} from "../src/telegram.ts";
+import { telegramLink } from "../src/telegram.ts";
 import { initialLocation } from "../src/app/routes.ts";
 const fixtures = JSON.parse(
   readFileSync(
@@ -75,7 +75,7 @@ test("large links preserve every filter without storage or API requests", () => 
     max: "999",
   });
   const original = selectionFromParams(p);
-  assert.equal(encodeView(p), null);
+  assert.equal(marketLaunch(p), null);
   const config = {
     bot_username: "market_bot",
     public_url: "https://market.example/app",
@@ -98,10 +98,10 @@ test("large links preserve every filter without storage or API requests", () => 
   assert(href.startsWith("/#f="));
 });
 test("explicit selections replace launched attributes as one scope", () => {
-  const start = encodeView(
+  const start = marketLaunch(
     new URLSearchParams({ f: "c=@slug:Gift|m=@name:Model", currency: "GRAM" }),
   )!;
-  const merged = launchSelection(
+  const merged = launchParams(
     { initData: new URLSearchParams({ start_param: start }).toString() },
     "?f=b%3D%40name%3ABlack&currency=XTR",
   );
@@ -110,10 +110,10 @@ test("explicit selections replace launched attributes as one scope", () => {
   assert.deepEqual(s.filters.models, []);
   assert.deepEqual(s.filters.backdrops, ["@name:Black"]);
   assert.equal(s.filters.currency_id, "XTR");
-  assert(decodeView(start)?.has("f"));
+  assert(decodedMarket(start)?.has("f"));
   const all = selectionParams(selectionFromParams(new URLSearchParams("f=")));
   assert(all.has("f"));
-  const reopened = launchSelection(
+  const reopened = launchParams(
     { initData: new URLSearchParams({ start_param: start }).toString() },
     all.toString(),
   );

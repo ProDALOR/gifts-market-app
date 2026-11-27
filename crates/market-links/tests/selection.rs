@@ -51,15 +51,26 @@ fn large_selections_keep_every_filter_in_stateless_website_fragments() {
         .map(|i| format!("@name:Model {i}").try_into().unwrap())
         .collect();
     s.filters.backdrops = vec!["@name:Black|White".into()];
-    assert_eq!(s.launch_payload().unwrap(), None);
-    let url = s
+    assert_eq!(
+        market_links::Target::Market {
+            selection: s.clone()
+        }
+        .launch(512)
+        .unwrap(),
+        None
+    );
+    let target = market_links::Target::Market {
+        selection: s.clone(),
+    };
+    let url = target
         .website_url(&url::Url::parse("https://market.example/app?old=1#old").unwrap())
         .unwrap();
     assert!(url.query().is_none());
     let restored = MarketSelection::from_query(url.fragment().unwrap()).unwrap();
     assert_eq!(restored, s);
     assert!(
-        s.website_url(&url::Url::parse("javascript:alert(1)").unwrap())
+        target
+            .website_url(&url::Url::parse("javascript:alert(1)").unwrap())
             .is_err()
     );
 }

@@ -2,7 +2,6 @@
 use super::*;
 pub(super) use crate::icons::escape;
 use crate::{ReportIcon, ReportIcons};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use market_gifts::*;
 use market_valuation::*;
 use std::sync::Arc;
@@ -152,19 +151,17 @@ impl Report {
             artwork: self.artwork.map(Into::into),
             ..Default::default()
         };
-        reply
-            .buttons
-            .push(vec![market_telegram::ReplyButton::Preview {
-                text: "Open preview".into(),
-                payload: self.preview_payload(),
-            }]);
-        reply
-            .buttons
-            .push(vec![market_telegram::ReplyButton::SwitchInline {
-                text: "Share".into(),
-                query: format!("{} {}", self.query.gift, self.query.currency_id),
-            }]);
-        reply
+        let target = market_links::Target::Gift {
+            slug: self.query.gift.clone(),
+            currency_id: self.query.currency_id.clone(),
+        };
+        if let Ok(button) = super::app_links::button("Open preview", &target, None) {
+            reply.buttons.push(vec![button]);
+        }
+        match target.share(None) {
+            Ok(destination) => super::sharing::with_share(reply, &destination),
+            Err(_) => reply,
+        }
     }
     fn reference_floor<'a>(
         &self,
@@ -279,16 +276,6 @@ impl Report {
             ));
         }
         html.push_str("</table>");
-    }
-    pub fn preview_payload(&self) -> String {
-        let mut params = url::form_urlencoded::Serializer::new(String::new());
-        if let Some(gift) = self.gift() {
-            params.append_pair("collection", gift.collection_id.as_str());
-        }
-        params
-            .append_pair("currency", self.query.currency_id.as_str())
-            .append_pair("gift", &self.query.gift.to_string());
-        format!("v_{}", URL_SAFE_NO_PAD.encode(params.finish()))
     }
 }
 impl MarketCommands {

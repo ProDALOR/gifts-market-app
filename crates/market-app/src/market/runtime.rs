@@ -155,10 +155,7 @@ impl MarketRuntime {
             })
     }
     #[cfg(feature = "bot")]
-    pub fn start_bot(
-        &self,
-        worker: market_telegram::TelegramWorker,
-    ) -> Result<market_telegram_bot::Sharing> {
+    pub fn start_bot(&self, worker: market_telegram::TelegramWorker) -> Result<()> {
         let stop = self.supervisor.token();
         let data = self.handle();
         let valuation = self.valuation();
@@ -167,7 +164,6 @@ impl MarketRuntime {
         if let Some(portfolio) = self.portfolio() {
             bot = bot.with_portfolio(portfolio);
         }
-        let sharing = bot.sharing();
         self.supervisor.spawn_optional(TaskKind::Bot, async move {
             super::worker::run("market-bot", stop, move |stop| async move {
                 bot.run_with_invocations(stop, invocations)
@@ -178,7 +174,7 @@ impl MarketRuntime {
             })
             .await
         })?;
-        Ok(sharing)
+        Ok(())
     }
 
     #[cfg(feature = "bot")]

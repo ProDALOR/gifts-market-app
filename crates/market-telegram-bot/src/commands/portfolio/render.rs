@@ -271,9 +271,9 @@ pub(super) fn render_page(
         row.push(button("Refresh gifts", 0, PortfolioAction::Refresh));
     }
     row.extend([
-        ReplyButton::SwitchInline {
+        ReplyButton::Share {
             text: "Share".into(),
-            query: request.inline_query(),
+            destination: market_telegram::ShareLink::Inline(request.inline_query()),
         },
         super::super::app_links::portfolio_button(request, &Default::default(), None)
             .expect("an unfiltered portfolio link fits a Mini App payload"),

@@ -11,6 +11,7 @@ import {
   applyTheme,
   miniappEnabled,
   telegramLink,
+  telegramBotLink,
   telegramReopenLink,
 } from "./telegram";
 import type { TelegramContext } from "./telegram";
@@ -58,7 +59,6 @@ export function useTelegram(context: TelegramContext) {
     ...state,
     retry: controller.retry,
     logout: controller.logout,
-    authorized: controller.authorized,
   };
 }
 export function useTelegramBack(
@@ -125,6 +125,7 @@ export function TelegramAccount({
   const link = context.initData
     ? null
     : telegramLink(telegram.config, selection);
+  const botLink = telegramBotLink(telegram.config, selection);
   const reopenLink =
     telegram.status === "reopen"
       ? telegramReopenLink(telegram.config, selection)
@@ -194,6 +195,26 @@ export function TelegramAccount({
           role="dialog"
           aria-label="Telegram account"
         >
+          {botLink && (
+            <a
+              className="account-action"
+              href={botLink}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => {
+                if (
+                  context.app?.openTelegramLink &&
+                  new URL(botLink).hostname === "t.me"
+                ) {
+                  event.preventDefault();
+                  context.app.openTelegramLink(botLink);
+                }
+                close();
+              }}
+            >
+              Open in bot
+            </a>
+          )}
           {user ? (
             <>
               <strong>
@@ -230,13 +251,20 @@ export function TelegramAccount({
                     target="_blank"
                     rel="noreferrer"
                     onClick={(event) => {
-                      if (context.app?.openTelegramLink) {
+                      if (
+                        context.app?.openTelegramLink &&
+                        new URL(reopenLink).hostname === "t.me"
+                      ) {
                         event.preventDefault();
                         context.app.openTelegramLink(reopenLink);
                       }
                     }}
                   >
-                    Reopen in Telegram
+                    {new URL(reopenLink).searchParams.has("text")
+                      ? "Send selection to bot"
+                      : new URL(reopenLink).hostname === "t.me"
+                        ? "Reopen in Telegram"
+                        : "Open selection"}
                   </a>
                 )
               ) : (

@@ -10,7 +10,7 @@ import { chromium } from "playwright";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cacheDir = await mkdtemp(join(tmpdir(), "igifts-session-"));
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module">
-import React,{useState}from'react';import{createRoot}from'react-dom/client';import{SessionProvider,useSession}from'/src/app/session.tsx';import{NavigationProvider}from'/src/app/navigation.tsx';import{AppHeader}from'/src/app/header.tsx';import'/src/style.css';
+import React,{useState}from'react';import{createRoot}from'react-dom/client';import{SessionProvider,useSession}from'/src/app/session.tsx';import{NavigationProvider}from'/src/app/navigation.tsx';import{AppHeader}from'/src/app/header.tsx';import{useSharing}from'/src/use-sharing.tsx';import'/src/style.css';
 window.events=new Map();window.nativeBack=new Set();window.colors=[];window.reopened=[];
 window.emit=name=>[...(window.events.get(name)||[])].forEach(f=>f());
 window.tapBack=()=>[...window.nativeBack].forEach(f=>f());
@@ -23,7 +23,7 @@ onEvent(name,f){if(!events.has(name))events.set(name,new Set());events.get(name)
 BackButton:{show(){},hide(){},onClick(f){nativeBack.add(f)},offClick(f){nativeBack.delete(f)}}};
 const context={initData:'browser-fixture',app:window.app};
 const h=React.createElement;
-function View(){const session=useSession();window.session=session;const[open,setOpen]=useState(false),[currency,changeCurrency]=useState('GRAM');return h('div',{className:'workspace'},h('main',{className:'orderbook market-shell'},h('aside',{className:'market-sidebar'},h(AppHeader,{context,currencies:['GRAM','XTR'],currency,changeCurrency,accountOpen:open,setAccountOpen:setOpen}),h('button',{style:{position:'fixed',bottom:12,left:12},id:'outside'},'Outside'),h('output',null,session.status)),h('section',{className:'market-results'})))}
+function View(){const sharing=useSharing(context,"fixture");window.shareFromApp=()=>sharing.share({type:"gift",slug:"Gift-123",currency_id:"GRAM"});const session=useSession();window.session=session;const[open,setOpen]=useState(false),[currency,changeCurrency]=useState('GRAM');window.changeCurrency=changeCurrency;return h('div',{className:'workspace'},h('main',{className:'orderbook market-shell'},h('aside',{className:'market-sidebar'},h(AppHeader,{context,currencies:['GRAM','XTR'],currency,changeCurrency,accountOpen:open,setAccountOpen:setOpen}),h('button',{style:{position:'fixed',bottom:12,left:12},id:'outside'},'Outside'),h('output',null,session.status)),h('section',{className:'market-results'})))}
 const root=createRoot(document.getElementById('root'));window.unmount=()=>root.unmount();root.render(h(SessionProvider,{context},h(NavigationProvider,{context},()=>h(View))));
 </script></body></html>`;
 const server = await createServer({
@@ -173,9 +173,47 @@ try {
     await menu.waitFor({ state: "detached" });
     await button.click();
     await menu.focus();
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Tab");
+    const controls = await menu
+      .locator("a[href],button:not([disabled])")
+      .count();
+    for (let i = 0; i <= controls; i++) await page.keyboard.press("Tab");
     await menu.waitFor({ state: "detached" });
+    await button.click();
+    const botLink = page.getByRole("link", {
+      name: "Open in bot",
+      exact: true,
+    });
+    assert.equal(new URL(await botLink.getAttribute("href")).hostname, "t.me");
+    await botLink.click();
+    await menu.waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => reopened.length), 1);
+    await page.evaluate(() => shareFromApp());
+    const shareLink = await page.evaluate(() => reopened.at(-1));
+    assert.equal(
+      new URL(new URL(shareLink).searchParams.get("url")).origin,
+      "https://example.test",
+      "fallback uses configured public app, never the local preview host",
+    );
+    await page.evaluate(() => changeCurrency("XTR"));
+    await button.click();
+    const changed = new URL(
+      await page
+        .getByRole("link", { name: "Open in bot", exact: true })
+        .getAttribute("href"),
+    );
+    const draft = changed.searchParams.get("text");
+    const launch = changed.searchParams.get("start");
+    const params = launch
+      ? new URLSearchParams(
+          Buffer.from(launch.slice(2), "base64url").toString(),
+        )
+      : new URLSearchParams();
+    assert(
+      draft?.includes("currency=XTR") || params.get("currency") === "XTR",
+      "header links follow current state before URL effects run",
+    );
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => changeCurrency("GRAM"));
     assert.deepEqual(await page.evaluate(() => colors), [
       ["header", "#151419"],
       ["background", "#151419"],
@@ -251,7 +289,7 @@ try {
     .click();
   assert.match(
     await expiry.page.evaluate(() => reopened[0]),
-    /^https:\/\/t.me\/fixture_bot\?startapp=v_/,
+    /^https:\/\/t.me\/fixture_bot\?startapp=t_/,
   );
   assert.deepEqual(expiry.calls(), { configs: 1, signins: 1 });
   await expiry.page.close();

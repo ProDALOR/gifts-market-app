@@ -36,6 +36,13 @@ pub(in crate::commands) struct View {
 }
 impl MarketCommands {
     pub(in crate::commands) async fn browse(&self, selection: MarketSelection) -> Reply {
+        if selection.filters.collection_id.is_none() {
+            let mut reply = Reply::text("Choose a collection in the app to browse this selection.");
+            if let Ok(button) = super::market_button(&selection, self.public_url.as_ref()) {
+                reply.buttons.push(vec![button]);
+            }
+            return reply;
+        }
         match self.market_page(selection, GridMode::Linked).await {
             Ok(view) => self.render_market(&view).await,
             Err(error) => render::error_reply(error),
@@ -267,7 +274,7 @@ impl MarketCommands {
         if let Ok(button) = super::market_button(&view.selection, self.public_url.as_ref()) {
             reply.buttons = vec![vec![button]];
         }
-        match sharing::market_fallback(&view.selection, self.public_url.as_ref()) {
+        match sharing::market_destination(&view.selection, self.public_url.as_ref()) {
             Ok(target) => sharing::with_share(reply, &target),
             Err(_) => reply,
         }

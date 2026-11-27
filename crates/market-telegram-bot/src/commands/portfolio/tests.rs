@@ -140,8 +140,12 @@ fn gallery_preserves_sort_currency_and_sharing_with_twelve_gifts_per_page() {
     assert_eq!(next.currency_id, BotCurrency::Stars);
     assert_eq!(next.sort, request.sort);
     assert_eq!(
-        request::inline(&request.inline_query(), 456).unwrap(),
-        request
+        parsed_target_portfolio(&request.inline_query(), 456),
+        PortfolioRequest {
+            layout: GridMode::Linked,
+            action: PortfolioAction::Open,
+            ..request.clone()
+        }
     );
     assert_eq!(callback("p:123:GRAM:v:0").unwrap().layout, GridMode::Linked);
     assert!(callback("p:123:GRAM:v:0:pa:unknown").is_none());
@@ -364,7 +368,7 @@ fn sorts_round_trip_through_pages_refresh_and_sharing() {
             );
         }
         request.mode = PortfolioMode::Inline;
-        let parsed = inline(&request.inline_query(), 99).unwrap();
+        let parsed = parsed_target_portfolio(&request.inline_query(), 99);
         assert_eq!(
             (
                 parsed.user_id.get(),
@@ -481,7 +485,7 @@ fn cancelled_sorted_reads_do_not_build_a_reply_and_inline_has_no_refresh_button(
             .flatten()
             .all(|b| !matches!(b, ReplyButton::Callback { .. }))
     );
-    assert!(reply.buttons.iter().flatten().any(|b| matches!(b, ReplyButton::SwitchInline { query, .. } if query.contains("sort=price_desc"))));
+    assert!(reply.buttons.iter().flatten().any(|b| matches!(b, ReplyButton::Share { destination:market_telegram::ShareLink::Inline(query), .. } if query.contains("sort=value_desc"))));
     assert_eq!(reply.title.as_deref(), Some("Portfolio"));
 }
 #[test]
@@ -608,7 +612,7 @@ fn reports_expose_partial_inventory_and_plain_text_fallback() {
             .buttons
             .iter()
             .flatten()
-            .any(|b| matches!(b,ReplyButton::Preview{payload,..} if payload.starts_with("p_")))
+            .any(|b| matches!(b,ReplyButton::OpenApp{payload,..} if payload.starts_with("t_")))
     );
 }
 
@@ -846,22 +850,24 @@ async fn private_and_inline_navigation_use_cached_reports_during_a_running_refre
         })
         .await
         .unwrap();
-    let sharing = crate::Sharing::new(Arc::new(commands.clone()), Default::default());
     let target = crate::PortfolioTarget {
         user_id: request.user_id,
         currency_id: "GRAM".into(),
         filters: Default::default(),
         sort: PortfolioSort::PositionAsc,
     };
-    let shared = tokio::time::timeout(Duration::from_secs(1), sharing.portfolio(7, target.clone()))
-        .await
-        .expect("offline sharing never waits for valuation")
-        .unwrap();
-    assert!(shared.prepared.is_none());
+    let shared = market_links::Target::Portfolio {
+        target: target.clone(),
+    }
+    .share(None)
+    .unwrap();
+    let market_links::ShareDestination::Inline { query } = shared else {
+        panic!()
+    };
     assert_eq!(
-        shared.fallback,
-        crate::ShareFallback::Inline {
-            query: "portfolio 123 GRAM sort=position_asc".into()
+        market_links::Target::parse_text(&query, 7).unwrap(),
+        market_links::Target::Portfolio {
+            target: target.clone()
         }
     );
     assert!(
@@ -871,19 +877,19 @@ async fn private_and_inline_navigation_use_cached_reports_during_a_running_refre
         .is_err(),
         "share targets cannot retain snapshot versions"
     );
-    let missing = sharing
-        .portfolio(
-            7,
-            crate::PortfolioTarget {
-                user_id: market_portfolio::UserId::new(456).unwrap(),
-                ..target
-            },
-        )
-        .await
-        .unwrap();
     assert!(
-        matches!(missing.fallback, crate::ShareFallback::Inline { .. }),
-        "a target is shareable before its inventory has been checked"
+        matches!(
+            market_links::Target::Portfolio {
+                target: crate::PortfolioTarget {
+                    user_id: market_portfolio::UserId::new(456).unwrap(),
+                    ..target
+                }
+            }
+            .share(None)
+            .unwrap(),
+            market_links::ShareDestination::Inline { .. }
+        ),
+        "targets are shareable before checking inventory"
     );
     let gallery_request = PortfolioRequest {
         layout: GridMode::Gallery,
@@ -1046,4 +1052,13 @@ fn gallery_snapshots_have_no_sort_or_paging_and_browse_returns_to_the_same_linke
     let preview = callback(data).unwrap();
     assert_eq!(preview.action, PortfolioAction::Preview);
     assert_eq!(preview.page, 3);
+}
+
+fn parsed_target_portfolio(text: &str, user: u64) -> PortfolioRequest {
+    let Command::Portfolio(request) =
+        super::super::parse::input(text, user, &[] as &[String], None, &[]).unwrap()
+    else {
+        panic!("portfolio target")
+    };
+    request
 }

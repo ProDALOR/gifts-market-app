@@ -4,19 +4,15 @@ import { useSession } from "./app/session";
 import { SharingController } from "./sharing";
 export function useSharing(context: TelegramContext, scope: string) {
   const session = useSession();
+  const publicUrl = session.config?.public_url || undefined;
   const controller = useMemo(
-    () => new SharingController(context.app, session.authorized),
-    [context.app, session.authorized],
+    () => new SharingController(context.app, publicUrl),
+    [context.app, publicUrl],
   );
   const state = useSyncExternalStore(controller.subscribe, controller.current);
-  useEffect(
-    () => () => controller.cancel(),
-    [controller, scope, session.status, session.identity?.user.id],
-  );
+  useEffect(() => () => controller.cancel(), [controller, scope]);
   const available = !!(
-    context.app?.shareMessage ||
-    context.app?.switchInlineQuery ||
-    context.app?.openTelegramLink
+    context.app?.switchInlineQuery || context.app?.openTelegramLink
   );
   return { ...state, available, share: controller.share };
 }

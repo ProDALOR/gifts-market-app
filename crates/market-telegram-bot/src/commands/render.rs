@@ -6,25 +6,38 @@ pub(super) fn error_reply(error: impl std::fmt::Display) -> Reply {
         ..Default::default()
     }
 }
-pub(crate) fn launch_reply(command: &super::Command) -> Option<Reply> {
+pub(crate) fn launch_reply(command: &super::Command, user: u64) -> Option<Reply> {
     use super::Command;
-    let usage =
-        "Send a gift link or slug, for example PlushPepe-123. Add TON or XTR to choose currency.";
-    Some(Reply::text(match command {
-        Command::Start => format!("{usage}\nOpen the market to browse gifts."),
-        Command::Help => {
-            let commands = super::CommandKind::ALL
-                .into_iter()
-                .map(|command| format!("{} — {}", command.usage(), command.description()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!(
-                "{usage}\n{commands}\nSort portfolios by position, price or gift number using the buttons.\nInline: type this bot’s username, then a gift slug or portfolio. Check gifts privately first; inline uses cached data.\nSales show observed executions; history may be incomplete."
-            )
-        }
-        Command::GiftHelp => usage.to_owned(),
+    use market_telegram::{ReplyButton, ShareLink};
+    let usage = "Send a gift link or slug for its estimate. Share gifts, markets and cached portfolios by typing this bot’s username in any chat. Check gifts privately first. Sales show observed executions; history may be incomplete.";
+    let text = match command {
+        Command::Start => "Send a gift link or slug, browse markets or check your portfolio.",
+        Command::Help => usage,
+        Command::GiftHelp => "Send one gift link or slug, for example PlushPepe-123.",
         _ => return None,
-    }))
+    };
+    let mut reply = Reply::text(text);
+    if matches!(command, Command::Start | Command::Help) {
+        let target = market_links::Target::Market {
+            selection: market_links::MarketSelection::from_query("f=&currency=GRAM")
+                .expect("landing selection"),
+        };
+        reply.buttons.push(vec![ReplyButton::OpenApp {
+            text: "Open app".into(),
+            payload: target.launch(512).ok()??,
+        }]);
+        if let Ok(user) = market_portfolio::UserId::new(user) {
+            reply.buttons.push(vec![ReplyButton::Callback {
+                text: "Check my gifts".into(),
+                data: format!("p:{}:GRAM:r:0:pa", user.get()).into_bytes(),
+            }]);
+        }
+        reply.buttons.push(vec![ReplyButton::Share {
+            text: "Share in a chat".into(),
+            destination: ShareLink::Inline(String::new()),
+        }]);
+    }
+    Some(reply)
 }
 pub(super) fn status_reply(status: market_gifts::SyncStatus) -> Reply {
     let state = if !status.ready {

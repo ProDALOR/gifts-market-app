@@ -39,10 +39,13 @@ pub(super) fn markup(
                 .filter_map(|button| match button {
                     ReplyButton::Url { text, url } => Some(Button::url(text, url.as_str())),
                     ReplyButton::Callback { text, data } => Some(Button::data(text, data.clone())),
-                    ReplyButton::SwitchInline { text, query } => {
-                        inline_enabled.then(|| Button::switch_elsewhere(text, query))
-                    }
-                    ReplyButton::Preview { text, payload } => {
+                    ReplyButton::Share { text, destination } => match destination {
+                        crate::ShareLink::Inline(query) => {
+                            inline_enabled.then(|| Button::switch_elsewhere(text, query))
+                        }
+                        crate::ShareLink::Url(url) => Some(Button::url(text, url.as_str())),
+                    },
+                    ReplyButton::OpenApp { text, payload } => {
                         let url = if let Some(name) = username {
                             format!("https://t.me/{name}?startapp={payload}")
                         } else {
@@ -405,10 +408,10 @@ fn sent_id(updates: tl::enums::Updates, random: i64) -> Option<i32> {
 mod tests {
     use super::*;
     #[test]
-    fn app_links_survive_private_inline_and_prepared_encoding_without_a_public_url() {
+    fn app_links_survive_private_and_rich_or_plain_inline_encoding_without_a_public_url() {
         use tl::Serializable;
         let reply = Reply {
-            buttons: vec![vec![ReplyButton::Preview {
+            buttons: vec![vec![ReplyButton::OpenApp {
                 text: "Open portfolio".into(),
                 payload: "p_cG9ydGZvbGlv".into(),
             }]],
@@ -620,7 +623,7 @@ mod tests {
         let reply = Reply {
             text: "Gift-123\nEstimate: 18 TON".into(),
             rich_html: Some("<h3>Gift-123</h3><p><tg-emoji emoji-id=\"123\">💎</tg-emoji> <b>18 TON</b></p><details><summary>🕘 Recent sales</summary><p>Observed executions</p></details>".into()),
-            buttons: vec![vec![ReplyButton::Preview {
+            buttons: vec![vec![ReplyButton::OpenApp {
                 text: "Open preview".into(),
                 payload: "v_Z2lmdD1HaWZ0LTEyMw".into(),
             }]],

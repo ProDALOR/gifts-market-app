@@ -4,114 +4,25 @@ use super::*;
 use market_gifts::*;
 use market_links::MarketSelection;
 pub(super) fn parse(text: &str) -> Option<MarketSelection> {
-    use market_actors::input::CatalogSelector;
-    fn public_reference<I>(reference: &CatalogSelector<I>) -> bool {
-        matches!(reference, CatalogSelector::Ref(_))
-    }
-    let mut selection = parse_selection(text)?;
-    selection.filters.currency_id =
-        BotCurrency::parse(selection.filters.currency_id.as_str())?.id();
-    let filters = &selection.filters;
-    (filters.collection_id.as_ref().is_none_or(public_reference)
-        && filters.models.iter().all(public_reference)
-        && filters.backdrops.iter().all(public_reference)
-        && filters.patterns.iter().all(public_reference))
-    .then_some(selection)
-}
-fn parse_selection(text: &str) -> Option<MarketSelection> {
-    let args = text.split_once(char::is_whitespace)?.1.trim();
-    let short = ["c=", "m=", "b=", "s=", "n="]
-        .iter()
-        .any(|prefix| args.starts_with(prefix));
-    if args.starts_with("f=") || short {
-        let mut params = url::form_urlencoded::Serializer::new(String::new());
-        for (i, part) in args.split_whitespace().enumerate() {
-            let (key, value) = if i == 0 && short {
-                ("f", part)
-            } else {
-                part.split_once('=')?
-            };
-            if ![
-                "f",
-                "currency",
-                "venue",
-                "mode",
-                "bid_match",
-                "sort",
-                "min",
-                "max",
-                "from",
-                "until",
-            ]
-            .contains(&key)
-            {
-                return None;
-            }
-            params.append_pair(key, value);
+    match market_links::Target::parse_text(text, 1).ok()? {
+        market_links::Target::Market { selection } => {
+            BotCurrency::parse(selection.filters.currency_id.as_str())?;
+            Some(selection)
         }
-        return MarketSelection::from_query(&params.finish()).ok();
+        _ => None,
     }
-    // Translate named arguments into the shared readable-link codec. Existing
-    // command and URL spellings retain the same alias semantics.
-    let mut groups = Vec::new();
-    let mut params = url::form_urlencoded::Serializer::new(String::new());
-    let mut seen = std::collections::BTreeSet::new();
-    for part in args.split_whitespace() {
-        let (key, raw) = part.split_once('=')?;
-        if !seen.insert(key) {
-            return None;
-        }
-        let value = url::form_urlencoded::parse(format!("v={raw}").as_bytes())
-            .next()?
-            .1
-            .into_owned();
-        if value.is_empty() {
-            return None;
-        }
-        let (group, namespace) = match key {
-            "collection" if value == "all" => continue,
-            "collection" => ("c", "slug"),
-            "model" => ("m", "name"),
-            "backdrop" => ("b", "name"),
-            "symbol" => ("s", "name"),
-            "currency" => {
-                params.append_pair("currency", BotCurrency::parse(&value)?.as_str());
-                continue;
-            }
-            _ => return None,
-        };
-        let reference = if value.starts_with('@') {
-            value
-        } else {
-            GiftAlias::new(namespace, value).ok()?.selector()
-        };
-        let escaped = url::form_urlencoded::byte_serialize(reference.as_bytes())
-            .collect::<String>()
-            .replace('+', "%20");
-        groups.push(format!("{group}={escaped}"));
-    }
-    params.append_pair("f", &groups.join("|"));
-    MarketSelection::from_query(&params.finish()).ok()
 }
 
 fn market_button(
     selection: &MarketSelection,
     public_url: Option<&url::Url>,
 ) -> Result<market_telegram::ReplyButton, market_links::LinkError> {
-    if let Some(payload) = selection.launch_payload()? {
-        return Ok(market_telegram::ReplyButton::Preview {
-            text: "Open market".into(),
-            payload,
-        });
-    }
-    let origin = public_url.ok_or(market_links::LinkError::Invalid(
-        "A public app URL is required to open this selection",
-    ))?;
-    Ok(market_telegram::ReplyButton::Url {
-        text: "Open market".into(),
-        url: selection.website_url(origin)?,
-    })
+    let target = market_links::Target::Market {
+        selection: selection.clone(),
+    };
+    super::app_links::button("Open market", &target, public_url)
 }
+
 mod pager;
 pub(super) use pager::View;
 pub(super) use pager::{Destination, MAX_PAGES};
@@ -143,9 +54,11 @@ mod tests {
         ] {
             assert!(parse(command).is_none(), "{command}");
         }
-        let url = named
-            .website_url(&url::Url::parse("https://market.example/").unwrap())
-            .unwrap();
+        let url = market_links::Target::Market {
+            selection: named.clone(),
+        }
+        .website_url(&url::Url::parse("https://market.example/").unwrap())
+        .unwrap();
         assert_eq!(
             MarketSelection::from_query(url.fragment().or(url.query()).unwrap()).unwrap(),
             named
@@ -172,7 +85,7 @@ mod tests {
         let mut selection = parse("/market collection=Gift").unwrap();
         assert!(matches!(
             market_button(&selection, None).unwrap(),
-            market_telegram::ReplyButton::Preview { .. }
+            market_telegram::ReplyButton::OpenApp { .. }
         ));
         selection.filters.models = (0..300)
             .map(|i| format!("@name:Model {i}").try_into().unwrap())
