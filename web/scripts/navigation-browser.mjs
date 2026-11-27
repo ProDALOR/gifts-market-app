@@ -284,12 +284,20 @@ try {
         price: String(i + 2),
         quantity: 1,
         observed_at: "2026-11-24T00:00:00Z",
-        target: {
-          kind: "gift",
-          id: String(i + 1),
-          number: i + 1,
-          traits: { model: "model", backdrop: "back" },
-        },
+        target:
+          params.source === "bids"
+            ? {
+                kind: "criteria",
+                models: ["model"],
+                backdrops: ["back"],
+                patterns: [],
+              }
+            : {
+                kind: "gift",
+                id: String(i + 1),
+                number: i + 1,
+                traits: { model: "model", backdrop: "back" },
+              },
         market_url: "https://example.com",
       }));
     let report,
@@ -496,7 +504,7 @@ try {
       await page.waitForFunction(
         () =>
           getComputedStyle(document.querySelector(".app-navigation"))
-            .display === "none",
+            .visibility === "hidden",
       );
       await page.evaluate(() => {
         window.keyboardHeight = innerHeight;
@@ -505,7 +513,7 @@ try {
       await page.waitForFunction(
         () =>
           getComputedStyle(document.querySelector(".app-navigation"))
-            .display !== "none",
+            .visibility === "visible",
       );
       await page.evaluate(() =>
         Reflect.deleteProperty(visualViewport, "height"),
@@ -989,11 +997,9 @@ try {
             assert(header.labelFits, `return label fits at ${width}px`);
         }
         await page.setViewportSize(viewport);
-        await page
-          .locator(".sidebar-heading")
-          .screenshot({
-            path: join(output, `header-back-${viewport.width}.png`),
-          });
+        await page.locator(".sidebar-heading").screenshot({
+          path: join(output, `header-back-${viewport.width}.png`),
+        });
       }
       if (source === "asks") {
         await page.locator(".orders .card-open").first().click();
@@ -1027,6 +1033,45 @@ try {
           .getByRole("button", { name: "Close details", exact: true })
           .click();
         await marketPreview.waitFor({ state: "detached" });
+      }
+      if (source === "bids") {
+        await page.locator(".orders .card-open").first().click();
+        const bidPreview = page.getByRole("dialog", {
+          name: "Order details",
+          exact: true,
+        });
+        const modelLink = bidPreview.getByRole("link", {
+          name: "View model Model asks",
+          exact: true,
+        });
+        await modelLink.waitFor();
+        const priorBidUrl = page.url();
+        await modelLink.click();
+        await page
+          .getByRole("button", { name: "Back to preview", exact: true })
+          .waitFor();
+        await page.waitForFunction(
+          () => !document.querySelector("dialog[open]"),
+        );
+        await page.waitForFunction(
+          () =>
+            document.querySelector(
+              '[aria-label="Market view"] button[aria-pressed="true"]',
+            )?.textContent === "Asks",
+        );
+        await page
+          .getByRole("button", { name: "Back to preview", exact: true })
+          .click();
+        await modelLink.waitFor();
+        assert.equal(
+          page.url(),
+          priorBidUrl,
+          "Asks navigation restores the inspected bid and its filters",
+        );
+        await bidPreview
+          .getByRole("button", { name: "Close details", exact: true })
+          .click();
+        await bidPreview.waitFor({ state: "detached" });
       }
       assert.equal(
         await page.evaluate(() => window.fixtureInstance),

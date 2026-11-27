@@ -12,6 +12,7 @@ import type { CatalogOption, Collection } from "../orderbook";
 import { OptionArt } from "../previews/option-art";
 import { TraitFloor } from "../valuation/floors";
 import { usePickerMotion } from "./picker-motion";
+import { usePreviewVisibility } from "../previews/preview-environment";
 export const TraitPickers = memo(function TraitPickers({
   collection,
   loading = false,
@@ -38,11 +39,12 @@ export const TraitPickers = memo(function TraitPickers({
   }>();
   const selectedCraft =
     modelGroup?.collection === collection?.id && modelGroup?.craft === true;
-  const { shown, shell, panel, content } = usePickerMotion(
+  const { shown, shell, content } = usePickerMotion(
     open,
     JSON.stringify([collection?.id, selectedCraft, query]),
   );
   const host = useRef<HTMLDivElement>(null);
+  const mediaActive = usePreviewVisibility(content, 0, !!shown) && !!open;
   useEffect(() => {
     if (!open) return;
     // This panel participates in layout. Close after the outside click has
@@ -61,6 +63,7 @@ export const TraitPickers = memo(function TraitPickers({
     [collection, shown, options],
   );
   const chosen = shown ? filters[shown] || [] : [];
+  const selected = useMemo(() => new Set(chosen), [chosen]);
   const allGroups = useMemo(
     () => rarityGroups(available, query),
     [available, query],
@@ -131,7 +134,6 @@ export const TraitPickers = memo(function TraitPickers({
           aria-hidden={!open}
         >
           <section
-            ref={panel}
             id="trait-panel"
             className="picker-panel"
             aria-label={`${trait?.label} choices`}
@@ -223,17 +225,21 @@ export const TraitPickers = memo(function TraitPickers({
                         key={option.id}
                         className="trait-option"
                         aria-label={option.name}
-                        aria-pressed={chosen.includes(option.id)}
+                        aria-pressed={selected.has(option.id)}
                         onClick={() =>
                           change(
                             shown,
-                            chosen.includes(option.id)
+                            selected.has(option.id)
                               ? chosen.filter((id) => id !== option.id)
                               : [...chosen, option.id],
                           )
                         }
                       >
-                        <OptionArt option={option} />
+                        <OptionArt
+                          option={option}
+                          visibilityRoot={content}
+                          active={mediaActive}
+                        />
                         <span className="trait-option-copy">
                           <span className="trait-option-name">
                             {option.name}

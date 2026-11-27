@@ -395,12 +395,24 @@ body:has(dialog[open], [role="listbox"]) .back-to-top {
   background: var(--paper);
   color: var(--ink);
 }
+.modal-sheet {
+  display: contents;
+}
 .detail::backdrop {
   background: #08070bc4;
 }
 @media (max-width: 959px) {
   .detail.modal-swipe {
-    bottom: calc(-1 * var(--sheet-drag-y, 0px));
+    background: transparent;
+  }
+  .detail.modal-swipe > .modal-sheet {
+    display: block;
+    background: var(--paper);
+    border-radius: inherit;
+    overflow: clip;
+  }
+  .detail[data-dragging] > .modal-sheet {
+    will-change: transform;
   }
   .detail[data-dragging] {
     user-select: none;

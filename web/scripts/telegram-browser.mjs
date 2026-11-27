@@ -333,7 +333,12 @@ try {
       ["background", "#faf7fb"],
       ["bottom", "#faf7fb"],
     ]);
-    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    assert.equal(
+      await page.getByRole("button", { name: "Sign out", exact: true }).count(),
+      0,
+      "Telegram profiles do not offer sign-out",
+    );
+    await page.evaluate(() => session.logout());
     assert.equal(await page.locator(".profile-identity").count(), 0);
     await page.waitForFunction(() => session.status === "signed_out");
     await page.clock.fastForward(60000);

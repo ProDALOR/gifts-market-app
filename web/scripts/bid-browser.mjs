@@ -571,7 +571,22 @@ try {
       document.querySelectorAll(".bid-detail-preview .model-animation.ready")
         .length === 8,
   );
-  assert.equal(await details.locator(".condition-chip").count(), 15);
+  assert.equal(await details.locator(".condition-chip").count(), 16);
+  for (const [kind, key, id] of [
+    ["model", "m", "model-0"],
+    ["backdrop", "b", "backdrop-0"],
+    ["pattern", "s", "pattern-0"],
+    ["number", "n", "1..1000"],
+  ]) {
+    const chip = details
+      .locator(`[data-condition="${kind}"] a.condition-chip`)
+      .first();
+    const url = new URL(await chip.getAttribute("href"), page.url());
+    assert.equal(url.searchParams.get("f"), `c=gift|${key}=${id}`);
+    assert.equal(url.searchParams.get("mode"), "ask");
+    assert.equal(url.searchParams.get("sort"), "price_asc");
+    assert.equal(url.searchParams.get("currency"), "GRAM");
+  }
   assert.equal(
     await details
       .locator('[data-condition="model"] .attribute-rarity')
@@ -870,7 +885,13 @@ try {
     const label = kind === "pattern" ? "Any symbol" : `Any ${kind}`;
     await condition.getByRole("img", { name: label, exact: true }).waitFor();
     assert.equal((await condition.textContent()).trim(), "∞");
-    await condition.click();
+    const url = new URL(await condition.getAttribute("href"), page.url());
+    assert.equal(
+      url.searchParams.get("f"),
+      "c=gift",
+      "Any trait opens unrestricted collection asks",
+    );
+    assert.equal(url.searchParams.get("mode"), "ask");
     assert.equal(await condition.locator(".condition-any-label").count(), 0);
     assert.equal(await condition.locator("summary, button").count(), 0);
   }
@@ -975,7 +996,7 @@ try {
   await page.screenshot({ path: join(output, "bid-large-mobile.png") });
   await largeCard.locator(".card-open").click();
   await details.waitFor();
-  assert.equal(await details.locator(".condition-chip").count(), 223);
+  assert.equal(await details.locator(".condition-chip").count(), 224);
   assert.equal(await detailPreview.locator(".preview-model").count(), 16);
   await detailPreview.locator(".model-animation.ready").first().waitFor();
   await checkModelSizing();
@@ -1081,7 +1102,15 @@ try {
     .locator(".condition-chip")
     .filter({ hasText: "Restored model" });
   await restored.locator("img.loaded").waitFor();
-  assert.equal(await restored.getAttribute("title"), "Restored model");
+  assert.equal(
+    await restored.getAttribute("title"),
+    "View Restored model asks",
+  );
+  assert.equal(
+    await restored.evaluate((el) => el.tagName),
+    "A",
+    "Resolved attributes become asks links",
+  );
   assert.match(
     await detailPreview.locator("figure").getAttribute("aria-label"),
     /Restored model/,

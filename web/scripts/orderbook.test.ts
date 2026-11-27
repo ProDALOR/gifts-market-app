@@ -114,6 +114,23 @@ test("trait choices use the active collection response and matching gift trait",
     ["gold", "silver"],
   );
   assert.deepEqual(collectionOptions(collection, "patterns", options), []);
+  assert.equal(
+    collectionOptions({ ...collection }, "models", options),
+    collectionOptions(collection, "models", options),
+    "Picker rerenders reuse sorted choices even when collection objects are recreated",
+  );
+  const revised = new Map(options);
+  revised.set("bronze", {
+    id: "bronze",
+    name: "Bronze",
+    kind: "model",
+    media: null,
+  });
+  assert.deepEqual(
+    collectionOptions(collection, "models", revised).map((option) => option.id),
+    ["bronze", "gold", "silver"],
+    "A new catalog invalidates the sorted choice cache",
+  );
 });
 test("market buttons require a public HTTP(S) source link", () => {
   for (const market_url of [

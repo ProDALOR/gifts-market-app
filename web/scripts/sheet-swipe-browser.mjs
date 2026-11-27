@@ -8,9 +8,9 @@ import { chromium } from "playwright";
 
 const cacheDir = await mkdtemp(join(tmpdir(), "gift-sheet-"));
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>.swipe-art{height:220px}.swipe-long{height:900px}.swipe-controls{padding:16px}</style></head><body><div id="root"></div><script type="module">
-import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Modal}from'/src/ui/modal.tsx';import'/src/style.css';
+import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Modal}from'/src/ui/modal.tsx';import{AppNavigation}from'/src/app/navigation.tsx';import'/src/style.css';
 function App(){const[open,setOpen]=useState(false),[guide,setGuide]=useState(false);window.openPreview=()=>setOpen(true);window.hidePreview=()=>setOpen(false);window.swipeCloseCalls=window.swipeCloseCalls||0;
-return React.createElement('main',{className:'workspace'},React.createElement('button',{onClick:()=>setOpen(true)},'Open preview'),open&&React.createElement(Modal,{className:'detail',label:'Gift details',closeLabel:'Close details',viewportClose:true,swipeToClose:true,close:()=>{window.swipeCloseCalls++;setOpen(false)}},React.createElement('div',{className:'detail-art swipe-art'},'Artwork'),React.createElement('div',{className:'detail-content'},React.createElement('div',{className:'swipe-controls'},React.createElement('button',{onClick:()=>setGuide(true)},'Calculation guide'),React.createElement('a',{href:'#gift'},'Gift link'),React.createElement('input',{'aria-label':'Test input'})),React.createElement('div',{className:'swipe-long'},'Details'),guide&&React.createElement(Modal,{className:'valuation-popup',heading:'Calculation',label:'Calculation',closeLabel:'Close calculation',close:()=>setGuide(false)},React.createElement('p',null,'Calculation details')))));}
+return React.createElement('main',{className:'workspace'},React.createElement(AppNavigation,{page:'market'}),React.createElement('button',{onClick:()=>setOpen(true)},'Open preview'),open&&React.createElement(Modal,{className:'detail',label:'Gift details',closeLabel:'Close details',viewportClose:true,swipeToClose:true,close:()=>{window.swipeCloseCalls++;setOpen(false)}},React.createElement('div',{className:'detail-art swipe-art'},'Artwork'),React.createElement('div',{className:'detail-content'},React.createElement('div',{className:'swipe-controls'},React.createElement('button',{onClick:()=>setGuide(true)},'Calculation guide'),React.createElement('a',{href:'#gift'},'Gift link'),React.createElement('input',{'aria-label':'Test input'})),React.createElement('div',{className:'swipe-long'},'Details'),guide&&React.createElement(Modal,{className:'valuation-popup',heading:'Calculation',label:'Calculation',closeLabel:'Close calculation',close:()=>setGuide(false)},React.createElement('p',null,'Calculation details')))));}
 createRoot(document.getElementById('root')).render(React.createElement(App));</script></body></html>`;
 const server = await createServer({
   root: fileURLToPath(new URL("..", import.meta.url)),
@@ -21,6 +21,13 @@ const server = await createServer({
       name: "sheet-swipe",
       configureServer(server) {
         server.middlewares.use(async (req, res, next) => {
+          if (req.url.startsWith("/media/icons/")) {
+            res.setHeader("Content-Type", "image/svg+xml");
+            res.end(
+              '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>',
+            );
+            return;
+          }
           if (req.url !== "/__swipe") return next();
           res.setHeader("Content-Type", "text/html");
           res.setHeader(
@@ -48,18 +55,110 @@ try {
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Performance.enable");
+    const layouts = async () =>
+      (await cdp.send("Performance.getMetrics")).metrics.find(
+        (metric) => metric.name === "LayoutCount",
+      ).value;
     const send = (type, points = []) =>
       cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
     const sheet = page.getByRole("dialog", {
       name: "Gift details",
       exact: true,
     });
+    const navigation = page.getByRole("navigation", {
+      name: "App navigation",
+      includeHidden: true,
+    });
+    const returningNavigation = async () => {
+      const before = await navigation.evaluate((el) => {
+        const transition = el
+          .getAnimations()
+          .find(
+            (animation) =>
+              animation instanceof CSSTransition &&
+              animation.transitionProperty === "opacity",
+          );
+        if (transition) {
+          transition.pause();
+          transition.currentTime = 0;
+        }
+        const style = getComputedStyle(el);
+        return {
+          visible: style.visibility,
+          opacity: style.opacity,
+          display: style.display,
+          animating: !!transition,
+          bounds: el.getBoundingClientRect().toJSON(),
+        };
+      });
+      assert.equal(before.visible, "visible");
+      assert.equal(
+        before.display,
+        "flex",
+        "Navigation retains its layout through preview closure",
+      );
+      if (reducedMotion === "no-preference") {
+        assert.equal(
+          before.animating,
+          true,
+          "Navigation fades back after the preview closes",
+        );
+        assert.equal(before.opacity, "0");
+        await navigation.evaluate((el) => {
+          const transition = el
+            .getAnimations()
+            .find(
+              (animation) =>
+                animation instanceof CSSTransition &&
+                animation.transitionProperty === "opacity",
+            );
+          transition.currentTime = 80;
+        });
+        const middle = await navigation.evaluate((el) =>
+          Number(getComputedStyle(el).opacity),
+        );
+        assert(
+          middle > 0 && middle < 1,
+          "Navigation returns gradually rather than popping in",
+        );
+        await navigation.evaluate((el) =>
+          el.getAnimations().forEach((animation) => animation.finish()),
+        );
+      } else
+        assert.equal(
+          before.animating,
+          false,
+          "Reduced motion restores navigation immediately",
+        );
+      const after = await navigation.evaluate((el) => ({
+        opacity: getComputedStyle(el).opacity,
+        bounds: el.getBoundingClientRect().toJSON(),
+      }));
+      assert.equal(after.opacity, "1");
+      assert.deepEqual(
+        after.bounds,
+        before.bounds,
+        "Navigation buttons never shift while returning",
+      );
+    };
     const open = async () => {
       await page
         .getByRole("button", { name: "Open preview", exact: true })
         .click();
       await sheet.waitFor();
       await page.waitForTimeout(200);
+      assert.equal(
+        await navigation.evaluate((el) => getComputedStyle(el).visibility),
+        "hidden",
+      );
+      assert.equal(
+        await navigation
+          .getByRole("link", { name: "Market", exact: true })
+          .count(),
+        0,
+        "Hidden navigation is excluded from keyboard and accessibility navigation",
+      );
     };
     const point = async (selector = ".detail-art") => {
       const box = await page.locator(selector).boundingBox();
@@ -98,23 +197,56 @@ try {
     assert.equal(await sheet.getAttribute("data-dragging"), "true");
     const dragged = await sheet.evaluate((el) => ({
       bottom: getComputedStyle(el).bottom,
+      distance: new DOMMatrixReadOnly(
+        getComputedStyle(el.querySelector(".modal-sheet")).transform,
+      ).m42,
       close: el.querySelector(".modal-close").getBoundingClientRect().top,
     }));
-    assert(
-      parseFloat(dragged.bottom) < -20,
-      "sheet follows the finger under CSP",
+    assert.equal(
+      dragged.bottom,
+      "0px",
+      "The dialog stays anchored without per-frame layout changes",
     );
+    assert(dragged.distance > 20, "Sheet content follows the finger under CSP");
     assert.equal(
       dragged.close,
       closeBounds.y,
       "viewport close button stays fixed during a pull",
     );
+    const beforeMove = await layouts();
+    for (let step = 1; step <= 6; step++) {
+      await send("touchMove", [{ ...p, y: p.y + 30 + step * 4 }]);
+      await page.waitForTimeout(20);
+    }
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    assert.equal(
+      await layouts(),
+      beforeMove,
+      "Following the finger does not perform repeated layout",
+    );
+    const layoutsBefore = await layouts();
+    for (let step = 1; step <= 6; step++) {
+      await send("touchMove", [{ ...p, y: p.y + 30 + step * 5 }]);
+      await page.waitForTimeout(20);
+    }
+    assert.equal(
+      await layouts(),
+      layoutsBefore,
+      "Tracking a pull does not relayout the preview",
+    );
     await send("touchEnd");
     await page.waitForTimeout(180);
     assert.equal(await sheet.getAttribute("data-dragging"), null);
     assert.equal(
-      await sheet.evaluate((el) => getComputedStyle(el).bottom),
-      "0px",
+      await sheet
+        .locator(":scope > .modal-sheet")
+        .evaluate((el) => getComputedStyle(el).transform),
+      "none",
       "short pull snaps back",
     );
     await swipe(100, 15);
@@ -160,11 +292,46 @@ try {
     );
     await page.keyboard.press("Escape");
     await guide.waitFor({ state: "detached" });
+    assert.equal(
+      await navigation.evaluate((el) => getComputedStyle(el).visibility),
+      "hidden",
+      "Closing a nested popup never reveals navigation behind its preview",
+    );
     await sheet.evaluate((el) => {
       el.scrollTop = 0;
     });
+    if (reducedMotion === "no-preference")
+      await sheet.evaluate((el) => {
+        const observer = new MutationObserver(() => {
+          if (!el.hasAttribute("data-closing")) return;
+          el.querySelector(".modal-sheet")
+            .getAnimations()
+            .find((animation) => animation.id === "modal-exit")
+            ?.pause();
+          observer.disconnect();
+        });
+        observer.observe(el, {
+          attributes: true,
+          attributeFilter: ["data-closing"],
+        });
+      });
     await swipe(0, 180);
+    if (reducedMotion === "no-preference") {
+      assert.equal(
+        await navigation.evaluate((el) => getComputedStyle(el).visibility),
+        "hidden",
+        "Navigation waits until the closing preview has actually gone",
+      );
+      await sheet.evaluate((el) =>
+        el
+          .querySelector(".modal-sheet")
+          .getAnimations()
+          .find((animation) => animation.id === "modal-exit")
+          .finish(),
+      );
+    }
     await sheet.waitFor({ state: "detached" });
+    await returningNavigation();
     assert.equal(
       await page.evaluate(() => window.swipeCloseCalls),
       1,
@@ -222,6 +389,7 @@ try {
       .getByRole("button", { name: "Close details", exact: true })
       .click();
     await sheet.waitFor({ state: "detached" });
+    await returningNavigation();
     assert.equal(await page.evaluate(() => window.swipeCloseCalls), 2);
     await open();
     const interrupted = await point();
@@ -247,7 +415,7 @@ try {
     await page.close();
   }
   console.log(
-    "Sheet swipe passed: native touch dismissal, scroll/control protection, nested dialogs, fixed close button, cancellation, desktop and reduced motion.",
+    "Sheet swipe passed: composited movement without repeated layout, native touch dismissal, scroll/control protection, nested dialogs, fixed close button, smooth navigation return after swipe/button dismissal, cancellation, desktop and reduced motion.",
   );
 } finally {
   await browser?.close();

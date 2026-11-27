@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { attributeMarketSelection } from "../src/orderbook/attribute-market.ts";
+import {
+  attributeMarketSelection,
+  marketScopeSelection,
+} from "../src/orderbook/attribute-market.ts";
 import {
   selectionFromParams,
   selectionParams,
@@ -15,6 +18,34 @@ const gift: ValuationSubject = {
     traits: { model: "model", backdrop: "back", pattern: "symbol" },
   },
 };
+test("bid alternatives and unrestricted traits link to independent asks with the same currency", () => {
+  for (const scope of [
+    { models: ["one"] },
+    { backdrops: ["blue"] },
+    { patterns: ["crown"] },
+    {},
+    { number: { min: 1, max: 1000 } },
+  ]) {
+    const selection = marketScopeSelection(gift.book, scope, "asks");
+    assert.deepEqual(selection.filters, {
+      collection_id: "collection",
+      currency_id: "XTR",
+      venue_id: null,
+      models: [],
+      backdrops: [],
+      patterns: [],
+      number: null,
+      price: null,
+      ...scope,
+    });
+    assert.equal(selection.source, "asks");
+    assert.equal(selection.sort, "price_asc");
+    assert.deepEqual(
+      selectionFromParams(selectionParams(selection)).filters,
+      selection.filters,
+    );
+  }
+});
 test("table price links use each independent valuation scope and price direction", () => {
   for (const [scope, models, backdrops, patterns] of [
     ["collection", [], [], []],

@@ -53,20 +53,34 @@ export function Modal({
     if (!motion || !element.animate) return finish();
     element.dataset.closing = "true";
     const swipe = element.dataset.swipeDismiss === "true";
-    const exit = element.animate(
+    const sheet = swipe
+      ? element.querySelector<HTMLElement>(":scope > .modal-sheet")
+      : null;
+    const target = sheet ?? element;
+    const exit = target.animate(
       [
         {
           opacity: 1,
-          ...(swipe ? { bottom: getComputedStyle(element).bottom } : {}),
-          ...(viewportClose ? {} : { transform: "translateY(0)" }),
+          ...(sheet
+            ? { transform: getComputedStyle(sheet).transform }
+            : viewportClose
+              ? {}
+              : { transform: "translateY(0)" }),
         },
         {
           opacity: 0,
-          ...(swipe ? { bottom: `${-element.offsetHeight - 24}px` } : {}),
-          ...(viewportClose ? {} : { transform: "translateY(8px)" }),
+          ...(sheet
+            ? { transform: `translate3d(0, ${element.offsetHeight + 24}px, 0)` }
+            : viewportClose
+              ? {}
+              : { transform: "translateY(8px)" }),
         },
       ],
-      { duration: 140, easing: "ease-in", fill: "forwards" },
+      {
+        duration: swipe ? 180 : 140,
+        easing: swipe ? "cubic-bezier(.2,.7,.2,1)" : "ease-in",
+        fill: "forwards",
+      },
     );
     exit.id = "modal-exit";
     animation.current = exit;
@@ -180,7 +194,7 @@ export function Modal({
       ) : (
         closeButton
       )}
-      {children}
+      {swipeToClose ? <div className="modal-sheet">{children}</div> : children}
     </dialog>
   );
 }

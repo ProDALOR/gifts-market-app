@@ -14,6 +14,8 @@ export function useSheetSwipe(
   useLayoutEffect(() => {
     const element = dialog.current;
     if (!enabled || !element) return;
+    const sheet = element.querySelector<HTMLElement>(":scope > .modal-sheet");
+    if (!sheet) return;
     const mobile = matchMedia("(max-width: 959px)");
     let gesture:
       | {
@@ -26,16 +28,30 @@ export function useSheetSwipe(
         }
       | undefined;
     let settling: Animation | undefined;
+    let frame: number | undefined;
+    const cancelFrame = () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+    };
+    const paint = () => {
+      frame = undefined;
+      if (gesture?.dragging)
+        sheet.style.transform = `translate3d(0, ${gesture.distance}px, 0)`;
+    };
     const reset = (animate = false) => {
       const distance = gesture?.distance ?? 0;
+      cancelFrame();
       gesture = undefined;
       delete element.dataset.dragging;
       delete element.dataset.swipeDismiss;
       settling?.cancel();
-      element.style.removeProperty("--sheet-drag-y");
-      if (animate && distance && latest.current.motion && element.animate)
-        settling = element.animate(
-          [{ bottom: `${-distance}px` }, { bottom: "0px" }],
+      sheet.style.removeProperty("transform");
+      if (animate && distance && latest.current.motion && sheet.animate)
+        settling = sheet.animate(
+          [
+            { transform: `translate3d(0, ${distance}px, 0)` },
+            { transform: "translate3d(0, 0, 0)" },
+          ],
           { duration: 160, easing: "cubic-bezier(.2,.7,.2,1)" },
         );
     };
@@ -97,8 +113,7 @@ export function useSheetSwipe(
       if (!event.cancelable) return reset(true);
       event.preventDefault();
       gesture.distance = Math.max(0, Math.min(dy, innerHeight));
-      // Moving the fixed sheet's bottom keeps the viewport close button fixed too.
-      element.style.setProperty("--sheet-drag-y", `${gesture.distance}px`);
+      if (frame === undefined) frame = requestAnimationFrame(paint);
     };
     const end = (event: TouchEvent) => {
       if (!gesture?.dragging) return reset();
@@ -112,6 +127,8 @@ export function useSheetSwipe(
         latest.current.canStart() &&
         (distance >= threshold || flick)
       ) {
+        cancelFrame();
+        paint();
         gesture = undefined;
         delete element.dataset.dragging;
         element.dataset.swipeDismiss = "true";

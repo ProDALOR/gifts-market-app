@@ -2,7 +2,7 @@ import type { CatalogOption, Collection } from "../orderbook.ts";
 import { traits } from "../orderbook.ts";
 const indexes = new WeakMap<
   ReadonlyMap<string, CatalogOption>,
-  WeakMap<Collection, Map<string, CatalogOption[]>>
+  Map<string, CatalogOption[]>
 >();
 export function collectionOptions(
   collection: Collection | undefined,
@@ -11,15 +11,10 @@ export function collectionOptions(
 ) {
   const trait = traits.find((trait) => trait.id === id);
   if (!collection || !trait) return [];
-  let collections = indexes.get(options);
-  if (!collections) {
-    collections = new WeakMap();
-    indexes.set(options, collections);
-  }
-  let selections = collections.get(collection);
+  let selections = indexes.get(options);
   if (!selections) {
     selections = new Map();
-    collections.set(collection, selections);
+    indexes.set(options, selections);
   }
   const cached = selections.get(id);
   if (cached) return cached;

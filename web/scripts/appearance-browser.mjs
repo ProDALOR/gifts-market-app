@@ -154,7 +154,7 @@ try {
       assert.equal(
         await page
           .locator(".app-navigation")
-          .evaluate((nav) => getComputedStyle(nav).display !== "none"),
+          .evaluate((nav) => getComputedStyle(nav).visibility === "visible"),
         true,
         "Radio focus must not be mistaken for a keyboard",
       );
@@ -169,6 +169,7 @@ try {
           .querySelector(".app-navigation")
           .classList.contains("keyboard-open"),
       );
+      assert.equal(await page.locator(".app-navigation").isVisible(), false);
       await page.evaluate(() => {
         const input = document.getElementById("keyboard-probe");
         input.blur();

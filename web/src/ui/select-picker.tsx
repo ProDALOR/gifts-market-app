@@ -72,13 +72,23 @@ export function SelectPicker<T extends string>({
     const outside = (event: PointerEvent) => {
       if (!host.current?.contains(event.target as Node)) setOpen(false);
     };
+    let frame: number | undefined;
+    const schedule = (event: Event) => {
+      if (event.target instanceof Node && menu.contains(event.target)) return;
+      if (frame !== undefined) return;
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        place();
+      });
+    };
     document.addEventListener("pointerdown", outside);
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, true);
     return () => {
       document.removeEventListener("pointerdown", outside);
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, true);
+      if (frame !== undefined) cancelAnimationFrame(frame);
     };
   }, [open, disabled]);
   function close() {

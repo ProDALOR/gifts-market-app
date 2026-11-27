@@ -101,6 +101,7 @@
     border-color: var(--line);
     border-radius: 15px;
     box-shadow: 0 4px 20px #0004;
+    transition: opacity 160ms ease-out;
   }
   @supports (backdrop-filter: blur(8px)) or (-webkit-backdrop-filter: blur(8px)) {
     .app-navigation {
@@ -160,6 +161,8 @@
   }
   body:has(dialog[open], [role="listbox"]) .app-navigation,
   .app-navigation.keyboard-open {
-    display: none;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
   }
 }

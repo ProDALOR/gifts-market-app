@@ -1,12 +1,4 @@
-import {
-  lazy,
-  memo,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
 import type { GiftMedia } from "../market";
 import type { ReactNode } from "react";
 import type { BackdropPalette } from "./gift-appearance";
@@ -17,6 +9,7 @@ import {
   usePreviewVisibility,
 } from "./preview-environment";
 import { useArtworkImage } from "./use-artwork-image";
+import { ArtworkImage } from "./artwork-image";
 import { useSettledVisibility } from "./use-playback";
 import type { PlaybackPolicy } from "./use-playback";
 import { useDisplayMode } from "../app/preferences";
@@ -228,37 +221,5 @@ function Artwork({
       )}
       {children}
     </span>
-  );
-}
-
-function ArtworkImage({
-  source,
-  eager,
-  priority,
-}: {
-  source: ReturnType<typeof useArtworkImage>["sources"][number];
-  eager: boolean;
-  priority: "high" | "auto";
-}) {
-  const complete = useCallback(
-    (image: HTMLImageElement | null) => {
-      // Memory-cache completions can precede React's load listener. Reveal before the first paint.
-      if (image?.complete && image.naturalWidth) source.loaded(image);
-    },
-    [source.loaded],
-  );
-  return (
-    <img
-      ref={complete}
-      src={source.url}
-      alt=""
-      style={{ visibility: source.status !== "ready" ? "hidden" : undefined }}
-      loading={eager ? "eager" : "lazy"}
-      fetchPriority={priority}
-      decoding="async"
-      className={`gift-model-image${source.status === "ready" ? " loaded" : ""}`}
-      onLoad={(event) => source.loaded(event.currentTarget)}
-      onError={source.failed}
-    />
   );
 }

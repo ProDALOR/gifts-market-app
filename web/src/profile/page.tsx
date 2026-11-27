@@ -130,9 +130,11 @@ export function ProfilePage({ context }: { context: TelegramContext }) {
                   </a>
                 )}
               </div>
-              <button className="profile-sign-out" onClick={session.logout}>
-                Sign out
-              </button>
+              {!context.app && !context.initData && (
+                <button className="profile-sign-out" onClick={session.logout}>
+                  Sign out
+                </button>
+              )}
             </>
           ) : (
             <section

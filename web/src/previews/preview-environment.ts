@@ -43,18 +43,25 @@ type Intersections = {
   observer: IntersectionObserver;
   targets: Map<Element, Set<(visible: boolean) => void>>;
 };
-const intersections = new Map<number, Intersections>();
+const intersections = new Map<Element | null, Map<number, Intersections>>();
 /** Visibility controls playback; a bounded margin admits static painting ahead of scrolling. */
 export function usePreviewVisibility(
   ref: { current: Element | null },
   margin = 0,
   enabled = true,
+  scrollRoot?: { current: Element | null },
 ) {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     const element = ref.current;
     if (!element || !enabled) return;
-    let group = intersections.get(margin);
+    const root = scrollRoot?.current ?? null;
+    let margins = intersections.get(root);
+    if (!margins) {
+      margins = new Map();
+      intersections.set(root, margins);
+    }
+    let group = margins.get(margin);
     if (!group) {
       const targets = new Map<Element, Set<(visible: boolean) => void>>();
       group = {
@@ -66,10 +73,10 @@ export function usePreviewVisibility(
                 .get(entry.target)
                 ?.forEach((update) => update(entry.isIntersecting));
           },
-          { threshold: 0.01, rootMargin: `${margin}px` },
+          { root, threshold: 0.01, rootMargin: `${margin}px` },
         ),
       };
-      intersections.set(margin, group);
+      margins.set(margin, group);
     }
     let updates = group.targets.get(element);
     if (!updates) {
@@ -86,10 +93,11 @@ export function usePreviewVisibility(
       }
       if (!group.targets.size) {
         group.observer.disconnect();
-        intersections.delete(margin);
+        margins.delete(margin);
+        if (!margins.size) intersections.delete(root);
       }
     };
-  }, [ref, margin, enabled]);
+  }, [ref, margin, enabled, scrollRoot]);
   return enabled && visible;
 }
 
