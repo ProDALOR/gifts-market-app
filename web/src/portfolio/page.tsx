@@ -16,6 +16,7 @@ import {
   useNavigation,
   useNavigationBack,
   usePageState,
+  useHistoryState,
   useSharedCurrency,
 } from "../app/navigation";
 import { portfolioUser } from "../app/routes";
@@ -48,8 +49,10 @@ import {
   portfolioSort,
   portfolioSortOptions,
   portfolioRelations,
+  portfolioGiftNumber,
 } from "./model";
-import type { PortfolioFilters, PortfolioItem, PortfolioState } from "./model";
+import type { PortfolioFilters, PortfolioItem } from "./model";
+import { PortfolioRefreshButton } from "./refresh-button";
 import "./portfolio.css";
 const keyOf = (item: PortfolioItem) => item.gift.gift.id;
 const initialFilters: PortfolioFilters = {
@@ -58,53 +61,52 @@ const initialFilters: PortfolioFilters = {
   number: "",
   sort: "value_desc",
 };
-function RefreshButton({
-  busy,
-  after,
-  refresh,
+/** Keep incomplete edits out of requests and shared links, retaining the last valid selection. */
+function GiftNumberFilter({
+  value,
+  change,
 }: {
-  busy: boolean;
-  after?: string | null;
-  refresh: () => void;
+  value: string;
+  change: (value: string) => void;
 }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => setNow(Date.now()), [after]);
-  const cooldown = after
-    ? Math.max(0, Math.ceil((Date.parse(after) - now) / 1000))
-    : 0;
+  const [draft, setDraft] = useState(value);
+  const [error, setError] = useState("");
   useEffect(() => {
-    if (!cooldown || document.hidden) return;
-    const timer = setTimeout(() => setNow(Date.now()), 1000);
-    return () => clearTimeout(timer);
-  }, [cooldown, after]);
-  useEffect(() => {
-    const tick = () => setNow(Date.now());
-    document.addEventListener("visibilitychange", tick);
-    return () => document.removeEventListener("visibilitychange", tick);
-  }, []);
+    setDraft(value);
+    setError("");
+  }, [value]);
   return (
-    <button
-      className={`portfolio-refresh${busy ? " busy" : ""}`}
-      disabled={busy || cooldown > 0}
-      onClick={refresh}
-      aria-label="Refresh gifts"
-      title={
-        busy
-          ? "Checking gifts"
-          : cooldown
-            ? `Recheck available in ${cooldown}s`
-            : "Recheck Telegram gifts"
-      }
-    >
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1" />
-      </svg>
-      {cooldown > 0 && !busy && (
-        <span className="portfolio-cooldown" aria-hidden="true">
-          {cooldown}s
+    <>
+      <input
+        type="text"
+        inputMode="numeric"
+        aria-label="Gift #"
+        placeholder="Gift #"
+        value={draft}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? "portfolio-number-error" : undefined}
+        onChange={(event) => {
+          const next = event.target.value;
+          setDraft(next);
+          try {
+            portfolioGiftNumber(next);
+            setError("");
+            change(next);
+          } catch (error) {
+            setError((error as Error).message);
+          }
+        }}
+      />
+      {error && (
+        <span
+          id="portfolio-number-error"
+          className="portfolio-number-error"
+          role="status"
+        >
+          {error}
         </span>
       )}
-    </button>
+    </>
   );
 }
 function Owner({
@@ -121,6 +123,7 @@ function Owner({
   choose: (value: number) => void;
 }) {
   const [input, setInput] = useState(user?.toString() || "");
+  useEffect(() => setInput(user?.toString() || ""), [user]);
   const host = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null),
     field = useRef<HTMLInputElement>(null);
@@ -239,11 +242,14 @@ function PortfolioView({
       }
     },
   );
+  const [selectedId, setSelected] = useHistoryState<string | undefined>(
+    "portfolio.preview",
+    () => undefined,
+  );
   const [open, setOpen] = useState<TraitKey>(),
-    [selectedId, setSelected] = useState<string>(),
     [previewIds, setPreviewIds] = useState<string[]>([]),
     [ownerOpen, setOwnerOpen] = useState(!initialUser && !context.initData);
-  const controls = useRef<HTMLElement>(null);
+  const controls = useRef<HTMLDivElement>(null);
   const portfolio = usePortfolio(user, currency);
   const rows = usePortfolioRows(
     user,
@@ -252,7 +258,7 @@ function PortfolioView({
     portfolio.state?.valuation,
     portfolio.resubscribe,
     portfolio.ready,
-    !!selectedId,
+    selectedId,
   );
   const filterKey = rows.queryKey;
   const sharingScope = useMemo(
@@ -281,8 +287,15 @@ function PortfolioView({
     [items, selectedId],
   );
   useEffect(() => {
-    if (selectedId && !selected) setSelected(undefined);
-  }, [selectedId, selected]);
+    if (
+      selectedId &&
+      !selected &&
+      portfolio.ready &&
+      !rows.loading &&
+      rows.version
+    )
+      setSelected(undefined);
+  }, [selectedId, selected, portfolio.ready, rows.loading, rows.version]);
   const selectedCollection =
     selected?.resolved?.collection_id || filters.collection;
   const demanded = useMemo(
@@ -328,14 +341,13 @@ function PortfolioView({
     }
   }, [user, currency, filters]);
   useNavigationBack(!!open, () => setOpen(undefined));
-  const filtered = items;
   const visible = useCallback(
     (start: number, end: number, anchor = start) => {
       const ids = [
         ...new Set(
           [
-            ...filtered.slice(Math.max(start, anchor), end),
-            ...filtered.slice(start, Math.max(start, anchor)),
+            ...items.slice(Math.max(start, anchor), end),
+            ...items.slice(start, Math.max(start, anchor)),
           ].flatMap((item) =>
             item.resolved ? [item.resolved.collection_id] : [],
           ),
@@ -345,15 +357,8 @@ function PortfolioView({
         JSON.stringify(old) === JSON.stringify(ids) ? old : ids,
       );
     },
-    [filtered],
+    [items],
   );
-  const summary = rows.selection ?? {
-    count: 0,
-    total: undefined,
-    unverified: 0,
-    unpriced: 0,
-    collections: [],
-  };
   const isFiltered = !!(
     filters.collection ||
     filters.number ||
@@ -393,13 +398,26 @@ function PortfolioView({
   };
   const state = portfolio.state,
     report = state?.valuation;
+  const hasGifts = !!report?.count;
+  const summary = isFiltered ? rows.selection : report;
+  const updatedAt = report?.evaluated_at ?? state?.inventory?.checked_at;
   const giftCount = report?.count.toLocaleString();
   const busy =
     !!state &&
     ["queued", "loading_inventory", "valuing"].includes(state.progress.stage);
   const partial = state?.inventory?.complete === false;
   const error = portfolio.error || state?.error;
-  const total = isFiltered ? summary.total : report?.total;
+  const showGrid = !!user && (hasGifts || (!report && !error));
+  const empty =
+    !!user &&
+    portfolio.ready &&
+    !!report &&
+    !busy &&
+    !rows.loading &&
+    !rows.error &&
+    !error &&
+    items.length === 0;
+  const total = summary?.total;
   const sortKey = filters.sort.startsWith("number")
     ? "number"
     : filters.sort.startsWith("position")
@@ -431,13 +449,13 @@ function PortfolioView({
       order={selected ? portfolioSubject(selected, currency) : undefined}
     >
       <div className="workspace">
-        <main className="orderbook market-shell portfolio-shell">
+        <main
+          className="orderbook market-shell portfolio-shell"
+          data-has-gifts={hasGifts}
+        >
           <aside
             className="market-sidebar"
-            id="portfolio-filters"
-            tabIndex={-1}
             aria-label="Portfolio controls"
-            ref={controls}
             data-scroll-container
           >
             <AppHeader
@@ -456,111 +474,117 @@ function PortfolioView({
               }
             />
             <AppNavigation page="portfolio" />
-            <button
-              className="collection-all"
-              aria-label="All gifts"
-              aria-describedby={report ? "portfolio-all-count" : undefined}
-              aria-pressed={!filters.collection}
-              title="Show all portfolio collections"
-              onClick={() => choose("")}
+            <div
+              className="portfolio-filter-controls"
+              id="portfolio-filters"
+              tabIndex={-1}
+              ref={controls}
+              data-scroll-container
+              hidden={!hasGifts}
             >
-              <GiftPlaceholder active={false} loading={false} />
-              <span className="collection-all-label">All gifts</span>
-              {report && (
-                <span
-                  className="collection-all-count"
-                  aria-hidden="true"
-                  title={`${giftCount} gifts in this portfolio`}
-                >
-                  {giftCount}
-                </span>
+              {hasGifts && (
+                <>
+                  <button
+                    className="collection-all"
+                    aria-label="All gifts"
+                    aria-describedby={
+                      report ? "portfolio-all-count" : undefined
+                    }
+                    aria-pressed={!filters.collection}
+                    title="Show all portfolio collections"
+                    onClick={() => choose("")}
+                  >
+                    <GiftPlaceholder active={false} loading={false} />
+                    <span className="collection-all-label">All gifts</span>
+                    {report && (
+                      <span
+                        className="collection-all-count"
+                        aria-hidden="true"
+                        title={`${giftCount} gifts in this portfolio`}
+                      >
+                        {giftCount}
+                      </span>
+                    )}
+                    <span className="collection-all-check" aria-hidden="true">
+                      ✓
+                    </span>
+                    {report && (
+                      <span className="sr" id="portfolio-all-count">
+                        {giftCount} gifts in this portfolio
+                      </span>
+                    )}
+                  </button>
+                  <CollectionRail
+                    collections={collections}
+                    selected={filters.collection}
+                    select={choose}
+                  />
+                  <TraitPickers
+                    key={filters.collection}
+                    collection={catalog.item}
+                    options={catalog.options}
+                    filters={pickerFilters}
+                    change={changeTrait}
+                    open={open}
+                    setOpen={setOpen}
+                    loading={catalog.optionsLoading}
+                    loadError={catalog.optionsError}
+                  />
+                  <TraitPreview
+                    collection={catalog.item}
+                    options={catalog.options}
+                    filters={pickerFilters}
+                    reset={() => {
+                      setFilters((old) => ({ ...old, traits: {} }));
+                      setOpen(undefined);
+                    }}
+                  />
+                  <div className="portfolio-filters">
+                    <GiftNumberFilter
+                      key={user}
+                      value={filters.number}
+                      change={(number) =>
+                        setFilters((old) => ({ ...old, number }))
+                      }
+                    />
+                    <div className="sort-control portfolio-sort">
+                      <SortPicker
+                        options={portfolioSortOptions}
+                        value={sortKey}
+                        change={(key) =>
+                          setFilters({
+                            ...filters,
+                            sort: portfolioSort(
+                              key,
+                              key === "position" ? true : ascending,
+                            ),
+                          })
+                        }
+                      />
+                      <button
+                        className="sort-direction"
+                        aria-label={
+                          ascending ? "Sort descending" : "Sort ascending"
+                        }
+                        onClick={() =>
+                          setFilters({
+                            ...filters,
+                            sort: portfolioSort(sortKey, !ascending),
+                          })
+                        }
+                      >
+                        {ascending ? "↑" : "↓"}
+                      </button>
+                    </div>
+                  </div>
+                </>
               )}
-              <span className="collection-all-check" aria-hidden="true">
-                ✓
-              </span>
-              {report && (
-                <span className="sr" id="portfolio-all-count">
-                  {giftCount} gifts in this portfolio
-                </span>
-              )}
-            </button>
-            <CollectionRail
-              collections={collections}
-              selected={filters.collection}
-              select={choose}
-            />
-            {
-              <>
-                <TraitPickers
-                  key={filters.collection}
-                  collection={catalog.item}
-                  options={catalog.options}
-                  filters={resolveFilterSelectors(
-                    filters.traits,
-                    catalog.options,
-                  )}
-                  change={changeTrait}
-                  open={open}
-                  setOpen={setOpen}
-                  loading={catalog.optionsLoading}
-                  loadError={catalog.optionsError}
-                />
-                <TraitPreview
-                  collection={catalog.item}
-                  options={catalog.options}
-                  filters={resolveFilterSelectors(
-                    filters.traits,
-                    catalog.options,
-                  )}
-                  reset={() => {
-                    setFilters((old) => ({ ...old, traits: {} }));
-                    setOpen(undefined);
-                  }}
-                />
-              </>
-            }
-            <div className="portfolio-filters">
-              <label>
-                Gift #
-                <input
-                  type="number"
-                  min="1"
-                  value={filters.number}
-                  onChange={(e) =>
-                    setFilters({ ...filters, number: e.target.value })
-                  }
-                />
-              </label>
-              <div className="sort-control portfolio-sort">
-                <SortPicker
-                  options={portfolioSortOptions}
-                  value={sortKey}
-                  change={(key) =>
-                    setFilters({
-                      ...filters,
-                      sort: portfolioSort(
-                        key,
-                        key === "position" ? true : ascending,
-                      ),
-                    })
-                  }
-                />
-                <button
-                  className="sort-direction"
-                  aria-label={ascending ? "Sort descending" : "Sort ascending"}
-                  onClick={() =>
-                    setFilters({
-                      ...filters,
-                      sort: portfolioSort(sortKey, !ascending),
-                    })
-                  }
-                >
-                  {ascending ? "↑" : "↓"}
-                </button>
-              </div>
             </div>
           </aside>
-          <section className="market-results portfolio-content">
+          <section
+            className="portfolio-overview portfolio-summary"
+            aria-label="Portfolio estimate"
+          >
             <header className="portfolio-heading">
               <Owner
                 user={user}
@@ -569,53 +593,82 @@ function PortfolioView({
                 setOpen={setOwnerOpen}
                 choose={chooseUser}
               />
+              {user && (
+                <PortfolioRefreshButton
+                  busy={busy || portfolio.refreshing}
+                  ready={portfolio.ready}
+                  after={state?.refresh_after}
+                  refresh={() => void portfolio.refresh()}
+                />
+              )}
             </header>
+            {!user && (
+              <p className="portfolio-prompt">
+                Enter a Telegram user ID to view gifts.
+              </p>
+            )}
             {user && (
-              <section
-                className="portfolio-summary"
-                aria-label="Portfolio estimate"
-              >
+              <>
                 <div className="portfolio-summary-main">
-                  <div>
-                    <p className="portfolio-estimate-label">
-                      {isFiltered ? "Selection estimate" : "Estimate"}
-                    </p>
-                    <div className="portfolio-total">
-                      {total != null ? (
-                        <Quote
-                          price={total}
-                          currency={currency}
-                          format="rounded"
-                        />
-                      ) : (
-                        <span>—</span>
-                      )}
+                  {hasGifts && (
+                    <div className="portfolio-value">
+                      <p className="portfolio-estimate-label">
+                        {isFiltered ? "Selection estimate" : "Estimate"}
+                      </p>
+                      <div className="portfolio-total">
+                        {total != null ? (
+                          <Quote
+                            price={total}
+                            currency={currency}
+                            format="rounded"
+                            wrap
+                          />
+                        ) : (
+                          <span
+                            className="portfolio-value-placeholder"
+                            aria-label={
+                              summary
+                                ? "Estimate unavailable"
+                                : "Loading estimate"
+                            }
+                          >
+                            —
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <div className="portfolio-check">
-                    {state?.inventory && (
+                  )}
+                  {updatedAt && (
+                    <span
+                      className="portfolio-checked"
+                      title={
+                        state?.inventory
+                          ? `Gifts checked: ${new Date(state.inventory.checked_at).toLocaleString()}`
+                          : undefined
+                      }
+                    >
+                      {report ? "Updated" : "Gifts checked"}
                       <RelativeAge
-                        at={state.inventory.checked_at}
-                        label="Inventory checked"
-                        className="portfolio-checked"
+                        at={updatedAt}
+                        label={
+                          report ? "Estimate updated" : "Inventory checked"
+                        }
+                        className="portfolio-age"
                         ago
                       />
-                    )}
-                    <RefreshButton
-                      busy={busy}
-                      after={state?.refresh_after}
-                      refresh={() => void portfolio.refresh()}
-                    />
-                  </div>
+                    </span>
+                  )}
                 </div>
                 <ShareStatus sharing={sharing} />
                 {report && (
-                  <div className="portfolio-meta">
+                  <div className="portfolio-meta" aria-busy={!summary}>
                     <span>
-                      {summary.count.toLocaleString()}
-                      {isFiltered
-                        ? ` / ${(report?.count ?? 0).toLocaleString()}`
-                        : ""}{" "}
+                      {summary ? (
+                        summary.count.toLocaleString()
+                      ) : (
+                        <span aria-label="Loading selection count">…</span>
+                      )}
+                      {isFiltered ? ` / ${report.count.toLocaleString()}` : ""}{" "}
                       gifts
                     </span>
                     {isFiltered && report.total != null ? (
@@ -625,23 +678,26 @@ function PortfolioView({
                           price={report.total}
                           currency={currency}
                           format="rounded"
+                          wrap
                         />
                       </span>
-                    ) : (
-                      <span>{summary.collections.length} collections</span>
-                    )}
-                    {summary.unverified > 0 && (
+                    ) : summary?.collections.length ? (
+                      <span>
+                        {summary ? summary.collections.length : "…"} collections
+                      </span>
+                    ) : null}
+                    {!!summary?.unverified && (
                       <span title={portfolioRelations.unverified.description}>
                         {summary.unverified.toLocaleString()}{" "}
                         {portfolioRelations.unverified.label.toLowerCase()}
                       </span>
                     )}
-                    {summary.unpriced > 0 && (
+                    {!!summary?.unpriced && (
                       <span
                         className="portfolio-unpriced"
                         title="Gifts without an estimate are excluded from the total"
                       >
-                        {summary.unpriced} unpriced
+                        {summary.unpriced.toLocaleString()} unpriced
                       </span>
                     )}
                   </div>
@@ -682,22 +738,20 @@ function PortfolioView({
                   (report.stale || availability.status !== "available") && (
                     <p className="portfolio-delayed">Market updates delayed</p>
                   )}
-              </section>
+              </>
             )}
+          </section>
+          <section className="market-results portfolio-content">
             {error && (
               <p className="error" role="alert">
                 {error}
               </p>
             )}
-            {!user ? (
-              <p className="empty">
-                Open your portfolio in Telegram, or enter a user ID.
-              </p>
-            ) : (
+            {showGrid && (
               <VirtualGiftGrid
-                orders={filtered}
+                orders={items}
                 keyOf={keyOf}
-                busy={busy || rows.loading}
+                busy={busy || rows.loading || !portfolio.ready}
                 visible={visible}
                 label="Portfolio gifts"
                 render={(item, index) => (
@@ -709,7 +763,7 @@ function PortfolioView({
                     selected={selectedId === item.gift.gift.id}
                     select={setSelected}
                     position={index + 1}
-                    total={summary.count}
+                    total={summary?.count ?? 0}
                   />
                 )}
               />
@@ -727,18 +781,33 @@ function PortfolioView({
                 {rows.error} <button onClick={rows.retry}>Retry</button>
               </p>
             )}
-            {!busy &&
-              !rows.loading &&
-              !rows.error &&
-              user &&
-              state?.inventory &&
-              filtered.length === 0 && (
-                <p className="empty">
-                  {report?.count
+            {empty && (
+              <div className="portfolio-empty" role="status">
+                <p>
+                  {hasGifts
                     ? "No gifts match these filters."
                     : "No collectible gifts available."}
                 </p>
-              )}
+                {hasGifts && isFiltered && (
+                  <button
+                    onClick={() => {
+                      setFilters((old) => ({
+                        ...initialFilters,
+                        sort: old.sort,
+                      }));
+                      setOpen(undefined);
+                      controls.current
+                        ?.querySelector<HTMLInputElement>(
+                          'input[aria-label="Gift #"]',
+                        )
+                        ?.focus({ preventScroll: true });
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            )}
           </section>
         </main>
         <BackToTop target={controls} blocked={!!selected || ownerOpen} />
@@ -748,6 +817,11 @@ function PortfolioView({
             currency={currency}
             options={catalog.previewOptions}
             names={catalog.names}
+            collectionPreview={
+              catalog.types.find(
+                (collection) => collection.id === selectedCollection,
+              )?.preview ?? undefined
+            }
             close={() => setSelected(undefined)}
             share={share}
           />

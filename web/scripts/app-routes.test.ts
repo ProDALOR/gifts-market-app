@@ -16,6 +16,31 @@ const context = (start: string): TelegramContext => ({
   initData: "",
   app: { initDataUnsafe: { start_param: start } } as TelegramContext["app"],
 });
+test("market return controls restore from local history, never link query parameters", () => {
+  const url = new URL(
+    "https://market.test/?page=market&currency=GRAM&returnTo=portfolio",
+  );
+  assert.equal(
+    initialLocation(context(""), url, null).route.returnTo,
+    undefined,
+  );
+  assert.equal(
+    initialLocation(context(""), url, {
+      giftsMarket: { page: "market", index: 1, returnTo: "portfolio" },
+    }).route.returnTo,
+    "portfolio",
+  );
+  assert.equal(
+    initialLocation(context(""), url, {
+      giftsMarket: {
+        page: "market",
+        index: 1,
+        returnTo: "https://external.test",
+      },
+    }).route.returnTo,
+    undefined,
+  );
+});
 test("profile routes use the current session and discard market and launch parameters", () => {
   const result = initialLocation(
     context("portfolio_123"),

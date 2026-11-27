@@ -1444,6 +1444,14 @@ try {
         const fade = dialog.querySelector(".detail-valuation");
         const fadeBox = fade.getBoundingClientRect();
         const table = dialog.querySelector(".detail-attributes");
+        const pricing = dialog.querySelector(".detail-pricing");
+        const pricingBox = pricing.getBoundingClientRect();
+        const actionsStyle = getComputedStyle(
+          dialog.querySelector(".detail-actions"),
+        );
+        const bodyStyle = getComputedStyle(
+          dialog.querySelector(".detail-body"),
+        );
         const content = dialog
           .querySelector(".detail-content")
           .getBoundingClientRect();
@@ -1461,8 +1469,14 @@ try {
             fadeBox.bottom <= table.getBoundingClientRect().top + 1,
           opaqueText:
             getComputedStyle(fade).opacity === "1" &&
-            getComputedStyle(dialog.querySelector(".detail-pricing"))
-              .opacity === "1",
+            getComputedStyle(pricing).opacity === "1",
+          glass: getComputedStyle(pricing).backdropFilter === "blur(8px)",
+          spacing:
+            Math.abs(
+              table.getBoundingClientRect().top - pricingBox.bottom - 12,
+            ) < 1 &&
+            bodyStyle.paddingLeft === actionsStyle.paddingLeft &&
+            bodyStyle.paddingRight === actionsStyle.paddingRight,
           plainTable: !getComputedStyle(table).getPropertyValue(
             "--gift-backdrop-edge",
           ),
@@ -1489,6 +1503,8 @@ try {
         layout.contained &&
           layout.gradient &&
           layout.opaqueText &&
+          layout.glass &&
+          layout.spacing &&
           layout.plainTable &&
           layout.caption &&
           layout.close &&

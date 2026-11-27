@@ -33,6 +33,13 @@ const server = await createServer({
       name: "preview-facts-fixture",
       configureServer(server) {
         server.middlewares.use(async (req, res, next) => {
+          if (req.url.startsWith("/media/icons/")) {
+            res.setHeader("Content-Type", "image/svg+xml");
+            res.end(
+              '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>',
+            );
+            return;
+          }
           if (req.url === "/guide") {
             res.setHeader("Content-Type", "text/markdown");
             res.end("# Calculation\n\nThe full calculation remains readable.");
@@ -176,7 +183,9 @@ try {
                 return {
                   height: row.getBoundingClientRect().height,
                   font: getComputedStyle(value).fontSize,
-                  icon: getComputedStyle(value.querySelector("svg")).width,
+                  icon: getComputedStyle(
+                    value.querySelector(".currency-symbol"),
+                  ).width,
                   separated:
                     heading.getBoundingClientRect().right <=
                     value.getBoundingClientRect().left,

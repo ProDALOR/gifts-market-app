@@ -15,6 +15,7 @@ import { useSession } from "../app/session";
 import { SharedIcon, VenueIcon } from "../ui/icons";
 import { DisplaySettings } from "./display-settings";
 import { AppearanceSettings } from "./appearance-settings";
+import { BrandMark } from "../brand/brand-mark";
 import "./profile.css";
 
 /** Account UI uses the existing verified session; opening it starts no market or inventory reads. */
@@ -177,6 +178,24 @@ export function ProfilePage({ context }: { context: TelegramContext }) {
           <AppearanceSettings />
           <DisplaySettings />
           <p className="profile-settings-note">Saved on this device.</p>
+          <section
+            className="profile-card profile-api"
+            aria-labelledby="profile-api-title"
+          >
+            <h2 id="profile-api-title">API</h2>
+            <div className="profile-api-links">
+              <a href="/docs" target="_blank" rel="noreferrer">
+                REST docs ↗
+              </a>
+              <a href="/docs/ws" target="_blank" rel="noreferrer">
+                WebSocket docs ↗
+              </a>
+            </div>
+          </section>
+          <footer className="profile-footer">
+            <BrandMark />
+            <span>Every venue. One view.</span>
+          </footer>
         </section>
       </main>
     </div>

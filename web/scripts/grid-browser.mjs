@@ -36,8 +36,7 @@ return React.createElement('main',{className:'workspace'},React.createElement('d
 React.createElement('header',{style:{height:72}},'Market'),
 React.createElement('section',{className:'orders'},
 React.createElement(GiftGrid,{orders:feed.displayOrders,card,busy:feed.loadingMore,visible:feed.setVisibleRange}),
-React.createElement(ScrollLoader,{loading:feed.loadingMore,hasMore:feed.hasMore,disabled:!!feed.error,loadMore:feed.loadMore})),
-React.createElement('footer',{className:'app-footer'},'Footer')));}
+React.createElement(ScrollLoader,{loading:feed.loadingMore,hasMore:feed.hasMore,disabled:!!feed.error,loadMore:feed.loadMore}))));}
 const root=createRoot(document.getElementById('fixture'));root.render(React.createElement(App));window.unmount=()=>root.unmount();
 </script></body></html>`;
 const server = await createServer({

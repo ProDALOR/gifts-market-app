@@ -21,7 +21,7 @@ const artwork = await readFile(
 );
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module">
 import React from 'react';import{createRoot}from'react-dom/client';import{PortfolioPage}from'/src/portfolio/page.tsx';import'/src/style.css';
-createRoot(document.getElementById('root')).render(React.createElement(PortfolioPage,{initialUser:7,context:{initData:''}}));</script></body></html>`;
+createRoot(document.getElementById('root')).render(React.createElement(PortfolioPage,{initialUser:new URLSearchParams(location.search).has('no_user')?undefined:7,context:{initData:''}}));</script></body></html>`;
 const server = await createServer({
   root,
   cacheDir,
@@ -31,7 +31,7 @@ const server = await createServer({
       name: "portfolio-fixture",
       configureServer(server) {
         server.middlewares.use(async (req, res, next) => {
-          if (req.url === "/__portfolio") {
+          if (req.url?.split("?")[0] === "/__portfolio") {
             res.setHeader("content-type", "text/html");
             res.end(await server.transformIndexHtml(req.url, html));
           } else next();
@@ -46,12 +46,29 @@ const collection = {
   name: "Gift",
   slug: "Gift",
   preview: {
-    thumbnail_url: "/media/models/model/thumbnail",
-    preview_url: "/media/models/model/preview",
+    thumbnail_url: "/media/models/collection-default/thumbnail",
+    preview_url: "/media/models/collection-default/preview",
+  },
+};
+const otherCollection = {
+  ...collection,
+  id: "other",
+  name: "Other Gift",
+  preview: {
+    thumbnail_url: "/media/models/other-default/thumbnail",
+    preview_url: "/media/models/other-default/preview",
   },
 };
 const models = [
-    { kind: "model", id: "model", name: "Model", media: collection.preview },
+    {
+      kind: "model",
+      id: "model",
+      name: "Model",
+      media: {
+        thumbnail_url: "/media/models/model/thumbnail",
+        preview_url: "/media/models/model/preview",
+      },
+    },
   ],
   backdrops = [
     {
@@ -194,10 +211,7 @@ try {
             patterns: [
               { ...patterns[0], aliases: [{ namespace: "name", id: "Star" }] },
             ],
-            collections: [
-              collection,
-              { ...collection, id: "other", name: "Other Gift" },
-            ],
+            collections: [collection, otherCollection],
             currencies: [
               { id: "GRAM", name: "GRAM", decimals: 9 },
               { id: "XTR", name: "Stars", decimals: 0 },
@@ -215,7 +229,7 @@ try {
           headers: { etag: '"details"' },
           json: r.request().url().endsWith("/other")
             ? {
-                collection: { ...collection, id: "other", name: "Other Gift" },
+                collection: otherCollection,
                 models: [
                   { ...models[0], id: "other-model", name: "Other Model" },
                 ],
@@ -280,7 +294,17 @@ try {
       holdRefresh = false,
       holdSummary = false,
       releaseSummary,
-      pendingRefreshId;
+      pendingRefreshId,
+      holdPages = false;
+    const pendingPages = [];
+    const releasePages = async () => {
+      const until = Date.now() + 5000;
+      while (!pendingPages.length && Date.now() < until)
+        await page.waitForTimeout(10);
+      assert(pendingPages.length, "a delayed portfolio page was requested");
+      holdPages = false;
+      pendingPages.splice(0).forEach((respond) => respond());
+    };
     const cancelledRequests = new Set();
     const pageReads = [];
     const send = (socket, value) => socket.send(JSON.stringify(value));
@@ -329,33 +353,37 @@ try {
         }
         if (frame.type === "request" && frame.method === "portfolio.query") {
           pageReads.push(frame.params);
-          try {
-            send(socket, {
-              type: "result",
-              id: frame.id,
-              method: frame.method,
-              data: portfolioPage(report, {
-                ...frame.params,
-                filters: {
-                  ...frame.params.filters,
-                  ...Object.fromEntries(
-                    Object.entries({ models, backdrops, patterns }).map(
-                      ([kind, options]) => [
-                        kind,
-                        frame.params.filters?.[kind]?.map(
-                          (id) =>
-                            options.find((row) => id === `@name:${row.name}`)
-                              ?.id ?? id,
-                        ),
-                      ],
+          const respond = () => {
+            try {
+              send(socket, {
+                type: "result",
+                id: frame.id,
+                method: frame.method,
+                data: portfolioPage(report, {
+                  ...frame.params,
+                  filters: {
+                    ...frame.params.filters,
+                    ...Object.fromEntries(
+                      Object.entries({ models, backdrops, patterns }).map(
+                        ([kind, options]) => [
+                          kind,
+                          frame.params.filters?.[kind]?.map(
+                            (id) =>
+                              options.find((row) => id === `@name:${row.name}`)
+                                ?.id ?? id,
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                },
-              }),
-            });
-          } catch (error) {
-            send(socket, { type: "error", id: frame.id, error });
-          }
+                  },
+                }),
+              });
+            } catch (error) {
+              send(socket, { type: "error", id: frame.id, error });
+            }
+          };
+          if (holdPages) pendingPages.push(respond);
+          else respond();
         }
         if (frame.type === "request" && frame.method === "portfolio.refresh") {
           refreshCount++;
@@ -449,6 +477,16 @@ try {
     assert.equal(watchCount, 1);
     assert.equal(catalogDetails, 0);
     assert.equal(
+      await page.locator(".portfolio-filter-controls").isHidden(),
+      true,
+      "initial checks hide unavailable filters",
+    );
+    assert.equal(
+      await page.locator(".portfolio-total").count(),
+      0,
+      "initial checks show progress without an empty estimate",
+    );
+    assert.equal(
       await page.getByLabel("Estimate from", { exact: true }).count(),
       0,
     );
@@ -475,11 +513,39 @@ try {
       .filter({ hasText: "100 of 700" })
       .waitFor();
     report = state(7, 700);
+    report.inventory.checked_at = "2026-11-20T00:00:00Z";
+    holdPages = true;
     send(peer, {
       type: "portfolio.snapshot",
       id: watchId,
       data: portfolioSnapshot(report),
     });
+    await page.waitForFunction(() =>
+      document
+        .querySelector(".portfolio-meta")
+        ?.textContent.includes("700 gifts"),
+    );
+    assert.match(
+      await page.locator(".portfolio-meta").innerText(),
+      /1 collections/,
+    );
+    assert.equal(
+      await page.locator(".portfolio-meta").getAttribute("aria-busy"),
+      "false",
+    );
+    assert.equal(
+      await page.locator(".portfolio-age").getAttribute("datetime"),
+      report.valuation.evaluated_at,
+    );
+    assert.match(
+      await page.locator(".portfolio-checked").innerText(),
+      /Updated/,
+    );
+    assert.match(
+      await page.locator(".portfolio-checked").getAttribute("title"),
+      /Gifts checked/,
+    );
+    await releasePages();
     await page.locator('.gift-grid[data-order-count="100"]').waitFor();
     assert((await page.locator(".portfolio-card").count()) < 150);
     assert.equal(
@@ -488,6 +554,17 @@ try {
       "first load requests only one 100-gift page",
     );
     assert.equal(pageReads[0].limit, 100);
+    assert.equal(
+      await page
+        .getByPlaceholder("Gift #", { exact: true })
+        .getAttribute("aria-label"),
+      "Gift #",
+    );
+    assert.equal(
+      await page.locator(".portfolio-filters label").count(),
+      0,
+      "gift number has no separate caption row",
+    );
     await page
       .locator(".portfolio-meta")
       .filter({ hasText: "1 on-chain" })
@@ -506,7 +583,85 @@ try {
       })
       .waitFor();
 
+    const hosted = page.locator(".portfolio-card").filter({
+      has: page.getByRole("button", { name: "View Gift-3", exact: true }),
+    });
+    await hosted
+      .getByLabel("Hosted on this Telegram profile.", { exact: true })
+      .waitFor();
+    assert.equal(
+      await hosted.locator(".portfolio-relation .currency-symbol").count(),
+      0,
+      "hosted gifts do not use the on-chain badge",
+    );
+    assert.equal(
+      await unverified.locator(".portfolio-relation .currency-symbol").count(),
+      1,
+    );
+    const readsBeforeInvalid = pageReads.length,
+      lastUrl = page.url();
+    const firstGift = await page
+      .locator(".portfolio-card .card-open")
+      .first()
+      .getAttribute("aria-label");
+    for (const invalid of [
+      "0",
+      "-1",
+      "1.5",
+      "1e2",
+      "4294967296",
+      "9007199254740993",
+      "abc",
+    ]) {
+      await page
+        .getByRole("textbox", { name: "Gift #", exact: true })
+        .fill(invalid);
+      assert.equal(
+        await page
+          .getByRole("textbox", { name: "Gift #", exact: true })
+          .getAttribute("aria-invalid"),
+        "true",
+      );
+      assert.match(
+        await page.locator("#portfolio-number-error").innerText(),
+        /Enter a gift number/,
+      );
+      assert.equal(
+        pageReads.length,
+        readsBeforeInvalid,
+        "invalid edits do not query the API",
+      );
+      assert.equal(
+        page.url(),
+        lastUrl,
+        "invalid edits do not change shared links",
+      );
+      assert.equal(
+        await page
+          .locator(".portfolio-card .card-open")
+          .first()
+          .getAttribute("aria-label"),
+        firstGift,
+      );
+      assert.equal(await page.locator(".error").count(), 0);
+    }
+    holdPages = true;
     await page.getByLabel("Gift #", { exact: true }).fill("2");
+    await page.getByLabel("Loading selection count", { exact: true }).waitFor();
+    assert.match(
+      await page.locator(".portfolio-meta").innerText(),
+      /… \/ 700 gifts/,
+    );
+    assert.doesNotMatch(
+      await page.locator(".portfolio-meta").innerText(),
+      /0 \/ 700/,
+    );
+    assert.equal(
+      await page.locator(".portfolio-meta").getAttribute("aria-busy"),
+      "true",
+    );
+    assert.equal(await page.locator("#portfolio-number-error").count(), 0);
+    await releasePages();
     await page.locator('.gift-grid[data-order-count="1"]').waitFor();
     assert.equal(watchCount, 1);
     assert.equal(refreshCount, 0);
@@ -522,7 +677,29 @@ try {
       await page.locator(".portfolio-full-total").innerText(),
       /1\u00a0400/,
     );
-    await page.getByLabel("Gift #", { exact: true }).fill("");
+    await page.getByPlaceholder("Gift #", { exact: true }).fill("999999");
+    await page
+      .getByText("No gifts match these filters.", { exact: true })
+      .waitFor();
+    assert.equal(
+      await page.locator(".portfolio-filter-controls").isVisible(),
+      true,
+      "zero matches retain the way to change filters",
+    );
+    await page
+      .getByRole("button", { name: "Clear filters", exact: true })
+      .click();
+    await page.locator('.gift-grid[data-order-count="100"]').waitFor();
+    assert.equal(
+      await page.getByPlaceholder("Gift #", { exact: true }).inputValue(),
+      "",
+    );
+    assert.equal(
+      await page
+        .getByPlaceholder("Gift #", { exact: true })
+        .evaluate((el) => el === document.activeElement),
+      true,
+    );
     await page.getByRole("button", { name: "Gift", exact: true }).click();
     await page.locator("#pick-models").waitFor();
     assert(catalogDetails >= 1);
@@ -581,6 +758,45 @@ try {
             requestAnimationFrame(() => requestAnimationFrame(resolve)),
           ),
       );
+      const overview = await page
+        .locator(".portfolio-overview")
+        .evaluate((panel) => {
+          const bounds = panel.getBoundingClientRect();
+          const controls = document
+            .querySelector(".portfolio-filter-controls")
+            .getBoundingClientRect();
+          const header = document
+            .querySelector(".sidebar-heading")
+            .getBoundingClientRect();
+          const results = document
+            .querySelector(".portfolio-content")
+            .getBoundingClientRect();
+          const amount = panel.querySelector(".quote-amount");
+          const saved = amount.innerHTML;
+          amount.innerHTML =
+            "999\u00a0<wbr>999\u00a0<wbr>999\u00a0<wbr>999\u00a0<wbr>999.99";
+          const fits =
+            panel.scrollWidth <= panel.clientWidth &&
+            document.documentElement.scrollWidth <= innerWidth;
+          amount.innerHTML = saved;
+          return {
+            fits,
+            ordered:
+              innerWidth < 960
+                ? bounds.top >= header.bottom &&
+                  controls.top >= bounds.bottom &&
+                  results.top >= controls.bottom
+                : bounds.left >= controls.right && results.top >= bounds.bottom,
+            owners: document.querySelectorAll(".portfolio-owner-trigger")
+              .length,
+          };
+        });
+      assert(overview.fits, `large portfolio totals fit at ${width}px`);
+      assert(
+        overview.ordered,
+        `overview precedes filters on mobile and cards on desktop at ${width}px`,
+      );
+      assert.equal(overview.owners, 1, "resizing keeps one owner control");
       assert.equal(
         await page
           .getByRole("button", { name: "All gifts", exact: true })
@@ -902,6 +1118,26 @@ try {
     await page.getByRole("dialog").waitFor();
     const detailDialog = page.getByRole("dialog");
     await detailDialog
+      .locator(".attribute-collection .gift-model-image.loaded")
+      .waitFor();
+    assert.equal(
+      new URL(
+        await detailDialog
+          .locator(".attribute-collection img")
+          .getAttribute("src"),
+        page.url(),
+      ).pathname,
+      collection.preview.preview_url,
+      "collection row uses the collection's default artwork, not the selected model",
+    );
+    assert.equal(
+      await detailDialog
+        .locator(".attribute-collection .model-animation")
+        .count(),
+      0,
+      "collection table artwork stays static",
+    );
+    await detailDialog
       .getByRole("columnheader", { name: "Best asks", exact: true })
       .waitFor();
     await detailDialog
@@ -1046,6 +1282,17 @@ try {
       reads,
       "opening details reuses visible card metadata",
     );
+    await page
+      .locator(".attribute-collection .gift-model-image.loaded")
+      .waitFor();
+    assert.equal(
+      new URL(
+        await page.locator(".attribute-collection img").getAttribute("src"),
+        page.url(),
+      ).pathname,
+      otherCollection.preview.preview_url,
+      "All gifts uses the opened gift's own collection artwork",
+    );
     assert.equal(
       await page
         .getByRole("dialog")
@@ -1188,6 +1435,32 @@ try {
       "repeated clicks share one pending refresh request",
     );
     assert(pendingRefreshId);
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Refresh gifts", exact: true })
+        .isDisabled(),
+      true,
+      "pending refresh acknowledgement disables duplicate requests immediately",
+    );
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Refresh gifts", exact: true })
+        .getAttribute("aria-busy"),
+      "true",
+    );
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Refresh gifts", exact: true })
+        .isDisabled(),
+      true,
+      "refresh disables immediately while its acknowledgement is pending",
+    );
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Refresh gifts", exact: true })
+        .getAttribute("aria-busy"),
+      "true",
+    );
     await page.locator(".portfolio-owner-trigger").click();
     await page.getByLabel("Telegram user ID").fill("8");
     await page.getByRole("button", { name: "Open", exact: true }).click();
@@ -1210,6 +1483,152 @@ try {
       0,
     );
     assert.equal(await page.locator(".portfolio-card").count(), 0);
+    // An empty inventory is different from a filtered portfolio with no matches.
+    report = state(8, 0, 2);
+    send(peer, {
+      type: "portfolio.snapshot",
+      id: watchId,
+      data: portfolioSnapshot(report),
+    });
+    await page
+      .getByText("No collectible gifts available.", { exact: true })
+      .waitFor();
+    assert.equal(
+      await page.locator(".portfolio-filter-controls").isHidden(),
+      true,
+    );
+    assert.equal(
+      await page.getByPlaceholder("Gift #", { exact: true }).count(),
+      0,
+    );
+    assert.equal(
+      await page
+        .getByRole("combobox", { name: "Sort by", exact: true })
+        .count(),
+      0,
+    );
+    assert.equal(await page.locator(".portfolio-total").count(), 0);
+    assert.doesNotMatch(
+      await page.locator(".portfolio-meta").innerText(),
+      /0 collections/,
+    );
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Refresh gifts", exact: true })
+        .isVisible(),
+      true,
+    );
+    report.inventory.complete = false;
+    send(peer, {
+      type: "portfolio.snapshot",
+      id: watchId,
+      data: portfolioSnapshot(report),
+    });
+    await page
+      .getByText("Partial inventory", { exact: true })
+      .waitFor({ state: "visible" });
+    send(peer, {
+      type: "portfolio.progress",
+      id: watchId,
+      refresh_id: 3,
+      progress: { ...report.progress, stage: "loading_inventory", checked: 3 },
+    });
+    await page
+      .getByText("No collectible gifts available.", { exact: true })
+      .waitFor({ state: "detached" });
+    assert.equal(
+      await page
+        .getByRole("progressbar", { name: "Portfolio check progress" })
+        .isVisible(),
+      true,
+    );
+    report = state(8, 3, 3);
+    send(peer, {
+      type: "portfolio.snapshot",
+      id: watchId,
+      data: portfolioSnapshot(report),
+    });
+    await page.locator('.gift-grid[data-order-count="3"]').waitFor();
+    assert.equal(
+      await page.locator(".portfolio-filter-controls").isVisible(),
+      true,
+      "completed checks restore controls when gifts appear",
+    );
+    await page.locator(".portfolio-owner-trigger").click();
+    assert.equal(
+      await page.getByLabel("Telegram user ID", { exact: true }).inputValue(),
+      "8",
+      "owner input follows the opened account",
+    );
+    await page.keyboard.press("Escape");
+    assert.equal(
+      await page
+        .locator(".portfolio-owner-trigger")
+        .evaluate((el) => el === document.activeElement),
+      true,
+    );
+    const watchesBeforeEmpty = watchCount,
+      readsBeforeEmpty = pageReads.length;
+    await page.goto(server.resolvedUrls.local[0] + "__portfolio?no_user=1");
+    await page
+      .getByRole("button", { name: "Open portfolio", exact: true })
+      .waitFor();
+    assert.equal(
+      await page.locator(".portfolio-filter-controls").isHidden(),
+      true,
+    );
+    assert.equal(
+      await page.getByPlaceholder("Gift #", { exact: true }).count(),
+      0,
+    );
+    assert.equal(
+      await page
+        .getByRole("button", { name: "All gifts", exact: true })
+        .count(),
+      0,
+    );
+    assert.equal(await page.locator(".portfolio-total").count(), 0);
+    assert.equal(
+      await page
+        .getByRole("link", { name: "Portfolio", exact: true })
+        .getAttribute("aria-current"),
+      "page",
+    );
+    await page.getByLabel("Telegram user ID", { exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    assert.equal(
+      await page
+        .locator(".portfolio-owner-trigger")
+        .evaluate((el) => el === document.activeElement),
+      true,
+    );
+    const blankLayout = await page
+      .locator(".portfolio-shell")
+      .evaluate((shell) => ({
+        overflow: shell.scrollWidth > shell.clientWidth,
+        sidebarHeight: shell
+          .querySelector(".market-sidebar")
+          .getBoundingClientRect().height,
+      }));
+    assert.equal(blankLayout.overflow, false);
+    if (viewport.width >= 960)
+      assert(
+        blankLayout.sidebarHeight < 250,
+        "empty desktop sidebar fits its remaining controls",
+      );
+    assert.equal(
+      watchCount,
+      watchesBeforeEmpty,
+      "no account opens no portfolio watch",
+    );
+    assert.equal(
+      pageReads.length,
+      readsBeforeEmpty,
+      "no account requests no gift pages",
+    );
+    await page.screenshot({
+      path: join(output, `portfolio-empty-${viewport.width}.png`),
+    });
     assert.deepEqual(errors, []);
     await page.close();
   }

@@ -224,11 +224,8 @@
     font-size: 15px;
     line-height: 22px;
   }
-  .market-results .app-footer {
-    padding-top: 24px;
-    font-size: 10px;
-  }
   .detail[open] {
+    --detail-gutter: 20px;
     display: grid;
     grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
     grid-template-rows: minmax(0, 1fr);
@@ -259,11 +256,7 @@
     scrollbar-color: var(--line) transparent;
   }
   .detail-body {
-    --detail-padding-top: 18px;
-    --detail-padding-inline: 24px;
+    --detail-padding-top: 16px;
     flex: 1;
-  }
-  .detail-actions {
-    padding-inline: 24px;
   }
 }

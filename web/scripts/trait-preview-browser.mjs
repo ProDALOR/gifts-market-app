@@ -16,7 +16,7 @@ const collection={id:'gift',name:'Gift',model_ids:models.map(o=>o.id),backdrop_i
 const root=createRoot(document.getElementById('root'));
 window.mount=({modelCount=0,backdropCount=0,patternCount=0,long=false}={})=>{
  const filters=Object.fromEntries([[models,modelCount],[backdrops,backdropCount],[patterns,patternCount]].filter(([,count])=>count>0).map(([rows,count])=>[{model:'models',backdrop:'backdrops',pattern:'patterns'}[rows[0].kind],rows.slice(0,count).map(o=>o.id)]));
- root.render(React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook'},React.createElement(TraitPreview,{collection,options,filters,reset:()=>window.mount()}),long?React.createElement('div',{id:'long-content',style:{height:1400}},'Long market'):null,React.createElement('footer',{className:'app-footer'},'IGIFTS'))));
+ root.render(React.createElement('div',{className:'workspace'},React.createElement('main',{className:'orderbook'},React.createElement(TraitPreview,{collection,options,filters,reset:()=>window.mount()}),long?React.createElement('div',{id:'long-content',style:{height:1400}},'Long market'):null)));
 };window.mount();
 </script></body></html>`;
 const server = await createServer({
@@ -93,22 +93,6 @@ try {
   );
   await page.waitForFunction(() => typeof window.mount === "function");
   assert.equal(await page.locator(".trait-preview").count(), 0);
-  const bottom = () =>
-    page
-      .locator(".app-footer")
-      .evaluate(
-        (el) =>
-          Math.abs(
-            el.getBoundingClientRect().bottom -
-              (innerHeight -
-                parseFloat(getComputedStyle(el.parentElement).paddingBottom)),
-          ) < 2,
-      );
-  assert.equal(
-    await bottom(),
-    true,
-    "Empty pages anchor the footer above the bottom safe area",
-  );
   await page.evaluate(() => window.mount({ modelCount: 1 }));
   await page.locator(".preview-model").waitFor();
   assert.equal(
@@ -287,21 +271,8 @@ try {
   assert.equal(await page.locator(".preview-model").count(), 0);
   await page.getByRole("button", { name: "Reset traits", exact: true }).click();
   assert.equal(await page.locator(".trait-preview").count(), 0);
-  assert.equal(await bottom(), true);
   await page.evaluate(() => window.mount({ long: true }));
   await page.locator("#long-content").waitFor({ state: "attached" });
-  assert.equal(
-    await page
-      .locator(".app-footer")
-      .evaluate(
-        (el) =>
-          el.getBoundingClientRect().top >=
-          document.getElementById("long-content").getBoundingClientRect()
-            .bottom,
-      ),
-    true,
-    "Footer follows long content without covering it",
-  );
   for (const width of [320, 390, 480]) {
     await page.setViewportSize({ width, height: 844 });
     assert.equal(
@@ -313,7 +284,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(
-    "Trait previews passed: balanced backdrop rows, fixed monochrome wallpaper, adaptive model sizing, hidden unselected preview and short/long footer placement.",
+    "Trait previews passed: balanced backdrop rows, fixed monochrome wallpaper, adaptive model sizing, hidden unselected preview.",
   );
 } finally {
   await browser?.close();

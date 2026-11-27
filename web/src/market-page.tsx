@@ -4,7 +4,14 @@ import {
   preferredSelector,
   resolveFilterSelectors,
 } from "./catalog/aliases";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   Order,
   TraitFilters,
@@ -30,7 +37,6 @@ import { SortPicker, marketSortOptions } from "./ui/pickers";
 import { ScrollLoader } from "./orderbook/scroll-loader";
 import { ShareStatus, useSharing } from "./use-sharing";
 import { AppHeader } from "./app/header";
-import { BrandMark } from "./brand/brand-mark";
 import { LoadingScreen } from "./app/loading-screen";
 import { BackToTop } from "./ui/back-to-top";
 import type { TelegramContext } from "./telegram";
@@ -39,6 +45,8 @@ import {
   useNavigation,
   useNavigationBack,
   usePageSlot,
+  useHistorySlot,
+  useHistoryState,
   useSharedCurrency,
 } from "./app/navigation";
 import {
@@ -63,6 +71,12 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     state: undefined as import("./order-feed").FeedState | undefined,
     bookmark: undefined as import("./order-feed").Bookmark | undefined,
   }));
+  const entryFeed = useHistorySlot("market.feed", () => ({
+    ...retainedFeed.current,
+  }));
+  useLayoutEffect(() => {
+    retainedFeed.current = entryFeed.current;
+  }, [retainedFeed, entryFeed]);
   const [giftSlug, setGiftSlug] = useState(() => {
     const value = selectionAt(location).get("gift");
     return normalizeSlug(value) ? value! : undefined;
@@ -81,9 +95,12 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     );
     navigation?.rememberLocation();
   };
+  const [selected, setSelected] = useHistoryState<Order | undefined>(
+    "market.preview",
+    () => undefined,
+  );
   const [storedChoice, setChoice] = useState(() => saved()),
     [reloadKey, setReloadKey] = useState(0),
-    [selected, setSelected] = useState<Order>(),
     [openTrait, setOpenTrait] = useState<TraitKey>();
   const choice = { ...storedChoice, currency };
   const sharingScope = useMemo(
@@ -213,7 +230,21 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     );
     navigation?.rememberLocation();
   }, [JSON.stringify(choice), item, filterAliases, giftSlug]);
-  useEffect(() => setSelected(undefined), [JSON.stringify(choice)]);
+  const choiceKey = JSON.stringify({
+    ...choice,
+    collection: item?.id || choice.collection,
+    filters: pickerFilters,
+  });
+  const previousChoice = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!filtersReady) return;
+    if (
+      previousChoice.current !== undefined &&
+      previousChoice.current !== choiceKey
+    )
+      setSelected(undefined);
+    previousChoice.current = choiceKey;
+  }, [choiceKey, filtersReady]);
   const base = {
     filters: {
       collection_id: choice.collection
@@ -263,7 +294,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     hasMore,
     loadMore,
     setVisibleRange,
-  } = useOrderFeed(query, false, reloadKey, retainedFeed.current);
+  } = useOrderFeed(query, false, reloadKey, entryFeed.current);
   const compactStatus =
     status === "Live" || status === "Connecting" || status === "Reconnecting";
   useEffect(
@@ -680,18 +711,6 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                 loadMore={loadMore}
               />
             </section>
-            <footer className="app-footer">
-              <BrandMark />
-              <span>Every venue. One view.</span>
-              <a
-                className="api-link"
-                href="/docs"
-                target="_blank"
-                rel="noreferrer"
-              >
-                API ↗
-              </a>
-            </footer>
           </div>
         </main>
         <BackToTop target={controls} blocked={!!selected || !!giftSlug} />

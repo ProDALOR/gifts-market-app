@@ -3,7 +3,16 @@ import { mergeTargetParams } from "../targets.ts";
 import { cleanSelection, launchTarget } from "../telegram.ts";
 import type { TelegramContext } from "../telegram.ts";
 export type Page = "market" | "portfolio" | "profile";
-export type Route = { page: Page; user?: number; index: number };
+export type Route = {
+  page: Page;
+  user?: number;
+  index: number;
+  returnTo?: Page;
+};
+export const returnPage = (value: unknown): Page | undefined =>
+  value === "market" || value === "portfolio" || value === "profile"
+    ? value
+    : undefined;
 export function pagePath(page: Page, user?: number) {
   if (page === "portfolio") return `/portfolio${user ? `/${user}` : ""}`;
   return page === "profile" ? "/profile" : "/";
@@ -66,6 +75,9 @@ export function initialLocation(
         Number.isSafeInteger(remembered?.index) && remembered!.index >= 0
           ? remembered!.index
           : 0,
+      ...(returnPage(remembered?.returnTo)
+        ? { returnTo: returnPage(remembered?.returnTo) }
+        : {}),
     },
     href: selectionHref(pagePath(route.page, route.user), params),
     currency,

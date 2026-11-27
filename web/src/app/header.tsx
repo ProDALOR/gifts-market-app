@@ -12,6 +12,7 @@ import { CurrencyPicker } from "../ui/pickers";
 import { selectionAt } from "../market-selection";
 import { pathRoute, portfolioUser } from "./routes";
 import { useSession } from "./session";
+import { useNavigation } from "./navigation";
 
 /** All pages share the same currency and account entry point. */
 export function AppHeader({
@@ -32,6 +33,9 @@ export function AppHeader({
   };
 }) {
   const telegram = useSession();
+  const navigation = useNavigation();
+  const returnTo = navigation?.route.returnTo;
+  const returnName = returnTo === "market" ? "preview" : returnTo;
   const selection = selectionAt(location);
   const route = pathRoute(location.pathname);
   selection.set("currency", currency);
@@ -67,7 +71,21 @@ export function AppHeader({
   ]);
   return (
     <div className="sidebar-heading">
-      <BrandMark animated />
+      {returnTo ? (
+        <button
+          className="header-back"
+          aria-label={`Back to ${returnName}`}
+          title={`Back to ${returnName}`}
+          onClick={() => history.back()}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m14 6-6 6 6 6" />
+          </svg>
+          <span className="header-back-label">Back</span>
+        </button>
+      ) : (
+        <BrandMark animated />
+      )}
       <div className="header-actions">
         <CurrencyPicker
           currencies={currencies}

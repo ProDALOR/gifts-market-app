@@ -12,6 +12,7 @@ import {
   floorReport,
   fixtureDisplay,
   giftReport,
+  bestBidResult,
 } from "./valuation-fixture.mjs";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cacheDir = await mkdtemp(join(tmpdir(), "market-portfolio-"));
@@ -187,6 +188,20 @@ try {
           ? r.fulfill({ status: 404 })
           : r.fulfill({ contentType: "image/svg+xml", body: artwork }),
     );
+    await page.route(
+      (url) => url.pathname === "/auth/me",
+      (route) =>
+        route.fulfill({
+          json: {
+            user: {
+              id: "7",
+              first_name: "Fixture",
+              last_name: null,
+              username: null,
+            },
+          },
+        }),
+    );
     let catalogDetails = 0,
       catalogDirectories = 0;
     await page.route(
@@ -238,10 +253,25 @@ try {
             documentation_url: "/guide",
             documentation_revision: "r1",
           },
+          {
+            id: "best_bid",
+            revision: "r1",
+            purpose: "quote",
+            name: "Best bid",
+            description: "Eligible bid",
+            input: {
+              targets: ["gift", "gift_attributes", "selection"],
+              period: "unsupported",
+            },
+            display: fixtureDisplay("best_bid"),
+            documentation_url: "/guide",
+            documentation_revision: "r1",
+          },
         ],
       }),
     );
     const active = new Map();
+    const marketQueries = [];
     const rows = (params) =>
       Array.from({ length: 260 }, (_, i) => ({
         id: String(i + 1),
@@ -250,7 +280,7 @@ try {
           currency_id: params.filters.currency_id,
           venue_id: "venue",
         },
-        kind: "ask",
+        kind: params.source === "bids" ? "bid" : "ask",
         price: String(i + 2),
         quantity: 1,
         observed_at: "2026-11-24T00:00:00Z",
@@ -297,6 +327,7 @@ try {
           ids.add(frame.id);
         }
         if (frame.type === "orders.watch") {
+          marketQueries.push(frame.params);
           const watch = new RangeWatch(frame.params, rows(frame.params));
           const value = watch.frame(frame.id, rows(frame.params));
           if (holdMarketSnapshots)
@@ -399,8 +430,8 @@ try {
                   stale: false,
                   evaluated_at: new Date().toISOString(),
                   gift: {
-                    id: "1",
-                    number: 1,
+                    id: String(params.target.number ?? 1),
+                    number: params.target.number ?? 1,
                     collection_id: "gift",
                     traits: { model: "model", backdrop: "back" },
                   },
@@ -414,6 +445,8 @@ try {
                   model_multiplier: { value: "2" },
                   backdrop_multiplier: { value: "1" },
                 });
+          if (params.target.kind !== "catalog")
+            data.results.push(bestBidResult());
           send(
             socket,
             frame.type === "request"
@@ -790,7 +823,9 @@ try {
     await page.locator(".portfolio-card").first().waitFor();
     assert.equal(await page.locator(".portfolio-card").count(), 1);
     assert.equal(
-      await page.getByRole("spinbutton", { name: "Gift #" }).inputValue(),
+      await page
+        .getByRole("textbox", { name: "Gift #", exact: true })
+        .inputValue(),
       "1",
     );
     assert.match(await page.locator(".portfolio-sort").innerText(), /Gift #/);
@@ -804,9 +839,241 @@ try {
     const returned = new URL(page.url()).searchParams;
     assert.equal(returned.get("sort"), "number_desc");
     assert.match(returned.get("f"), /m=model/);
-    await page.getByRole("spinbutton", { name: "Gift #" }).fill("0");
-    await page.getByRole("spinbutton", { name: "Gift #" }).fill("1");
+    await page.getByRole("textbox", { name: "Gift #", exact: true }).fill("0");
+    await page.getByRole("textbox", { name: "Gift #", exact: true }).fill("1");
     await page.locator(".portfolio-card").first().waitFor();
+    await page.goto(server.resolvedUrls.local[0] + "__navigation");
+    await page.locator('.gift-grid[data-order-count="100"]').waitFor();
+    const linkInstance = await page.evaluate(() => window.fixtureInstance);
+    assert.equal(
+      await page.locator(".sidebar-heading .brand").count(),
+      1,
+      "main views retain the animated home logo",
+    );
+    assert.equal(await page.locator(".header-back").count(), 0);
+    await page.evaluate(() => window.scrollTo(0, 900));
+    await page.waitForTimeout(100);
+    const selectedCard = await page
+      .locator(".portfolio-card .card-open")
+      .evaluateAll((buttons) =>
+        buttons
+          .find((button) => {
+            const box = button.getBoundingClientRect();
+            return box.top >= 0 && box.bottom <= innerHeight - 90;
+          })
+          ?.getAttribute("aria-label"),
+      );
+    assert(selectedCard);
+    const selectedNumber = selectedCard.match(/Gift-(\d+)/)[1];
+    // Price links open a separate market history entry and return to the exact preview.
+    for (const [label, source, traits] of [
+      ["View model asks", "asks", { models: ["model"], backdrops: [] }],
+      [
+        "View model & backdrop bids",
+        "bids",
+        { models: ["model"], backdrops: ["back"] },
+      ],
+    ]) {
+      await page
+        .getByRole("button", { name: selectedCard, exact: true })
+        .click();
+      const preview = page.getByRole("dialog", {
+        name: "Gift details",
+        exact: true,
+      });
+      await preview.waitFor();
+      const link = preview.getByRole("link", { name: label, exact: true });
+      await link.waitFor();
+      await link.scrollIntoViewIfNeeded();
+      const quoteButton = await link.evaluate((anchor) => {
+        const bounds = anchor.getBoundingClientRect(),
+          value = anchor.querySelector(".floor-value").getBoundingClientRect(),
+          cell = anchor.closest("td").getBoundingClientRect();
+        return {
+          contained: bounds.left >= cell.left && bounds.right <= cell.right,
+          padded:
+            value.left - bounds.left >= 5 && bounds.right - value.right >= 5,
+          compact: bounds.width <= Math.max(44, value.width + 16),
+          height: bounds.height,
+        };
+      });
+      assert(
+        quoteButton.contained && quoteButton.padded,
+        "price and gift count fit inside a padded button",
+      );
+      assert(
+        quoteButton.compact,
+        "hover targets follow price content rather than spanning the column",
+      );
+      assert(
+        quoteButton.height >= (viewport.width < 960 ? 44 : 36),
+        "compact quotes retain their touch/click target",
+      );
+      const before = await page.evaluate(() => ({
+        url: location.pathname + location.search,
+        y: scrollY,
+        count: document.querySelector(".gift-grid").dataset.orderCount,
+        sheet: document.querySelector(".detail").scrollTop,
+        pane: document.querySelector(".detail-content").scrollTop,
+      }));
+      const href = await link.getAttribute("href");
+      assert(href.includes("f="));
+      await link.click();
+      await page.locator(".orders .gift-card").first().waitFor();
+      await page.waitForFunction(() => !document.querySelector("dialog[open]"));
+      const query = marketQueries.at(-1);
+      assert.equal(query.source, source);
+      assert.equal(query.sort, source === "asks" ? "price_asc" : "price_desc");
+      assert.deepEqual(
+        query.filters.models,
+        traits.models.map(() => "@name:Model"),
+      );
+      assert.deepEqual(
+        query.filters.backdrops,
+        traits.backdrops.map(() => "@name:Green"),
+      );
+      assert.deepEqual(query.filters.patterns, []);
+      assert.equal(query.filters.number, null);
+      assert.equal(query.filters.currency_id, "GRAM");
+      if (source === "bids") assert.equal(query.bid_match, "any");
+      assert.equal(
+        await page.locator(".sidebar-heading > .header-back").count(),
+        1,
+        "contextual return replaces the top-left logo",
+      );
+      assert.equal(await page.locator(".sidebar-heading .brand").count(), 0);
+      assert.equal(
+        await page.locator(".page-return").count(),
+        0,
+        "no separate back row remains",
+      );
+      if (source === "asks") {
+        for (const width of [280, 320, 390, 960, 1440]) {
+          await page.setViewportSize({ width, height: viewport.height });
+          const header = await page
+            .locator(".sidebar-heading")
+            .evaluate((heading) => {
+              const bounds = heading.getBoundingClientRect(),
+                back = heading
+                  .querySelector(".header-back")
+                  .getBoundingClientRect(),
+                actions = heading
+                  .querySelector(".header-actions")
+                  .getBoundingClientRect();
+              return {
+                height: bounds.height,
+                touch: back.width >= 44 && back.height >= 44,
+                contained:
+                  back.left >= bounds.left &&
+                  actions.right <= bounds.right + 1 &&
+                  back.right <= actions.left - 3,
+                caption: getComputedStyle(
+                  heading.querySelector(".header-back-label"),
+                ).display,
+                labelFits:
+                  heading.querySelector(".header-back-label").scrollWidth <=
+                  heading.querySelector(".header-back-label").clientWidth,
+              };
+            });
+          assert.equal(header.height, 44, `one header row at ${width}px`);
+          assert(
+            header.touch && header.contained,
+            `return and account actions fit at ${width}px`,
+          );
+          assert.equal(
+            header.caption === "none",
+            width < 360,
+            "narrow headers use an accessible arrow-only button",
+          );
+          if (width >= 360)
+            assert(header.labelFits, `return label fits at ${width}px`);
+        }
+        await page.setViewportSize(viewport);
+        await page
+          .locator(".sidebar-heading")
+          .screenshot({
+            path: join(output, `header-back-${viewport.width}.png`),
+          });
+      }
+      if (source === "asks") {
+        await page.locator(".orders .card-open").first().click();
+        const marketPreview = page.getByRole("dialog", {
+          name: "Order details",
+          exact: true,
+        });
+        const collectionPrice = marketPreview.getByRole("link", {
+          name: "View collection asks",
+          exact: true,
+        });
+        await collectionPrice.waitFor();
+        const priorMarketUrl = page.url();
+        await collectionPrice.click();
+        await page
+          .getByRole("button", { name: "Back to preview", exact: true })
+          .waitFor();
+        await page.waitForFunction(
+          () => !document.querySelector("dialog[open]"),
+        );
+        await page
+          .getByRole("button", { name: "Back to preview", exact: true })
+          .click();
+        await marketPreview.waitFor();
+        assert.equal(
+          page.url(),
+          priorMarketUrl,
+          "market-to-market drill-down restores its prior filters and preview",
+        );
+        await page
+          .getByRole("button", { name: "Close details", exact: true })
+          .click();
+        await marketPreview.waitFor({ state: "detached" });
+      }
+      assert.equal(
+        await page.evaluate(() => window.fixtureInstance),
+        linkInstance,
+        "price navigation never reloads the app",
+      );
+      if (source === "asks")
+        await page
+          .getByRole("button", { name: "Back to portfolio", exact: true })
+          .click();
+      else await page.evaluate(() => window.tapNativeBack());
+      await page
+        .getByRole("dialog", { name: "Gift details", exact: true })
+        .waitFor();
+      await page.waitForFunction(
+        (expected) => Math.abs(scrollY - expected) < 3,
+        before.y,
+      );
+      assert.equal(
+        new URL(page.url()).pathname + new URL(page.url()).search,
+        before.url,
+      );
+      assert.equal(
+        await page.locator(".gift-grid").getAttribute("data-order-count"),
+        before.count,
+      );
+      const restored = await preview.evaluate((el) => ({
+        sheet: el.scrollTop,
+        pane: el.querySelector(".detail-content").scrollTop,
+      }));
+      assert(
+        Math.abs(restored.sheet - before.sheet) < 3,
+        "mobile preview scroll returns",
+      );
+      assert(
+        Math.abs(restored.pane - before.pane) < 3,
+        "desktop preview scroll returns",
+      );
+      assert.equal(
+        await preview.locator("#detail-title").innerText(),
+        `Gift #${selectedNumber}`,
+      );
+      await page
+        .getByRole("button", { name: "Close details", exact: true })
+        .click();
+      await preview.waitFor({ state: "detached" });
+    }
     assert.deepEqual(errors, []);
     await page.close();
   }

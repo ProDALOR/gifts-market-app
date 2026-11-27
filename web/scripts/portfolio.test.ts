@@ -5,7 +5,9 @@ import {
   portfolioRelation,
   portfolioSort,
   portfolioQuery,
+  portfolioGiftNumber,
 } from "../src/portfolio/model.ts";
+import { portfolioParams } from "../src/portfolio/links.ts";
 import { parseFrame } from "../src/ws-protocol.ts";
 import { PortfolioPager } from "../src/portfolio/pager.ts";
 import {
@@ -397,6 +399,36 @@ test("canonical selections share identity without changing picker order", () => 
   );
   assert.deepEqual(filters.traits.models, ["b", "a", "b"]);
   assert.equal(portfolioQuery(undefined, "GRAM", filters), undefined);
+});
+
+test("portfolio gift numbers reject invalid edits at query and link boundaries", () => {
+  const filters = {
+    collection: "",
+    traits: {},
+    number: "",
+    sort: "value_desc" as const,
+  };
+  assert.equal(portfolioGiftNumber(""), undefined);
+  assert.equal(portfolioGiftNumber("0002"), 2);
+  assert.equal(portfolioGiftNumber("4294967295"), 4294967295);
+  for (const number of [
+    "0",
+    "-1",
+    "1.5",
+    "1e2",
+    "1e",
+    "abc",
+    " ",
+    "4294967296",
+    "9007199254740993",
+  ]) {
+    assert.throws(() => portfolioGiftNumber(number), /gift number/);
+    assert.equal(portfolioQuery(7, "GRAM", { ...filters, number }), undefined);
+    assert.throws(
+      () => portfolioParams({ ...filters, number }, "GRAM"),
+      /gift number/,
+    );
+  }
 });
 
 test("refresh during a pending append preserves coverage and ignores late rows", async () => {

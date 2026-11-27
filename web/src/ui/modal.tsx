@@ -1,8 +1,9 @@
-import { useNavigationBack } from "../app/navigation";
+import { useHistorySlot, useNavigationBack } from "../app/navigation";
 import { CloseIcon } from "./icons";
 import { useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { usePreviewEnvironment } from "../previews/preview-environment";
+import { useSheetSwipe } from "./use-sheet-swipe";
 
 export function Modal({
   close,
@@ -13,6 +14,8 @@ export function Modal({
   heading,
   closeLabel,
   viewportClose = false,
+  swipeToClose = false,
+  scrollKey,
 }: {
   close: () => void;
   children: ReactNode;
@@ -22,7 +25,12 @@ export function Modal({
   heading?: string;
   closeLabel: string;
   viewportClose?: boolean;
+  swipeToClose?: boolean;
+  scrollKey?: string;
 }) {
+  const scrolls = useHistorySlot<
+    Map<string, { sheet: number; content: number }>
+  >("modal.scrolls", () => new Map());
   const dialog = useRef<HTMLDialogElement>(null);
   const closeAction = useRef(close);
   const animation = useRef<Animation | undefined>(undefined);
@@ -44,14 +52,17 @@ export function Modal({
     animation.current?.cancel();
     if (!motion || !element.animate) return finish();
     element.dataset.closing = "true";
+    const swipe = element.dataset.swipeDismiss === "true";
     const exit = element.animate(
       [
         {
           opacity: 1,
+          ...(swipe ? { bottom: getComputedStyle(element).bottom } : {}),
           ...(viewportClose ? {} : { transform: "translateY(0)" }),
         },
         {
           opacity: 0,
+          ...(swipe ? { bottom: `${-element.offsetHeight - 24}px` } : {}),
           ...(viewportClose ? {} : { transform: "translateY(8px)" }),
         },
       ],
@@ -66,6 +77,14 @@ export function Modal({
     const previous = document.activeElement;
     phase.current = "open";
     element?.showModal();
+    if (element && scrollKey) {
+      const saved = scrolls.current.get(scrollKey);
+      if (saved) {
+        element.scrollTop = saved.sheet;
+        const content = element.querySelector(".detail-content");
+        if (content) content.scrollTop = saved.content;
+      }
+    }
     if (element?.animate && motion) {
       const enter = element.animate(
         [
@@ -84,6 +103,15 @@ export function Modal({
       animation.current = enter;
     }
     return () => {
+      if (element && scrollKey) {
+        scrolls.current.delete(scrollKey);
+        scrolls.current.set(scrollKey, {
+          sheet: element.scrollTop,
+          content: element.querySelector(".detail-content")?.scrollTop ?? 0,
+        });
+        while (scrolls.current.size > 4)
+          scrolls.current.delete(scrolls.current.keys().next().value!);
+      }
       phase.current = "unmounted";
       animation.current?.cancel();
       element?.close();
@@ -98,6 +126,13 @@ export function Modal({
     }
   }, [pageVisible, reducedMotion]);
   useNavigationBack(true, dismiss, 20);
+  useSheetSwipe(
+    dialog,
+    swipeToClose,
+    motion,
+    () => phase.current === "open",
+    dismiss,
+  );
   const closeButton = (
     <button
       className="modal-close"
@@ -111,7 +146,7 @@ export function Modal({
   return (
     <dialog
       ref={dialog}
-      className={`modal ${className}${viewportClose ? " modal-viewport-close" : ""}`}
+      className={`modal ${className}${viewportClose ? " modal-viewport-close" : ""}${swipeToClose ? " modal-swipe" : ""}`}
       aria-label={label}
       aria-describedby={describedBy}
       onCancel={(event) => {

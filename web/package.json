@@ -24,6 +24,7 @@
     "test:grid": "node scripts/grid-browser.mjs",
     "test:traits": "node scripts/trait-preview-browser.mjs",
     "test:listings": "node scripts/listing-browser.mjs",
+    "test:sheet-swipe": "node scripts/sheet-swipe-browser.mjs",
     "test:preview-facts": "node scripts/preview-facts-browser.mjs",
     "test:bids": "node scripts/bid-browser.mjs",
     "test:live-feed": "node scripts/live-feed-browser.mjs",
@@ -31,6 +32,7 @@
     "test:attribute-values": "node scripts/attribute-values-browser.mjs",
     "test:rarity": "node scripts/rarity-browser.mjs",
     "test:portfolio": "node scripts/portfolio-browser.mjs",
+    "test:portfolio-controls": "node scripts/portfolio-controls-browser.mjs",
     "test:navigation": "node scripts/navigation-browser.mjs",
     "test:telegram": "node scripts/telegram-browser.mjs",
     "test:scroll-artwork": "node scripts/scroll-artwork-browser.mjs"

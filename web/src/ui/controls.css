@@ -379,6 +379,8 @@ body:has(dialog[open], [role="listbox"]) .back-to-top {
   width: 100%;
 }
 .detail {
+  --detail-gutter: 16px;
+  --detail-section-gap: 12px;
   position: fixed;
   inset: auto 0 0;
   width: min(100%, 480px);
@@ -396,11 +398,59 @@ body:has(dialog[open], [role="listbox"]) .back-to-top {
 .detail::backdrop {
   background: #08070bc4;
 }
+@media (max-width: 959px) {
+  .detail.modal-swipe {
+    bottom: calc(-1 * var(--sheet-drag-y, 0px));
+  }
+  .detail[data-dragging] {
+    user-select: none;
+  }
+}
 body:has(.detail[open]) {
   overflow: hidden;
 }
 .attribute-floor-table {
-  margin-top: 8px;
+  margin-top: 0;
+}
+.market-quote-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 44px;
+  min-height: 36px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  vertical-align: middle;
+}
+.market-quote-link > .floor-value {
+  width: auto;
+  max-width: 100%;
+}
+.market-quote-link:active {
+  background: var(--tint);
+  border-color: var(--accent-line);
+}
+@media (hover: hover) {
+  .market-quote-link:hover {
+    background: var(--tint);
+    border-color: var(--accent-line);
+  }
+}
+.market-quote-link .quote-amount {
+  text-decoration: underline;
+  text-decoration-color: var(--accent-line);
+  text-underline-offset: 3px;
+}
+.market-quote-link:focus-visible {
+  outline-offset: 2px;
+}
+@media (max-width: 959px), (pointer: coarse) {
+  .market-quote-link {
+    min-height: 44px;
+  }
 }
 .detail-attributes {
   width: 100%;
@@ -482,6 +532,9 @@ body:has(.detail[open]) {
 .attribute-floor-missing {
   color: var(--muted);
   font-size: 12px;
+}
+.attribute-pattern .symbol-thumb {
+  background: var(--surface);
 }
 .attribute-pattern .gift-model-image {
   padding: 3px;

@@ -26,6 +26,7 @@ export function GiftDetailsView({
   collectionSlug,
   slug,
   collectionPreview,
+  giftPreview,
   removed = false,
   notice,
   close,
@@ -43,6 +44,8 @@ export function GiftDetailsView({
   collectionSlug?: string | null;
   slug?: string;
   collectionPreview?: GiftMedia;
+  /** Exact gift artwork can load before the trait catalog without changing the collection icon. */
+  giftPreview?: GiftMedia;
   removed?: boolean;
   notice?: ReactNode;
   close: () => void;
@@ -125,6 +128,8 @@ export function GiftDetailsView({
       label={label}
       closeLabel="Close details"
       viewportClose
+      swipeToClose
+      scrollKey={slug ?? JSON.stringify([collectionId, selected?.target])}
       describedBy="detail-title"
     >
       <div
@@ -167,7 +172,7 @@ export function GiftDetailsView({
             order={selected}
             options={options}
             fallback={collectionName[0] || "◇"}
-            fallbackMedia={collectionPreview}
+            fallbackMedia={giftPreview ?? collectionPreview}
             size="large"
             playback="detail"
           />

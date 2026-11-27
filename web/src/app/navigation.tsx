@@ -1,4 +1,9 @@
-import { selectionAt, selectionHref } from "../market-selection";
+import {
+  selectionAt,
+  selectionHref,
+  selectionParams,
+} from "../market-selection";
+import type { MarketSelection } from "../market-selection";
 import { SharedIcon } from "../ui/icons";
 import "./navigation.css";
 import {
@@ -14,7 +19,7 @@ import {
 import type { ReactNode, Dispatch, SetStateAction } from "react";
 import type { TelegramContext } from "../telegram";
 import { useTelegramBack } from "../telegram-ui";
-import { initialLocation, pagePath, pathRoute } from "./routes";
+import { initialLocation, pagePath, pathRoute, returnPage } from "./routes";
 import type { Page, Route } from "./routes";
 export type { Page } from "./routes";
 type Memory = Map<string, unknown>;
@@ -23,6 +28,7 @@ type Navigation = {
   currency: string;
   setCurrency: (value: string) => void;
   go: (page: Page, user?: number, replace?: boolean) => void;
+  openMarket: (selection: MarketSelection) => void;
   href: (page: Page, user?: number) => string;
   memory: Memory;
   rememberLocation: () => void;
@@ -103,32 +109,33 @@ export function NavigationProvider({
     while (pageScrolls.current.size > 4)
       pageScrolls.current.delete(pageScrolls.current.keys().next().value!);
   }, []);
-  const go = useCallback(
-    (page: Page, user?: number, replace = false) => {
+  const navigate = useCallback(
+    (url: URL, replace = false, returnTo?: Page) => {
       urls.current[current.current.page] =
         location.pathname + location.search + location.hash;
       rememberScroll();
-      const url = new URL(
-        page === "portfolio" && user != null
-          ? pagePath(page, user)
-          : urls.current[page],
-        location.origin,
-      );
-      url.searchParams.set("currency", currency);
       const next = {
         ...pathRoute(url.pathname),
         index: replace ? current.current.index : current.current.index + 1,
+        ...(returnTo ? { returnTo } : {}),
       };
       if (
-        page === current.current.page &&
+        next.page === current.current.page &&
         next.user === current.current.user &&
-        !replace
+        !replace &&
+        !returnTo
       )
         return;
+      if (!replace) {
+        const entries = memory.get("navigation.entries") as
+          { current: Map<number, Memory> } | undefined;
+        for (const index of entries?.current.keys() ?? [])
+          if (index >= next.index) entries?.current.delete(index);
+      }
       if (!replace)
         scrolls.current.set(
           next.index,
-          pageScrolls.current.get(pageKey(next)) ?? 0,
+          returnTo ? 0 : (pageScrolls.current.get(pageKey(next)) ?? 0),
         );
       (replace ? history.replaceState : history.pushState).call(
         history,
@@ -137,9 +144,37 @@ export function NavigationProvider({
         selectionHref(url.pathname, selectionAt(url)),
       );
       current.current = next;
+      const selectedCurrency = selectionAt(url).get("currency");
+      if (selectedCurrency) setCurrency(selectedCurrency);
       setRoute(next);
     },
-    [currency, rememberScroll],
+    [rememberScroll, memory],
+  );
+  const go = useCallback(
+    (page: Page, user?: number, replace = false) => {
+      const url = new URL(
+        page === "portfolio" && user != null
+          ? pagePath(page, user)
+          : urls.current[page],
+        location.origin,
+      );
+      url.searchParams.set("currency", currency);
+      navigate(url, replace);
+    },
+    [currency, navigate],
+  );
+  const openMarket = useCallback(
+    (selection: MarketSelection) => {
+      navigate(
+        new URL(
+          selectionHref("/", selectionParams(selection)),
+          location.origin,
+        ),
+        false,
+        current.current.page,
+      );
+    },
+    [navigate],
   );
   useEffect(() => {
     const previous = history.scrollRestoration;
@@ -153,6 +188,9 @@ export function NavigationProvider({
           Number.isSafeInteger(saved?.index) && saved.index >= 0
             ? saved.index
             : 0,
+        ...(returnPage(saved?.returnTo)
+          ? { returnTo: returnPage(saved?.returnTo) }
+          : {}),
       };
       const nextCurrency = selectionAt(location).get("currency");
       if (nextCurrency) setCurrency(nextCurrency);
@@ -228,12 +266,22 @@ export function NavigationProvider({
       currency,
       setCurrency,
       go,
+      openMarket,
       href,
       memory,
       rememberLocation,
       registerBack,
     }),
-    [route, currency, go, href, memory, rememberLocation, registerBack],
+    [
+      route,
+      currency,
+      go,
+      openMarket,
+      href,
+      memory,
+      rememberLocation,
+      registerBack,
+    ],
   );
   return <Context.Provider value={value}>{children(route)}</Context.Provider>;
 }
@@ -267,6 +315,76 @@ export function usePageState<T>(
     slot.current = state;
   }, [slot, state]);
   return [state, setState];
+}
+/** A few recent history entries retain previews and loaded rows without keeping services alive. */
+export function useHistorySlot<T>(
+  key: string,
+  create: () => T,
+): { current: T } {
+  const nav = useNavigation();
+  const entries = usePageSlot<Map<number, Memory>>(
+    "navigation.entries",
+    () => new Map(),
+  );
+  const index = nav?.route.index ?? 0;
+  let entry = entries.current.get(index);
+  if (!entry) entry = new Map();
+  entries.current.delete(index);
+  entries.current.set(index, entry);
+  while (entries.current.size > 4)
+    entries.current.delete(entries.current.keys().next().value!);
+  let slot = entry.get(key) as { current: T } | undefined;
+  if (!slot) {
+    slot = { current: create() };
+    entry.set(key, slot);
+  }
+  return slot;
+}
+export function useHistoryState<T>(
+  key: string,
+  create: () => T,
+): [T, Dispatch<SetStateAction<T>>] {
+  const slot = useHistorySlot(key, create);
+  const [state, setState] = useState(slot.current);
+  useLayoutEffect(() => {
+    slot.current = state;
+  }, [slot, state]);
+  return [state, setState];
+}
+/** Real URLs keep modified clicks and standalone views working. */
+export function MarketLink({
+  selection,
+  children,
+  ...props
+}: Omit<import("react").AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & {
+  selection: MarketSelection;
+}) {
+  const nav = useNavigation();
+  return (
+    <a
+      {...props}
+      href={selectionHref("/", selectionParams(selection))}
+      onClick={(event) => {
+        props.onClick?.(event);
+        if (
+          !nav ||
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey ||
+          (props.target && props.target !== "_self") ||
+          props.download != null
+        )
+          return;
+        event.preventDefault();
+        nav.openMarket(selection);
+      }}
+    >
+      {children}
+    </a>
+  );
 }
 export function useSharedCurrency(initial = "GRAM") {
   const nav = useNavigation();

@@ -88,6 +88,21 @@ try {
     await prepare(page);
     await page.goto(url + "profile");
     await page.getByRole("radio", { name: "Rose", exact: true }).waitFor();
+    const resources = page.getByRole("region", { name: "API", exact: true });
+    await resources.waitFor();
+    assert.equal(await resources.getByRole("link").count(), 2);
+    for (const [name, path] of [
+      ["REST docs", "/docs"],
+      ["WebSocket docs", "/docs/ws"],
+    ]) {
+      assert.equal(
+        await resources
+          .getByRole("link", { name: new RegExp(name) })
+          .getAttribute("href"),
+        path,
+      );
+    }
+    assert.equal(await page.locator(".profile-footer").count(), 1);
     assert.equal(
       await page.getByText("Saved on this device.", { exact: true }).count(),
       1,
@@ -111,7 +126,9 @@ try {
     });
     assert.equal(
       await page
-        .locator(".display-mode-options label, .palette-option")
+        .locator(
+          ".display-mode-options label, .palette-option, .profile-api, .profile-api a",
+        )
         .evaluateAll((labels) =>
           labels.every((label) => label.scrollWidth <= label.clientWidth),
         ),
@@ -209,6 +226,9 @@ try {
               background: nav.backgroundColor,
               blur: nav.backdropFilter,
               opacity: nav.opacity,
+              text: getComputedStyle(
+                document.querySelector(".app-navigation a"),
+              ).color,
             },
           };
         });
@@ -256,14 +276,14 @@ try {
           const alpha = Number(
             colors.navigation.background.match(/\/\s*([\d.]+)/)?.[1],
           );
-          assert.equal(alpha, mode === "light" ? 0.9 : 0.85);
+          assert.equal(alpha, mode === "light" ? 0.86 : 0.78);
           const paper = [1, 3, 5].map((i) =>
             parseInt(colors.vars.paper.slice(i, i + 2), 16),
           );
           for (const underneath of [0, 255]) {
             const mixed = `rgb(${paper.map((channel) => channel * alpha + underneath * (1 - alpha)).join(",")})`;
             assert(
-              contrast(colors.vars.muted, mixed) >= 4.5,
+              contrast(colors.navigation.text, mixed) >= 4.5,
               `${palette} ${mode} navigation stays readable over bright/dark gifts`,
             );
           }
@@ -274,6 +294,31 @@ try {
           .click();
         const active = page.locator('.app-navigation [aria-current="page"]');
         const text = await active.evaluate((el) => getComputedStyle(el).color);
+        if (width < 960) {
+          const selected = await active.evaluate((el) => ({
+            background: getComputedStyle(el).backgroundColor,
+            opacity: getComputedStyle(el).opacity,
+          }));
+          const alpha = Number(selected.background.match(/\/\s*([\d.]+)/)?.[1]);
+          assert.equal(alpha, mode === "light" ? 0.88 : 0.8);
+          assert.equal(
+            selected.opacity,
+            "1",
+            "Selected tab text and icons stay fully opaque",
+          );
+          const rgb = (hex) =>
+            [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+          const paper = rgb(colors.vars.paper),
+            selection = rgb(colors.vars.selection);
+          const navAlpha = mode === "light" ? 0.86 : 0.78;
+          for (const underneath of [0, 255]) {
+            const mixed = `rgb(${selection.map((channel, i) => channel * alpha + (paper[i] * navAlpha + underneath * (1 - navAlpha)) * (1 - alpha)).join(",")})`;
+            assert(
+              contrast(text, mixed) >= 4.5,
+              `${palette} ${mode} selected navigation stays readable`,
+            );
+          }
+        }
         await active.hover();
         assert.equal(
           await active.evaluate((el) => getComputedStyle(el).color),

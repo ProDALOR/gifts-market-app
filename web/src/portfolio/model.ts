@@ -37,6 +37,19 @@ export type PortfolioFilters = {
   number: string;
   sort: PortfolioSort;
 };
+/** Match the domain's nonzero u32 gift number without rounding or exponent notation. */
+export function portfolioGiftNumber(value: string): number | undefined {
+  if (!value) return undefined;
+  const number = Number(value);
+  if (
+    !/^\d+$/.test(value) ||
+    !Number.isInteger(number) ||
+    number < 1 ||
+    number > 0xffffffff
+  )
+    throw new Error("Enter a gift number from 1 to 4 294 967 295.");
+  return number;
+}
 /** Canonical request identity matches the server's set semantics for trait alternatives. */
 export function portfolioQuery(
   user: number | undefined,
@@ -44,6 +57,12 @@ export function portfolioQuery(
   filters: PortfolioFilters,
 ) {
   if (!user) return undefined;
+  let number: number | undefined;
+  try {
+    number = portfolioGiftNumber(filters.number);
+  } catch {
+    return undefined;
+  }
   const alternatives = (values?: string[]) => [...new Set(values)].sort();
   return {
     user_id: user,
@@ -54,7 +73,7 @@ export function portfolioQuery(
       models: alternatives(filters.traits.models),
       backdrops: alternatives(filters.traits.backdrops),
       patterns: alternatives(filters.traits.patterns),
-      number: filters.number ? Number(filters.number) : undefined,
+      number,
     },
   } satisfies Omit<
     components["schemas"]["PortfolioReadQuery"],

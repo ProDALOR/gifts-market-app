@@ -132,6 +132,47 @@ try {
     reducedMotion: "reduce",
   });
   await page.goto(server.resolvedUrls.local[0] + "__pricing");
+  for (const palette of ["rose", "ocean", "mint", "amber"]) {
+    for (const scheme of ["dark", "light"]) {
+      await page.evaluate(
+        ({ palette, scheme }) => {
+          document.documentElement.dataset.palette = palette;
+          document.documentElement.dataset.colorScheme = scheme;
+        },
+        { palette, scheme },
+      );
+      const glass = await page.locator(".detail-pricing").evaluate((el) => {
+        const style = getComputedStyle(el);
+        return {
+          blur: style.backdropFilter,
+          opacity: style.opacity,
+          alpha: style.backgroundColor.match(/\/\s*([\d.]+)\)/)?.[1],
+        };
+      });
+      assert.equal(glass.blur, "blur(8px)");
+      assert.equal(glass.opacity, "1", "Text stays fully opaque");
+      assert.equal(Number(glass.alpha), scheme === "light" ? 0.82 : 0.76);
+    }
+  }
+  const client = await page.context().newCDPSession(page);
+  await client.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-transparency", value: "reduce" }],
+  });
+  assert.equal(
+    await page.locator(".detail-pricing").evaluate((el) => {
+      const style = getComputedStyle(el);
+      const probe = document.createElement("span");
+      probe.style.backgroundColor = "var(--surface)";
+      el.append(probe);
+      const solid =
+        style.backgroundColor === getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return solid && style.backdropFilter === "none";
+    }),
+    true,
+    "Reduced transparency restores the solid panel",
+  );
+  await client.send("Emulation.setEmulatedMedia", { features: [] });
   await page
     .getByRole("button", { name: "How is Gift floor calculated?", exact: true })
     .click();
@@ -148,15 +189,46 @@ try {
     true,
     "calculation popup remains independently readable",
   );
+  assert.equal(
+    await page
+      .locator(".valuation-popup")
+      .evaluate((el) => getComputedStyle(el).backdropFilter),
+    "none",
+    "Calculation popup does not inherit the glass effect",
+  );
   await page
     .getByRole("button", { name: "Close calculation guide", exact: true })
     .click();
   await page
     .getByRole("dialog", { name: "Calculation guide", exact: true })
     .waitFor({ state: "detached" });
+  await page.evaluate(() => {
+    const removeBlurSupport = (sheet) => {
+      for (let i = sheet.cssRules.length - 1; i >= 0; i--) {
+        const rule = sheet.cssRules[i];
+        if (
+          rule.type === CSSRule.SUPPORTS_RULE &&
+          rule.conditionText.includes("backdrop-filter")
+        )
+          sheet.deleteRule(i);
+        else if (rule.cssRules) removeBlurSupport(rule);
+      }
+    };
+    for (const sheet of document.styleSheets) removeBlurSupport(sheet);
+  });
+  assert.equal(
+    await page.locator(".detail-pricing").evaluate((el) => {
+      const style = getComputedStyle(el);
+      return (
+        style.backdropFilter === "none" && !style.backgroundColor.includes("/")
+      );
+    }),
+    true,
+    "Browsers without blur support keep an opaque panel",
+  );
   await page.close();
   console.log(
-    "Pricing browser passed: asks/bids/history/portfolio, 280–1440px, fractional/high DPI, large text, exact long amounts, percentage badges and calculation popup.",
+    "Pricing browser passed: asks/bids/history/portfolio, 280–1440px, fractional/high DPI, large text, exact amounts, four palettes in light/dark, glass fallback, reduced transparency and readable calculation popup.",
   );
 } finally {
   await browser?.close();

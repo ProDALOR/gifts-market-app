@@ -16,7 +16,7 @@ export function usePortfolioRows(
   summary: PortfolioState["valuation"],
   refreshSummary: () => void,
   ready: boolean,
-  hold = false,
+  hold?: string,
 ) {
   const { query, key } = useMemo(() => {
     const query = portfolioQuery(user, currency, filters);
@@ -68,7 +68,14 @@ export function usePortfolioRows(
   }, [key]);
   useLayoutEffect(() => {
     // Keep the inspected card stable until details close; its valuation has its own lifecycle.
-    if (hold || !ready || !summary?.version) {
+    if (
+      (hold &&
+        pager.current
+          ?.current()
+          .items.some((item) => item.gift.gift.id === hold)) ||
+      !ready ||
+      !summary?.version
+    ) {
       pager.current?.pause();
       return;
     }

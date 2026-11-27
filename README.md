@@ -459,7 +459,7 @@ The frontend uses one initial bootstrap request and caches each selected collect
 
 ## Developer documentation
 
-Open `/docs` for the Scalar REST reference and request client. `/docs/ws` provides a WebSocket console and an expandable AsyncAPI message reference. The market footer's API link opens the REST documentation. These are separate HTML entries with local, pinned assets: visiting the market does not load Scalar or AsyncAPI. No CDN, account, proxy or external fonts are required. Documentation uses system fonts and disables Scalar's agent, telemetry and authentication persistence.
+Open `/docs` for the Scalar REST reference and request client. `/docs/ws` provides a WebSocket console and an expandable AsyncAPI message reference. Profile links to both documentation pages, including outside Telegram and without signing in. These are separate HTML entries with local, pinned assets: visiting the market or Profile does not load Scalar or AsyncAPI. No CDN, account, proxy or external fonts are required. Documentation uses system fonts and disables Scalar's agent, telemetry and authentication persistence.
 
 The console starts with a range-watch template and loads collection/currency choices from the local catalog and connects to this server's `/ws` only when **Connect** is clicked. It supports subscription replacement, cancel, custom JSON, error inspection and manual reconnection. Leaving the page closes the socket; returning through browser history leaves it disconnected. The log bounds retained event count and text size, clipping large frames. The full AsyncAPI renderer loads only when its section is opened.
 

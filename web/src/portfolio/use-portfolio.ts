@@ -23,6 +23,7 @@ export function usePortfolio(user: number | undefined, currency: string) {
   const received = useRef(state);
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
+  const [refreshPending, setRefreshPending] = useState(false);
   const generation = useRef(0);
   const refreshing = useRef<AbortController | undefined>(undefined);
   const watchId = useRef<string | undefined>(undefined);
@@ -42,6 +43,7 @@ export function usePortfolio(user: number | undefined, currency: string) {
       ++generation.current;
       refreshing.current?.abort();
       refreshing.current = undefined;
+      setRefreshPending(false);
       unsubscribe?.();
       unsubscribe = undefined;
       watchId.current = undefined;
@@ -97,10 +99,11 @@ export function usePortfolio(user: number | undefined, currency: string) {
     };
   }, [user, currency]);
   const refresh = useCallback(async () => {
-    if (!user || refreshing.current || document.hidden) return;
+    if (!user || !ready || refreshing.current || document.hidden) return;
     const current = generation.current;
     const request = new AbortController();
     refreshing.current = request;
+    setRefreshPending(true);
     try {
       // The watch owns state. A late acknowledgement must never overwrite newer progress.
       await liveSocket.request(
@@ -115,9 +118,12 @@ export function usePortfolio(user: number | undefined, currency: string) {
       if (!request.signal.aborted && current === generation.current)
         setError(error instanceof Error ? error.message : "Refresh failed");
     } finally {
-      if (refreshing.current === request) refreshing.current = undefined;
+      if (refreshing.current === request) {
+        refreshing.current = undefined;
+        setRefreshPending(false);
+      }
     }
-  }, [user, currency]);
+  }, [user, currency, ready]);
   const currentState =
     state &&
     state.user_id === user &&
@@ -127,5 +133,12 @@ export function usePortfolio(user: number | undefined, currency: string) {
   const resubscribe = useCallback(() => {
     if (watchId.current && !document.hidden) liveSocket.retry(watchId.current);
   }, []);
-  return { state: currentState, ready, error, refresh, resubscribe };
+  return {
+    state: currentState,
+    ready,
+    error,
+    refresh,
+    refreshing: refreshPending,
+    resubscribe,
+  };
 }

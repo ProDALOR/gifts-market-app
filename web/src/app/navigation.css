@@ -7,6 +7,61 @@
   border-radius: 11px;
   background: var(--surface);
 }
+.header-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 0 1 auto;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--accent);
+  transition:
+    background 140ms ease-out,
+    border-color 140ms ease-out;
+}
+.header-back:active {
+  background: var(--tint);
+  border-color: var(--accent-line);
+}
+@media (hover: hover) {
+  .header-back:hover {
+    background: var(--tint);
+    border-color: var(--accent-line);
+  }
+}
+.header-back svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.header-back-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 16px;
+}
+@media (max-width: 359px) {
+  .header-back {
+    width: 44px;
+    padding: 0;
+  }
+  .header-back-label {
+    display: none;
+  }
+}
 .app-navigation a {
   display: flex;
   align-items: center;
@@ -49,7 +104,8 @@
   }
   @supports (backdrop-filter: blur(8px)) or (-webkit-backdrop-filter: blur(8px)) {
     .app-navigation {
-      --navigation-tint: 85%;
+      --navigation-tint: 78%;
+      --navigation-selection-tint: 80%;
       background: color-mix(
         in srgb,
         var(--paper) var(--navigation-tint),
@@ -59,7 +115,15 @@
       backdrop-filter: blur(8px);
     }
     :root[data-color-scheme="light"] .app-navigation {
-      --navigation-tint: 90%;
+      --navigation-tint: 86%;
+      --navigation-selection-tint: 88%;
+    }
+    .app-navigation a[aria-current="page"] {
+      background: color-mix(
+        in srgb,
+        var(--selection) var(--navigation-selection-tint),
+        transparent
+      );
     }
   }
   @media (prefers-reduced-transparency: reduce) {
@@ -68,6 +132,9 @@
       -webkit-backdrop-filter: none;
       backdrop-filter: none;
     }
+    .app-navigation a[aria-current="page"] {
+      background: var(--selection);
+    }
   }
   .app-navigation a {
     min-height: 48px;
@@ -75,6 +142,7 @@
     gap: 2px;
     padding: 4px 10px;
     font-size: 11px;
+    color: var(--ink);
   }
   .app-navigation .shared-icon {
     width: 20px;

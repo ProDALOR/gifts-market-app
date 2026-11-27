@@ -1,6 +1,7 @@
 /** Stateless portfolio return links share the market's readable attribute codec. */
 import { selectionFromParams, selectionParams } from "../market-selection.ts";
 import type { PortfolioFilters, PortfolioSort } from "./model.ts";
+import { portfolioGiftNumber } from "./model.ts";
 export function portfolioFiltersFromParams(
   params: URLSearchParams,
 ): PortfolioFilters {
@@ -31,7 +32,7 @@ export function portfolioFiltersFromParams(
   };
 }
 export function portfolioParams(filters: PortfolioFilters, currency: string) {
-  const number = filters.number ? Number(filters.number) : undefined;
+  const number = portfolioGiftNumber(filters.number);
   const market = selectionParams({
     filters: {
       collection_id: filters.collection || undefined,

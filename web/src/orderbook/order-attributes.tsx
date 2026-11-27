@@ -14,6 +14,8 @@ import { criteriaPresentation, giftPresentation } from "../order-target";
 import type { OrderValuationState } from "../valuation/use-order-valuation";
 import { BidValue } from "./bid-value";
 import { RarityLabel } from "../ui/rarity-label";
+import { MarketLink } from "../app/navigation";
+import { attributeMarketSelection } from "./attribute-market";
 
 export function OrderAttributes({
   order,
@@ -111,68 +113,106 @@ export function OrderAttributes({
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ label, value, attribute, visual, floor }) => (
-              <tr key={label} data-attribute={attribute}>
-                <th scope="row">
-                  <span className="attribute-identity">
-                    {(visual ||
-                      attribute === "collection" ||
-                      attribute === "pair") && (
-                      <span
-                        className={`attribute-visual attribute-${visual?.kind ?? attribute}`}
-                        aria-hidden="true"
-                      >
-                        <AttributeArt
-                          kind={attribute}
-                          option={visual}
-                          model={model}
-                          backdrop={backdrop}
-                          collectionPreview={collectionPreview}
-                        />
-                      </span>
-                    )}
-                    <span className="attribute-copy">
-                      <span className="attribute-label">
-                        {label}
-                        <RarityLabel rarity={visual?.rarity} />
-                      </span>
-                      {value && (
-                        <strong className="attribute-name">{value}</strong>
+            {rows.map(({ label, value, attribute, visual, floor }) => {
+              const bid =
+                attribute === "collection"
+                  ? bids?.collection
+                  : attribute === "pair"
+                    ? bids?.model_backdrop
+                    : attribute
+                      ? bids?.[attribute]
+                      : undefined;
+              const asks =
+                floor && "value" in floor
+                  ? attributeMarketSelection(order, attribute, "asks")
+                  : undefined;
+              const bidSelection =
+                bid && "value" in bid
+                  ? attributeMarketSelection(order, attribute, "bids")
+                  : undefined;
+              const askValue = (
+                <FloorValue
+                  label={`${label} floor`}
+                  floor={floor}
+                  currency={order.book.currency_id}
+                  stale={shared?.stale}
+                  loading={detail.pending}
+                  error={detail.error}
+                />
+              );
+              const bidValue = (
+                <BidValue
+                  label={`${label} best bid`}
+                  bid={bid}
+                  currency={order.book.currency_id}
+                  stale={bidState?.stale}
+                  loading={valuation?.loading}
+                  error={bidError}
+                  names={names}
+                />
+              );
+              return (
+                <tr key={label} data-attribute={attribute}>
+                  <th scope="row">
+                    <span className="attribute-identity">
+                      {(visual ||
+                        attribute === "collection" ||
+                        attribute === "pair") && (
+                        <span
+                          className={`attribute-visual attribute-${visual?.kind ?? attribute}`}
+                          aria-hidden="true"
+                        >
+                          <AttributeArt
+                            kind={attribute}
+                            option={visual}
+                            model={model}
+                            backdrop={backdrop}
+                            collectionPreview={collectionPreview}
+                          />
+                        </span>
                       )}
+                      <span className="attribute-copy">
+                        <span className="attribute-label">
+                          {label}
+                          <RarityLabel rarity={visual?.rarity} />
+                        </span>
+                        {value && (
+                          <strong className="attribute-name">{value}</strong>
+                        )}
+                      </span>
                     </span>
-                  </span>
-                </th>
-                <td>
-                  <FloorValue
-                    label={`${label} floor`}
-                    floor={floor}
-                    currency={order.book.currency_id}
-                    stale={shared?.stale}
-                    loading={detail.pending}
-                    error={detail.error}
-                  />
-                </td>
-                <td>
-                  <BidValue
-                    label={`${label} best bid`}
-                    bid={
-                      attribute === "collection"
-                        ? bids?.collection
-                        : attribute === "pair"
-                          ? bids?.model_backdrop
-                          : attribute
-                            ? bids?.[attribute]
-                            : undefined
-                    }
-                    currency={order.book.currency_id}
-                    stale={bidState?.stale}
-                    loading={valuation?.loading}
-                    error={bidError}
-                    names={names}
-                  />
-                </td>
-              </tr>
-            ))}
+                  </th>
+                  <td>
+                    {asks ? (
+                      <MarketLink
+                        className="market-quote-link"
+                        selection={asks}
+                        aria-label={`View ${label.toLowerCase()} asks`}
+                        title={`View ${label.toLowerCase()} asks`}
+                      >
+                        {askValue}
+                      </MarketLink>
+                    ) : (
+                      askValue
+                    )}
+                  </td>
+                  <td>
+                    {bidSelection ? (
+                      <MarketLink
+                        className="market-quote-link"
+                        selection={bidSelection}
+                        aria-label={`View ${label.toLowerCase()} bids`}
+                        title={`View compatible ${label.toLowerCase()} bids`}
+                      >
+                        {bidValue}
+                      </MarketLink>
+                    ) : (
+                      bidValue
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

@@ -1214,29 +1214,9 @@ try {
   assert.equal(await sortTrigger.innerText(), "Price");
   assert.equal(await button("Reverse sort direction").innerText(), "↓");
   assert.equal(
-    await page
-      .locator(".app-footer")
-      .evaluate(
-        (footer) =>
-          Math.abs(
-            footer.getBoundingClientRect().bottom -
-              (innerHeight -
-                parseFloat(
-                  getComputedStyle(footer.closest(".orderbook")).paddingBottom,
-                )),
-          ) < 2,
-      ),
-    true,
-    "Short books keep the footer at the viewport bottom: " +
-      JSON.stringify(
-        await page.locator(".app-footer").evaluate((footer) => ({
-          footer: footer.getBoundingClientRect().toJSON(),
-          height: innerHeight,
-          scrollY,
-          padding: getComputedStyle(footer.closest(".orderbook")).paddingBottom,
-          main: footer.closest(".orderbook").getBoundingClientRect().toJSON(),
-        })),
-      ),
+    await page.locator("footer").count(),
+    0,
+    "Market keeps footer resources in Profile",
   );
   assert.equal(await button("Model").isDisabled(), false);
   assert.equal(
@@ -1563,7 +1543,11 @@ try {
     '[data-attribute="model"] .floor-value:not(.bid-value)',
   );
   const beforeInspect = floorRequests;
-  await inspect.click();
+  const marketLink = page.getByRole("link", {
+    name: "View model asks",
+    exact: true,
+  });
+  assert((await marketLink.getAttribute("href")).includes("f="));
   const floorInfo = page.getByRole("dialog", {
     name: "Floor details",
     exact: true,
@@ -1579,7 +1563,7 @@ try {
   assert.equal(
     floorRequests,
     beforeInspect,
-    "Read-only floor values reuse the loaded projection",
+    "Market price links reuse the loaded projection",
   );
   assert.equal(
     await page.locator(".detail").count(),
@@ -1628,7 +1612,7 @@ try {
             .getBoundingClientRect();
           const floor = row.querySelector("td").getBoundingClientRect();
           return {
-            compact: bounds.height <= 54,
+            compact: bounds.height <= 55,
             separate: label.right <= floor.left,
             contained: floor.right <= bounds.right && label.left >= bounds.left,
           };

@@ -6,7 +6,18 @@ import { GiftCardView } from "../previews/gift-card";
 import { GiftDetailsView } from "../previews/gift-details";
 import { useOrderValuation } from "../valuation/use-order-valuation";
 import { formatGiftNumber } from "../amount";
-import { CurrencySymbol } from "../ui/icons";
+import { CurrencySymbol, SharedIcon } from "../ui/icons";
+function RelationIcon({
+  relation,
+}: {
+  relation: PortfolioItem["gift"]["relation"];
+}) {
+  return relation === "unverified" ? (
+    <CurrencySymbol currency="GRAM" />
+  ) : (
+    <SharedIcon name="user" />
+  );
+}
 export function portfolioSubject(
   item: PortfolioItem,
   currency: string,
@@ -34,6 +45,7 @@ export function PortfolioDetails({
   currency,
   options,
   names,
+  collectionPreview,
   close,
   share,
 }: {
@@ -41,6 +53,7 @@ export function PortfolioDetails({
   currency: string;
   options: ReadonlyMap<string, CatalogOption>;
   names: ReadonlyMap<string, string>;
+  collectionPreview?: GiftMedia;
   close: () => void;
   share?: (slug: string, currency: string) => void;
 }) {
@@ -54,9 +67,7 @@ export function PortfolioDetails({
       notice={
         relation && (
           <p className="portfolio-ownership-note">
-            {item.gift.relation === "unverified" && (
-              <CurrencySymbol currency="GRAM" />
-            )}
+            <RelationIcon relation={item.gift.relation} />
             {relation.description}
           </p>
         )
@@ -66,7 +77,8 @@ export function PortfolioDetails({
       collectionName={item.gift.gift.slug.split("-")[0]}
       options={options}
       names={names}
-      collectionPreview={modelMedia(item)}
+      collectionPreview={collectionPreview}
+      giftPreview={modelMedia(item)}
       slug={item.gift.gift.slug}
       close={close}
       share={share}
@@ -114,7 +126,7 @@ export const PortfolioGiftCard = memo(function PortfolioGiftCard({
             title={relation.description}
             aria-label={relation.description}
           >
-            <CurrencySymbol currency="GRAM" />
+            <RelationIcon relation={item.gift.relation} />
           </span>
         )
       }
