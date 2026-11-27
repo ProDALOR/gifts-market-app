@@ -295,8 +295,6 @@ export function MarketPage({ context }: { context: TelegramContext }) {
     loadMore,
     setVisibleRange,
   } = useOrderFeed(query, false, reloadKey, entryFeed.current);
-  const compactStatus =
-    status === "Live" || status === "Connecting" || status === "Reconnecting";
   useEffect(
     () =>
       setSelected((current) =>
@@ -512,11 +510,9 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                   </button>
                 ))}
               </div>
-              {compactStatus && (
-                <span className="sr mobile-feed-status" role="status">
-                  {status}
-                </span>
-              )}
+              <span className="sr mobile-feed-status" role="status">
+                {status}
+              </span>
               {choice.mode === "bid" && (
                 <div className="bid-matching" id="bid-matching">
                   <div
@@ -649,7 +645,7 @@ export function MarketPage({ context }: { context: TelegramContext }) {
                     "Select a collection"
                   ))}
               </h1>
-              <div className="feed-status" data-compact={compactStatus}>
+              <div className="feed-status">
                 <span
                   role="status"
                   className={`status${status === "Live" ? " live" : ""}`}

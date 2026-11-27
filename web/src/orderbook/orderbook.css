@@ -253,7 +253,7 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 50%, transparent);
 }
 @media (max-width: 959px) {
-  .market-heading .feed-status[data-compact="true"] {
+  .market-heading .feed-status {
     display: none;
   }
   .market-results > .orders {

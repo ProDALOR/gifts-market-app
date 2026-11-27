@@ -566,22 +566,56 @@ try {
   );
   for (const socket of openSockets)
     socket.send(JSON.stringify({ type: "market.status", status: "delayed" }));
-  await page
-    .locator(".feed-status")
-    .getByText("Updates delayed", { exact: true })
-    .waitFor();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".mobile-feed-status")?.textContent ===
+      "Updates delayed",
+  );
+  assert.equal(
+    await page.locator(".feed-status").isVisible(),
+    false,
+    "Delayed updates use the tab indicator without bringing back the mobile status row",
+  );
+  assert.match(
+    await page
+      .getByRole("button", { name: "Asks", exact: true })
+      .getAttribute("title"),
+    /Updates delayed.*loaded/,
+  );
+  assert.equal(
+    await page.locator(".market-view-status.live").count(),
+    0,
+    "Delayed data never displays a Live indicator",
+  );
+  await page.setViewportSize({ width: 1200, height: 900 });
   assert.equal(
     await page.locator(".feed-status").isVisible(),
     true,
-    "Delayed updates remain visible on mobile",
+    "Desktop keeps status beside the collection name",
+  );
+  assert.match(
+    await page.locator(".feed-status").innerText(),
+    /Updates delayed/,
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const socket of openSockets)
+    socket.send(
+      JSON.stringify({ type: "market.status", status: "unavailable" }),
+    );
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".mobile-feed-status")?.textContent ===
+      "Unavailable",
+  );
+  assert.equal(
+    await page.locator(".feed-status").isVisible(),
+    false,
+    "Temporary unavailability also keeps the compact mobile layout",
   );
   for (const socket of openSockets)
     socket.send(JSON.stringify({ type: "market.status", status: "available" }));
-  await page.waitForFunction(
-    () =>
-      getComputedStyle(document.querySelector(".feed-status")).display ===
-      "none",
-  );
+  await page.locator(".market-view-status.live").waitFor();
+  assert.equal(await page.locator(".feed-status").isVisible(), false);
 
   await page.waitForSelector('.collection-tile[data-collection-id="bunny"]');
   assert.deepEqual(

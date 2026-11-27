@@ -102,7 +102,7 @@ impl MessageHandler for MarketCommands {
         menu()
     }
     fn launch_label(&self) -> &'static str {
-        "Open market"
+        LaunchCommands.launch_label()
     }
     fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<CommandRequest> {
         parse::parse_with_origin(message, usernames, self.public_url.as_ref())
@@ -176,7 +176,7 @@ impl MessageHandler for LaunchCommands {
         menu()
     }
     fn launch_label(&self) -> &'static str {
-        "Open market"
+        "Open app"
     }
     fn parse(&self, message: IncomingMessage<'_>, usernames: &[String]) -> Option<CommandRequest> {
         parse(message, usernames)
